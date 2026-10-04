@@ -193,9 +193,9 @@ private struct ImmersiveItemView: View {
             player = p; p.isMuted = store.muted
             // Start immediately. Duration metadata must never delay the first frame.
             if let resume = store.resumePosition(post.stableID), resume > 0 {
-                p.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
+                p.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: { _ in })
             } else if store.resumePosition(post.stableID) == nil, post.providerKey == .hanime {
-                p.seek(to: CMTime(seconds: 180, preferredTimescale: 600))
+                p.seek(to: CMTime(seconds: 180, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: { _ in })
             }
             if playing { p.play() }; error = nil
         } catch { self.error = error.localizedDescription }
@@ -225,3 +225,4 @@ struct PosterView: View {
         }
     }
 }
+

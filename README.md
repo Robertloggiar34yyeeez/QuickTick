@@ -11,7 +11,7 @@ xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNativ
 xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=NO test
 ```
 
-Choose a simulator actually installed in your Xcode if iPhone 17 is unavailable. GitHub Actions selects an available iPhone automatically. Workflow is supplied locally; it has not run or been pushed.
+Choose a simulator actually installed in your Xcode if iPhone 17 is unavailable. GitHub Actions selects an available iPhone automatically. The workflow is pushed and has passed native simulator tests and an iPhoneOS archive. It produces an unsigned IPA for user-requested AltStore/Sideloadly signing. See IOS-PORT-STATUS.md for the exact tested commit and remaining device checks.
 
 Project generation is optional: `python3 scripts/generate-xcode-project.py` regenerates the checked-in native project deterministically; XcodeGen's `ios-starter/project.yml` is also provided. No WebView implementation is shipped. `reference-web` is development/API reference only.
 
@@ -24,3 +24,5 @@ python3 scripts/check-swift-syntax.py
 ```
 
 The crypto check requires Python cryptography. Syntax parsing does not replace Swift type checking or Apple tests. Live provider probes are separate (`scripts/probe-providers.py`). See IOS-PORT-STATUS.md for actual results, remaining verification and delivery limitations.
+
+

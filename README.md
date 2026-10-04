@@ -8,7 +8,7 @@ Build/test from the source root:
 
 ```sh
 xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
-xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=NO test
+xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual test
 ```
 
 Choose a simulator actually installed in your Xcode if iPhone 17 is unavailable. GitHub Actions selects an available iPhone automatically. The workflow is pushed and has passed native simulator tests and an iPhoneOS archive. It produces an unsigned IPA for user-requested AltStore/Sideloadly signing. See IOS-PORT-STATUS.md for the exact tested commit and remaining device checks.
@@ -26,3 +26,4 @@ python3 scripts/check-swift-syntax.py
 The crypto check requires Python cryptography. Syntax parsing does not replace Swift type checking or Apple tests. Live provider probes are separate (`scripts/probe-providers.py`). See IOS-PORT-STATUS.md for actual results, remaining verification and delivery limitations.
 
 
+Revision build 2: gradient surfaces, responsive controls, tags behind View tags, video/GIF-only Immersive with bounded playback prewarming. Sync imports fill live credential fields, including when Remember is off, and persist the supported Pornhub username when remembering is enabled. Signed simulator tests use the checked-in Simulator.entitlements to exercise real Keychain access; the device IPA remains unsigned. The successful run has 27 unit tests and 3 UI tests; see GITHUB-BUILD-STATUS.md.

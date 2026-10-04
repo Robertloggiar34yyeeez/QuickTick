@@ -19,9 +19,11 @@ with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
 export=Path(metadata['exportDirectory'])
 for name in ['QuickTick-0.6.24-unsigned.ipa','SHA256SUMS.txt','INSTALLATION.txt']: shutil.copy2(export/name,local/name)
 logs=local/'logs'; logs.mkdir()
-for name in ['github-xcode-version.txt','github-xcodebuild-test.txt','github-xcodebuild-archive.txt','native-test-results.zip','ipa-verification.json','provider-live-probes.json','project-audit.txt','swift-syntax.txt','sync-vector.txt']:
+for name in ['github-xcode-version.txt','github-xcodebuild-test.txt','github-xcodebuild-archive.txt','native-test-results.zip','ipa-verification.json','provider-live-probes.json','project-audit.txt','swift-syntax.txt','sync-vector.txt','sync-live-roundtrip.json']:
     file=ROOT/'logs'/name
     if file.exists(): shutil.copy2(file,logs/name)
+screenshots=ROOT/'logs/final-native-tests/screenshots'
+if screenshots.exists(): shutil.copytree(screenshots,logs/'screenshots')
 for name in ['IOS-PORT-STATUS.md','GITHUB-BUILD-STATUS.md','CODEX-MASTER-PROMPT.md']: shutil.copy2(ROOT/name,local/name)
 def sha(file): return hashlib.sha256(file.read_bytes()).hexdigest()
 assert sha(local/'QuickTick-0.6.24-unsigned.ipa')==metadata['ipaSHA256']
@@ -40,4 +42,3 @@ report=json.dumps(verification,indent=2)
 for file in [local/'DELIVERY-VERIFICATION.json',drive/'DELIVERY-VERIFICATION.json',ROOT/'logs/ipa-drive-delivery.json']: file.write_text(report,encoding='utf-8')
 assert sha(local/'DELIVERY-VERIFICATION.json')==sha(drive/'DELIVERY-VERIFICATION.json')
 print(report)
-

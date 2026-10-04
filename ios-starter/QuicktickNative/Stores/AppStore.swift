@@ -69,7 +69,10 @@ final class AppStore: ObservableObject {
             local = savedState
             favorites = local.snapshot.favorites; exclusions = local.snapshot.exclusions.tags
             tasteSetup = local.snapshot.preferences.value
-            immersionFraming = savedState.immersionFraming; muted = savedState.muted
+            immersionFraming = savedState.immersionFraming
+            // Older releases defaulted to muted before audio was configured.
+            // Enable audio once on upgrade, then preserve explicit mute choices.
+            muted = savedState.audioPreferenceVersion == nil ? false : savedState.muted
         } catch { restoreFailed = true; storageWarning = error.localizedDescription }
         if let saved = KeychainStore.get(account: "quicktick-sync-id"), (try? QuicktickSyncCrypto.parse(saved)) != nil {
             syncID = saved
@@ -386,6 +389,7 @@ final class AppStore: ObservableObject {
     private func persistLocal() {
         guard !restoreFailed else { return }
         local.snapshot = currentSnapshot(); local.immersionFraming = immersionFraming; local.muted = muted
+        local.audioPreferenceVersion = 1
         // Credentials/session material belongs in Keychain, never in the ordinary state file.
         var disk = local
         disk.snapshot.rule34.credentials = Rule34Credentials()

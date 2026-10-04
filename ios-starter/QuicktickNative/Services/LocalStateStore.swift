@@ -6,6 +6,7 @@ struct LocalAppState: Codable {
     var resumePositions: [String: Double] = [:]
     var immersionFraming = false
     var muted = false
+    var audioPreferenceVersion: Int? = nil
 }
 
 struct LocalStateStore {

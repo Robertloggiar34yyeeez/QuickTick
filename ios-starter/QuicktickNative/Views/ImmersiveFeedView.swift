@@ -58,7 +58,7 @@ struct ImmersiveFeedView: View {
                 if searchVisible && !offline { NativeSearchBar(immersive: true).padding(.horizontal, 12).padding(.bottom, 8) }
             }.background(.ultraThinMaterial).overlay(alignment: .bottom) { Color.white.opacity(0.12).frame(height: 0.5) }
         }
-        .task { activeID = mediaPosts.first?.stableID; if !offline && posts.isEmpty { await store.refresh(immersive: true) } }
+        .task { if activeID == nil { activeID = mediaPosts.first?.stableID }; if !offline && posts.isEmpty { await store.refresh(immersive: true) } }
         .task(id: "\(activeID ?? ""):\(mediaPosts.count)") { await prewarm() }
         .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
             if activeID == nil || !keys.contains(activeID ?? "") { activeID = keys.first }

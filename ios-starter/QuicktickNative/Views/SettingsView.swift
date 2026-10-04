@@ -3,6 +3,7 @@ import UIKit
 
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
+    @FocusState private var syncFieldFocused: Bool
     @State private var syncID = ""
     @State private var status = ""
     @State private var user = ""
@@ -25,11 +26,11 @@ struct SettingsView: View {
                 }.buttonStyle(.plain)
                 SecureField("Paste Sync ID from another device", text: $syncID)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
-                    .accessibilityIdentifier("sync-id-input")
+                    .accessibilityIdentifier("sync-id-input").focused($syncFieldFocused).submitLabel(.done)
                 HStack {
                     Button("Paste ID") { syncID = UIPasteboard.general.string ?? "" }
                     Spacer()
-                    Button("Connect and merge") { Task {
+                    Button("Connect and merge") { syncFieldFocused = false; Task {
                         do { try await store.connectSyncID(syncID); status = ""; await reloadAccessFields(); await store.refresh() }
                         catch { status = error.localizedDescription }
                     } }.disabled(store.isSyncing || syncID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -45,7 +46,7 @@ struct SettingsView: View {
                 TextField("Pornhub username", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
                 SecureField("Supported Pornhub session", text: $session)
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
-            }
+            }.disabled(store.isSyncing)
             Section("Learned interests · \(store.selectedProvider.displayName)") {
                 LabeledContent("Engine", value: store.recommendationMode)
                 Text(store.learnedInterests.isEmpty ? "Interact with posts or search to learn interests." : store.learnedInterests.joined(separator: " · "))

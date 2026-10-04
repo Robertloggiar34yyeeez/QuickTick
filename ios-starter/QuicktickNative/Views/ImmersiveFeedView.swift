@@ -60,6 +60,7 @@ struct ImmersiveFeedView: View {
         }
         let range = max(0, index - 1)...min(clips.count - 1, index + 3)
         store.players.retain(Set(range.map { clips[$0].stableID }))
+        let offlineMode = offline
         let feedStore = store
         let resolver = store.resolver
         let pool = store.players
@@ -68,7 +69,7 @@ struct ImmersiveFeedView: View {
                 let post = clips[i]
                 group.addTask {
                     let url: URL?
-                    if offline { url = URL(string: post.mediaUrl) }
+                    if offlineMode { url = URL(string: post.mediaUrl) }
                     else { url = try? await resolver.resolve(post).mediaUrlURL }
                     guard !Task.isCancelled, let url else { return }
                     await pool.prewarm(key: post.stableID, url: url)

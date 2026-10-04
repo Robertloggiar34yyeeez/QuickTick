@@ -100,7 +100,8 @@ final class AppStore: ObservableObject {
         let token = generation
         let provider = selectedProvider
         isLoading = true
-        defer { if generation == token { isLoading = false } }
+        var releasedLoading = false
+        defer { if generation == token && !releasedLoading { isLoading = false } }
         do {
             let parsed = QueryParser.parse(queryText)
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -119,6 +120,7 @@ final class AppStore: ObservableObject {
             guard generation == token else { return }
             posts = immediate
             isLoading = false
+            releasedLoading = true
             var gorseScores: [String: Double] = [:]
             var mode = "Local 0.6.24"
             if parsed.included.isEmpty, !syncID.isEmpty, filtered.count >= 2 {
@@ -137,7 +139,7 @@ final class AppStore: ObservableObject {
                 : filtered
             guard generation == token else { return }
             // Do not reorder a playing feed after background recommendations arrive.
-            if !immersive { posts = ranked }
+            if !immersive, nextPage == 2, posts.map(\.stableID) == immediate.map(\.stableID) { posts = ranked }
             recommendationMode = mode
             learnedInterests = await recommendations.positiveTerms(provider: provider, taste: taste)
             await persistRecommendations()

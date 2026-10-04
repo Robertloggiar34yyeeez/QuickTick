@@ -3,11 +3,14 @@ import XCTest
 final class NavigationTests: XCTestCase {
     @MainActor func testTagsHiddenUntilRequestedAndActionsHaveRoom() {
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing"]; app.launch()
+        app.launchArguments = ["--ui-testing", "--compact-ui-testing"]; app.launch()
         XCTAssertTrue(app.buttons["View tags"].firstMatch.waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["#test_tag"].exists)
         let labels = ["Like", "Less", "Download", "Comments"]
         let buttons = labels.map { app.buttons[$0].firstMatch }
+        let tabs = ["Home", "Immersive", "Downloads", "Favorites", "Settings"].map { app.buttons["tab-\($0)"] }
+        for tab in tabs { XCTAssertGreaterThanOrEqual(tab.frame.width, 44) }
+        for index in 1..<tabs.count { XCTAssertGreaterThanOrEqual(tabs[index].frame.minX, tabs[index - 1].frame.maxX - 1) }
         for button in buttons { XCTAssertGreaterThanOrEqual(button.frame.width, 44) }
         for index in 1..<buttons.count { XCTAssertGreaterThanOrEqual(buttons[index].frame.minX, buttons[index - 1].frame.maxX - 1) }
         let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Gradient home"; screenshot.lifetime = .keepAlways; add(screenshot)

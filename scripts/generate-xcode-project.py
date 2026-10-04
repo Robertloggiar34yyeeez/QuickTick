@@ -50,7 +50,11 @@ main_group=add('main','PBXGroup',children=refs+[products_group],sourceTree='<gro
 project_configs=[]
 for config in ('Debug','Release'):
     settings={'SDKROOT':'iphoneos','CLANG_ENABLE_MODULES':'YES','CLANG_ENABLE_OBJC_ARC':'YES','SWIFT_VERSION':'6.0','IPHONEOS_DEPLOYMENT_TARGET':'17.0','SWIFT_OPTIMIZATION_LEVEL':'-Onone' if config=='Debug' else '-O','DEBUG_INFORMATION_FORMAT':'dwarf' if config=='Debug' else 'dwarf-with-dsym'}
-    if config=='Debug': settings['SWIFT_ACTIVE_COMPILATION_CONDITIONS']='DEBUG $(inherited)'
+    if config=='Debug':
+        settings['SWIFT_ACTIVE_COMPILATION_CONDITIONS']='DEBUG $(inherited)'
+        settings['ENABLE_TESTABILITY']='YES'
+        settings['ONLY_ACTIVE_ARCH']='YES'
+        settings['COPY_PHASE_STRIP']='NO'
     project_configs.append(add('projectconfig:'+config,'XCBuildConfiguration',buildSettings=settings,name=config))
 config_list=add('projectconfigs','XCConfigurationList',buildConfigurations=project_configs,defaultConfigurationIsVisible='0',defaultConfigurationName='Release')
 project=add('project','PBXProject',attributes={'LastUpgradeCheck':'1600'},buildConfigurationList=config_list,compatibilityVersion='Xcode 14.0',developmentRegion='en',hasScannedForEncodings='0',knownRegions=['en','Base'],mainGroup=main_group,productRefGroup=products_group,projectDirPath='',projectRoot='',targets=targets)
@@ -75,4 +79,5 @@ scheme=f'''<?xml version="1.0" encoding="UTF-8"?>
 '''
 (scheme_dir/'QuicktickNative.xcscheme').write_text(scheme,encoding='utf-8')
 print(f'Generated {folder}: {len(source_ids)} Swift sources, {len(resource_ids)} fixtures, {len(targets)} targets.')
+
 

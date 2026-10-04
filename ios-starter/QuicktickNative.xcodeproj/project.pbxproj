@@ -875,6 +875,9 @@
 				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
 				"DEBUG_INFORMATION_FORMAT" = "dwarf";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG $(inherited)";
+				"ENABLE_TESTABILITY" = "YES";
+				"ONLY_ACTIVE_ARCH" = "YES";
+				"COPY_PHASE_STRIP" = "NO";
 			};
 			"name" = "Debug";
 		};
@@ -926,3 +929,4 @@
 	};
 	"rootObject" = "244210E48437B6556980A702";
 }
+

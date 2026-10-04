@@ -151,7 +151,7 @@ private struct ImmersiveItemView: View {
         .sheet(isPresented: $showComments) { CommentsView(post: post) }
         .sheet(isPresented: $showTags) { PostTagsView(post: post) }
         .task(id: active) {
-            guard active else { endExposure(); return }
+            guard active else { endExposure(); player = nil; ready = false; gifURL = nil; return }
             exposureStarted = .now
             await prepare()
             guard !Task.isCancelled else { return }
@@ -167,7 +167,7 @@ private struct ImmersiveItemView: View {
                 }
             }
         }
-        .onDisappear { endExposure() }
+        .onDisappear { endExposure(); player = nil; ready = false; gifURL = nil }
         .onChange(of: store.muted) { _, value in player?.isMuted = value }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
             guard active, let item = notification.object as? AVPlayerItem, item === player?.currentItem else { return }

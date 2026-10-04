@@ -37,7 +37,9 @@ report+=f'- Local revision: `{local}`\n- Source ZIP: `{archive.name}`\n- Source 
 report+=f'- Drive destination: `{destination}`\n- Delivery verification: all file sizes and SHA-256 values are compared against the local revision; the script fails if any mismatch occurs. The successful result is recorded in DELIVERY-VERIFICATION.json.\n' if destination else '- Drive destination unavailable; no copy occurred.\n'
 (ROOT/'IOS-PORT-STATUS.md').write_text(report,encoding='utf-8')
 (local/'IOS-PORT-STATUS.md').write_text(report,encoding='utf-8')
-manifest={'revision':revision,'repository':'https://github.com/Robertloggiar34yyeeez/QuickTick','branch':None,'preReplacementHEAD':None,'gitCommitSHA':None,'pushResult':'blocked: repository authentication/access unavailable','sourceZipSHA256':archive_hash,'files':[]}
+git_info_path=ROOT/'logs/github-final.json'
+git_info=json.loads(git_info_path.read_text()) if git_info_path.exists() else {}
+manifest={'revision':revision,'repository':'https://github.com/Robertloggiar34yyeeez/QuickTick','branch':git_info.get('branch'),'preReplacementHEAD':git_info.get('preReplacementHEAD'),'gitCommitSHA':git_info.get('commitSHA'),'pushResult':git_info.get('pushResult','blocked: repository authentication/access unavailable'),'sourceZipSHA256':archive_hash,'files':[]}
 for file in sorted(local.rglob('*')):
     if file.is_file(): manifest['files'].append({'path':file.relative_to(local).as_posix(),'bytes':file.stat().st_size,'sha256':sha(file)})
 (local/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
@@ -58,3 +60,4 @@ if destination:
     assert sha(destination/'DELIVERY-VERIFICATION.json')==sha(local/'DELIVERY-VERIFICATION.json')
 (ROOT/'logs/delivery-verification.json').write_text(verification,encoding='utf-8')
 print(verification)
+

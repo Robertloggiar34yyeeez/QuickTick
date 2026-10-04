@@ -21,6 +21,10 @@ targets:
     configFiles:
       Debug: Config/Debug.xcconfig
       Release: Config/Release.xcconfig
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Config/Info.plist
   QuicktickNativeTests:
     type: bundle.unit-test
     platform: iOS
@@ -35,3 +39,4 @@ targets:
       - QuicktickNativeUITests
     dependencies:
       - target: QuicktickNative
+

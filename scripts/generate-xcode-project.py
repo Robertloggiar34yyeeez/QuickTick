@@ -13,10 +13,10 @@ def serialize(value, level=0):
     return '"'+str(value).replace('\\','\\\\').replace('"','\\"')+'"'
 refs=[]; source_ids={}; resource_ids={}
 for path in sorted(ROOT.rglob('*')):
-    if not path.is_file() or path.suffix not in ('.swift','.json','.xcconfig'): continue
+    if not path.is_file() or path.suffix not in ('.swift','.json','.xcconfig','.plist'): continue
     rel=path.relative_to(ROOT).as_posix()
     if not rel.startswith(('QuicktickNative/','QuicktickNativeTests/','QuicktickNativeUITests/','Config/')): continue
-    ref=add('file:'+rel,'PBXFileReference',lastKnownFileType={'.swift':'sourcecode.swift','.json':'text.json','.xcconfig':'text.xcconfig'}[path.suffix],path=rel,sourceTree='SOURCE_ROOT')
+    ref=add('file:'+rel,'PBXFileReference',lastKnownFileType={'.swift':'sourcecode.swift','.json':'text.json','.xcconfig':'text.xcconfig','.plist':'text.plist.xml'}[path.suffix],path=rel,sourceTree='SOURCE_ROOT')
     refs.append(ref)
     if path.suffix=='.swift': source_ids[rel]=add('build:'+rel,'PBXBuildFile',fileRef=ref)
     if path.suffix=='.json': resource_ids[rel]=add('build:'+rel,'PBXBuildFile',fileRef=ref)
@@ -36,6 +36,8 @@ for name,kind in [('QuicktickNative','application'),('QuicktickNativeTests','bun
         if app:
             settings.update({'MARKETING_VERSION':'0.6.24','CURRENT_PROJECT_VERSION':'1','INFOPLIST_KEY_QUICKTICK_API_BASE_URL':'$(QUICKTICK_API_BASE_URL)','INFOPLIST_KEY_UIApplicationSceneManifest_Generation':'YES','INFOPLIST_KEY_UILaunchScreen_Generation':'YES','INFOPLIST_KEY_UISupportedInterfaceOrientations':'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad':'UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_CFBundleDisplayName':'Quicktick','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
             extra['baseConfigurationReference']=uid('file:Config/'+config+'.xcconfig')
+            settings['GENERATE_INFOPLIST_FILE']='NO'
+            settings['INFOPLIST_FILE']='Config/Info.plist'
         elif kind=='bundle.unit-test': settings.update({'TEST_HOST':'$(BUILT_PRODUCTS_DIR)/QuicktickNative.app/QuicktickNative','BUNDLE_LOADER':'$(TEST_HOST)','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks @loader_path/Frameworks'})
         else: settings['TEST_TARGET_NAME']='QuicktickNative'
         configs.append(add('config:'+name+config,'XCBuildConfiguration',buildSettings=settings,name=config,**extra))

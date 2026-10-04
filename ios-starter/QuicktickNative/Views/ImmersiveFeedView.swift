@@ -5,6 +5,7 @@ struct ImmersiveFeedView: View {
     @EnvironmentObject private var store: AppStore
     let posts: [Post]
     let offline: Bool
+    var onClose: (() -> Void)? = nil
     @State private var activeID: String?
     @State private var searchVisible = false
 
@@ -32,18 +33,25 @@ struct ImmersiveFeedView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(AppTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .toolbar {
-            if !offline {
-                Menu(store.selectedProvider.displayName) { ForEach(Provider.allCases) { provider in
-                    Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
-                } }
-                Button { searchVisible.toggle() } label: { Image(systemName: "magnifyingglass") }
-            }
-        }
-        .safeAreaInset(edge: .top) {
-            if searchVisible && !offline {
-                NativeSearchBar(immersive: true).padding(.horizontal).background(AppTheme.surface)
-            }
+        .toolbar(.hidden, for: .navigationBar)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    if let onClose { Button(action: onClose) { Image(systemName: "chevron.left").frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("Back") }
+                    if !offline && onClose == nil {
+                        Menu { ForEach(Provider.allCases) { provider in
+                            Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
+                        } } label: { Text(store.selectedProvider.displayName).font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.accent) }
+                    }
+                    Spacer(minLength: 0)
+                    Text(offline ? "Offline Immersive" : "Immersive").font(.headline)
+                    Spacer(minLength: 0)
+                    if !offline {
+                        Button { searchVisible.toggle() } label: { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("Search")
+                    }
+                }.padding(.horizontal, 16).frame(minHeight: 52)
+                if searchVisible && !offline { NativeSearchBar(immersive: true).padding(.horizontal, 12).padding(.bottom, 8) }
+            }.background(AppTheme.background)
         }
         .task { activeID = mediaPosts.first?.stableID; if !offline { await store.refresh(immersive: true) } }
         .task(id: "\(activeID ?? ""):\(mediaPosts.count)") { await prewarm() }
@@ -177,6 +185,9 @@ private struct ImmersiveItemView: View {
     }
     private func prepare() async {
         guard post.isImmersiveMedia else { return }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
+        #endif
         do {
             let url: URL
             if offline {
@@ -220,9 +231,19 @@ struct PosterView: View {
     var body: some View {
         if let file = URL(string: url), file.isFileURL, let image = UIImage(contentsOfFile: file.path) {
             Image(uiImage: image).resizable().scaledToFit()
+        } else if url.isEmpty {
+            placeholder
         } else {
-            AsyncImage(url: URL(string: url)) { image in image.resizable().scaledToFit() } placeholder: { ProgressView() }
+            AsyncImage(url: URL(string: url)) { phase in
+                switch phase {
+                case .success(let image): image.resizable().scaledToFit()
+                case .failure: placeholder
+                default: placeholder.overlay { ProgressView().tint(.white) }
+                }
+            }
         }
     }
+    private var placeholder: some View {
+        AppTheme.canvas.overlay { Image(systemName: "play.rectangle").font(.system(size: 44, weight: .light)).foregroundStyle(.white.opacity(0.25)) }
+    }
 }
-

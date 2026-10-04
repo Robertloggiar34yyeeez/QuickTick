@@ -11,7 +11,7 @@ private struct DownloadContent: View {
     @State private var immersive = false
     var body: some View {
         Group {
-            if immersive { ImmersiveFeedView(posts: localPosts, offline: true) }
+            if immersive { ImmersiveFeedView(posts: localPosts, offline: true, onClose: { immersive = false }) }
             else {
                 List {
                     if let error = manager.storageError { Text(error).foregroundStyle(.orange) }

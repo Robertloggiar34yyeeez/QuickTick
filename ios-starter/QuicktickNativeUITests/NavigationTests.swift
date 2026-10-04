@@ -18,8 +18,34 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.buttons["#test_tag"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()
         app.buttons["tab-Immersive"].tap()
+        XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["tab-Settings"].isHittable)
         let immersive = XCTAttachment(screenshot: app.screenshot()); immersive.name = "Immersive controls"; immersive.lifetime = .keepAlways; add(immersive)
         XCTAssertFalse(app.staticTexts["#still_tag"].exists)
+    }
+
+    @MainActor func testSyncedLoginsFillSettingsEvenWhenRememberIsOff() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-sync-login"]
+        app.launch()
+        app.buttons["tab-Settings"].tap()
+        let input = app.secureTextFields["sync-id-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        input.tap()
+        input.typeText("QT6-AAECAwQFBgcICQoLDA0ODw.ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8")
+        app.buttons["Connect and merge"].tap()
+        let username = app.textFields["Rule34 user ID"]
+        let filled = NSPredicate(format: "value == %@", "synced-test-user")
+        expectation(for: filled, evaluatedWith: username)
+        waitForExpectations(timeout: 10)
+        let key = app.secureTextFields["Rule34 API key"]
+        XCTAssertNotEqual(key.value as? String, "Rule34 API key")
+        XCTAssertFalse((key.value as? String ?? "").isEmpty)
+        app.swipeUp()
+        XCTAssertEqual(app.textFields["Pornhub username"].value as? String, "synced-test-name")
+        let session = app.secureTextFields["Supported Pornhub session"]
+        XCTAssertNotEqual(session.value as? String, "Supported Pornhub session")
+        let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Synced access fields (synthetic data)"; screenshot.lifetime = .keepAlways; add(screenshot)
     }
 
     @MainActor func testHomeImmersiveHomeAndDownloads() async {
@@ -28,7 +54,7 @@ final class NavigationTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.navigationBars["Quicktick"].waitForExistence(timeout: 10))
         app.buttons["tab-Immersive"].tap()
-        XCTAssertTrue(app.navigationBars["Immersive"].exists)
+        XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 5))
         app.buttons["tab-Home"].tap()
         XCTAssertTrue(app.navigationBars["Quicktick"].exists)
         app.buttons["tab-Downloads"].tap()

@@ -7,8 +7,8 @@ struct PostCardView: View {
     @State private var tags = false
     var body: some View {
         VStack(spacing: 0) {
-            PosterView(url: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl)
-                .aspectRatio(4/3, contentMode: .fit).frame(maxWidth: .infinity).background(Color.black).clipped()
+            Color.black.aspectRatio(4/3, contentMode: .fit)
+                .overlay { PosterView(url: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl) }.clipped()
             VStack(spacing: 8) {
                 HStack {
                     Text(post.provider.uppercased()).font(.caption.weight(.bold)).tracking(1.5).foregroundStyle(AppTheme.gradient)

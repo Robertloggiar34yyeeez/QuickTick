@@ -38,7 +38,7 @@ struct HomeFeedView: View {
             if showFloatingSearch { searchBar.padding(.horizontal).background(AppTheme.background) }
         }
         .refreshable { await store.refresh() }
-        .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false) }
+        .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, onClose: { immersive = false }) }
         .sheet(isPresented: $onboarding) { TasteOnboardingView() }
         .onChange(of: store.posts) { _, posts in
             if !posts.isEmpty && !store.tasteChoice(for: store.selectedProvider).done { onboarding = true }

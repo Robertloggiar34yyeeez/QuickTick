@@ -22,7 +22,18 @@ actor QuicktickAPIClient {
     let session: URLSession
     var credentials = ProviderCredentials()
 
-    init(baseURL: URL? = QuicktickAPIClient.configuredBaseURL(), session: URLSession = .shared) { self.baseURL = baseURL; self.session = session }
+    init(baseURL: URL? = QuicktickAPIClient.configuredBaseURL(), session: URLSession = .shared) {
+        self.baseURL = baseURL
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing-sync-login") {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [UITestSyncProtocol.self]
+            self.session = URLSession(configuration: configuration)
+        } else { self.session = session }
+        #else
+        self.session = session
+        #endif
+    }
 
     static func configuredBaseURL() -> URL? {
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "QUICKTICK_API_BASE_URL") as? String,

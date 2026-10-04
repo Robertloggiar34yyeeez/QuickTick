@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct QuicktickNativeApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var store = AppStore()
 
     var body: some Scene {
@@ -12,6 +13,7 @@ struct QuicktickNativeApp: App {
                 .environmentObject(store)
                 .preferredColorScheme(.dark)
                 .task { await store.bootstrap() }
+                .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await store.syncWhenActive() } } }
         }
     }
 }

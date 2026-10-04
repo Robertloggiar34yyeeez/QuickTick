@@ -233,7 +233,8 @@ private final class ComicScrollView: UIScrollView, UIScrollViewDelegate {
         }
         let horizontal = max(0, (bounds.width - contentSize.width) / 2)
         let vertical = max(0, (bounds.height - contentSize.height) / 2)
-        contentInset = UIEdgeInsets(top: vertical, left: horizontal, bottom: vertical, right: horizontal)
+        let inset = UIEdgeInsets(top: vertical, left: horizontal, bottom: vertical, right: horizontal)
+        if contentInset != inset { contentInset = inset }
     }
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
 }
@@ -241,10 +242,11 @@ private final class ComicScrollView: UIScrollView, UIScrollViewDelegate {
 // Draw visible regions rather than putting the entire long comic in one
 // backing bitmap. The original CGImage stays uncached and retains full detail.
 private final class ComicTileView: UIView {
-    private let image: UIImage
+    private nonisolated let tileImage: ComicTileImage
     override class var layerClass: AnyClass { CATiledLayer.self }
     init(image: UIImage) {
-        self.image = image; super.init(frame: CGRect(origin: .zero, size: image.size))
+        tileImage = ComicTileImage(image: image.cgImage, size: image.size, scale: image.scale)
+        super.init(frame: CGRect(origin: .zero, size: image.size))
         if let tiled = layer as? CATiledLayer {
             tiled.tileSize = CGSize(width: 256, height: 256)
             tiled.levelsOfDetail = 8; tiled.levelsOfDetailBias = 3
@@ -252,11 +254,19 @@ private final class ComicTileView: UIView {
         isOpaque = true; backgroundColor = .black
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func draw(_ rect: CGRect) {
-        guard let context = UIGraphicsGetCurrentContext(), let full = image.cgImage else { return }
-        let region = rect.intersection(bounds)
-        guard !region.isEmpty, let tile = full.cropping(to: CGRect(x: region.minX * image.scale, y: region.minY * image.scale, width: region.width * image.scale, height: region.height * image.scale)) else { return }
+    nonisolated override func draw(_ rect: CGRect) {
+        // CATiledLayer invokes drawing on worker threads. Read only immutable
+        // image data here; UIView geometry and SwiftUI state stay on MainActor.
+        guard let context = UIGraphicsGetCurrentContext(), let full = tileImage.image else { return }
+        let region = rect.intersection(CGRect(origin: .zero, size: tileImage.size))
+        guard !region.isEmpty, let tile = full.cropping(to: CGRect(x: region.minX * tileImage.scale, y: region.minY * tileImage.scale, width: region.width * tileImage.scale, height: region.height * tileImage.scale)) else { return }
         context.saveGState(); context.translateBy(x: region.minX, y: region.maxY); context.scaleBy(x: 1, y: -1)
         context.draw(tile, in: CGRect(origin: .zero, size: region.size)); context.restoreGState()
     }
+}
+
+private struct ComicTileImage: @unchecked Sendable {
+    let image: CGImage?
+    let size: CGSize
+    let scale: CGFloat
 }

@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "provider": "redgifs",
+      "type": "video",
+      "key": "redgifs:fixture",
+      "tags": [
+        "example"
+      ],
+      "id": "fixture"
+    }
+  ],
+  "hasMore": true
+}

@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "provider": "pornhub",
+      "type": "video",
+      "key": "pornhub:fixture",
+      "tags": [
+        "example"
+      ],
+      "id": "fixture"
+    }
+  ],
+  "hasMore": true
+}

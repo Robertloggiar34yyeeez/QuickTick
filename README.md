@@ -1,19 +1,26 @@
-# Quicktick
+# Native Quicktick 0.6.24
 
-Native SwiftUI iPhone media browser (iOS 17+). Sources: Danbooru and RedGIFs. The app uses public browsing by default; optional Danbooru login and API key are stored in Keychain. RedGIFs browsing uses its temporary guest token. Likes are local.
+Open `ios-starter/QuicktickNative.xcodeproj` on macOS with current Xcode. The shared QuicktickNative scheme includes the app, deterministic unit tests and navigation UI tests. Minimum deployment: iOS 17; Swift 6.
 
-## Build
+The API base URL is https://quick-tick-webb.vercel.app. Config xcconfig uses `https:/$()/` to preserve the URL through Xcode's comment parser. Rule34 credentials and supported Pornhub session material are entered in Settings and saved in Keychain. No passwords or Gorse server credentials belong in the app.
 
-The project is described in `project.yml` for [XcodeGen](https://github.com/yonaskolb/XcodeGen). On macOS with Xcode 16.4:
+Build/test from the source root:
 
 ```sh
-brew install xcodegen
-xcodegen generate
-xcodebuild test -project Quicktick.xcodeproj -scheme Quicktick -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.5' CODE_SIGNING_ALLOWED=NO
+xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=NO test
 ```
 
-GitHub Actions runs the same build on `macos-15` and uploads test results and an unsigned archive. A signed IPA requires an Apple Developer team, a distribution certificate, a provisioning profile, and an export options plist supplied through GitHub Secrets. No credentials belong in the repository.
+Choose a simulator actually installed in your Xcode if iPhone 17 is unavailable. GitHub Actions selects an available iPhone automatically. Workflow is supplied locally; it has not run or been pushed.
 
-## Current limits
+Project generation is optional: `python3 scripts/generate-xcode-project.py` regenerates the checked-in native project deterministically; XcodeGen's `ios-starter/project.yml` is also provided. No WebView implementation is shipped. `reference-web` is development/API reference only.
 
-Danbooru limits anonymous tag search; exclusions are filtered locally. RedGIFs account login and remote favorites are not implemented because the verified guest API flow does not provide them. Downloads use URLSession temporary files but do not yet show incremental progress or resume across app termination. The app has not been compiled or tested on a Mac until the GitHub Actions job runs.
+Portable checks:
+
+```sh
+python3 scripts/verify-sync-vector.py
+python3 -m pip install --target scripts/parser-deps tree-sitter tree-sitter-swift
+python3 scripts/check-swift-syntax.py
+```
+
+The crypto check requires Python cryptography. Syntax parsing does not replace Swift type checking or Apple tests. Live provider probes are separate (`scripts/probe-providers.py`). See IOS-PORT-STATUS.md for actual results, remaining verification and delivery limitations.

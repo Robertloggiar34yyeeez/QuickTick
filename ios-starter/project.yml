@@ -1,0 +1,37 @@
+name: QuicktickNative
+options:
+  bundleIdPrefix: com.quicktick
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.6.24
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    INFOPLIST_KEY_QUICKTICK_API_BASE_URL: "$(QUICKTICK_API_BASE_URL)"
+targets:
+  QuicktickNative:
+    type: application
+    platform: iOS
+    sources:
+      - QuicktickNative
+    configFiles:
+      Debug: Config/Debug.xcconfig
+      Release: Config/Release.xcconfig
+  QuicktickNativeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - QuicktickNativeTests
+    dependencies:
+      - target: QuicktickNative
+  QuicktickNativeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - QuicktickNativeUITests
+    dependencies:
+      - target: QuicktickNative

@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "provider": "eporner",
+      "type": "video",
+      "key": "eporner:fixture",
+      "tags": [
+        "example"
+      ],
+      "id": "fixture"
+    }
+  ],
+  "hasMore": true
+}

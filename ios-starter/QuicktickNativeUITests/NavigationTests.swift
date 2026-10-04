@@ -38,6 +38,7 @@ final class NavigationTests: XCTestCase {
         let filled = NSPredicate(format: "value == %@", "synced-test-user")
         expectation(for: filled, evaluatedWith: username)
         waitForExpectations(timeout: 10)
+        print("Sync UI status:", app.staticTexts["sync-status"].label)
         let key = app.secureTextFields["Rule34 API key"]
         XCTAssertNotEqual(key.value as? String, "Rule34 API key")
         XCTAssertFalse((key.value as? String ?? "").isEmpty)

@@ -31,7 +31,8 @@ final class UITestSyncProtocol: URLProtocol, @unchecked Sendable {
                     }
                 }
                 let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
-                if json?["action"] as? String == "get" {
+                let action = request.value(forHTTPHeaderField: "x-quicktick-test-action") ?? (json?["action"] as? String)
+                if action == "get" {
                     let encrypted = try QuicktickSyncCrypto.encrypt(UITestSyncSupport.snapshot, syncID: UITestSyncSupport.syncID)
                     let payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(encrypted.envelope))
                     result = ["exists": true, "payload": payload, "updatedAt": 100]

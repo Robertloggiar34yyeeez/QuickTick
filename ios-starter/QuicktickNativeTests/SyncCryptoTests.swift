@@ -2,6 +2,17 @@ import XCTest
 @testable import QuicktickNative
 
 final class SyncCryptoTests: XCTestCase {
+    func testCredentialsRoundTripWithoutRememberingLocally() throws {
+        let id = QuicktickSyncCrypto.generate()
+        var snapshot = QuicktickSyncSnapshot.empty
+        snapshot.rule34.credentials = .init(userId: "synthetic-user", apiKey: "synthetic-key", remember: false)
+        snapshot.pornhub.auth = .init(username: "synthetic-name", session: "synthetic-session")
+        let envelope = try QuicktickSyncCrypto.encrypt(snapshot, syncID: id).envelope
+        let decoded = try QuicktickSyncCrypto.decrypt(QuicktickSyncSnapshot.self, envelope: envelope, syncID: id)
+        XCTAssertEqual(decoded.rule34.credentials, snapshot.rule34.credentials)
+        XCTAssertEqual(decoded.pornhub.auth, snapshot.pornhub.auth)
+    }
+
     func testGeneratedIDsAndInvalidEnvelope() throws {
         let generated = QuicktickSyncCrypto.generate()
         XCTAssertEqual(try QuicktickSyncCrypto.parse(generated).secret.count, 32)

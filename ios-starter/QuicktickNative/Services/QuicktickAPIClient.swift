@@ -53,6 +53,14 @@ actor QuicktickAPIClient {
         req.httpBody = jsonBody
         req.timeoutInterval = path == "/api/recommend" ? 5 : 20
         if jsonBody != nil { req.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        #if DEBUG
+        // URLProtocol may receive POST bodies as inaccessible streams. Preserve the
+        // operation for the in-process UI test server, before Foundation adapts it.
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing-sync-login"), path == "/api/sync", let jsonBody,
+           let body = (try? JSONSerialization.jsonObject(with: jsonBody)) as? [String: Any], let action = body["action"] as? String {
+            req.setValue(action, forHTTPHeaderField: "x-quicktick-test-action")
+        }
+        #endif
         if path.hasPrefix("/api/rule34") || path.hasPrefix("/api/comments") {
             if !credentials.rule34User.isEmpty && !credentials.rule34Key.isEmpty {
                 req.setValue(credentials.rule34User, forHTTPHeaderField: "x-r34-user")

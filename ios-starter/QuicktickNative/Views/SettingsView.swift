@@ -36,7 +36,7 @@ struct SettingsView: View {
                     } }.disabled(store.isSyncing || syncID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }.buttonStyle(.plain)
                 if store.isSyncing { ProgressView("Syncing profile…") }
-                Text(status.isEmpty ? store.syncStatus : status).font(.footnote).foregroundStyle(store.syncFailed ? .orange : .secondary)
+                Text(status.isEmpty ? store.syncStatus : status).accessibilityIdentifier("sync-status").font(.footnote).foregroundStyle(store.syncFailed ? .orange : .secondary)
                 Text("Your Sync ID is the key to your profile. Downloads stay on this device.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Provider access") {

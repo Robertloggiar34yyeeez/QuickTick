@@ -13,10 +13,10 @@ def serialize(value, level=0):
     return '"'+str(value).replace('\\','\\\\').replace('"','\\"')+'"'
 refs=[]; source_ids={}; resource_ids={}
 for path in sorted(ROOT.rglob('*')):
-    if not path.is_file() or path.suffix not in ('.swift','.json','.xcconfig','.plist'): continue
+    if not path.is_file() or path.suffix not in ('.swift','.json','.xcconfig','.plist','.entitlements'): continue
     rel=path.relative_to(ROOT).as_posix()
     if not rel.startswith(('QuicktickNative/','QuicktickNativeTests/','QuicktickNativeUITests/','Config/')): continue
-    ref=add('file:'+rel,'PBXFileReference',lastKnownFileType={'.swift':'sourcecode.swift','.json':'text.json','.xcconfig':'text.xcconfig','.plist':'text.plist.xml'}[path.suffix],path=rel,sourceTree='SOURCE_ROOT')
+    ref=add('file:'+rel,'PBXFileReference',lastKnownFileType={'.swift':'sourcecode.swift','.json':'text.json','.xcconfig':'text.xcconfig','.plist':'text.plist.xml','.entitlements':'text.plist.entitlements'}[path.suffix],path=rel,sourceTree='SOURCE_ROOT')
     refs.append(ref)
     if path.suffix=='.swift': source_ids[rel]=add('build:'+rel,'PBXBuildFile',fileRef=ref)
     if path.suffix=='.json': resource_ids[rel]=add('build:'+rel,'PBXBuildFile',fileRef=ref)
@@ -38,6 +38,7 @@ for name,kind in [('QuicktickNative','application'),('QuicktickNativeTests','bun
             extra['baseConfigurationReference']=uid('file:Config/'+config+'.xcconfig')
             settings['GENERATE_INFOPLIST_FILE']='NO'
             settings['INFOPLIST_FILE']='Config/Info.plist'
+            settings['CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]']='Config/Simulator.entitlements'
         elif kind=='bundle.unit-test': settings.update({'TEST_HOST':'$(BUILT_PRODUCTS_DIR)/QuicktickNative.app/QuicktickNative','BUNDLE_LOADER':'$(TEST_HOST)','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks @loader_path/Frameworks'})
         else: settings['TEST_TARGET_NAME']='QuicktickNative'
         configs.append(add('config:'+name+config,'XCBuildConfiguration',buildSettings=settings,name=config,**extra))

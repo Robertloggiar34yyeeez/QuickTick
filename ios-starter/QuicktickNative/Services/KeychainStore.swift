@@ -13,12 +13,22 @@ enum KeychainStore {
         ]
         let updated = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if updated == errSecSuccess { return }
-        guard updated == errSecItemNotFound else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(updated)) }
+        guard updated == errSecItemNotFound else { throw failure(updated) }
         var add = query
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(add as CFDictionary, nil)
-        guard status == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        guard status == errSecSuccess else { throw failure(status) }
+    }
+
+    private static func failure(_ status: OSStatus) -> NSError {
+        let description: String
+        if status == errSecMissingEntitlement {
+            description = "Quicktick cannot access secure storage in this installation. Re-sign and reinstall the IPA with AltStore/Sideloadly, then connect your Sync ID again."
+        } else {
+            description = (SecCopyErrorMessageString(status, nil) as String?) ?? "Secure storage could not be updated."
+        }
+        return NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: description])
     }
 
     static func get(account: String) -> String? {

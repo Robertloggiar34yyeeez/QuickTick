@@ -23,6 +23,12 @@
 			"path" = "Config/Release.xcconfig";
 			"sourceTree" = "SOURCE_ROOT";
 		};
+		"E23711AE79CCABA22B559A9B" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.entitlements";
+			"path" = "Config/Simulator.entitlements";
+			"sourceTree" = "SOURCE_ROOT";
+		};
 		"45134B7486A66B43C05DD36F" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -433,6 +439,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "513A7E7BC7F7B625B576DF22";
 		};
+		"B1025898228F4D541E72B705" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNativeTests/KeychainTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"CFE197409EEB72A4DB090C1B" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "B1025898228F4D541E72B705";
+		};
 		"88DA23992F5F8C55B046D60B" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -615,6 +631,7 @@
 				"INFOPLIST_KEY_CFBundleDisplayName" = "Quicktick";
 				"LD_RUNPATH_SEARCH_PATHS" = "$(inherited) @executable_path/Frameworks";
 				"INFOPLIST_FILE" = "Config/Info.plist";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Config/Simulator.entitlements";
 			};
 			"name" = "Debug";
 			"baseConfigurationReference" = "734399CC5ADF15F31FBB8FDF";
@@ -640,6 +657,7 @@
 				"INFOPLIST_KEY_CFBundleDisplayName" = "Quicktick";
 				"LD_RUNPATH_SEARCH_PATHS" = "$(inherited) @executable_path/Frameworks";
 				"INFOPLIST_FILE" = "Config/Info.plist";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Config/Simulator.entitlements";
 			};
 			"name" = "Release";
 			"baseConfigurationReference" = "6414AD7185FE22D4F0767C2B";
@@ -684,6 +702,7 @@
 				"AAA2B3C06C50EB5B270D6A47",
 				"296495298EF2BE47592C277C",
 				"E874A51461B51542A42328F6",
+				"CFE197409EEB72A4DB090C1B",
 				"42BE8C854396B93468951617",
 				"505A95D236067ABB69460177",
 				"9928DA1D24EC2DB2E16DB84D",
@@ -902,6 +921,7 @@
 				"734399CC5ADF15F31FBB8FDF",
 				"B4686A9D30CDA7DE4C3F2F33",
 				"6414AD7185FE22D4F0767C2B",
+				"E23711AE79CCABA22B559A9B",
 				"45134B7486A66B43C05DD36F",
 				"907362A7CF4ADBC7CAE0AFC6",
 				"1CB8D62245F6A30ACD4E11A4",
@@ -943,6 +963,7 @@
 				"9193556AEBFB063734B2A162",
 				"A00D35EE326C2421B308F85E",
 				"513A7E7BC7F7B625B576DF22",
+				"B1025898228F4D541E72B705",
 				"88DA23992F5F8C55B046D60B",
 				"670D517B1CAB490DD6B1D0B5",
 				"B40C55A0F7C6005E1D1A76B4",

@@ -12,6 +12,7 @@ struct RootView: View {
             NavigationStack { FavoritesView() }.tag(3)
             NavigationStack { SettingsView() }.tag(4)
         }.toolbar(.hidden, for: .tabBar)
+            .onChange(of: selection) { _, _ in store.inlinePlaybackID = nil }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack(spacing: 0) {
                     ForEach(tabs.indices, id: \.self) { index in

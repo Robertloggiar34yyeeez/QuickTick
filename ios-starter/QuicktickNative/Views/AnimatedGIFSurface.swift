@@ -36,11 +36,16 @@ struct GIFFrames: @unchecked Sendable {
 struct AnimatedGIFSurface: View {
     let url: URL
     var playing = true
+    var naturalAspect = false
     @State private var frames: GIFFrames?
     @State private var failed = false
     var body: some View {
         Group {
-            if let frames { GIFImageView(frames: frames, playing: playing) }
+            if let frames {
+                if naturalAspect, let size = frames.images.first?.size {
+                    GIFImageView(frames: frames, playing: playing).aspectRatio(size.width / max(1, size.height), contentMode: .fit)
+                } else { GIFImageView(frames: frames, playing: playing) }
+            }
             else if failed { Text("GIF could not be loaded").foregroundStyle(.white) }
             else { ProgressView().tint(.white) }
         }.task(id: url) {

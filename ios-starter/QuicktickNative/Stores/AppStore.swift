@@ -11,6 +11,7 @@ final class AppStore: ObservableObject {
         }
     }
     @Published var posts: [Post] = []
+    @Published var inlinePlaybackID: String?
     @Published var queryText = ""
     @Published var favorites: [String: Post] = [:]
     @Published var exclusions: [String] = []

@@ -74,7 +74,7 @@ final class FeedPaginationTests: XCTestCase {
     }
     func testNormalFeedUsesOriginalImageAndLargerPreview() {
         let image = Post(key: "1", id: "1", provider: "Rule34", mediaUrl: "https://example.invalid/full.jpg", previewUrl: "https://example.invalid/sample.jpg", thumbUrl: "https://example.invalid/tiny.jpg", type: "image")
-        XCTAssertEqual(image.cardPreviewURL, image.mediaUrl)
+        XCTAssertEqual(image.cardPreviewURL, image.previewUrl)
         var video = image; video.type = "video"
         XCTAssertEqual(video.cardPreviewURL, video.previewUrl)
         video.previewUrl = "https://example.invalid/preview.mp4"

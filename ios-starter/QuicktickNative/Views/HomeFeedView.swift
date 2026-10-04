@@ -14,9 +14,18 @@ struct HomeFeedView: View {
                 } }
                 if let error = store.lastError { Text(error).foregroundStyle(.orange).padding() }
                 ForEach(store.posts, id: \.stableID) { post in
-                    PostCardView(post: post).onAppear { if post.stableID == store.posts.last?.stableID { Task { await store.loadMore() } } }
+                    PostCardView(post: post).onAppear {
+                        if let index = store.posts.firstIndex(where: { $0.stableID == post.stableID }), index >= store.posts.count - 4 { Task { await store.loadMore() } }
+                    }
                 }
                 if store.isLoading { ProgressView() }
+                if store.hasMore {
+                    Button("Load more") { Task { await store.loadMore() } }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .task(id: "\(store.posts.count):\(store.isLoading)") {
+                            if !store.isLoading && store.lastError == nil { await store.loadMore() }
+                        }
+                }
             }.padding(.horizontal)
         }
         .background(AppTheme.canvas)
@@ -39,6 +48,7 @@ struct HomeFeedView: View {
         }
         .refreshable { await store.refresh() }
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, onClose: { immersive = false }) }
+        .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $onboarding) { TasteOnboardingView() }
         .onChange(of: store.posts) { _, posts in
             if !posts.isEmpty && !store.tasteChoice(for: store.selectedProvider).done { onboarding = true }

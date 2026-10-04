@@ -1,6 +1,27 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testHomeInlinePlaybackAndComicClose() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        let playback = app.buttons["inline-play-test:video"]
+        XCTAssertTrue(playback.waitForExistence(timeout: 10))
+        playback.tap()
+        XCTAssertEqual(playback.value as? String, "Playing")
+        playback.tap()
+        XCTAssertEqual(playback.value as? String, "Paused")
+        playback.tap()
+        app.buttons["tab-Immersive"].tap(); app.buttons["tab-Home"].tap()
+        XCTAssertEqual(playback.value as? String, "Paused")
+        let full = app.buttons["View full image"].firstMatch
+        for _ in 0..<3 { if full.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(full.isHittable); full.tap()
+        let close = app.buttons["Close full image"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Full comic with close control"; screenshot.lifetime = .keepAlways; add(screenshot)
+        close.tap()
+        XCTAssertTrue(app.navigationBars["Quicktick"].waitForExistence(timeout: 5))
+    }
+
     @MainActor func testImmersiveRailSnapsAndDoubleTapLikes() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--compact-ui-testing"]; app.launch()

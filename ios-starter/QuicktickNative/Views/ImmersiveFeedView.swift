@@ -8,6 +8,7 @@ struct ImmersiveFeedView: View {
     let offline: Bool
     var onClose: (() -> Void)? = nil
     @State private var activeID: String?
+    @State private var activeIndex = 0
     @State private var searchVisible = false
     @StateObject private var previews = ImmersivePreviewCache()
 
@@ -28,7 +29,7 @@ struct ImmersiveFeedView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
             }.scrollTargetBehavior(.paging)
-                .scrollPosition(id: $activeID)
+                .scrollPosition(id: $activeID, anchor: .top)
                 .scrollIndicators(.hidden)
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
@@ -61,8 +62,12 @@ struct ImmersiveFeedView: View {
         .task { if activeID == nil { activeID = mediaPosts.first?.stableID }; if !offline && posts.isEmpty { await store.refresh(immersive: true) } }
         .task(id: "\(activeID ?? ""):\(mediaPosts.count)") { await prewarm() }
         .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
-            if activeID == nil || !keys.contains(activeID ?? "") { activeID = keys.first }
+            if activeID == nil || !keys.contains(activeID ?? "") {
+                activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
+                if keys.isEmpty { activeIndex = 0 }
+            }
         }
+        .onChange(of: activeID) { _, key in if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index } }
         .onDisappear { store.players.releaseAll() }
     }
     private func prewarm() async {

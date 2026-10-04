@@ -15,7 +15,9 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
 
     var isImmersiveMedia: Bool { ["video", "gif"].contains(type.lowercased()) }
     var cardPreviewURL: String {
-        if type.lowercased() == "image", !mediaUrl.isEmpty { return mediaUrl }
+        if type.lowercased() == "image" {
+            return !previewUrl.isEmpty ? previewUrl : (!mediaUrl.isEmpty ? mediaUrl : thumbUrl)
+        }
         let candidates = [previewUrl, thumbUrl].filter { !$0.isEmpty }
         return candidates.first(where: { url in
             let ext = URL(string: url)?.pathExtension.lowercased() ?? ""

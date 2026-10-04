@@ -13,6 +13,8 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
     var type: String = ""
     var embedUrl: String? = nil
 
+    var isImmersiveMedia: Bool { ["video", "gif"].contains(type.lowercased()) }
+
     var stableID: String { key.isEmpty ? "\(provider):\(id)" : key }
     var providerKey: Provider? { Provider(rawValue: provider.lowercased().replacingOccurrences(of: " ", with: "")) }
 

@@ -10,7 +10,7 @@ struct NativeSearchBar: View {
                 TextField("Search · -tag to exclude", text: $store.queryText)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
                     .onSubmit { search() }
-                Button("Search") { search() }
+                Button { search() } label: { Image(systemName: "arrow.right").font(.headline).frame(width: 44, height: 44).background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 12)) }.buttonStyle(.plain).accessibilityLabel("Search")
             }
             if !suggestions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -25,7 +25,7 @@ struct NativeSearchBar: View {
                     } }
                 }
             }
-        }.padding(10).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        }.padding(10).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
             .task(id: store.selectedProvider.rawValue + ":" + store.queryText) {
                 suggestions = []
                 guard store.selectedProvider == .rule34, let token = store.queryText.split(whereSeparator: \.isWhitespace).last else { return }

@@ -37,7 +37,7 @@ private struct DownloadContent: View {
                     }
                 }
             }
-        }.navigationTitle("Downloads")
+        }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Downloads")
             .toolbar { Button(immersive ? "Feed" : "Offline Immersive") { immersive.toggle() }.disabled(!immersive && localPosts.isEmpty) }
     }
     private var localPosts: [Post] {

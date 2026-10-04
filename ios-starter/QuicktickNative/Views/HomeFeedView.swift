@@ -13,16 +13,16 @@ struct HomeFeedView: View {
                     Color.clear.preference(key: HomeSearchOffset.self, value: geometry.frame(in: .named("home-feed")).minY)
                 } }
                 if let error = store.lastError { Text(error).foregroundStyle(.orange).padding() }
-                if !store.learnedInterests.isEmpty {
-                    ScrollView(.horizontal) { HStack { ForEach(store.learnedInterests.prefix(8), id: \.self) { topic in Button(topic) { store.queryText = topic; Task { await store.refresh(trainSearch: true) } }.buttonStyle(.bordered) } } }
-                }
                 ForEach(store.posts, id: \.stableID) { post in
                     PostCardView(post: post).onAppear { if post.stableID == store.posts.last?.stableID { Task { await store.loadMore() } } }
                 }
                 if store.isLoading { ProgressView() }
             }.padding(.horizontal)
         }
+        .background(AppTheme.canvas)
         .navigationTitle("Quicktick")
+        .toolbarBackground(AppTheme.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .coordinateSpace(name: "home-feed")
         .onPreferenceChange(HomeSearchOffset.self) { offset in showFloatingSearch = offset < -60 }
         .toolbar {
@@ -35,7 +35,7 @@ struct HomeFeedView: View {
             } }
         }
         .safeAreaInset(edge: .top) {
-            if showFloatingSearch { searchBar.padding(.horizontal).background(.ultraThinMaterial) }
+            if showFloatingSearch { searchBar.padding(.horizontal).background(AppTheme.background) }
         }
         .refreshable { await store.refresh() }
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false) }

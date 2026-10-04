@@ -8,22 +8,30 @@ struct ImmersiveFeedView: View {
     @State private var activeID: String?
     @State private var searchVisible = false
 
+    private var mediaPosts: [Post] { posts.filter(\.isImmersiveMedia) }
+
     var body: some View {
         GeometryReader { geo in
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
-                    ForEach(posts, id: \.stableID) { post in
+                    ForEach(mediaPosts, id: \.stableID) { post in
                         ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID)
                             .frame(width: geo.size.width, height: geo.size.height)
                             .id(post.stableID)
                     }
                 }.scrollTargetLayout()
+                if mediaPosts.isEmpty {
+                    ContentUnavailableView(store.isLoading ? "Loading clips" : "No videos or GIFs", systemImage: "play.rectangle", description: Text(store.lastError ?? "Choose another source or search to find clips."))
+                        .frame(width: geo.size.width, height: geo.size.height)
+                }
             }.scrollTargetBehavior(.paging)
                 .scrollPosition(id: $activeID)
                 .scrollIndicators(.hidden)
         }
         .navigationTitle(offline ? "Offline Immersive" : "Immersive")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(AppTheme.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
             if !offline {
                 Menu(store.selectedProvider.displayName) { ForEach(Provider.allCases) { provider in
@@ -34,31 +42,44 @@ struct ImmersiveFeedView: View {
         }
         .safeAreaInset(edge: .top) {
             if searchVisible && !offline {
-                NativeSearchBar(immersive: true).padding(.horizontal).background(.ultraThinMaterial)
+                NativeSearchBar(immersive: true).padding(.horizontal).background(AppTheme.surface)
             }
         }
-        .task { activeID = posts.first?.stableID }
-        .task(id: activeID) { await prewarm() }
-        .onChange(of: posts.map(\.stableID)) { _, keys in
+        .task { activeID = mediaPosts.first?.stableID; if !offline { await store.refresh(immersive: true) } }
+        .task(id: "\(activeID ?? ""):\(mediaPosts.count)") { await prewarm() }
+        .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
             if activeID == nil || !keys.contains(activeID ?? "") { activeID = keys.first }
         }
         .onDisappear { store.players.releaseAll() }
     }
     private func prewarm() async {
-        guard let activeID, let index = posts.firstIndex(where: { $0.stableID == activeID }) else { return }
-        let range = max(0, index - 1)...min(posts.count - 1, index + 1)
-        store.players.retain(Set(range.map { posts[$0].stableID }))
-        for i in range where i != index {
-            let post = posts[i]
-            if offline {
-                if let url = URL(string: post.mediaUrl), url.isFileURL { store.players.prewarm(key: post.stableID, url: url) }
-            } else if let resolved = try? await store.resolver.resolve(post), let url = URL(string: resolved.mediaUrl) {
-                guard !Task.isCancelled else { return }
-                store.players.prewarm(key: post.stableID, url: url)
+        let clips = mediaPosts
+        guard let activeID, let index = clips.firstIndex(where: { $0.stableID == activeID }) else {
+            if !offline && !store.isLoading && store.hasMore { await store.loadMore(immersive: true) }
+            return
+        }
+        let range = max(0, index - 1)...min(clips.count - 1, index + 3)
+        store.players.retain(Set(range.map { clips[$0].stableID }))
+        let feedStore = store
+        let resolver = store.resolver
+        let pool = store.players
+        await withTaskGroup(of: Void.self) { group in
+            for i in range where i != index && clips[i].type.lowercased() == "video" {
+                let post = clips[i]
+                group.addTask {
+                    let url: URL?
+                    if offline { url = URL(string: post.mediaUrl) }
+                    else { url = try? await resolver.resolve(post).mediaUrlURL }
+                    guard !Task.isCancelled, let url else { return }
+                    await pool.prewarm(key: post.stableID, url: url)
+                }
+            }
+            if !offline, index >= clips.count - 8 {
+                group.addTask { await feedStore.loadMore(immersive: true) }
             }
         }
-        if !offline, index >= posts.count - 4 { await store.loadMore(immersive: true) }
     }
+
 }
 
 private struct ImmersiveItemView: View {
@@ -75,6 +96,8 @@ private struct ImmersiveItemView: View {
     @State private var scrubOrigin: Double?
     @State private var error: String?
     @State private var showComments = false
+    @State private var showTags = false
+    @State private var gifURL: URL?
     @State private var exposureStarted: Date?
 
     var body: some View {
@@ -84,7 +107,10 @@ private struct ImmersiveItemView: View {
                 NativePlayerSurface(player: player, fill: store.immersionFraming, ready: $ready)
                     .opacity(ready ? 1 : 0)
             }
-            if !ready || post.type == "image" || post.type == "gif" { PosterView(url: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl) }
+            if !ready { PosterView(url: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl) }
+            if post.type.lowercased() == "gif", active, playing, let gifURL {
+                AnimatedGIFSurface(url: gifURL)
+            }
             Color.clear.contentShape(Rectangle())
                 .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { gesture in
                     switch gesture {
@@ -93,33 +119,36 @@ private struct ImmersiveItemView: View {
                     }
                 })
             VStack {
-                if let error { Text(error).padding().background(.ultraThinMaterial) }
+                if let error { Text(error).padding().background(AppTheme.surface) }
                 Spacer()
-                HStack {
-                    Button(store.favorites[post.stableID] == nil ? "Like" : "Liked") { interacted = true; store.toggleFavorite(post) }
-                    if !offline {
-                        Button("Less") { interacted = true; store.less(post) }
-                        Button("Download") { store.download(post) }
-                        Button { showComments = true } label: { Image(systemName: "bubble.left") }
+                VStack(spacing: 4) {
+                    HStack {
+                        Text(post.provider.uppercased()).font(.caption.weight(.bold)).tracking(1.5)
+                        Spacer()
+                        Button("View tags") { showTags = true }.font(.caption.weight(.semibold))
+                    }.padding(.horizontal, 16)
+                    HStack(spacing: 0) {
+                        ActionIcon(title: "Like", symbol: store.favorites[post.stableID] == nil ? "heart" : "heart.fill", selected: store.favorites[post.stableID] != nil) { interacted = true; store.toggleFavorite(post) }
+                        if !offline {
+                            ActionIcon(title: "Less", symbol: "hand.thumbsdown") { interacted = true; store.less(post) }
+                            ActionIcon(title: "Download", symbol: "arrow.down.to.line") { store.download(post) }
+                            ActionIcon(title: "Comments", symbol: "bubble.left") { showComments = true }
+                        }
+                        ActionIcon(title: "Mute", symbol: store.muted ? "speaker.slash" : "speaker.wave.2") { store.muted.toggle(); player?.isMuted = store.muted }
                     }
-                    Button { store.muted.toggle(); player?.isMuted = store.muted } label: { Image(systemName: store.muted ? "speaker.slash" : "speaker.wave.2") }
-                }.buttonStyle(.bordered).padding(8).background(.ultraThinMaterial)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack { ForEach(post.tags.prefix(8), id: \.self) { tag in
-                        Menu(tag) { Button("Add to search") { store.includeTag(tag) }; Button("Exclude from search") { store.excludeTag(tag) } }
-                    } }
-                }.padding(.horizontal)
-                Rectangle().fill(.white.opacity(0.35)).frame(height: 32).overlay { Image(systemName: "arrow.left.and.right").foregroundStyle(.white) }
+                }.padding(.top, 20).background(LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .top, endPoint: .bottom))
+                Rectangle().fill(AppTheme.gradient).frame(height: 16).overlay { Image(systemName: "arrow.left.and.right").foregroundStyle(.white) }
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 3).onChanged { value in
                         guard let player, let duration = player.currentItem?.duration.seconds, duration.isFinite, duration > 0 else { return }
                         if scrubOrigin == nil { scrubOrigin = player.currentTime().seconds; player.pause() }
-                        let seconds = max(0, min(duration, (scrubOrigin ?? 0) + Double(value.translation.width) / 300 * duration))
+                        let seconds = max(0, min(duration, (scrubOrigin ?? 0) + Double(value.translation.width) / max(1, UIScreen.main.bounds.width) * duration))
                         player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
                     }.onEnded { _ in scrubOrigin = nil; if playing { player?.play() } })
             }
         }
         .sheet(isPresented: $showComments) { CommentsView(post: post) }
+        .sheet(isPresented: $showTags) { PostTagsView(post: post) }
         .task(id: active) {
             guard active else { endExposure(); return }
             exposureStarted = .now
@@ -146,7 +175,7 @@ private struct ImmersiveItemView: View {
         }
     }
     private func prepare() async {
-        guard post.type != "image", post.type != "gif" else { return }
+        guard post.isImmersiveMedia else { return }
         do {
             let url: URL
             if offline {
@@ -158,16 +187,14 @@ private struct ImmersiveItemView: View {
                 url = remote
             }
             guard !Task.isCancelled else { return }
+            if post.type.lowercased() == "gif" { gifURL = url; return }
             let p = store.players.player(for: post.stableID, url: url)
             player = p; p.isMuted = store.muted
-            let duration: Double
-            if let asset = p.currentItem?.asset { duration = try await asset.load(.duration).seconds }
-            else { duration = 0 }
-            guard !Task.isCancelled else { return }
-            if let resume = store.resumePosition(post.stableID), resume >= 0, duration.isFinite, duration > 0 {
-                _ = await p.seek(to: CMTime(seconds: min(resume, max(0, duration - 1)), preferredTimescale: 600))
-            } else if store.resumePosition(post.stableID) == nil, post.providerKey == .hanime, duration.isFinite, duration > 185 {
-                _ = await p.seek(to: CMTime(seconds: 180, preferredTimescale: 600))
+            // Start immediately. Duration metadata must never delay the first frame.
+            if let resume = store.resumePosition(post.stableID), resume > 0 {
+                p.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
+            } else if store.resumePosition(post.stableID) == nil, post.providerKey == .hanime {
+                p.seek(to: CMTime(seconds: 180, preferredTimescale: 600))
             }
             if playing { p.play() }; error = nil
         } catch { self.error = error.localizedDescription }

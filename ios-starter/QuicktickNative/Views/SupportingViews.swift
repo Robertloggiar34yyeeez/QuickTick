@@ -16,7 +16,7 @@ struct CommentsView: View {
                     }
                     if page.available && page.items.isEmpty { Text("No comments.") }
                 } else { ProgressView() }
-            }.navigationTitle("Comments")
+            }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Comments")
         }.task {
             do { page = try await store.api.comments(post) } catch { self.error = error.localizedDescription }
         }
@@ -43,7 +43,7 @@ struct TasteOnboardingView: View {
                         Button(notInto.contains(tag) ? "✓ Not Into" : "Not Into") { into.remove(tag); if !notInto.insert(tag).inserted { notInto.remove(tag) } }
                     }.buttonStyle(.bordered)
                 }
-            }.navigationTitle("Your interests")
+            }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Your interests")
                 .toolbar { Button("Done") { store.setTaste(into: into.sorted(), notInto: notInto.sorted()); dismiss() } }
         }.interactiveDismissDisabled()
             .onAppear { let taste = store.tasteChoice(for: store.selectedProvider); into = Set(taste.into); notInto = Set(taste.notInto) }
@@ -54,6 +54,6 @@ struct FavoritesView: View {
     @EnvironmentObject private var store: AppStore
     var body: some View {
         ScrollView { LazyVStack { ForEach(store.favorites.values.sorted { $0.stableID < $1.stableID }, id: \.stableID) { PostCardView(post: $0) } }.padding() }
-            .navigationTitle("Favorites")
+            .scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Favorites")
     }
 }

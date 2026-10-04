@@ -233,6 +233,26 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "60E93205A75B91DE3BE3FF87";
 		};
+		"D08EEE6354DE3E85DD6233EA" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Views/AnimatedGIFSurface.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"A0267183887649F0D3445D4D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "D08EEE6354DE3E85DD6233EA";
+		};
+		"DA5D3A3703705760A338173D" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Views/AppTheme.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"4AD8375EB7F87863CF4A2393" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "DA5D3A3703705760A338173D";
+		};
 		"194A9491C4A6AC1DB3E849C3" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -393,6 +413,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "A00D35EE326C2421B308F85E";
 		};
+		"513A7E7BC7F7B625B576DF22" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNativeTests/ImmersiveMediaTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"E874A51461B51542A42328F6" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "513A7E7BC7F7B625B576DF22";
+		};
 		"670D517B1CAB490DD6B1D0B5" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -505,6 +535,8 @@
 				"1D467EC36BF43BAF05661909",
 				"8C78320B0214E9830B8B704C",
 				"A3DBBA346C911D403CEE722E",
+				"A0267183887649F0D3445D4D",
+				"4AD8375EB7F87863CF4A2393",
 				"E387E06DA4108E30F74431FB",
 				"5F5D5B6479064E9F062A8C14",
 				"C55355093960707535D47288",
@@ -543,7 +575,7 @@
 				"CODE_SIGN_STYLE" = "Automatic";
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
 				"MARKETING_VERSION" = "0.6.24";
-				"CURRENT_PROJECT_VERSION" = "1";
+				"CURRENT_PROJECT_VERSION" = "2";
 				"INFOPLIST_KEY_QUICKTICK_API_BASE_URL" = "$(QUICKTICK_API_BASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation" = "YES";
 				"INFOPLIST_KEY_UILaunchScreen_Generation" = "YES";
@@ -568,7 +600,7 @@
 				"CODE_SIGN_STYLE" = "Automatic";
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
 				"MARKETING_VERSION" = "0.6.24";
-				"CURRENT_PROJECT_VERSION" = "1";
+				"CURRENT_PROJECT_VERSION" = "2";
 				"INFOPLIST_KEY_QUICKTICK_API_BASE_URL" = "$(QUICKTICK_API_BASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation" = "YES";
 				"INFOPLIST_KEY_UILaunchScreen_Generation" = "YES";
@@ -620,6 +652,7 @@
 			"files" = (
 				"AAA2B3C06C50EB5B270D6A47",
 				"296495298EF2BE47592C277C",
+				"E874A51461B51542A42328F6",
 				"505A95D236067ABB69460177",
 				"9928DA1D24EC2DB2E16DB84D",
 				"5BE0BF867459EA710F1D3BBE",
@@ -857,6 +890,8 @@
 				"1CA4346E247B66C50EDB9280",
 				"7C54B72DC1B9E24B33CFEBC1",
 				"60E93205A75B91DE3BE3FF87",
+				"D08EEE6354DE3E85DD6233EA",
+				"DA5D3A3703705760A338173D",
 				"194A9491C4A6AC1DB3E849C3",
 				"DDE68145EE931C5A683E4D4E",
 				"84FB9D25F36C5DD7573D03A6",
@@ -873,6 +908,7 @@
 				"F422696745B42143030C181A",
 				"9193556AEBFB063734B2A162",
 				"A00D35EE326C2421B308F85E",
+				"513A7E7BC7F7B625B576DF22",
 				"670D517B1CAB490DD6B1D0B5",
 				"B40C55A0F7C6005E1D1A76B4",
 				"2FC045618C1B61EAD3CD0608",
@@ -950,4 +986,3 @@
 	};
 	"rootObject" = "244210E48437B6556980A702";
 }
-

@@ -50,6 +50,8 @@ final class AppStore: ObservableObject {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
             tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true)
+            posts = [Post(key: "test:video", id: "1", provider: "Rule34", tags: ["test_tag"], type: "video"), Post(key: "test:image", id: "2", provider: "Rule34", tags: ["still_tag"], type: "image")]
+            hasMore = false
             return
         }
         #endif
@@ -91,6 +93,9 @@ final class AppStore: ObservableObject {
     }
 
     func refresh(immersive: Bool = false, trainSearch: Bool = false) async {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
+        #endif
         generation = UUID()
         let token = generation
         let provider = selectedProvider
@@ -110,6 +115,10 @@ final class AppStore: ObservableObject {
                 return (exclusions + parsed.excluded).allSatisfy { !lowered.contains($0.lowercased()) }
             }
 
+            let immediate = parsed.included.isEmpty ? await recommendations.rank(filtered, taste: taste, recent: posts) : filtered
+            guard generation == token else { return }
+            posts = immediate
+            isLoading = false
             var gorseScores: [String: Double] = [:]
             var mode = "Local 0.6.24"
             if parsed.included.isEmpty, !syncID.isEmpty, filtered.count >= 2 {
@@ -127,7 +136,9 @@ final class AppStore: ObservableObject {
                 ? await recommendations.rank(filtered, taste: taste, recent: posts, collaborativeScores: gorseScores)
                 : filtered
             guard generation == token else { return }
-            posts = ranked; recommendationMode = mode
+            // Do not reorder a playing feed after background recommendations arrive.
+            if !immersive { posts = ranked }
+            recommendationMode = mode
             learnedInterests = await recommendations.positiveTerms(provider: provider, taste: taste)
             await persistRecommendations()
             if !restoreFailed { lastError = nil }

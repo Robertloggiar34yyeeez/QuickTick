@@ -43,7 +43,7 @@ struct SettingsView: View {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
                 Toggle("Mute", isOn: $store.muted)
             }
-        }.navigationTitle("Settings")
+        }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Settings")
             .sheet(isPresented: $onboarding) { TasteOnboardingView() }
             .task {
                 syncID = store.syncID; exclusions = store.exclusions.joined(separator: " ")

@@ -3,14 +3,25 @@ import Foundation
 struct ResolvedMedia: Codable, Sendable {
     var mediaUrl: String
     var type: String
+    var mediaUrlURL: URL? { URL(string: mediaUrl) }
 }
 
 actor MediaResolver {
     let api: QuicktickAPIClient
     private var cache: [String: (ResolvedMedia, Date)] = [:]
+    private var inFlight: [String: Task<ResolvedMedia, Error>] = [:]
     init(api: QuicktickAPIClient) { self.api = api }
 
     func resolve(_ post: Post) async throws -> ResolvedMedia {
+        if let (media, date) = cache[post.stableID], Date().timeIntervalSince(date) < 180 { return media }
+        if let task = inFlight[post.stableID] { return try await task.value }
+        let task = Task { try await self.fetch(post) }
+        inFlight[post.stableID] = task
+        defer { inFlight.removeValue(forKey: post.stableID) }
+        return try await task.value
+    }
+
+    private func fetch(_ post: Post) async throws -> ResolvedMedia {
         if let (media, date) = cache[post.stableID], Date().timeIntervalSince(date) < 180 { return media }
         if (post.providerKey == .rule34 || post.type == "image" || post.type == "gif"), !post.mediaUrl.isEmpty {
             return ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type)
@@ -32,7 +43,7 @@ actor MediaResolver {
         }
         media.mediaUrl = try await api.absoluteMediaURL(media.mediaUrl).absoluteString
         cache[post.stableID] = (media, .now)
-        if cache.count > 12 { cache.removeValue(forKey: cache.min { $0.value.1 < $1.value.1 }!.key) }
+        if cache.count > 40 { cache.removeValue(forKey: cache.min { $0.value.1 < $1.value.1 }!.key) }
         return media
     }
 }

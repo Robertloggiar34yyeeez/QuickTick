@@ -24,8 +24,9 @@ final class AppStore: ObservableObject {
     @Published var resetStatus: String?
     @Published var storageWarning: String?
     @Published var immersionFraming = false { didSet { persistLocal() } }
-    @Published var muted = true { didSet { persistLocal() } }
+    @Published var muted = false { didSet { persistLocal() } }
     private var nextPage = 1
+    private var encountered: Set<String> = []
     private var generation = UUID()
     private var local = LocalAppState()
     private let localStorage = LocalStateStore()
@@ -58,7 +59,7 @@ final class AppStore: ObservableObject {
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
             if ProcessInfo.processInfo.arguments.contains("--ui-testing-sync-login") { syncID = UITestSyncSupport.syncID }
             tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true)
-            posts = [Post(key: "test:video", id: "1", provider: "Rule34", tags: ["test_tag"], type: "video"), Post(key: "test:image", id: "2", provider: "Rule34", tags: ["still_tag"], type: "image")]
+            posts = [Post(key: "test:video", id: "1", provider: "Rule34", tags: ["test_tag"], type: "video"), Post(key: "test:image", id: "2", provider: "Rule34", tags: ["still_tag"], type: "image"), Post(key: "test:next", id: "3", provider: "Rule34", type: "video")]
             hasMore = false
             return
         }
@@ -145,11 +146,13 @@ final class AppStore: ObservableObject {
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 await recommendations.recordSearch(provider: selectedProvider, query: queryText)
             }
-            let page = try await api.posts(provider: provider, query: parsed, page: 1, immersive: immersive)
+            let page = try await api.posts(provider: provider, query: parsed, page: 1)
             guard generation == token else { return }
             nextPage = 2; hasMore = page.hasMore ?? !page.items.isEmpty
             let taste = tasteChoice(for: selectedProvider)
+            encountered = []
             let filtered = page.items.filter { post in
+                guard encountered.insert(post.stableID).inserted else { return false }
                 let lowered = Set(post.tags.map { $0.lowercased() })
                 return (exclusions + parsed.excluded).allSatisfy { !lowered.contains($0.lowercased()) }
             }
@@ -195,15 +198,21 @@ final class AppStore: ObservableObject {
         defer { if token == generation { isLoading = false } }
         do {
             let parsed = QueryParser.parse(queryText)
-            let page = try await api.posts(provider: provider, query: parsed, page: nextPage, immersive: immersive)
+            lastError = nil
+            // Skip sparse, duplicate and fully filtered pages without waiting for
+            // a last-card onAppear that will never fire again.
+            for attempt in 0..<5 {
+            let page = try await api.posts(provider: provider, query: parsed, page: nextPage)
             guard generation == token else { return }
             nextPage += 1; hasMore = page.hasMore ?? !page.items.isEmpty
             let banned = Set((exclusions + parsed.excluded).map { $0.lowercased() })
-            let keys = Set(posts.map(\.stableID))
-            let candidates = page.items.filter { !keys.contains($0.stableID) && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
+            let candidates = page.items.filter { encountered.insert($0.stableID).inserted && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
             let ranked = parsed.included.isEmpty ? await recommendations.rank(candidates, taste: tasteChoice(for: provider), recent: posts) : candidates
             guard generation == token else { return }
             posts.append(contentsOf: ranked)
+            if !hasMore || (!immersive && !ranked.isEmpty) || (immersive && ranked.contains(where: \.isImmersiveMedia)) { break }
+            if attempt == 4 { lastError = "No new clips in the last five pages. Tap Load more to continue." }
+            }
         } catch { if token == generation { lastError = error.localizedDescription } }
     }
 

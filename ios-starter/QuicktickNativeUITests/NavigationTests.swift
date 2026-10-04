@@ -1,6 +1,35 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testImmersiveRailSnapsAndDoubleTapLikes() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--compact-ui-testing"]; app.launch()
+        app.buttons["tab-Immersive"].tap()
+        let like = app.buttons["immersive-Like"]
+        XCTAssertTrue(like.waitForExistence(timeout: 10))
+        let actions = ["Like", "Comments", "Less", "Download"].map { app.buttons["immersive-\($0)"] }
+        for action in actions {
+            XCTAssertTrue(action.isHittable)
+            XCTAssertGreaterThanOrEqual(action.frame.width, 44)
+            XCTAssertEqual(action.frame.midX, like.frame.midX, accuracy: 1)
+        }
+        for index in 1..<actions.count { XCTAssertGreaterThan(actions[index].frame.minY, actions[index - 1].frame.maxY) }
+        let progress = app.otherElements["immersive-progress"]
+        XCTAssertTrue(progress.exists)
+        let before = like.frame
+        let center = app.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.45))
+        center.doubleTap()
+        XCTAssertEqual(like.value as? String, "Liked")
+        center.doubleTap()
+        XCTAssertEqual(like.value as? String, "Liked")
+        app.swipeUp()
+        expectation(for: NSPredicate(format: "value == %@", "Not liked"), evaluatedWith: like)
+        waitForExpectations(timeout: 5)
+        XCTAssertEqual(like.frame.midX, before.midX, accuracy: 1)
+        XCTAssertEqual(like.frame.midY, before.midY, accuracy: 1)
+        let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Frosted right rail and snapped timeline"; screenshot.lifetime = .keepAlways; add(screenshot)
+    }
+
     @MainActor func testTagsHiddenUntilRequestedAndActionsHaveRoom() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--compact-ui-testing"]; app.launch()

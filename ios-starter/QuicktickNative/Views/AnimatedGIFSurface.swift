@@ -35,11 +35,12 @@ struct GIFFrames: @unchecked Sendable {
 
 struct AnimatedGIFSurface: View {
     let url: URL
+    var playing = true
     @State private var frames: GIFFrames?
     @State private var failed = false
     var body: some View {
         Group {
-            if let frames { GIFImageView(frames: frames) }
+            if let frames { GIFImageView(frames: frames, playing: playing) }
             else if failed { Text("GIF could not be loaded").foregroundStyle(.white) }
             else { ProgressView().tint(.white) }
         }.task(id: url) {
@@ -57,12 +58,17 @@ struct AnimatedGIFSurface: View {
 
 private struct GIFImageView: UIViewRepresentable {
     let frames: GIFFrames
+    let playing: Bool
     func makeUIView(context: Context) -> UIImageView {
         let view = UIImageView(); view.contentMode = .scaleAspectFit; view.clipsToBounds = true
         view.animationImages = frames.images; view.animationDuration = frames.duration
-        view.animationRepeatCount = 0; view.startAnimating()
+        view.animationRepeatCount = 0; view.image = frames.images.first
+        if playing { view.startAnimating() }
         return view
     }
-    func updateUIView(_ view: UIImageView, context: Context) {}
+    func updateUIView(_ view: UIImageView, context: Context) {
+        if playing && !view.isAnimating { view.startAnimating() }
+        else if !playing && view.isAnimating { view.stopAnimating() }
+    }
     static func dismantleUIView(_ view: UIImageView, coordinator: Void) { view.stopAnimating(); view.animationImages = nil }
 }

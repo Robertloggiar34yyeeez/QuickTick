@@ -14,6 +14,14 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
     var embedUrl: String? = nil
 
     var isImmersiveMedia: Bool { ["video", "gif"].contains(type.lowercased()) }
+    var cardPreviewURL: String {
+        if type.lowercased() == "image", !mediaUrl.isEmpty { return mediaUrl }
+        let candidates = [previewUrl, thumbUrl].filter { !$0.isEmpty }
+        return candidates.first(where: { url in
+            let ext = URL(string: url)?.pathExtension.lowercased() ?? ""
+            return !["mp4", "webm", "mov", "m3u8", "gif"].contains(ext)
+        }) ?? thumbUrl
+    }
 
     var stableID: String { key.isEmpty ? "\(provider):\(id)" : key }
     var providerKey: Provider? { Provider(rawValue: provider.lowercased().replacingOccurrences(of: " ", with: "")) }

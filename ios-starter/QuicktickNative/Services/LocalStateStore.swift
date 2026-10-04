@@ -5,7 +5,7 @@ struct LocalAppState: Codable {
     var snapshot = QuicktickSyncSnapshot.empty
     var resumePositions: [String: Double] = [:]
     var immersionFraming = false
-    var muted = true
+    var muted = false
 }
 
 struct LocalStateStore {

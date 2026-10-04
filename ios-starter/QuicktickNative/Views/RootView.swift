@@ -23,7 +23,10 @@ struct RootView: View {
                                 .frame(maxWidth: .infinity, minHeight: 58).contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityLabel(tabs[index].0).accessibilityIdentifier("tab-\(tabs[index].0)")
                     }
-                }.padding(.horizontal, 8).background(AppTheme.background)
+                }.padding(.horizontal, 8).background {
+                    if selection == 1 { Rectangle().fill(.ultraThinMaterial) }
+                    else { AppTheme.background }
+                }
                     .overlay(alignment: .top) { Rectangle().fill(AppTheme.gradient).frame(height: 1) }
             }.tint(AppTheme.accent)
             .background(AppTheme.canvas)

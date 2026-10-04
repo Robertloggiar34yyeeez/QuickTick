@@ -20,7 +20,16 @@ final class UITestSyncProtocol: URLProtocol, @unchecked Sendable {
             // UI testing only: all requests stay off the network.
             var result: [String: Any] = ["ok": true]
             if request.url?.path == "/api/sync" {
-                let body = request.httpBody ?? Data()
+                var body = request.httpBody ?? Data()
+                if body.isEmpty, let stream = request.httpBodyStream {
+                    stream.open(); defer { stream.close() }
+                    var buffer = [UInt8](repeating: 0, count: 4096)
+                    while stream.hasBytesAvailable {
+                        let read = stream.read(&buffer, maxLength: buffer.count)
+                        guard read > 0 else { break }
+                        body.append(contentsOf: buffer.prefix(read))
+                    }
+                }
                 let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
                 if json?["action"] as? String == "get" {
                     let encrypted = try QuicktickSyncCrypto.encrypt(UITestSyncSupport.snapshot, syncID: UITestSyncSupport.syncID)

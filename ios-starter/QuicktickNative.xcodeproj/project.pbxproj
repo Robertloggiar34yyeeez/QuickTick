@@ -513,6 +513,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "CE84D0A97A98DC466C6E2D76";
 		};
+		"073C0CC6C30BC6A644063462" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNativeTests/SyncServiceTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"BFD69E6457B16CA77FD5DF7D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "073C0CC6C30BC6A644063462";
+		};
 		"E9C974562A88FC7884953A1A" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -682,6 +692,7 @@
 				"49C1E740CC40A3CBB826401E",
 				"60EFEBC722AC2DF982B5A117",
 				"822622462A5CC158D7A9B906",
+				"BFD69E6457B16CA77FD5DF7D",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -940,6 +951,7 @@
 				"18E1F10A89A09252CEC5591B",
 				"3C6F9848C8D464270781E19A",
 				"CE84D0A97A98DC466C6E2D76",
+				"073C0CC6C30BC6A644063462",
 				"E9C974562A88FC7884953A1A",
 				"0A3E27B8CA818264D75C8D81",
 			);

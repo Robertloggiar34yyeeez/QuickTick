@@ -60,6 +60,8 @@ struct PostCardView: View {
                 }.aspectRatio(mediaAspect, contentMode: .fit)
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true)
+            } else if post.type.lowercased() == "image" {
+                ComicCardPreview(url: post.cardPreviewURL)
             } else { PosterView(url: post.cardPreviewURL) }
         }
         .overlay(alignment: .bottomTrailing) {
@@ -106,6 +108,56 @@ struct PostCardView: View {
         } catch { if !Task.isCancelled { playbackError = error.localizedDescription; playing = false } }
     }
     private func stopPlayback() { player?.pause(); player = nil; gifURL = nil; ready = false; playing = false }
+}
+
+private struct ComicCardPreview: View {
+    let url: String
+    @State private var preview: DecodedCardPreview?
+    var body: some View {
+        Group {
+            if let preview {
+                Image(uiImage: preview.image).resizable().aspectRatio(preview.image.size, contentMode: .fit)
+                    .overlay(alignment: .topLeading) {
+                        if preview.isComic { Text("Comic preview").font(.caption.weight(.semibold)).padding(8).background(.ultraThinMaterial, in: Capsule()).padding(10) }
+                    }
+            } else { PosterView(url: "") }
+        }.task(id: url) {
+            guard !url.isEmpty, let location = URL(string: url, relativeTo: QuicktickAPIClient.configuredBaseURL())?.absoluteURL else { return }
+            do {
+                let data: Data
+                if location.isFileURL { data = try Data(contentsOf: location) }
+                else {
+                    let (body, response) = try await URLSession.shared.data(from: location)
+                    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
+                    data = body
+                }
+                let decoded = await Task.detached(priority: .userInitiated) { DecodedCardPreview.decode(data) }.value
+                guard !Task.isCancelled else { return }; preview = decoded
+            } catch { /* The feed keeps its preview placeholder on failure. */ }
+        }
+    }
+}
+
+private struct DecodedCardPreview: @unchecked Sendable {
+    let image: UIImage
+    let isComic: Bool
+    static func decode(_ data: Data) -> Self? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat, width > 0, height > 0 else { return nil }
+        if height > width * 4,
+           let full = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
+           let top = full.cropping(to: CGRect(x: 0, y: 0, width: width, height: min(height, width * 1.5))) {
+            let size = CGSize(width: min(1200, width), height: min(1200, width) * 1.5)
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in UIImage(cgImage: top).draw(in: CGRect(origin: .zero, size: size)) }
+            return Self(image: image, isComic: true)
+        }
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 2048, kCGImageSourceCreateThumbnailWithTransform: true]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return Self(image: UIImage(cgImage: image), isComic: false)
+    }
 }
 
 private struct FullComicView: View {

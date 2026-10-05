@@ -3,7 +3,6 @@ import SwiftUI
 struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
-    @State private var showFloatingSearch = false
     @State private var showSearch = false
     @State private var onboarding = false
     @State private var immersive = false
@@ -50,12 +49,10 @@ struct HomeFeedView: View {
                             if !store.isLoading && store.lastError == nil { await store.loadMore() }
                         }
                 }
-            }.background { GeometryReader { geometry in
-                Color.clear.preference(key: HomeSearchOffset.self, value: geometry.frame(in: .named("home-feed")).minY)
-            } }.padding(.horizontal, 16).padding(.bottom, 18)
+            }.padding(.horizontal, 16).padding(.bottom, 18)
         }
         .overlay(alignment: .bottomLeading) {
-            if showFloatingSearch {
+            Group {
                 Button {
                     store.inlinePlaybackID = nil
                     withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo("home-top", anchor: .top) }
@@ -70,8 +67,6 @@ struct HomeFeedView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(AppTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .coordinateSpace(name: "home-feed")
-        .onPreferenceChange(HomeSearchOffset.self) { offset in showFloatingSearch = offset < -60 }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 10) {
@@ -102,9 +97,4 @@ struct HomeFeedView: View {
     private var searchBar: some View {
         NativeSearchBar()
     }
-}
-
-private struct HomeSearchOffset: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

@@ -35,9 +35,7 @@ struct HomeFeedView: View {
                     }.buttonStyle(.plain)
                     Spacer(minLength: 0)
                 }
-                searchBar.background { GeometryReader { geometry in
-                    Color.clear.preference(key: HomeSearchOffset.self, value: geometry.frame(in: .named("home-feed")).minY)
-                } }
+                searchBar
                 if let error = store.lastError { Text(error).foregroundStyle(.orange).padding() }
                 ForEach(store.posts, id: \.stableID) { post in
                     PostCardView(post: post).onAppear {
@@ -52,7 +50,9 @@ struct HomeFeedView: View {
                             if !store.isLoading && store.lastError == nil { await store.loadMore() }
                         }
                 }
-            }.padding(.horizontal, 16).padding(.bottom, 18)
+            }.background { GeometryReader { geometry in
+                Color.clear.preference(key: HomeSearchOffset.self, value: geometry.frame(in: .named("home-feed")).minY)
+            } }.padding(.horizontal, 16).padding(.bottom, 18)
         }
         .overlay(alignment: .bottomLeading) {
             if showFloatingSearch {

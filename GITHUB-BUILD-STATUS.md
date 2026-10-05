@@ -1,17 +1,15 @@
-# GitHub iOS build delivery - UI and Sync correction
+# Quicktick iOS build 4 - verified delivery
 
-Repository: https://github.com/Robertloggiar34yyeeez/QuickTick
-Branch: main
-Native-build commit: 74777d9706c0f601612452cb3c9cd9bf0b072a0c
-Workflow: https://github.com/Robertloggiar34yyeeez/QuickTick/actions/runs/37221535704
+Repository: https://github.com/Robertloggiar34yyeeez/QuickTick, main.
+Native-build commit: 94bb4e567e158584d80325c3ce8b18748e9c44d8
+GitHub run: https://github.com/Robertloggiar34yyeeez/QuickTick/actions/runs/37265988154
 
-PASS: 27 unit tests and 3 UI tests, zero failures, on an iPhone 17 Pro simulator with Xcode 26.6. The credential-import regression exercises encrypted Sync, actual Keychain access and populated Settings fields with Remember off. Simulator builds are ad hoc signed with the app's Keychain entitlement. The actual Release iPhoneOS archive remains unsigned for AltStore/Sideloadly.
+PASS: 29 unit tests and 6 UI tests, zero failures, with Xcode 26.6. Simulator tests are ad hoc signed with the app's Keychain entitlement. The Release iPhoneOS archive is intentionally unsigned for the user-selected AltStore/Sideloadly installation.
 
-Verified IPA: QuickTick-0.6.24-unsigned.ipa, build 2, 428170 bytes.
-SHA-256: b674abf94cad93f0077773037ac7103307ecac76a68e2ca50e673162c3c0566b
-GitHub artifact ZIP digest: a9d99ca18a29c3a5dc65a8d635e13ecb2aa674df8df43590de8b6ad070c46b9b, matched after download.
-Verified arm64/iPhoneOS, com.quicktick.QuicktickNative, existing API origin https://quick-tick-webb.vercel.app, and UIDesignRequiresCompatibility=true.
+New UI coverage: four bottom tabs, Settings in the top right, Home scroll-to-top, centered and snapped right-side Immersive controls, double-tap idempotent Like, Home Play/Pause and stopping on tab changes, and full comic open/close. Existing hidden-tags, navigation and encrypted Sync login-fill regressions also pass. Media in screenshots is deterministic synthetic data; live provider playback is not claimed.
 
-The three screenshots in the delivered logs are from the passing simulator suite. Media placeholders are deterministic test fixtures, not live playback evidence. Live synthetic encrypted Sync get/put/get round trip passed against the existing API without using personal credentials. Real-device scrolling latency, provider-account behavior, downloads and offline playback remain unverified.
+Verified IPA: build 4, 633999 bytes, arm64 iPhoneOS, com.quicktick.QuicktickNative.
+SHA-256: a6e33737ab84afc3911ba81cf598b9b48df2f51c784a4b39d2f415499f45222d
+Verified configured API https://quick-tick-webb.vercel.app, compatibility-design plist flag, compiled AppIcon metadata/images, and Assets.car. Downloaded artifact digests and runner IPA checksum match.
 
-Final report commit changes documentation and delivery tooling only. App/test/config source exactly matches the successful build commit. Drive revision and exact source hashes are in manifest.json and DELIVERY-VERIFICATION.json; mounted-folder copying does not confirm Google's server-side synchronization.
+The final report commit updates only documentation/delivery tooling. Native app, tests, icon and config exactly match the successful native-build commit. Drive revision, source hashes and copy verification are in manifest.json and DELIVERY-VERIFICATION.json. Mounted-folder copying does not establish completion of Google Drive Desktop's cloud synchronization.

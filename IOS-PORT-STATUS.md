@@ -1,45 +1,45 @@
-# IOS-PORT-STATUS - Quicktick native iOS 0.6.24 build 2
+# IOS-PORT-STATUS - Quicktick native iOS 0.6.24 build 4
 
-2026-10-04, Europe/Berlin. Successful GitHub simulator tests, actual iPhoneOS archive and verified unsigned arm64 IPA for the user's selected AltStore/Sideloadly installation.
+2026-10-05, Europe/Berlin. Native simulator tests, real iPhoneOS archive and unsigned IPA packaging succeeded on GitHub Actions. Re-signing is required before installation using the user's chosen AltStore/Sideloadly.
 
-## Requested corrections
-- Deep navy, violet and blue gradients with solid surfaces; custom navigation replaces Liquid Glass. Compatibility design is enabled in the installed plist.
-- Tags are hidden in cards and Immersive until View tags opens the tag sheet. Learned tags remain available in Settings.
-- Equal-width action and navigation targets adapt to display width; automated layout coverage includes 320-point width.
-- Immersive accepts videos and GIFs only, including offline items; images are excluded.
-- Feed publishes local results without waiting for recommendation services. Media resolution deduplicates in-flight requests and caches results. Three upcoming clips and the previous clip are warmed concurrently inside a bounded player pool. Player readiness triggers preroll and playback no longer waits for duration lookup. Earlier pagination reduces end-of-page stalls.
-- GIFs use native ImageIO/UIImageView with bounded decoding and release offscreen resources. No WebView is shipped.
-- Sync login fields refresh from live merged credentials instead of a stale initial Keychain read. Remember-off credentials fill fields for the current session. Remembered Pornhub username is now restored as well.
-- Settings supports paste/connect/merge, copy current ID, Sync now and clear status. Launch/foreground sync runs without blocking the feed. Overlapping sync writes are serialized and malformed cloud data does not replace a working identity.
+## Final user-requested behavior
+- Black native canvas and near-black surfaces. Gradients appear on buttons only; no gradient canvas, media placeholder or provider-label decoration remains.
+- Four bottom icons: Home, Immersive, Favorites, Downloads. Settings opens from the top-right sliders button. Home has Recommended/Popular/Recent ordering, Refresh and scroll-to-top.
+- Opaque 1024px Q/checkmark app icon, wired through an asset catalog and verified in the compiled IPA.
+- Immersive has fixed viewport-sized pages, centered content/header and paging snap. Right-side Like/Less/Comments/Download/Mute controls have independent frosted circular surfaces. Tags stay hidden until View tags.
+- Thin elapsed-progress track with a 44-point touch region, absolute seeking, drag time labels and accessible adjustments. Double tap likes idempotently with a heart pulse; single tap pauses; GIFs also respect pause.
+- Bounded previous/next-three poster caching and player prewarming. A blurred actual poster covers the viewport before the video layer has a displayable frame; black remains the fallback if no poster is available. No universal network latency guarantee is made.
+- Audio uses playback/moviePlayback so the silent switch does not silence video. The older implicit mute default is cleared once on upgrade, then explicit choices persist.
+- Home video/GIF cards play inline when tapped and preserve natural aspect. One card owns playback; scrolling away, leaving Home or entering Immersive stops it.
+- Normal previews prefer the larger sample over small thumbnails, preserve natural aspect and decode up to 2048 pixels for ordinary images. Very tall comics use a bounded preview of top panels; tapping opens the original image with width-fit vertical scrolling, pinch zoom and X to close. Tile drawing uses immutable image data on Core Animation worker threads; the simulator regression caught and verified the fix for the initial actor-isolation crash.
+- No ten-post cap. Home and Immersive share a consistent page cursor, skip duplicate/filtered pages, deduplicate within/across batches including removed posts, and offer Load more on stalls. Opening Immersive preserves the current page; Less advances rather than returning to the first item. Pagination continues while the provider reports more data; it cannot create unavailable upstream posts.
+- Sync credential imports populate live Settings fields, including Remember off. Remembered Pornhub username is restored. Sync remains encrypted and serialized, with actionable errors and no insecure fallback.
 
-## Executed verification
-- Native source commit: 74777d9706c0f601612452cb3c9cd9bf0b072a0c.
-- GitHub run: https://github.com/Robertloggiar34yyeeez/QuickTick/actions/runs/37221535704.
-- Xcode 26.6, build 17F113; minimum iOS 17, Swift 6.
-- 27 unit tests and 3 UI tests, zero failures. Coverage includes the encrypted Sync credential round trip, real Keychain write/read/delete, populated login fields with Remember off, tags hidden until requested, compact action spacing, navigation, immersive filtering, resolver deduplication and failed cloud responses. Existing recommendation/query/provider/persistence/crypto tests also pass.
-- Simulator test signing: CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual, with checked-in Simulator.entitlements. This exercises actual secure storage without an Apple signing account.
-- Release archive: generic/platform=iOS, CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO. ARCHIVE SUCCEEDED; a real device executable was packaged and downloaded.
-- Live API synthetic encrypted get/put/get test: PASS. A fresh random test identity and synthetic credentials were used, with no personal profile read; see logs/sync-live-roundtrip.json.
-- Independent crypto vector, project audit and Swift syntax checks passed. Passing UI screenshots and complete Apple test/archive logs are included.
+## Actually executed verification
+- Repository https://github.com/Robertloggiar34yyeeez/QuickTick, main; tested native commit 94bb4e567e158584d80325c3ce8b18748e9c44d8.
+- GitHub run https://github.com/Robertloggiar34yyeeez/QuickTick/actions/runs/37265988154.
+- Xcode 26.6 (17F113), minimum iOS 17, Swift 6; 29 unit tests and 6 UI tests, zero failures.
+- Simulator signing uses CODE_SIGNING_ALLOWED=YES, CODE_SIGNING_REQUIRED=YES, CODE_SIGN_IDENTITY=-, CODE_SIGN_STYLE=Manual and Simulator.entitlements. Real Keychain storage and encrypted login-fill are tested.
+- Release archive uses generic/platform=iOS with signing disabled, as explicitly requested; actual arm64 executable packaged in the IPA.
+- Provider pagination regression supplies ten items, a duplicate-only page and a new batch. It verifies advancement beyond ten without duplicate IDs. Preview selection avoids video URLs as poster images.
+- UI fixtures validate controls and lifecycle; they do not validate live AV playback, sound or huge-image device memory. Passing screenshots, full Xcode test/archive logs and xcresult bundle are included.
+- Portable project audit and Swift syntax checks pass. The independent AES-GCM vector and synthetic live API get/put/get round trip passed on 2026-10-04; the latter used no personal credentials/profile and is historical evidence, not a new 2026-10-05 account-authentication test.
 
-## IPA verification
-- File: QuickTick-0.6.24-unsigned.ipa; 428170 bytes; build 2.
-- SHA-256: b674abf94cad93f0077773037ac7103307ecac76a68e2ca50e673162c3c0566b.
-- GitHub artifact ZIP digest matched: a9d99ca18a29c3a5dc65a8d635e13ecb2aa674df8df43590de8b6ad070c46b9b.
-- Valid ZIP, matching runner checksum, Mach-O arm64, iPhoneOS, bundle com.quicktick.QuicktickNative, minimum OS 17.0.
-- Embedded API origin: https://quick-tick-webb.vercel.app.
-- UIDesignRequiresCompatibility=true verified from the packaged plist.
-- Unsigned as requested; re-sign before installation. No certificate/profile/private key is supplied or committed. Provider credentials and the Sync identity use Keychain; ordinary local state excludes credential/session material. Release excludes deterministic UI-test support.
-
-## Repository and delivery
-- Repository https://github.com/Robertloggiar34yyeeez/QuickTick, main; authenticated connected GitHub API access works.
-- Original pre-replacement HEAD 79dde743f5aad6bf98eba29ab57756c3578ce28e remains in history; replacement commit d44da263005edc949e7b99212e50a99860ceedb2 preserved its parent. This correction continues that history.
-- Final report/delivery tip is in manifest.json; only docs/tooling differ from the tested native source commit.
-- Unique revision in E:\Meine Ablage\QuickTick iOS Revisions contains exact source tree/ZIP, IPA, checksums, effective master prompt, reports and logs. Every copied file is checked by size and SHA-256. Earlier revisions remain intact.
-- Mounted-folder verification does not prove completion of Google Drive Desktop synchronization to Google's servers.
+## IPA and exact-source verification
+- QuickTick-0.6.24-unsigned.ipa, 633999 bytes; SHA-256 a6e33737ab84afc3911ba81cf598b9b48df2f51c784a4b39d2f415499f45222d.
+- ZIP integrity, runner checksum, artifact ZIP digest, iPhoneOS/arm64, bundle ID, configured API, build 4, compatibility flag and compiled app icon are independently checked.
+- No Apple certificate, provisioning profile, private key, provider password or Gorse server secret is committed. Keychain stores the Sync identity and remembered credential/session material; ordinary state excludes secrets. DEBUG media/sync fixtures are excluded from Release.
+- Original pre-replacement HEAD 79dde743f5aad6bf98eba29ab57756c3578ce28e remains in repository history. These changes continue that main branch; no fork or alternative repo was used.
+- Final report tip is recorded in the delivery manifest; only docs/tooling differ from the tested native commit. Source files including binary icon bytes are checked against Git blob hashes.
+- Unique revision in E:/Meine Ablage/QuickTick iOS Revisions includes the verified IPA, exact source/ZIP, master prompt, reports, screenshots and logs. Size and SHA-256 match for every copied file. Earlier revisions remain intact. Google's server-side synchronization is not observed.
 
 ## Practical limits
-- No physical iPhone was available. Near-instant scrolling is the intended improvement; actual latency, gestures and playback transitions are not benchmarked on device.
-- Provider read-only probes on this deployment: Rule34 401 without account credentials; RedGIFs 200 with 26 posts; Eporner 200 with 40 posts; Pornhub 200 with no posts; Hanime 502 upstream fetch failure. See logs/provider-live-probes.json. Those upstream conditions are not fixed by this native revision.
-- Real account login/session acceptance, live Gorse ranking, full media playback, background/HLS downloads and airplane-mode/offline playback still need device verification. The synthetic Sync checks validate credential delivery, not provider authentication.
-- Deterministic simulator screenshots use neutral media fixtures; they are layout evidence only. No CAPTCHA, access-control, DRM, geo or premium bypass was added.
+No physical iPhone was available. Sound, live stream quality, frame transitions, network latency, huge-comic memory, background/HLS downloads and full airplane-mode/offline playback require device verification. Gorse live behavior and real provider-account acceptance remain unverified. The previous read-only deployment probes returned Rule34 401 without credentials, RedGIFs 200 with 26 posts, Eporner 200 with 40 posts, Pornhub 200 with zero posts and Hanime 502 upstream failure; no server changes were made in this native revision. No CAPTCHA, DRM, account/access-control, geo or premium bypass was added.
+
+## Delivery location and commands
+
+Exact mounted Drive destination: E:/Meine Ablage/QuickTick iOS Revisions/QuickTick-iOS-0.6.24-REV-20261005-071305
+
+The IPA hash above is verified at this destination by the delivery script. Source ZIP SHA-256 and final documentation commit SHA are recorded in manifest.json and DELIVERY-VERIFICATION.json, avoiding a self-referential source archive hash.
+
+Executed workflow commands: `xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination platform=iOS\ Simulator,id=$DEVICE CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -resultBundlePath logs/QuicktickTests.xcresult test`; `xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination generic/platform=iOS -archivePath build/QuicktickNative.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive`. The workflow uses shell-quoted destination values; see .github/workflows/ios.yml for exact executable syntax.

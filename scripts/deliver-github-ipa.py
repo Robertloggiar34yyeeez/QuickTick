@@ -1,5 +1,5 @@
 """Deliver an exact GitHub revision plus a verified GitHub-built unsigned IPA."""
-import sys,json,hashlib,zipfile,shutil
+import sys,json,hashlib,zipfile,shutil,base64
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 metadata=json.loads((ROOT/'logs/github-final.json').read_text(encoding='utf-8'))
@@ -11,7 +11,7 @@ local.mkdir(parents=True,exist_ok=False)
 source=local/'source'
 for entry in entries:
     file=source/entry['path']; file.parent.mkdir(parents=True,exist_ok=True)
-    file.write_bytes(entry['content'].encode('utf-8'))
+    file.write_bytes(base64.b64decode(entry['content']) if entry.get('encoding')=='base64' else entry['content'].encode('utf-8'))
 archive=local/(metadata['revision']+'-source.zip')
 with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
     for file in sorted(source.rglob('*')):
@@ -22,9 +22,9 @@ logs=local/'logs'; logs.mkdir()
 for name in ['github-xcode-version.txt','github-xcodebuild-test.txt','github-xcodebuild-archive.txt','native-test-results.zip','ipa-verification.json','provider-live-probes.json','project-audit.txt','swift-syntax.txt','sync-vector.txt','sync-live-roundtrip.json']:
     file=ROOT/'logs'/name
     if file.exists(): shutil.copy2(file,logs/name)
-screenshots=ROOT/'logs/final-native-tests/screenshots'
+screenshots=ROOT/'logs/immersive-native-tests/screenshots'
 if screenshots.exists(): shutil.copytree(screenshots,logs/'screenshots')
-for name in ['IOS-PORT-STATUS.md','GITHUB-BUILD-STATUS.md','CODEX-MASTER-PROMPT.md']: shutil.copy2(ROOT/name,local/name)
+for name in ['IOS-PORT-STATUS.md','GITHUB-BUILD-STATUS.md','IMMERSIVE-RELEASE-NOTES.md','CODEX-MASTER-PROMPT.md']: shutil.copy2(ROOT/name,local/name)
 def sha(file): return hashlib.sha256(file.read_bytes()).hexdigest()
 assert sha(local/'QuickTick-0.6.24-unsigned.ipa')==metadata['ipaSHA256']
 manifest={**metadata,'drivePath':str(drive),'sourceZipSHA256':sha(archive),'files':[]}

@@ -4,6 +4,7 @@ struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
     @State private var showFloatingSearch = false
+    @State private var showSearch = false
     @State private var onboarding = false
     @State private var immersive = false
 
@@ -78,14 +79,14 @@ struct HomeFeedView: View {
                         Text(store.selectedProvider.displayName).font(.caption.weight(.medium)).padding(.horizontal, 12).frame(height: 44)
                             .background(AppTheme.surface, in: Capsule()).overlay(Capsule().stroke(.white.opacity(0.15)))
                     }
-                    Button { showFloatingSearch.toggle() } label: { Image(systemName: "magnifyingglass").font(.system(size: 19)).frame(width: 44, height: 44).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Toggle search")
+                    Button { showSearch.toggle() } label: { Image(systemName: "magnifyingglass").font(.system(size: 19)).frame(width: 44, height: 44).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Toggle search")
                     SettingsLauncher(isPresented: $showSettings)
                 }
             }
         }
 
         .safeAreaInset(edge: .top) {
-            if showFloatingSearch { searchBar.padding(.horizontal).background(AppTheme.background) }
+            if showSearch { searchBar.padding(.horizontal).background(AppTheme.background) }
         }
         .refreshable { await store.refresh() }
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, onClose: { immersive = false }, showSettings: $showSettings) }

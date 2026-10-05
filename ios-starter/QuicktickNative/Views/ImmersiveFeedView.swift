@@ -7,7 +7,11 @@ struct ImmersiveFeedView: View {
     let posts: [Post]
     let offline: Bool
     var onClose: (() -> Void)? = nil
-    @Binding var showSettings: Bool = .constant(false)
+    @Binding var showSettings: Bool
+    init(posts: [Post], offline: Bool, onClose: (() -> Void)? = nil, showSettings: Binding<Bool> = .constant(false)) {
+        self.posts = posts; self.offline = offline; self.onClose = onClose
+        _showSettings = showSettings
+    }
     @State private var activeID: String?
     @State private var activeIndex = 0
     @State private var searchVisible = false

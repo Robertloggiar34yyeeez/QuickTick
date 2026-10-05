@@ -1,11 +1,11 @@
 import SwiftUI
 
 enum AppTheme {
-    static let background = Color(red: 0.035, green: 0.045, blue: 0.085)
-    static let surface = Color(red: 0.085, green: 0.10, blue: 0.16)
+    static let background = Color.black
+    static let surface = Color(white: 0.055)
     static let accent = Color(red: 0.60, green: 0.43, blue: 1)
     static let gradient = LinearGradient(colors: [accent, Color(red: 0.25, green: 0.62, blue: 0.95)], startPoint: .topLeading, endPoint: .bottomTrailing)
-    static let canvas = LinearGradient(colors: [Color(red: 0.12, green: 0.08, blue: 0.22), background, Color(red: 0.04, green: 0.10, blue: 0.16)], startPoint: .topLeading, endPoint: .bottomTrailing)
+    static let canvas = Color.black
 }
 
 struct ActionIcon: View {
@@ -44,5 +44,17 @@ struct PostTagsView: View {
             }.background(AppTheme.canvas).navigationTitle("Tags")
                 .toolbar { Button("Done") { dismiss() } }
         }.tint(AppTheme.accent)
+    }
+}
+
+struct SettingsLauncher: View {
+    @Binding var isPresented: Bool
+    var body: some View {
+        Button { isPresented = true } label: {
+            Image(systemName: "slider.horizontal.3").font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(.white).frame(width: 44, height: 44)
+                .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.15), lineWidth: 1))
+        }.buttonStyle(.plain).accessibilityLabel("Settings").accessibilityIdentifier("open-settings")
     }
 }

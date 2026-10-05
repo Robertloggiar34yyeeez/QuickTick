@@ -7,6 +7,7 @@ struct ImmersiveFeedView: View {
     let posts: [Post]
     let offline: Bool
     var onClose: (() -> Void)? = nil
+    @Binding var showSettings: Bool = .constant(false)
     @State private var activeID: String?
     @State private var activeIndex = 0
     @State private var searchVisible = false
@@ -53,6 +54,7 @@ struct ImmersiveFeedView: View {
                     Spacer(minLength: 0)
                     if !offline {
                         Button { searchVisible.toggle() } label: { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("Search")
+                        SettingsLauncher(isPresented: $showSettings)
                     }
                     }
                 }.padding(.horizontal, 16).frame(height: 52)
@@ -176,10 +178,6 @@ private struct ImmersiveItemView: View {
                         Text(post.provider.uppercased()).font(.caption.weight(.bold)).tracking(1.5)
                         Spacer(minLength: 0)
                         Button("View tags") { showTags = true }.font(.caption.weight(.semibold))
-                        Button { store.muted.toggle() } label: {
-                            Image(systemName: store.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                .frame(width: 44, height: 44)
-                        }.accessibilityLabel("Mute")
                     }.padding(.horizontal, 16).background(.ultraThinMaterial)
                     if post.type.lowercased() == "video" { timeline }
                 }
@@ -241,19 +239,21 @@ private struct ImmersiveItemView: View {
                 interacted = true; store.toggleFavorite(post)
             }.accessibilityValue(store.favorites[post.stableID] == nil ? "Not liked" : "Liked")
             if !offline {
-                railButton("Comments", symbol: "bubble.right.fill") { showComments = true }
-                railButton("Less", symbol: "hand.thumbsdown.fill") { interacted = true; store.less(post) }
+                railButton("Less", symbol: "minus.circle") { interacted = true; store.less(post) }
+                railButton("Comments", symbol: "bubble.right") { showComments = true }
                 railButton("Download", symbol: "arrow.down.to.line") { store.download(post) }
             }
-        }.padding(6).background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().stroke(.white.opacity(0.15), lineWidth: 0.5))
+            railButton("Mute", symbol: store.muted ? "speaker.slash" : "speaker.wave.2") { store.muted.toggle() }
+        }
     }
     private func railButton(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 25, weight: .semibold))
                 .foregroundStyle(selected ? Color.pink : .white)
                 .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
-                .frame(width: 44, height: 48).contentShape(Rectangle())
+                .frame(width: 48, height: 48).contentShape(Circle())
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
         }.buttonStyle(.plain).accessibilityLabel(title)
             .accessibilityIdentifier(active ? "immersive-\(title)" : "inactive-\(title)-\(post.stableID)")
     }

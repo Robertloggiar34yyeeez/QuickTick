@@ -1,6 +1,22 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testFourTabsSettingsAndScrollToTop() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
+        let names = ["Home", "Immersive", "Favorites", "Downloads"]
+        for name in names { XCTAssertTrue(app.buttons["tab-\(name)"].exists) }
+        XCTAssertFalse(app.buttons["tab-Settings"].exists)
+        app.swipeUp()
+        let top = app.buttons["home-scroll-top"]
+        XCTAssertTrue(top.waitForExistence(timeout: 5)); top.tap()
+        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+        app.buttons["open-settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+    }
+
     @MainActor func testHomeInlinePlaybackAndComicClose() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         let playback = app.buttons["inline-play-test:video"]
@@ -19,7 +35,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(close.waitForExistence(timeout: 5))
         let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Full comic with close control"; screenshot.lifetime = .keepAlways; add(screenshot)
         close.tap()
-        XCTAssertTrue(app.navigationBars["Quicktick"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 5))
     }
 
     @MainActor func testImmersiveRailSnapsAndDoubleTapLikes() {
@@ -28,7 +44,7 @@ final class NavigationTests: XCTestCase {
         app.buttons["tab-Immersive"].tap()
         let like = app.buttons["immersive-Like"]
         XCTAssertTrue(like.waitForExistence(timeout: 10))
-        let actions = ["Like", "Comments", "Less", "Download"].map { app.buttons["immersive-\($0)"] }
+        let actions = ["Like", "Less", "Comments", "Download", "Mute"].map { app.buttons["immersive-\($0)"] }
         for action in actions {
             XCTAssertTrue(action.isHittable)
             XCTAssertGreaterThanOrEqual(action.frame.width, 44)
@@ -58,7 +74,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["#test_tag"].exists)
         let labels = ["Like", "Less", "Download", "Comments"]
         let buttons = labels.map { app.buttons[$0].firstMatch }
-        let tabs = ["Home", "Immersive", "Downloads", "Favorites", "Settings"].map { app.buttons["tab-\($0)"] }
+        let tabs = ["Home", "Immersive", "Favorites", "Downloads"].map { app.buttons["tab-\($0)"] }
         for tab in tabs { XCTAssertGreaterThanOrEqual(tab.frame.width, 44) }
         for index in 1..<tabs.count { XCTAssertGreaterThanOrEqual(tabs[index].frame.minX, tabs[index - 1].frame.maxX - 1) }
         for button in buttons { XCTAssertGreaterThanOrEqual(button.frame.width, 44) }
@@ -69,7 +85,7 @@ final class NavigationTests: XCTestCase {
         app.buttons["Done"].tap()
         app.buttons["tab-Immersive"].tap()
         XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["tab-Settings"].isHittable)
+        XCTAssertTrue(app.buttons["open-settings"].isHittable)
         let immersive = XCTAttachment(screenshot: app.screenshot()); immersive.name = "Immersive controls"; immersive.lifetime = .keepAlways; add(immersive)
         XCTAssertFalse(app.staticTexts["#still_tag"].exists)
     }
@@ -78,7 +94,7 @@ final class NavigationTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-testing-sync-login"]
         app.launch()
-        app.buttons["tab-Settings"].tap()
+        app.buttons["open-settings"].tap()
         let input = app.secureTextFields["sync-id-input"]
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         input.tap()
@@ -103,11 +119,11 @@ final class NavigationTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing"]
         app.launch()
-        XCTAssertTrue(app.navigationBars["Quicktick"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
         app.buttons["tab-Immersive"].tap()
         XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 5))
         app.buttons["tab-Home"].tap()
-        XCTAssertTrue(app.navigationBars["Quicktick"].exists)
+        XCTAssertTrue(app.staticTexts["home-title"].exists)
         app.buttons["tab-Downloads"].tap()
         XCTAssertTrue(app.navigationBars["Downloads"].exists)
         app.buttons["tab-Favorites"].tap()

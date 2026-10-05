@@ -22,7 +22,7 @@ struct PostCardView: View {
             if let playbackError { Text(playbackError).font(.caption).foregroundStyle(.orange).padding(8) }
             VStack(spacing: 8) {
                 HStack {
-                    Text(post.provider.uppercased()).font(.caption.weight(.bold)).tracking(1.5).foregroundStyle(AppTheme.gradient)
+                    Text(post.provider.uppercased()).font(.caption.weight(.bold)).tracking(1.5).foregroundStyle(.white.opacity(0.8))
                     Spacer()
                     Button("View tags") { tags = true }.font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.7))
                 }

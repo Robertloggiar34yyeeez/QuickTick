@@ -13,6 +13,7 @@ final class AppStore: ObservableObject {
     @Published var posts: [Post] = []
     @Published var inlinePlaybackID: String?
     @Published var queryText = ""
+    @Published var feedSort = "recommended"
     @Published var favorites: [String: Post] = [:]
     @Published var exclusions: [String] = []
     @Published var tasteSetup = TasteSetup()
@@ -150,7 +151,7 @@ final class AppStore: ObservableObject {
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 await recommendations.recordSearch(provider: selectedProvider, query: queryText)
             }
-            let page = try await api.posts(provider: provider, query: parsed, page: 1)
+            let page = try await api.posts(provider: provider, query: parsed, page: 1, sort: feedSort)
             guard generation == token else { return }
             nextPage = 2; hasMore = page.hasMore ?? !page.items.isEmpty
             let taste = tasteChoice(for: selectedProvider)
@@ -161,14 +162,14 @@ final class AppStore: ObservableObject {
                 return (exclusions + parsed.excluded).allSatisfy { !lowered.contains($0.lowercased()) }
             }
 
-            let immediate = parsed.included.isEmpty ? await recommendations.rank(filtered, taste: taste, recent: posts) : filtered
+            let immediate = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(filtered, taste: taste, recent: posts) : filtered
             guard generation == token else { return }
             posts = immediate
             isLoading = false
             releasedLoading = true
             var gorseScores: [String: Double] = [:]
             var mode = "Local 0.6.24"
-            if parsed.included.isEmpty, !syncID.isEmpty, filtered.count >= 2 {
+            if parsed.included.isEmpty, feedSort == "recommended", !syncID.isEmpty, filtered.count >= 2 {
                 let positive = await recommendations.positiveTerms(provider: selectedProvider, taste: taste)
                 let negative = await recommendations.negativeTerms(provider: selectedProvider, taste: taste)
                 if let remote = await recommendationBridge.rank(posts: filtered, provider: selectedProvider, syncID: syncID, positiveTerms: positive, negativeTerms: negative) {
@@ -179,7 +180,7 @@ final class AppStore: ObservableObject {
                 }
             }
 
-            let ranked = parsed.included.isEmpty
+            let ranked = parsed.included.isEmpty && feedSort == "recommended"
                 ? await recommendations.rank(filtered, taste: taste, recent: posts, collaborativeScores: gorseScores)
                 : filtered
             guard generation == token else { return }
@@ -206,12 +207,12 @@ final class AppStore: ObservableObject {
             // Skip sparse, duplicate and fully filtered pages without waiting for
             // a last-card onAppear that will never fire again.
             for attempt in 0..<5 {
-            let page = try await api.posts(provider: provider, query: parsed, page: nextPage)
+            let page = try await api.posts(provider: provider, query: parsed, page: nextPage, sort: feedSort)
             guard generation == token else { return }
             nextPage += 1; hasMore = page.hasMore ?? !page.items.isEmpty
             let banned = Set((exclusions + parsed.excluded).map { $0.lowercased() })
             let candidates = page.items.filter { encountered.insert($0.stableID).inserted && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
-            let ranked = parsed.included.isEmpty ? await recommendations.rank(candidates, taste: tasteChoice(for: provider), recent: posts) : candidates
+            let ranked = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(candidates, taste: tasteChoice(for: provider), recent: posts) : candidates
             guard generation == token else { return }
             posts.append(contentsOf: ranked)
             if !hasMore || (!immersive && !ranked.isEmpty) || (immersive && ranked.contains(where: \.isImmersiveMedia)) { break }

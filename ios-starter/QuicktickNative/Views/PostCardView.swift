@@ -9,6 +9,8 @@ struct PostCardView: View {
     let post: Post
     var available = CGSize(width: 400, height: 800)
     var playbackTab = 0
+    var offline = false
+    var onDelete: (() -> Void)?
     @State private var nativeSize: CGSize?
     @State private var comments = false
     @State private var tags = false
@@ -22,7 +24,7 @@ struct PostCardView: View {
     @State private var playbackError: String?
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
-    private var playbackOwner: String { playbackTab == 2 ? "favorites" : "home" }
+    private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
     private var mediaSize: CGSize { MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: (post.nativeSize.map { post.type.lowercased() == "image" && $0.height > $0.width * 4 ? 2 / 3 : $0.width / $0.height }) ?? mediaAspect, available: available) }
     var body: some View {
         VStack(spacing: 0) {
@@ -45,10 +47,14 @@ struct PostCardView: View {
                         .frame(minHeight: 44)
                 }
                 HStack(spacing: 0) {
+                    if offline {
+                        if let onDelete { ActionIcon(title: "Delete", symbol: "trash", action: onDelete) }
+                    } else {
                     ActionIcon(title: "Like", symbol: store.favorites[post.stableID] == nil ? "heart" : "heart.fill", selected: store.favorites[post.stableID] != nil) { store.toggleFavorite(post) }
                     ActionIcon(title: "Less", symbol: "hand.thumbsdown") { store.less(post) }
                     ActionIcon(title: "Download", symbol: "arrow.down.to.line") { store.download(post) }
                     ActionIcon(title: "Comments", symbol: "bubble.left") { comments = true }
+                    }
                 }
             }.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 4)
         }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 22))
@@ -125,7 +131,11 @@ struct PostCardView: View {
         preparing = true; playbackError = nil; playing = false
         defer { preparing = false; reportWatch() }
         do {
-            let resolved = try await store.resolver.resolve(post)
+            let resolved: ResolvedMedia
+            if offline {
+                guard let local = URL(string: post.mediaUrl), local.isFileURL, FileManager.default.fileExists(atPath: local.path) else { throw APIError.server("Downloaded file is missing.") }
+                resolved = ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type)
+            } else { resolved = try await store.resolver.resolve(post) }
             guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, let url = URL(string: resolved.mediaUrl) else { return }
             if post.type.lowercased() == "gif" {
                 gifURL = url; playing = store.pausedPlaybackID != post.stableID; preparing = false

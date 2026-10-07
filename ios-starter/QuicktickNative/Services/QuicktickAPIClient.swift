@@ -85,7 +85,15 @@ actor QuicktickAPIClient {
         let q = query.included.joined(separator: " ")
         if !q.isEmpty { items.append(URLQueryItem(name: "q", value: q)) }
         if !query.excluded.isEmpty { items.append(URLQueryItem(name: "exclude", value: query.excluded.joined(separator: ","))) }
-        if immersive { items.append(URLQueryItem(name: "mode", value: "video")) }
+        if provider == .rule34 {
+            items.append(URLQueryItem(name: "mode", value: immersive ? "video" : "feed"))
+            if immersive, query.included.isEmpty { items.append(URLQueryItem(name: "soft", value: "1")) }
+        } else if provider == .pornhub {
+            items.append(URLQueryItem(name: "mode", value: immersive ? "shorties" : "videos"))
+            if query.included.isEmpty { items.append(URLQueryItem(name: "fallback", value: "1")) }
+        } else if provider == .hanime, query.included.isEmpty {
+            items.append(URLQueryItem(name: "soft", value: "1"))
+        }
         let data = try await request(path: path, query: items)
         return try JSONDecoder().decode(PostPage.self, from: data)
     }

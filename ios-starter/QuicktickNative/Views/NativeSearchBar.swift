@@ -3,11 +3,17 @@ import SwiftUI
 struct NativeSearchBar: View {
     @EnvironmentObject private var store: AppStore
     var immersive = false
+    @Binding var focusRequested: Bool
+    @FocusState private var focused: Bool
     @State private var suggestions: [TagSuggestion] = []
+    init(immersive: Bool = false, focusRequested: Binding<Bool> = .constant(false)) {
+        self.immersive = immersive; _focusRequested = focusRequested
+    }
     var body: some View {
         VStack(alignment: .leading) {
             HStack {
                 TextField("Search · -tag to exclude", text: $store.queryText)
+                    .focused($focused).accessibilityIdentifier("feed-search-input")
                     .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
                     .onSubmit { search() }
                 Button { search() } label: { Image(systemName: "arrow.right").font(.headline).frame(width: 44, height: 44).background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 12)) }.buttonStyle(.plain).accessibilityLabel("Search")
@@ -26,8 +32,14 @@ struct NativeSearchBar: View {
                 }
             }
         }.padding(10).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+            .task(id: focusRequested) {
+                if focusRequested { focused = true; focusRequested = false }
+            }
             .task(id: store.selectedProvider.rawValue + ":" + store.queryText) {
                 suggestions = []
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
+                #endif
                 guard store.selectedProvider == .rule34, let token = store.queryText.split(whereSeparator: \.isWhitespace).last else { return }
                 let query = token.hasPrefix("-") ? String(token.dropFirst()) : String(token)
                 guard query.count >= 2 else { return }
@@ -38,5 +50,5 @@ struct NativeSearchBar: View {
                 } catch { suggestions = [] }
             }
     }
-    private func search() { suggestions = []; Task { await store.refresh(immersive: immersive, trainSearch: true) } }
+    private func search() { focused = false; suggestions = []; Task { await store.refresh(immersive: immersive, trainSearch: true) } }
 }

@@ -55,6 +55,15 @@ struct RecommendationProfile: Codable, Sendable, Equatable {
 struct RecommendationState: Codable, Sendable, Equatable {
     var version: Int = 3
     var profiles: [String: RecommendationProfile] = [:]
+    var candidatePages: [String: Int] = [:]
+    init() {}
+    enum CodingKeys: String, CodingKey { case version, profiles, candidatePages }
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        version = try fields.decodeIfPresent(Int.self, forKey: .version) ?? 3
+        profiles = try fields.decodeIfPresent([String: RecommendationProfile].self, forKey: .profiles) ?? [:]
+        candidatePages = try fields.decodeIfPresent([String: Int].self, forKey: .candidatePages) ?? [:]
+    }
 }
 
 struct RecommendationItemPayload: Codable, Sendable, Equatable {

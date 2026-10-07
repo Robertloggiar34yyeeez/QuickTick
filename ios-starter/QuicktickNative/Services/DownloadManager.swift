@@ -46,6 +46,15 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             record.state = .failed; record.errorMessage = "Interrupted transfer. Retry to download again."; upsert(record)
         }
     }
+    #if DEBUG
+    func useUITestDownloads(_ posts: [Post]) {
+        records = posts.map { post in
+            var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: "Saved fixture", tags: post.tags, thumbnailRemoteURL: "", localMediaPath: URL(string: post.mediaUrl)?.path, kind: .file, state: .complete, progress: 1, createdAt: .now)
+            record.mediaType = post.type == "image" ? nil : post.type
+            return record
+        }
+    }
+    #endif
     func download(_ post: Post) {
         guard !metadataFailed, tasks[post.stableID] == nil, !preparing.contains(post.stableID), records.first(where: { $0.key == post.stableID })?.state != .complete else { return }
         preparing.insert(post.stableID)

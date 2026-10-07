@@ -51,6 +51,29 @@ final class NavigationTests: XCTestCase {
         app.buttons["Done"].tap()
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
     }
+    @MainActor func testSearchAppearsOnceBeforeAndAfterSubmitting() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        app.buttons["Toggle search"].tap()
+        let fields = app.textFields.matching(identifier: "feed-search-input")
+        XCTAssertEqual(fields.count, 1)
+        fields.firstMatch.typeText("engineering")
+        app.buttons["Search"].firstMatch.tap()
+        XCTAssertTrue(fields.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(fields.count, 1)
+        XCTAssertEqual(fields.firstMatch.value as? String, "engineering")
+    }
+    @MainActor func testDownloadedImagesUseNormalFeedAndCloseFullComic() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]; app.launch()
+        app.buttons["tab-Downloads"].tap()
+        XCTAssertTrue(app.navigationBars["Downloads"].waitForExistence(timeout: 10))
+        let full = app.buttons["View full image"].firstMatch
+        for _ in 0..<5 { if full.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(full.isHittable); full.tap()
+        let close = app.buttons["Close full image"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Downloaded comic full view"; capture.lifetime = .keepAlways; add(capture)
+        close.tap(); XCTAssertTrue(app.navigationBars["Downloads"].exists)
+    }
 
     @MainActor func testHomeInlinePlaybackAndComicClose() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()

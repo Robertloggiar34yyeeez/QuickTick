@@ -77,9 +77,10 @@ struct ImmersiveFeedView: View {
         .task(id: presentationActive) {
             guard presentationActive else { return }
             if activeID == nil { activeID = mediaPosts.first?.stableID }
-            if !offline && posts.isEmpty { await store.refresh(immersive: true) }
+            if !offline && (posts.isEmpty || !store.feedMediaOnly) { await store.refresh(immersive: true) }
         }
-        .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.isForeground):\(store.feedRevision)") { await prewarm() }
+        .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision)") { await prewarm() }
+        .onChange(of: store.feedRevision) { _, _ in activeIndex = 0; activeID = nil }
         .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
             if activeID == nil || !keys.contains(activeID ?? "") {
                 activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
@@ -91,6 +92,7 @@ struct ImmersiveFeedView: View {
     }
     private func prewarm() async {
         guard presentationActive, store.isForeground, !Task.isCancelled else { return }
+        guard offline || store.feedMediaOnly else { return }
         let clips = mediaPosts
         guard let activeID, let index = clips.firstIndex(where: { $0.stableID == activeID }) else {
             if !offline && !store.isLoading && store.hasMore { await store.loadMore(immersive: true) }
@@ -113,15 +115,17 @@ struct ImmersiveFeedView: View {
                 let post = clips[i]
                 group.addTask { await previewCache.load(post) }
             }
-            group.addTask { @MainActor in
+            group.addTask {
                 // Nearest first; do not compete with the visible player.
                 for i in playerRange where i != index && clips[i].type.lowercased() == "video" {
                     let post = clips[i]
                     let url: URL?
                     if offlineMode { url = URL(string: post.mediaUrl) }
                     else { url = try? await resolver.resolve(post).mediaUrlURL }
-                    guard !Task.isCancelled, feedStore.isForeground, feedStore.activeTab == presentingTab else { return }
-                    if let url { pool.prewarm(key: post.stableID, url: url) }
+                    guard !Task.isCancelled else { return }
+                    let stillPresenting = await MainActor.run { feedStore.isForeground && feedStore.activeTab == presentingTab }
+                    guard stillPresenting, !Task.isCancelled else { return }
+                    if let url { await pool.prewarm(key: post.stableID, url: url) }
                 }
             }
             if !offline, index >= clips.count - 8 {

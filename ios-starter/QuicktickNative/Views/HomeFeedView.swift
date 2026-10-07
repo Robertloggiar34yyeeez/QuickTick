@@ -28,7 +28,7 @@ struct HomeFeedView: View {
                     }
                     Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44,height: 44).background(AppTheme.gradient,in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Refresh feed")
                 }
-                searchBar
+                searchBar.id("home-search")
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
                 } else if store.posts.isEmpty && !store.isLoading {
@@ -38,14 +38,14 @@ struct HomeFeedView: View {
                     PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width - 32), height: viewport.size.height))
                         .frame(maxWidth: .infinity)
                         .onAppear {
-                        if let index = store.posts.firstIndex(where: { $0.stableID == post.stableID }), index >= store.posts.count - 4 { Task { await store.loadMore() } }
+                        if store.activeTab == 0, let index = store.posts.firstIndex(where: { $0.stableID == post.stableID }), index >= store.posts.count - 4 { Task { await store.loadMore() } }
                     }
                 }
                 if store.isLoading { RoundedRectangle(cornerRadius: 22).fill(AppTheme.surface).frame(height: 220).overlay { ProgressView("Loading posts") }.accessibilityIdentifier("feed-loading") }
                 if store.hasMore {
                     Button("Load more") { Task { await store.loadMore() } }
                         .frame(maxWidth: .infinity, minHeight: 44)
-                        .onAppear { if !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
+                        .onAppear { if store.activeTab == 0 && !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
                 }
             }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
         }
@@ -59,6 +59,9 @@ struct HomeFeedView: View {
                         .background(AppTheme.gradient, in: Circle()).shadow(color: .black.opacity(0.5), radius: 10)
                 }.buttonStyle(.plain).padding(16).accessibilityLabel("Scroll to top").accessibilityIdentifier("home-scroll-top")
             }
+        }
+        .task(id: store.activeTab) {
+            if store.activeTab == 0 && store.feedMediaOnly { await store.refresh() }
         }
         .coordinateSpace(name: "home-viewport")
         .onPreferenceChange(HomeVisibleFrames.self) { visibleFrames = $0 }
@@ -82,15 +85,12 @@ struct HomeFeedView: View {
                         Text(store.selectedProvider.displayName).font(.caption.weight(.medium)).padding(.horizontal, 12).frame(height: 44)
                             .background(AppTheme.surface, in: Capsule()).overlay(Capsule().stroke(.white.opacity(0.15)))
                     }
-                    Button { showSearch.toggle() } label: { Image(systemName: "magnifyingglass").font(.system(size: 19)).frame(width: 44, height: 44).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Toggle search")
+                    Button { showSearch = true; withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("home-search", anchor: .top) } } label: { Image(systemName: "magnifyingglass").font(.system(size: 19)).frame(width: 44, height: 44).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Toggle search")
                     SettingsLauncher(isPresented: $showSettings)
                 }
             }
         }
 
-        .safeAreaInset(edge: .top) {
-            if showSearch { searchBar.padding(.horizontal).background(AppTheme.background) }
-        }
         .refreshable { await store.refresh() }
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
@@ -122,7 +122,7 @@ struct HomeFeedView: View {
     }
 
     private var searchBar: some View {
-        NativeSearchBar()
+        NativeSearchBar(focusRequested: $showSearch)
     }
 }
 
@@ -130,4 +130,3 @@ struct HomeVisibleFrames: PreferenceKey {
     static let defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, next in next }) }
 }
-

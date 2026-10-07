@@ -38,9 +38,25 @@ actor RecommendationEngine {
         return state
     }
 
+    // Candidate acquisition must advance too: ranking page one cannot discover
+    // new posts, regardless of the already-seen penalty.
+    func candidatePage(context: String) -> Int { max(1, state.candidatePages[context] ?? 1) }
+    func advanceCandidatePage(context: String, nextPage: Int) {
+        if state.candidatePages.count >= 32, state.candidatePages[context] == nil {
+            state.candidatePages.removeValue(forKey: state.candidatePages.keys.sorted().first!)
+        }
+        state.candidatePages[context] = max(1, nextPage)
+    }
+    func unseen(_ posts: [Post]) -> [Post] {
+        posts.filter { !profile(for: $0.provider.lowercased()).recentSeen.contains($0.stableID) }
+    }
+
     func reset(provider: Provider? = nil) async {
         await semantic.reset()
-        if let provider { state.profiles[provider.rawValue] = RecommendationProfile() }
+        if let provider {
+            state.profiles[provider.rawValue] = RecommendationProfile()
+            state.candidatePages = state.candidatePages.filter { !$0.key.hasPrefix(provider.rawValue + "|") }
+        }
         else { state = RecommendationState() }
     }
 

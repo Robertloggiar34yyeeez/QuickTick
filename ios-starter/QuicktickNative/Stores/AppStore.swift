@@ -30,6 +30,8 @@ final class AppStore: ObservableObject {
     @Published var storageWarning: String?
     @Published var immersionFraming = false { didSet { persistLocal() } }
     @Published var muted = false { didSet { persistLocal() } }
+    @Published private(set) var feedMediaOnly = false
+    private var candidateContext: String?
     private var nextPage = 1
     private var encountered: Set<String> = []
     private var generation = UUID()
@@ -70,6 +72,7 @@ final class AppStore: ObservableObject {
             if ProcessInfo.processInfo.arguments.contains("--ui-testing-sync-login") { syncID = UITestSyncSupport.syncID }
             tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true)
             posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []
+            if ProcessInfo.processInfo.arguments.contains("--ui-testing-download-images") { downloads.useUITestDownloads(posts) }
             hasMore = false
             return
         }
@@ -153,7 +156,7 @@ final class AppStore: ObservableObject {
     private func invalidateFeed() {
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel(); semanticTask = nil
         generation = UUID(); feedRevision = generation; posts = []; encountered = []; nextPage = 1
-        hasMore = true; isLoading = false; lastError = nil; inlinePlaybackID = nil; players.releaseAll()
+        hasMore = true; candidateContext = nil; isLoading = false; lastError = nil; inlinePlaybackID = nil; players.releaseAll()
         learnedInterests = []; recommendationMode = "Local 0.6.24"
     }
 
@@ -165,6 +168,8 @@ final class AppStore: ObservableObject {
     }
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
+        let mediaOnly = immersive || activeTab == 1
+        feedMediaOnly = mediaOnly
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") { posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []; hasMore = false; return }
         #endif
@@ -181,16 +186,35 @@ final class AppStore: ObservableObject {
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 await recommendations.recordSearch(provider: selectedProvider, query: queryText)
             }
-            let page = try await api.posts(provider: provider, query: parsed, page: 1, sort: requestedSort)
+            let personalized = requestedSort == "recommended" && parsed.included.isEmpty
+            let banned = Set((exclusions + parsed.excluded).map { $0.lowercased() })
+            let context = provider.rawValue + "|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
+            candidateContext = personalized ? context : nil
+            let previous = Set(posts.map(\.stableID))
+            var requestedPage = personalized ? await recommendations.candidatePage(context: context) : 1
             guard generation == token, !Task.isCancelled else { return }
-            nextPage = 2; hasMore = page.hasMore ?? !page.items.isEmpty
-            let taste = tasteChoice(for: provider)
             encountered = []
-            let filtered = page.items.filter { post in
-                guard encountered.insert(post.stableID).inserted else { return false }
-                let lowered = Set(post.tags.map { $0.lowercased() })
-                return (exclusions + parsed.excluded).allSatisfy { !lowered.contains($0.lowercased()) }
+            var filtered: [Post] = []
+            // Skip consumed/filtered pages; never reinsert them just to fill a batch.
+            for _ in 0..<5 {
+                let page = try await api.posts(provider: provider, query: parsed, page: requestedPage, sort: requestedSort, immersive: mediaOnly)
+                guard generation == token, !Task.isCancelled else { return }
+                requestedPage += 1
+                nextPage = requestedPage; hasMore = page.hasMore ?? !page.items.isEmpty
+                var incoming = page.items.filter { post in
+                    encountered.insert(post.stableID).inserted && (!mediaOnly || post.isImmersiveMedia)
+                        && banned.isDisjoint(with: Set(post.tags.map { $0.lowercased() }))
+                }
+                if personalized {
+                    incoming = await recommendations.unseen(incoming.filter { !previous.contains($0.stableID) })
+                    guard generation == token, !Task.isCancelled else { return }
+                    await recommendations.advanceCandidatePage(context: context, nextPage: hasMore ? nextPage : 1)
+                }
+                filtered = incoming
+                if !filtered.isEmpty || !hasMore { break }
             }
+            let taste = tasteChoice(for: provider)
+            let firstBatchNextPage = nextPage
 
             let immediate = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(filtered, taste: taste, recent: posts) : filtered
             guard generation == token, !Task.isCancelled else { return }
@@ -224,7 +248,7 @@ final class AppStore: ObservableObject {
                 : filtered
             guard generation == token, !Task.isCancelled else { return }
             // Do not reorder a playing feed after background recommendations arrive.
-            if !immersive, inlinePlaybackID == nil, nextPage == 2, posts.map(\.stableID) == immediate.map(\.stableID) { posts = ranked }
+            if !mediaOnly, inlinePlaybackID == nil, nextPage == firstBatchNextPage, posts.map(\.stableID) == immediate.map(\.stableID) { posts = ranked }
             recommendationMode = mode
             let interests = await recommendations.positiveTerms(provider: provider, taste: taste)
             guard generation == token, !Task.isCancelled else { return }
@@ -256,11 +280,16 @@ final class AppStore: ObservableObject {
             // Skip sparse, duplicate and fully filtered pages without waiting for
             // a last-card onAppear that will never fire again.
             for attempt in 0..<5 {
-            let page = try await api.posts(provider: provider, query: parsed, page: nextPage, sort: feedSort)
+            let page = try await api.posts(provider: provider, query: parsed, page: nextPage, sort: feedSort, immersive: feedMediaOnly)
             guard generation == token, !Task.isCancelled else { return }
             nextPage += 1; hasMore = page.hasMore ?? !page.items.isEmpty
             let banned = Set((exclusions + parsed.excluded).map { $0.lowercased() })
-            let candidates = page.items.filter { encountered.insert($0.stableID).inserted && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
+            var candidates = page.items.filter { encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia) && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
+            if let context = candidateContext {
+                candidates = await recommendations.unseen(candidates)
+                guard generation == token, !Task.isCancelled else { return }
+                await recommendations.advanceCandidatePage(context: context, nextPage: hasMore ? nextPage : 1)
+            }
             let ranked = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(candidates, taste: tasteChoice(for: provider), recent: posts) : candidates
             guard generation == token, !Task.isCancelled else { return }
             posts.append(contentsOf: ranked)
@@ -273,9 +302,11 @@ final class AppStore: ObservableObject {
                     await adaptRecommendationTail(token:token)
                 }
             }
-            if !hasMore || (!immersive && !ranked.isEmpty) || (immersive && ranked.contains(where: \.isImmersiveMedia)) { break }
-            if attempt == 4 { lastError = "No new clips in the last five pages. Tap Load more to continue." }
+            if !hasMore || (!(immersive || feedMediaOnly) && !ranked.isEmpty) || ((immersive || feedMediaOnly) && ranked.contains(where: \.isImmersiveMedia)) { break }
+            if attempt == 4 { lastError = "No new posts in the last five pages. Tap Load more to continue." }
             }
+            guard generation == token, !Task.isCancelled else { return }
+            await persistRecommendations()
         } catch { if token == generation, !Task.isCancelled { lastError = error.localizedDescription } }
     }
 

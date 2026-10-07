@@ -9,9 +9,10 @@ struct DownloadsFeedView: View {
 private struct DownloadContent: View {
     @ObservedObject var manager: DownloadManager
     @State private var immersive = false
+    @State private var immersivePostID: String?
     var body: some View {
         Group {
-            if immersive { ImmersiveFeedView(posts: localPosts, offline: true, onClose: { immersive = false }) }
+            if immersive { ImmersiveFeedView(posts: localPosts, offline: true, activePostID: $immersivePostID, onClose: { immersive = false }) }
             else {
                 GeometryReader { geometry in
                 ScrollView {

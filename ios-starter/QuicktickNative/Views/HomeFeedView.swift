@@ -3,9 +3,11 @@ import SwiftUI
 struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
+    @Binding var scrollAnchor: String?
     @State private var showSearch = false
     @State private var onboarding = false
     @State private var immersive = false
+    @State private var immersivePostID: String?
     @State private var visibleFrames: [String: CGRect] = [:]
 
     var body: some View {
@@ -37,6 +39,7 @@ struct HomeFeedView: View {
                 ForEach(store.posts, id: \.stableID) { post in
                     PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width - 32), height: viewport.size.height))
                         .frame(maxWidth: .infinity)
+                        .id(post.stableID)
                         .onAppear {
                         if store.activeTab == 0, let index = store.posts.firstIndex(where: { $0.stableID == post.stableID }), index >= store.posts.count - 4 { Task { await store.loadMore() } }
                     }
@@ -47,8 +50,9 @@ struct HomeFeedView: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .onAppear { if store.activeTab == 0 && !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
                 }
-            }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
+            }.scrollTargetLayout().frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
         }
+        .scrollPosition(id: $scrollAnchor, anchor: .top)
         .overlay(alignment: .bottomLeading) {
             Group {
                 Button {
@@ -92,7 +96,7 @@ struct HomeFeedView: View {
         }
 
         .refreshable { await store.refresh() }
-        .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, onClose: { immersive = false }, showSettings: $showSettings) }
+        .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $onboarding) { TasteOnboardingView() }
         .onChange(of: store.feedSort) { _, _ in Task { await store.refresh() } }

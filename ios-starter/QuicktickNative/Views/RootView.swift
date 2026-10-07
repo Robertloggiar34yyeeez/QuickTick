@@ -3,18 +3,26 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
     @State private var showSettings = false
+    @State private var homeAnchor: String?
+    @State private var immersiveAnchor: String?
     private let tabs = [("Home", "house.fill"), ("Immersive", "play.fill"), ("Favorites", "heart"), ("Downloads", "arrow.down.to.line")]
 
     var body: some View {
         GeometryReader { geometry in
             let sideNavigation = store.activeTab == 1 && geometry.size.width > 600
-            // Preserve each navigation/scroll history with our own controls.
-            // iPadOS otherwise creates a floating TabView bar without tabItem labels.
-            ZStack {
-                NavigationStack { HomeFeedView(showSettings: $showSettings) }.tabVisibility(store.activeTab == 0)
-                NavigationStack { ImmersiveFeedView(posts: store.posts, offline: false, showSettings: $showSettings) }.tabVisibility(store.activeTab == 1)
-                NavigationStack { FavoritesView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }.tabVisibility(store.activeTab == 2)
-                NavigationStack { DownloadsFeedView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }.tabVisibility(store.activeTab == 3)
+            // Mount one native navigation host. Opacity-hidden stacks still
+            // export UIKit toolbars/accessibility controls and waste resources.
+            Group {
+                switch store.activeTab {
+                case 1:
+                    NavigationStack { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersiveAnchor, showSettings: $showSettings) }
+                case 2:
+                    NavigationStack { FavoritesView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }
+                case 3:
+                    NavigationStack { DownloadsFeedView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }
+                default:
+                    NavigationStack { HomeFeedView(showSettings: $showSettings, scrollAnchor: $homeAnchor) }
+                }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if !sideNavigation {
@@ -50,12 +58,5 @@ struct RootView: View {
             }.buttonStyle(.plain).accessibilityLabel(tabs[index].0).accessibilityIdentifier("tab-\(tabs[index].0)")
                 .accessibilityAddTraits(store.activeTab == index ? .isSelected : [])
         }
-    }
-}
-
-private extension View {
-    func tabVisibility(_ visible: Bool) -> some View {
-        opacity(visible ? 1 : 0).allowsHitTesting(visible).accessibilityHidden(!visible)
-            .zIndex(visible ? 1 : 0)
     }
 }

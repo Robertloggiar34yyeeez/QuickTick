@@ -27,6 +27,8 @@ struct PostCardView: View {
     var body: some View {
         VStack(spacing: 0) {
             media.frame(width: mediaSize.width, height: mediaSize.height).clipped()
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("post-media-\(post.stableID)")
             if let playbackError { Text(playbackError).font(.caption).foregroundStyle(.orange).padding(8) }
             VStack(spacing: 8) {
                 HStack {

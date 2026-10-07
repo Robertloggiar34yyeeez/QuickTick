@@ -60,6 +60,8 @@ final class NavigationTests: XCTestCase {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         let frame = app.otherElements["video-frame"].firstMatch
         let playback = app.buttons["inline-play-test:video"]
+        let media = app.otherElements["post-media-test:video"]
+        XCTAssertTrue(media.waitForExistence(timeout: 15))
         XCTAssertTrue(frame.waitForExistence(timeout: 15))
         expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: frame)
         waitForExpectations(timeout: 15)
@@ -68,25 +70,27 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(frame.frame.width / frame.frame.height,320.0 / 180,accuracy:0.05)
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
             XCUIDevice.shared.orientation = orientation
+            app.buttons["home-scroll-top"].tap()
             // On a short landscape window the Home header can move media below
-            // the viewport. Scroll it into view before asserting playback.
+            // the viewport. Reset the scroll anchor, then expose the entire
+            // video, rather than mistaking its visible Play button for media.
             let scroll = app.scrollViews.firstMatch
             let top = app.navigationBars.firstMatch.frame.maxY
             let bottom = app.buttons["tab-Home"].frame.minY
             let viewport = CGRect(x: app.frame.minX, y: top, width: app.frame.width, height: max(1, bottom - top)).insetBy(dx: 0, dy: 12)
             for _ in 0..<8 {
-                if viewport.contains(playback.frame) { break }
+                if viewport.contains(media.frame) { break }
                 // Short drags avoid flinging past this small, native-size video.
                 // XCTest cannot compute a hit point for controls occluded by
                 // the bottom bar; use their bounds until fully in the viewport.
-                let below = playback.frame.midY > viewport.midY
+                let below = media.frame.midY > viewport.midY
                 let distance = min(45, viewport.height / 4)
                 let origin = scroll.coordinate(withNormalizedOffset: .zero)
                 let start = origin.withOffset(CGVector(dx: app.frame.midX, dy: viewport.midY + (below ? distance : -distance)))
                 let end = origin.withOffset(CGVector(dx: app.frame.midX, dy: viewport.midY + (below ? -distance : distance)))
                 start.press(forDuration: 0.05, thenDragTo: end)
             }
-            XCTAssertTrue(viewport.contains(playback.frame))
+            XCTAssertTrue(viewport.contains(media.frame))
             XCTAssertTrue(playback.isHittable)
             XCTAssertTrue(frame.waitForExistence(timeout:10))
             expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)

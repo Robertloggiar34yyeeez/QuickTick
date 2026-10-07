@@ -84,13 +84,13 @@ final class NavigationTests: XCTestCase {
                 // XCTest cannot compute a hit point for controls occluded by
                 // the bottom bar; use their bounds until fully in the viewport.
                 let below = media.frame.midY > viewport.midY
-                let distance = min(45, viewport.height / 4)
+                let distance = min(45, max(8, abs(media.frame.midY - viewport.midY) / 2))
                 let origin = scroll.coordinate(withNormalizedOffset: .zero)
                 let start = origin.withOffset(CGVector(dx: app.frame.midX, dy: viewport.midY + (below ? distance : -distance)))
                 let end = origin.withOffset(CGVector(dx: app.frame.midX, dy: viewport.midY + (below ? -distance : distance)))
-                start.press(forDuration: 0.05, thenDragTo: end)
+                start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.3)
             }
-            XCTAssertTrue(viewport.contains(media.frame))
+            XCTAssertTrue(viewport.contains(media.frame), "Media \(media.frame) must fit viewport \(viewport)")
             XCTAssertTrue(playback.isHittable)
             XCTAssertTrue(frame.waitForExistence(timeout:10))
             expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)

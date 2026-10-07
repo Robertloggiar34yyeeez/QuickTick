@@ -58,6 +58,12 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(VisiblePostSelector.select(frames: frames,viewport: viewport,current: "first"),"next")
         XCTAssertNil(VisiblePostSelector.select(frames: ["gone":CGRect(x: 0,y: 800,width: 390,height: 100)],viewport: viewport,current: nil))
     }
+    func testCenteredImageDoesNotSuppressVisibleVideoOnTablet() {
+        let viewport = CGRect(x: 0, y: 0, width: 1024, height: 1200)
+        let frames = ["video": CGRect(x: 352, y: 220, width: 320, height: 280), "image": CGRect(x: 352, y: 520, width: 320, height: 480)]
+        XCTAssertEqual(VisiblePostSelector.select(frames: frames, viewport: viewport, current: nil, eligible: ["video"]), "video")
+        XCTAssertNil(VisiblePostSelector.select(frames: frames, viewport: viewport, current: "image", eligible: []))
+    }
     @MainActor func testPlayerPoolChangesURLForSameIdentityAndPausesOnTabAndBackground() {
         let store = AppStore();let pool = store.players
         let a = URL(fileURLWithPath: "/tmp/a.mp4"), b = URL(fileURLWithPath: "/tmp/b.mp4")

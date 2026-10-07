@@ -106,8 +106,8 @@ struct HomeFeedView: View {
 
     private func visibleCandidate(viewport: CGSize) -> String? {
         guard store.activeTab == 0, store.isForeground else { return nil }
-        let key = VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID)
-        return store.posts.first(where: { $0.stableID == key })?.isImmersiveMedia == true ? key : nil
+        let playable = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
+        return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playable)
     }
     private func warmNext(after key: String?) async {
         guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }

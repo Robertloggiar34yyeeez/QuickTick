@@ -295,9 +295,10 @@ final class AppStore: ObservableObject {
             posts.append(contentsOf: ranked)
             if feedSort == "recommended" {
                 semanticTask?.cancel()
+                let semanticCandidates = candidates
                 semanticTask = Task(priority:.utility) { [weak self] in
                     guard let self else { return }
-                    await recommendations.prepareSemantic(candidates)
+                    await recommendations.prepareSemantic(semanticCandidates)
                     guard !Task.isCancelled, generation == token else { return }
                     await adaptRecommendationTail(token:token)
                 }

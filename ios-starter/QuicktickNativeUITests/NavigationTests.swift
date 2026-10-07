@@ -169,9 +169,6 @@ final class NavigationTests: XCTestCase {
         let like = app.buttons["immersive-Like"]
         XCTAssertTrue(like.waitForExistence(timeout: 10))
         let actions = ["Like", "Less", "Comments", "Download", "Mute"].map { app.buttons["immersive-\($0)"] }
-        let progress = app.otherElements["immersive-progress"]
-        XCTAssertTrue(progress.isHittable)
-        XCTAssertLessThanOrEqual(progress.frame.maxY, app.buttons["tab-Home"].frame.minY)
         for action in actions {
             XCTAssertTrue(action.isHittable)
             XCTAssertGreaterThanOrEqual(action.frame.width, 44)
@@ -179,6 +176,8 @@ final class NavigationTests: XCTestCase {
         }
         for index in 1..<actions.count { XCTAssertGreaterThan(actions[index].frame.minY, actions[index - 1].frame.maxY) }
         let progress = app.otherElements["immersive-progress"]
+        XCTAssertTrue(progress.isHittable)
+        XCTAssertLessThanOrEqual(progress.frame.maxY, app.buttons["tab-Home"].frame.minY)
         XCTAssertTrue(progress.exists)
         let before = like.frame
         let center = app.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.45))

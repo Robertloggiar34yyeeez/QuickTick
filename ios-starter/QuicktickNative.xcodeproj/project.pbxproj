@@ -5,6 +5,16 @@
 	};
 	"objectVersion" = "56";
 	"objects" = {
+		"B0DE261EAEEC004473441A01" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "file";
+			"path" = "QuicktickNative/TestsSupport/UITestClip.mp4";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"B0DE261EAEEC004473441A02" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "B0DE261EAEEC004473441A01";
+		};
 		"734399CC5ADF15F31FBB8FDF" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "text.xcconfig";
@@ -695,6 +705,7 @@
 			"buildActionMask" = "2147483647";
 			"files" = (
 				"3238D0253CD3CF7340AAF0BF",
+				"B0DE261EAEEC004473441A02",
 				"9E60231250AFB54880FB7BF6",
 				"FAC6CAA41D3E049244AD5EA3",
 				"E3C75BB0DE43FDF6F944EF6A",
@@ -1019,6 +1030,7 @@
 		"0D6E4079E36703EBD37C0072" = {
 			"isa" = "PBXGroup";
 			"children" = (
+				"B0DE261EAEEC004473441A01",
 				"734399CC5ADF15F31FBB8FDF",
 				"B4686A9D30CDA7DE4C3F2F33",
 				"6414AD7185FE22D4F0767C2B",

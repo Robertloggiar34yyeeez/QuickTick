@@ -10,23 +10,11 @@ actor UITestMediaFactory {
     func posts(sort: String) async throws -> [Post] {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("QuicktickMediaFixture", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let clip = folder.appendingPathComponent("clip.mp4")
-        if !FileManager.default.fileExists(atPath: clip.path) {
-            let writer = try AVAssetWriter(outputURL: clip, fileType: .mp4)
-            let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 180])
-            let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB, kCVPixelBufferWidthKey as String: 320, kCVPixelBufferHeightKey as String: 180, kCVPixelBufferCGImageCompatibilityKey as String: true])
-            writer.add(input); guard writer.startWriting() else { throw writer.error ?? URLError(.cannotCreateFile) }; writer.startSession(atSourceTime: .zero)
-            for frame in 0..<60 {
-                while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
-                var buffer: CVPixelBuffer?; CVPixelBufferCreate(kCFAllocatorDefault, 320, 180, kCVPixelFormatType_32ARGB, nil, &buffer)
-                guard let buffer else { throw URLError(.cannotCreateFile) }
-                CVPixelBufferLockBaseAddress(buffer, []);
-                if let context = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: 320, height: 180, bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue) {
-                    context.setFillColor(CGColor(red: CGFloat(frame) / 60, green: 0.2, blue: 0.65, alpha: 1)); context.fill(CGRect(x: 0,y: 0,width: 320,height: 180))
-                }
-                CVPixelBufferUnlockBaseAddress(buffer, []); guard adaptor.append(buffer, withPresentationTime: CMTime(value: Int64(frame), timescale: 20)) else { throw writer.error ?? URLError(.cannotCreateFile) }
-            }
-            input.markAsFinished(); await writer.finishWriting(); guard writer.status == .completed else { throw writer.error ?? URLError(.cannotCreateFile) }
+        // A checked-in H.264/AAC clip exercises real AVPlayer decoding without
+        // depending on a simulator video encoder or leaving partial MP4 files
+        // behind when a previous test launch is terminated.
+        guard let clip = Bundle.main.url(forResource: "UITestClip", withExtension: "mp4") else {
+            throw APIError.server("UI test video resource is missing")
         }
         let image = folder.appendingPathComponent("comic.jpg")
         if !FileManager.default.fileExists(atPath: image.path), let context = CGContext(data: nil,width: 320,height: 1600,bitsPerComponent: 8,bytesPerRow: 0,space: CGColorSpaceCreateDeviceRGB(),bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {

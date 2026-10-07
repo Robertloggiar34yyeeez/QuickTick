@@ -267,8 +267,8 @@ private struct ImmersiveItemView: View {
     private var timeline: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.3)).frame(height: scrubbing ? 6 : 3)
-                Capsule().fill(.white).frame(width: max(0, geo.size.width * progress), height: scrubbing ? 6 : 3)
+                Capsule().fill(.white.opacity(scrubbing ? 0.3 : 0.18)).frame(height: scrubbing ? 6 : 2)
+                Capsule().fill(.white.opacity(scrubbing ? 1 : 0.8)).frame(width: max(0, geo.size.width * progress), height: scrubbing ? 6 : 2)
                 Circle().fill(.white).frame(width: scrubbing ? 12 : 5, height: scrubbing ? 12 : 5)
                     .offset(x: max(0, min(geo.size.width - 6, geo.size.width * progress - 3)))
                 if scrubbing {
@@ -295,7 +295,7 @@ private struct ImmersiveItemView: View {
                     progress = min(1, max(0, progress + delta))
                     player?.seek(to: CMTime(seconds: duration * progress, preferredTimescale: 600))
                 }
-        }.frame(height: 44).padding(.horizontal, 12).background(.ultraThinMaterial)
+        }.frame(height: 44).padding(.horizontal, 12)
     }
     private func timeLabel(_ seconds: Double) -> String {
         let value = Int(max(0, seconds)); return String(format: "%d:%02d", value / 60, value % 60)

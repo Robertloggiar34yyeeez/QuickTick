@@ -69,7 +69,15 @@ final class NavigationTests: XCTestCase {
             XCUIDevice.shared.orientation = orientation
             // On a short landscape window the Home header can move media below
             // the viewport. Scroll it into view before asserting playback.
-            for _ in 0..<4 { if playback.isHittable { break }; app.swipeUp() }
+            let scroll = app.scrollViews.firstMatch
+            for _ in 0..<8 {
+                if playback.isHittable { break }
+                // Short drags avoid flinging past this small, native-size video.
+                let below = playback.frame.midY > app.frame.midY
+                let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: below ? 0.65 : 0.45))
+                let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: below ? 0.45 : 0.65))
+                start.press(forDuration: 0.05, thenDragTo: end)
+            }
             XCTAssertTrue(playback.isHittable)
             XCTAssertTrue(frame.waitForExistence(timeout:10))
             XCTAssertLessThanOrEqual(frame.frame.width,321)

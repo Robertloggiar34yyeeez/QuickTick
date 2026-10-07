@@ -215,10 +215,10 @@ private struct ImmersiveItemView: View {
             if !offline { store.recordImpression(post) }
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
-                if player?.timeControlStatus == .playing {
+                if player?.timeControlStatus == .playing || (gifURL != nil && playing) {
                     watched += 1
                     if !offline, watched - reportedWatch >= 10 {
-                        store.recordWatch(post, seconds: watched - reportedWatch, completion: 0)
+                        store.recordWatch(post, seconds: watched - reportedWatch, completion: progress)
                         reportedWatch = watched
                     }
                 }
@@ -234,7 +234,7 @@ private struct ImmersiveItemView: View {
         .onDisappear { endExposure(); player = nil; ready = false; gifURL = nil }
         .onChange(of: store.muted) { _, value in player?.isMuted = value }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
-            guard active, let item = notification.object as? AVPlayerItem, item === player?.currentItem else { return }
+            guard active, presentationActive, store.isForeground, let item = notification.object as? AVPlayerItem, item === player?.currentItem else { return }
             if !offline { store.recordComplete(post); store.recordReplay(post) }
             player?.seek(to: .zero); if playing { player?.play() }
         }
@@ -302,9 +302,6 @@ private struct ImmersiveItemView: View {
     }
     private func prepare() async {
         guard post.isImmersiveMedia else { return }
-        #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
-        #endif
         do {
             let url: URL
             if offline {
@@ -344,7 +341,7 @@ private struct ImmersiveItemView: View {
         let elapsed = Date().timeIntervalSince(started)
         if let player, player.currentItem?.status == .readyToPlay { store.saveResume(post.stableID, seconds: player.currentTime().seconds) }
         if !offline {
-            if watched - reportedWatch >= 2 { store.recordWatch(post, seconds: watched - reportedWatch, completion: 0) }
+            if watched - reportedWatch >= 2 { store.recordWatch(post, seconds: watched - reportedWatch, completion: progress) }
             if elapsed < 1.25 && !interacted { store.recordQuickSkip(post) }
         }
         watched = 0

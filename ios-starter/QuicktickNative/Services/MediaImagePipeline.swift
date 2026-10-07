@@ -37,18 +37,19 @@ actor MediaImagePipeline {
         misses += 1
         let data = try await data(url: url)
         try Task.checkCancellation()
+        if let cached = images[key] { hits += 1; touch(key); return cached }
         guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
               let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue, w > 0, h > 0 else { throw URLError(.cannotDecodeContentData) }
         let comic = comicPreview && h > w * 4
         var cg: CGImage?
-        if comic, let original = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
-           let top = original.cropping(to: CGRect(x: 0, y: 0, width: w, height: min(h, w * 1.5))) {
-            let outputWidth = min(bucket, Int(w))
-            if let context = CGContext(data: nil, width: outputWidth, height: Int(Double(outputWidth) * 1.5), bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-                context.interpolationQuality = .high
-                context.draw(top, in: CGRect(x: 0, y: 0, width: outputWidth, height: Int(Double(outputWidth) * 1.5))); cg = context.makeImage()
+        if comic {
+            // Bound the full-strip thumbnail before cropping; never decode the giant original for a card.
+            let scale = min(1, min(Double(bucket) / w, min(8192 / h, sqrt(2_000_000 / (w * h)))))
+            let edge = max(1, Int(max(w,h) * scale))
+            if let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: edge, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true] as CFDictionary) {
+                cg = thumbnail.cropping(to: CGRect(x:0,y:0,width:thumbnail.width,height:min(thumbnail.height,Int(Double(thumbnail.width) * 1.5))))
             }
         } else {
             cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: bucket, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
@@ -58,6 +59,12 @@ actor MediaImagePipeline {
         if images[key] == nil { images[key] = decoded; bytes += decoded.cost; touch(key) }
         while bytes > 32 * 1024 * 1024, let oldest = order.first { order.removeFirst(); if let old = images.removeValue(forKey: oldest) { bytes -= old.cost } }
         return decoded
+    }
+    func fullImage(url: URL) async throws -> DecodedMediaImage {
+        let bytes = try await data(url:url);try Task.checkCancellation()
+        guard let source = CGImageSourceCreateWithData(bytes as CFData,[kCGImageSourceShouldCache:false] as CFDictionary),
+              let image = CGImageSourceCreateImageAtIndex(source,0,[kCGImageSourceShouldCache:false] as CFDictionary) else { throw URLError(.cannotDecodeContentData) }
+        return DecodedMediaImage(image:image,nativeSize:CGSize(width:image.width,height:image.height),comic:true)
     }
     func data(url: URL) async throws -> Data {
         if url.isFileURL { return try Data(contentsOf: url) }

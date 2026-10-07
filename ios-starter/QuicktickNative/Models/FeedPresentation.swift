@@ -17,9 +17,9 @@ struct VisiblePostSelector {
 
 enum MediaSizing {
     static func size(native: CGSize?, aspect: CGFloat, available: CGSize) -> CGSize {
-        let ratio = max(0.1, min(10, aspect.isFinite ? aspect : 4 / 3))
+        let ratio = aspect.isFinite && aspect > 0 ? aspect : 4 / 3
         let wide = available.width > 600
-        let maxHeight = min(wide ? 620 : 560, max(180, available.height * 0.72))
+        let maxHeight = min(wide ? 620 : 560, max(1, available.height * 0.72))
         var width = min(available.width, wide ? 680 : available.width, maxHeight * ratio)
         if let native, native.width > 0 { width = min(width, native.width) }
         return CGSize(width: max(1, width), height: max(1, width / ratio))

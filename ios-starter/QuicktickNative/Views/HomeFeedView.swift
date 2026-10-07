@@ -48,7 +48,7 @@ struct HomeFeedView: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .onAppear { if !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
                 }
-            }.frame(maxWidth: 720).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
+            }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
         }
         .overlay(alignment: .bottomLeading) {
             Group {
@@ -76,6 +76,7 @@ struct HomeFeedView: View {
         .toolbarBackground(AppTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { Text("QuickTick").font(.subheadline.weight(.semibold)) }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 10) {
                     Menu { ForEach(Provider.allCases) { p in Button(p.displayName) { store.selectedProvider = p; Task { await store.refresh() } } } } label: {
@@ -130,3 +131,4 @@ private struct HomeVisibleFrames: PreferenceKey {
     static let defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, next in next }) }
 }
+

@@ -9,10 +9,12 @@ actor RecommendationEngine {
         let tags: Double
         let diversity: Double
         let seen: Double
+        let interestThemes: [String]
         let final: Double
     }
     private(set) var debugScores: [String: DebugScore] = [:]
     private(set) var rankLatencyMs = 0.0
+    func releaseSemanticModel() async { await semantic.releaseModel() }
     func prepareSemantic(_ posts: [Post]) async { await semantic.prepare(posts) }
 
 
@@ -245,12 +247,15 @@ actor RecommendationEngine {
         let vectors = await semantic.diversityVectors(candidates + recent)
         let weights = semantic.weights
         debugScores = [:]
+        let themes = Dictionary(uniqueKeysWithValues:Set(candidates.map { $0.provider.lowercased() }).map { source in
+            (source,positiveTermEntries(source:source,taste:taste,limit:3).map { $0.0 })
+        })
         var pool = candidates.filter { !isHardDisliked($0, taste: taste) }
             .enumerated()
              .map { entry in
                 let raw = score(entry.element, taste: taste, recent: recent, collaborativeScores: collaborativeScores)
-                let seen = profile(for: entry.element.provider.lowercased()).recentSeen.contains(entry.element.stableID) ? -1000.0 : 0
-                let tags = tanh((raw - seen) / 35) * 8
+                let seen = profile(for: entry.element.provider.lowercased()).recentSeen.contains(entry.element.stableID) ? -weights.seen : 0
+                let tags = tanh((raw - (seen == 0 ? 0 : -1000)) / 35) * weights.tag
                 let semantic = semanticScores[entry.element.stableID] ?? SemanticScore()
                 return (post: entry.element, base: tags + semantic.total(weights) + seen - Double(entry.offset) * 0.002, tags: tags, seen: seen)
             }
@@ -268,21 +273,21 @@ actor RecommendationEngine {
                 let candidateTerms = terms(for: entry.post)
                 let overlap = candidateTerms.filter(contextTerms.contains).count
                 let immediate = candidateTerms.filter(lastTerms.contains).count
-                var diversity = min(8, Double(overlap) * 0.5 + Double(immediate) * 1.0)
+                var diversity = min(weights.tagDiversityCap, Double(overlap) * weights.overlap + Double(immediate) * weights.immediate)
                 if let vector = vectors[entry.post.stableID] {
                     let similar = context.compactMap { vectors[$0.stableID] }.map { SemanticRecommender.cosine(vector, $0) }.max() ?? 0
-                    diversity += max(0, similar - 0.70) * 10
-                    if similar > 0.94 { diversity += 8 }
+                    diversity += max(0, similar - 0.70) * weights.semanticDiversity
+                    if similar > 0.94 { diversity += weights.nearDuplicate }
                 }
-                if let creator = entry.post.creator, context.suffix(3).contains(where: { $0.creator == creator }) { diversity += 3 }
+                if let creator = entry.post.creator, context.suffix(3).contains(where: { $0.creator == creator }) { diversity += weights.creatorRepeat }
                 var value = entry.base - diversity
                 // Every eighth slot favors an unseen lower-affinity candidate, bounded by negative preferences.
-                if chosen.count % 8 == 7, entry.seen == 0 { value += 2 * (1 - (semanticScores[entry.post.stableID]?.recent ?? 0)) }
-                if immediate >= 2 { value -= 9 }
-                if immediate >= 3 { value -= 15 }
-                if overlap >= 4 { value -= 11 }
-                if overlap >= 6 { value -= 18 }
-                debugScores[entry.post.stableID] = DebugScore(semantic: semanticScores[entry.post.stableID] ?? SemanticScore(), tags: entry.tags, diversity: diversity, seen: entry.seen, final: value)
+                if chosen.count % 8 == 7, entry.seen == 0 { value += weights.exploration * (1 - (semanticScores[entry.post.stableID]?.recent ?? 0)) }
+                if immediate >= 2 { value -= weights.immediateTwo }
+                if immediate >= 3 { value -= weights.immediateThree }
+                if overlap >= 4 { value -= weights.overlapFour }
+                if overlap >= 6 { value -= weights.overlapSix }
+                debugScores[entry.post.stableID] = DebugScore(semantic: semanticScores[entry.post.stableID] ?? SemanticScore(), tags: entry.tags, diversity: diversity, seen: entry.seen, interestThemes: themes[entry.post.provider.lowercased()] ?? [], final: value)
                 if value > bestScore { bestScore = value; bestIndex = index }
             }
             chosen.append(pool.remove(at: bestIndex).post)

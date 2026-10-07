@@ -6,6 +6,7 @@ import UIKit
 struct GIFFrames: @unchecked Sendable {
     let images: [UIImage]
     let duration: Double
+    let nativeSize: CGSize
     static func decode(_ data: Data) -> GIFFrames? {
         guard data.count <= 32 * 1024 * 1024, let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let count = CGImageSourceGetCount(source)
@@ -29,8 +30,15 @@ struct GIFFrames: @unchecked Sendable {
             }
             if let image = decoded[index] { images.append(image) }
         }
-        return GIFFrames(images: images, duration: duration)
+        let properties = CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [CFString:Any]
+        let size = CGSize(width:(properties?[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 360,height:(properties?[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 360)
+        return GIFFrames(images: images, duration: duration, nativeSize:size)
     }
+}
+
+private actor GIFFrameDecoder {
+    static let shared = GIFFrameDecoder()
+    func decode(_ data: Data) throws -> GIFFrames? { try Task.checkCancellation(); return GIFFrames.decode(data) }
 }
 
 struct AnimatedGIFSurface: View {
@@ -52,9 +60,9 @@ struct AnimatedGIFSurface: View {
         }.task(id: url) {
             do {
                 let data = try await MediaImagePipeline.shared.data(url: url)
-                let decoded = await Task.detached(priority: .userInitiated) { GIFFrames.decode(data) }.value
+                let decoded = try await GIFFrameDecoder.shared.decode(data)
                 guard !Task.isCancelled else { return }
-                frames = decoded; failed = decoded == nil; if let size = decoded?.images.first?.size { onSize?(size) }
+                frames = decoded; failed = decoded == nil; if let size = decoded?.nativeSize { onSize?(size) }
             } catch { if !Task.isCancelled { failed = true } }
         }
     }

@@ -13,6 +13,9 @@ struct QuicktickNativeApp: App {
                 .environmentObject(store)
                 .preferredColorScheme(.dark)
                 .task { await store.bootstrap() }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                    store.handleMemoryPressure()
+                }
                 .onChange(of: scenePhase) { _, phase in store.isForeground = phase == .active; if phase == .active { Task { await store.syncWhenActive() } } }
         }
     }

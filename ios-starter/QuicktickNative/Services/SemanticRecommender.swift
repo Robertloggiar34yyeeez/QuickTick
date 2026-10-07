@@ -48,7 +48,10 @@ struct SemanticInterest: Codable, Sendable {
     var updated = Date()
 }
 struct SemanticRankWeights: Sendable {
-    var recent = 10.0, longTerm = 6.0, negative = 12.0, creator = 2.0, freshness = 1.5, semanticDiversity = 3.0
+    var recent = 10.0, longTerm = 6.0, negative = 12.0, creator = 2.0, freshness = 1.5
+    var tag = 8.0, seen = 1000.0, semanticDiversity = 10.0, nearDuplicate = 8.0, creatorRepeat = 3.0, exploration = 2.0
+    var tagDiversityCap = 8.0, overlap = 0.5, immediate = 1.0
+    var immediateTwo = 9.0, immediateThree = 15.0, overlapFour = 11.0, overlapSix = 18.0
 }
 struct SemanticScore: Sendable {
     var recent: Double = 0, longTerm: Double = 0, negative: Double = 0, creator: Double = 0, freshness: Double = 0
@@ -64,7 +67,7 @@ private struct SemanticDiskState: Codable {
 
 /// Serial utility work, CPU/Neural Engine only: never uses the GPU competing with AV playback.
 actor SemanticRecommender {
-    let weights = SemanticRankWeights()
+    let weights: SemanticRankWeights
     private var disk = SemanticDiskState()
     private var restored = false
     private var model: MLModel?
@@ -76,7 +79,8 @@ actor SemanticRecommender {
     private(set) var cacheHits = 0
     private(set) var cacheMisses = 0
     private let directory: URL
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil, weights: SemanticRankWeights = SemanticRankWeights(), enabled: Bool = true) {
+        self.weights = weights; self.unavailable = !enabled
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("QuicktickSemantic", isDirectory: true)
     }
     nonisolated static func text(for post: Post) -> String {
@@ -105,6 +109,7 @@ actor SemanticRecommender {
         restore(); let key = key(post)
         if let vector = disk.embeddings[key] { cacheHits += 1; return vector }
         guard !Self.text(for: post).trimmingCharacters(in: CharacterSet(charactersIn: ". ")).isEmpty else { return [] }
+        guard !ProcessInfo.processInfo.isLowPowerModeEnabled, ProcessInfo.processInfo.thermalState.rawValue < ProcessInfo.ThermalState.serious.rawValue else { throw CancellationError() }
         try loadModel(); guard let model, let tokenizer else { return [] }
         let input = tokenizer.encode(Self.text(for: post)); let start = Date()
         let ids = try MLMultiArray(shape: [1,96], dataType: .int32); let mask = try MLMultiArray(shape: [1,96], dataType: .int32)
@@ -184,6 +189,7 @@ actor SemanticRecommender {
     static func blend(_ old: [Float], _ new: [Float], alpha: Float) -> [Float] {
         guard old.count == new.count else { return new }; return zip(old,new).map { $0 * (1-alpha) + $1 * alpha }
     }
+    func releaseModel() { model = nil; tokenizer = nil }
     func reset() { disk = SemanticDiskState(); restored = true; persist() }
     private func persist() {
         do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true); let data = try JSONEncoder().encode(disk); try data.write(to: directory.appendingPathComponent("state.json"), options: .atomic); changes = 0 }

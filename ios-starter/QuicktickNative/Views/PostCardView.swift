@@ -21,10 +21,11 @@ struct PostCardView: View {
     @State private var playbackError: String?
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
+    @State private var playbackOwner = "home"
     private var mediaSize: CGSize { MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: (post.nativeSize.map { post.type.lowercased() == "image" && $0.height > $0.width * 4 ? 2 / 3 : $0.width / $0.height }) ?? mediaAspect, available: available) }
     var body: some View {
         VStack(spacing: 0) {
-            media.frame(width: mediaSize.width, height: mediaSize.height).clipped().accessibilityIdentifier("post-media-\(post.stableID)")
+            media.frame(width: mediaSize.width, height: mediaSize.height).clipped()
             if let playbackError { Text(playbackError).font(.caption).foregroundStyle(.orange).padding(8) }
             VStack(spacing: 8) {
                 HStack {
@@ -47,11 +48,11 @@ struct PostCardView: View {
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl) }
             .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision)") {
-                guard store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground else { stopPlayback(); return }
+                guard store.inlinePlaybackID == post.stableID, (store.activeTab == 0 || store.activeTab == 2), store.isForeground else { stopPlayback(); return }
                 await preparePlayback()
             }
             .onDisappear { stopPlayback(); if store.inlinePlaybackID == post.stableID { store.inlinePlaybackID = nil } }
-            .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Just(AVPlayer.TimeControlStatus.paused).eraseToAnyPublisher()) { playing = $0 == .playing }
+            .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Just(AVPlayer.TimeControlStatus.paused).eraseToAnyPublisher()) { if player != nil { playing = $0 == .playing } }
             .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Just(AVPlayerItem.Status.unknown).eraseToAnyPublisher()) { status in
                 if status == .failed { playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."; playing = false; store.players.release(post.stableID) }
             }
@@ -60,7 +61,7 @@ struct PostCardView: View {
             .onChange(of: store.muted) { _, value in player?.isMuted = value }
             .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
                 guard let item = note.object as? AVPlayerItem, item === player?.currentItem else { return }
-                if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground { store.recordComplete(post); store.recordReplay(post); player?.seek(to: .zero); if playing { player?.play() } }
+                if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground { store.recordComplete(post); store.recordReplay(post); player?.seek(to: .zero); if store.pausedPlaybackID != post.stableID { player?.play() } }
             }
     }
 
@@ -70,7 +71,7 @@ struct PostCardView: View {
                 ZStack {
                     PosterView(url: post.cardPreviewURL)
                     NativePlayerSurface(player: player, fill: false, ready: $ready).opacity(ready ? 1 : 0)
-                }.aspectRatio(mediaAspect, contentMode: .fit)
+                }.aspectRatio(mediaSize.width / max(1,mediaSize.height), contentMode: .fit)
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true, onSize: { nativeSize = $0; mediaAspect = $0.width / max(1,$0.height) })
             } else if post.type.lowercased() == "image" {
@@ -102,15 +103,24 @@ struct PostCardView: View {
         .onTapGesture { if !post.isImmersiveMedia { fullImage = true } }
     }
     private func preparePlayback() async {
+        playbackOwner = store.activeTab == 2 ? "favorites" : "home"
         preparing = true; playbackError = nil; playing = false
         defer { preparing = false; reportWatch() }
         do {
             let resolved = try await store.resolver.resolve(post)
             guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, let url = URL(string: resolved.mediaUrl) else { return }
-            if post.type.lowercased() == "gif" { gifURL = url; playing = store.pausedPlaybackID != post.stableID; return }
+            if post.type.lowercased() == "gif" {
+                gifURL = url; playing = store.pausedPlaybackID != post.stableID; preparing = false
+                if playing, store.activeTab == 0 { store.recordImpression(post) }
+                while !Task.isCancelled, store.inlinePlaybackID == post.stableID, (store.activeTab == 0 || store.activeTab == 2), store.isForeground {
+                    do { try await Task.sleep(for: .seconds(1)) } catch { break }
+                    if playing, store.activeTab == 0 { watchSeconds += 1; if watchSeconds >= 10 { reportWatch() } }
+                }
+                return
+            }
             let p: AVPlayer
             if store.pausedPlaybackID == post.stableID { p = store.players.player(for: post.stableID, url: url); p.pause() }
-            else { p = store.players.activate(key: post.stableID, url: url, muted: store.muted) }
+            else { p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) }
             player = p; preparing = false
             // Start playback first; size discovery adjusts the card independently.
             if let asset = p.currentItem?.asset, let track = try? await asset.loadTracks(withMediaType: .video).first,
@@ -118,10 +128,10 @@ struct PostCardView: View {
                 let display = size.applying(transform)
                 if !Task.isCancelled, store.inlinePlaybackID == post.stableID, abs(display.height) > 0 { nativeSize = CGSize(width: abs(display.width), height: abs(display.height)); mediaAspect = abs(display.width / display.height) }
             }
-            if store.pausedPlaybackID != post.stableID { store.recordImpression(post) }
-            while !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground {
+            if store.pausedPlaybackID != post.stableID, store.activeTab == 0 { store.recordImpression(post) }
+            while !Task.isCancelled, store.inlinePlaybackID == post.stableID, (store.activeTab == 0 || store.activeTab == 2), store.isForeground {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
-                if p.timeControlStatus == .playing {
+                if p.timeControlStatus == .playing, store.activeTab == 0 {
                     watchSeconds += 1
                     let length = p.currentItem?.duration.seconds ?? 0
                     if length.isFinite, length > 0 { completion = min(1,max(0,p.currentTime().seconds / length)) }
@@ -134,7 +144,7 @@ struct PostCardView: View {
         if watchSeconds >= 2 { store.recordWatch(post, seconds: watchSeconds, completion: completion) }
         watchSeconds = 0
     }
-    private func stopPlayback() { store.players.pause(post.stableID, owner: "home"); player = nil; gifURL = nil; ready = false; playing = false }
+    private func stopPlayback() { store.players.pause(post.stableID, owner: playbackOwner); player = nil; gifURL = nil; ready = false; playing = false }
 }
 
 private struct FullComicView: View {
@@ -155,25 +165,10 @@ private struct FullComicView: View {
             }.buttonStyle(.plain).padding(12).accessibilityLabel("Close full image")
         }.task {
             do {
-                #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
-                    image = UIGraphicsImageRenderer(size: CGSize(width: 300, height: 1500)).image { context in
-                        UIColor.systemIndigo.setFill(); context.fill(CGRect(x: 0, y: 0, width: 300, height: 1500))
-                    }
-                    return
-                }
-                #endif
                 guard let location = URL(string: url, relativeTo: QuicktickAPIClient.configuredBaseURL())?.absoluteURL else { throw URLError(.badURL) }
-                let data: Data
-                if location.isFileURL { data = try Data(contentsOf: location) }
-                else {
-                    let (body, response) = try await URLSession.shared.data(from: location)
-                    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
-                    data = body
-                }
-                guard !Task.isCancelled, let source = CGImageSourceCreateWithData(data as CFData, nil),
-                      let full = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary) else { throw APIError.server("Full image could not be decoded.") }
-                image = UIImage(cgImage: full)
+                let full = try await MediaImagePipeline.shared.fullImage(url: location)
+                guard !Task.isCancelled else { return }
+                image = UIImage(cgImage: full.image)
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
     }

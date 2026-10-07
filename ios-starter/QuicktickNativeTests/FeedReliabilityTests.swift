@@ -77,6 +77,23 @@ final class FeedReliabilityTests: XCTestCase {
         let hits = await pipeline.hits;XCTAssertEqual(hits,1)
         print("QUICKTICK_METRIC image cold_ms=\(cold*1000) warm_ms=\(warm*1000)")
     }
+    func testLargeComicPreviewIsBoundedAndKeepsNativeMetadata() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".png")
+        defer { try? FileManager.default.removeItem(at:url) }
+        let context = CGContext(data:nil,width:600,height:12000,bitsPerComponent:8,bytesPerRow:0,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let destination = CGImageDestinationCreateWithURL(url as CFURL,"public.png" as CFString,1,nil)!
+        CGImageDestinationAddImage(destination,context.makeImage()!,nil);CGImageDestinationFinalize(destination)
+        let image = try await MediaImagePipeline().image(raw:url.absoluteString,pixels:512,comicPreview:true)
+        XCTAssertTrue(image.comic);XCTAssertEqual(image.nativeSize,CGSize(width:600,height:12000))
+        XCTAssertLessThanOrEqual(image.image.width,512);XCTAssertLessThan(image.cost,2_000_000)
+        XCTAssertEqual(Double(image.image.width)/Double(image.image.height),2.0/3,accuracy:0.01)
+    }
+    func testSizingPreservesExtremeAspectAndShortWindow() {
+        let wide = MediaSizing.size(native:CGSize(width:4000,height:200),aspect:20,available:CGSize(width:900,height:400))
+        XCTAssertEqual(wide.width/wide.height,20,accuracy:0.001)
+        let short = MediaSizing.size(native:nil,aspect:1,available:CGSize(width:900,height:100))
+        XCTAssertLessThanOrEqual(short.height,72)
+    }
     func testDirectProviderMediaURLIsAbsolute() async throws {
         let resolver = MediaResolver(api:QuicktickAPIClient(baseURL:URL(string:"https://example.invalid")))
         let result = try await resolver.resolve(Post(key:"rule34:1",id:"1",provider:"Rule34",mediaUrl:"/sample.mp4",type:"video"))
@@ -86,6 +103,17 @@ final class FeedReliabilityTests: XCTestCase {
         let tokenizer = WordPieceTokenizer(vocabulary:["[PAD]":0,"[CLS]":101,"[SEP]":102,"[UNK]":100,"race":1,"##car":2,",":3,"aero":4])
         let encoded = tokenizer.encode("Racecar, Áero",length:8)
         XCTAssertEqual(encoded.ids,[101,1,2,3,4,102,0,0]);XCTAssertEqual(encoded.mask,[1,1,1,1,1,1,0,0])
+    }
+    func testUnavailableSemanticModelRetainsLocalKeywordFeed() async {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let engine = RecommendationEngine(semantic:SemanticRecommender(directory:folder,enabled:false))
+        let liked = Post(key:"liked",id:"1",provider:"rule34",tags:["engineering"])
+        let related = Post(key:"related",id:"2",provider:"rule34",tags:["engineering"])
+        let other = Post(key:"other",id:"3",provider:"rule34",tags:["baking"])
+        await engine.record(.like,post:liked)
+        let result = await engine.rank([other,related],taste:TasteChoice(),recent:[])
+        XCTAssertEqual(result.first?.stableID,"related");XCTAssertEqual(result.count,2)
     }
     func testActualBGEMicroRecognizesNonMatchingKeywordsAndCaches() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -99,6 +127,9 @@ final class FeedReliabilityTests: XCTestCase {
         await semantic.record(.like,post:interest)
         let scores = await semantic.scores([related,unrelated]);XCTAssertGreaterThan(scores["related"]!.recent,scores["unrelated"]!.recent)
         _ = try await semantic.embed(interest);let hits = await semantic.cacheHits;XCTAssertGreaterThanOrEqual(hits,2)
+        let restored = SemanticRecommender(directory:folder,enabled:false)
+        let persisted = try await restored.embed(interest);XCTAssertEqual(persisted,a)
+        let restoredHits = await restored.cacheHits;XCTAssertEqual(restoredHits,1)
         let load = await semantic.modelLoadMs;let warm = await semantic.embeddingMs
         print("QUICKTICK_METRIC bge_load_ms=\(load) embedding_ms=\(warm)")
     }

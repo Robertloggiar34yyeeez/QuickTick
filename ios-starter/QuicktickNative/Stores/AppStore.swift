@@ -142,10 +142,17 @@ final class AppStore: ObservableObject {
         } catch { /* syncNow exposes the error in Settings without hiding the feed. */ }
     }
 
+    func handleMemoryPressure() {
+        semanticTask?.cancel()
+        players.retain(Set(players.activeKey.map { [$0] } ?? []))
+        Task { await MediaImagePipeline.shared.clearDecoded(); await recommendations.releaseSemanticModel() }
+    }
+
     private func invalidateFeed() {
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel(); semanticTask = nil
         generation = UUID(); feedRevision = generation; posts = []; encountered = []; nextPage = 1
         hasMore = true; isLoading = false; lastError = nil; inlinePlaybackID = nil; players.releaseAll()
+        learnedInterests = []; recommendationMode = "Local 0.6.24"
     }
 
     func refresh(immersive: Bool = false, trainSearch: Bool = false) async {
@@ -217,9 +224,11 @@ final class AppStore: ObservableObject {
             // Do not reorder a playing feed after background recommendations arrive.
             if !immersive, inlinePlaybackID == nil, nextPage == 2, posts.map(\.stableID) == immediate.map(\.stableID) { posts = ranked }
             recommendationMode = mode
-            learnedInterests = await recommendations.positiveTerms(provider: provider, taste: taste)
+            let interests = await recommendations.positiveTerms(provider: provider, taste: taste)
+            guard generation == token, !Task.isCancelled else { return }
+            learnedInterests = interests
             await persistRecommendations()
-            if !restoreFailed { lastError = nil }
+            if generation == token, !restoreFailed { lastError = nil }
         } catch {
             if generation == token, !Task.isCancelled { lastError = error.localizedDescription }
         }
@@ -237,8 +246,6 @@ final class AppStore: ObservableObject {
         defer { if token == generation { isLoading = false } }
         guard !Task.isCancelled, hasMore else { return }
         let provider = selectedProvider
-        isLoading = true
-        defer { if token == generation { isLoading = false } }
         do {
             let parsed = QueryParser.parse(queryText)
             lastError = nil
@@ -253,6 +260,15 @@ final class AppStore: ObservableObject {
             let ranked = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(candidates, taste: tasteChoice(for: provider), recent: posts) : candidates
             guard generation == token, !Task.isCancelled else { return }
             posts.append(contentsOf: ranked)
+            if feedSort == "recommended" {
+                semanticTask?.cancel()
+                semanticTask = Task(priority:.utility) { [weak self] in
+                    guard let self else { return }
+                    await recommendations.prepareSemantic(candidates)
+                    guard !Task.isCancelled, generation == token else { return }
+                    await adaptRecommendationTail(token:token)
+                }
+            }
             if !hasMore || (!immersive && !ranked.isEmpty) || (immersive && ranked.contains(where: \.isImmersiveMedia)) { break }
             if attempt == 4 { lastError = "No new clips in the last five pages. Tap Load more to continue." }
             }
@@ -286,6 +302,7 @@ final class AppStore: ObservableObject {
     func recordWatch(_ post: Post, seconds: Double, completion: Double) { Task { await record(.watched(seconds: seconds, completion: completion), post: post, bridgeType: "watch", value: seconds) } }
 
     private func adaptRecommendationTail(token: UUID) async {
+        guard activeTab == 0 else { return }
         let source = posts; let active = inlinePlaybackID
         // Freeze everything through the visible post: engagement never moves the current card.
         let prefixCount = active.flatMap { id in source.firstIndex(where: { $0.stableID == id }).map { $0 + 1 } } ?? 0
@@ -365,7 +382,9 @@ final class AppStore: ObservableObject {
 
     private func persistRecommendations() async {
         await recommendationPersistence.save(await recommendations.snapshot())
-        learnedInterests = await recommendations.positiveTerms(provider: selectedProvider, taste: tasteChoice(for: selectedProvider))
+        let provider = selectedProvider; let token = generation
+        let interests = await recommendations.positiveTerms(provider: provider, taste: tasteChoice(for: provider))
+        if generation == token, selectedProvider == provider { learnedInterests = interests }
     }
 
     func setTaste(into: [String], notInto: [String]) {

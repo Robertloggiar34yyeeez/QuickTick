@@ -75,6 +75,16 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(VisiblePostSelector.select(frames: frames, viewport: viewport, current: nil, eligible: ["video"]), "video")
         XCTAssertNil(VisiblePostSelector.select(frames: frames, viewport: viewport, current: "image", eligible: []))
     }
+    func testRotationReleasesPeripheralAnchorAndInitialTabletPlaybackStartsAtFirstCard() {
+        let portrait = CGRect(x: 0, y: 0, width: 402, height: 700)
+        let frames = ["first": CGRect(x: 41, y: 220, width: 320, height: 280), "next": CGRect(x: 41, y: 506, width: 320, height: 280)]
+        XCTAssertEqual(VisiblePostSelector.select(frames: frames, viewport: portrait, current: "next"), "first")
+        let nearby = ["first": CGRect(x: 41, y: 100, width: 320, height: 280), "next": CGRect(x: 41, y: 386, width: 320, height: 280)]
+        XCTAssertEqual(VisiblePostSelector.select(frames: nearby, viewport: portrait, current: "next"), "next")
+        let tablet = CGRect(x: 0, y: 0, width: 1024, height: 1200)
+        let bothVisible = ["first": CGRect(x: 352, y: 220, width: 320, height: 280), "next": CGRect(x: 352, y: 506, width: 320, height: 280)]
+        XCTAssertEqual(VisiblePostSelector.select(frames: bothVisible, viewport: tablet, current: nil), "first")
+    }
     @MainActor func testPlayerPoolChangesURLForSameIdentityAndPausesOnTabAndBackground() {
         let store = AppStore();let pool = store.players
         let a = URL(fileURLWithPath: "/tmp/a.mp4"), b = URL(fileURLWithPath: "/tmp/b.mp4")

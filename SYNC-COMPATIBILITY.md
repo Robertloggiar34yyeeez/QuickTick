@@ -57,3 +57,10 @@ Downloads are intentionally not part of v1 cloud sync. Do not add local paths or
 - Preferences/onboarding: newer `preferences.updatedAt` wins.
 
 Use `reference-tests/sync-vector-v1.json` as a deterministic cross-language test vector.
+
+## Native Sync reliability (build 6)
+
+- Saving provider access settings schedules an encrypted cloud upload using the connected Sync ID, even when Rule34 credentials are not remembered locally.
+- Older schema-v1 records may omit favorite metadata or optional provider/exclusion/preference sections. Missing sections use empty defaults; existing fields retain strict decoding and unsupported schema versions fail before the connected identity changes.
+- Secrets remain in Keychain or the in-memory profile; the ordinary state file excludes credentials and sessions.
+- Regression coverage includes automatic upload after saving access, legacy-v1 login restoration, unsupported wire-version rejection, crypto interoperability and UI field hydration.

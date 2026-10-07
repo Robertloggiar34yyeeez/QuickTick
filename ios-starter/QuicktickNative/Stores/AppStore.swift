@@ -37,7 +37,7 @@ final class AppStore: ObservableObject {
     private var refreshFlight: Task<Void, Never>?
     private var pageFlight: Task<Void, Never>?
     private var local = LocalAppState()
-    private let localStorage = LocalStateStore()
+    private let localStorage: LocalStateStore
     @Published private(set) var syncStatus = "Not yet synced"
     @Published private(set) var syncFailed = false
     @Published private(set) var isSyncing = false
@@ -57,7 +57,8 @@ final class AppStore: ObservableObject {
     lazy var downloads = DownloadManager(resolver: resolver)
     lazy var sync = QuicktickSyncService(api: api)
 
-    init(api: QuicktickAPIClient = QuicktickAPIClient()) {
+    init(api: QuicktickAPIClient = QuicktickAPIClient(), localStorage: LocalStateStore = LocalStateStore()) {
+        self.localStorage = localStorage
         self.api = api
         self.recommendationBridge = RecommendationBridge(api: api)
     }
@@ -112,7 +113,7 @@ final class AppStore: ObservableObject {
         let canonical = try QuicktickSyncCrypto.parse(value).full
         if let flight = syncFlight { _ = try? await flight.value }
         guard !isSyncing else { throw APIError.server("Sync is already running. Please wait.") }
-        isSyncing = true; syncFailed = false; syncStatus = "Checking cloud profileâ€¦"
+        isSyncing = true; syncFailed = false; syncStatus = "Checking cloud profile…"
         defer { isSyncing = false }
         do {
             // Verify the server response and decrypt before replacing a working identity.
@@ -122,7 +123,7 @@ final class AppStore: ObservableObject {
             syncTask?.cancel()
             if let remote { try await applySyncSnapshot(remote) }
             await recommendationBridge.clearBackoff()
-            syncStatus = "Saving merged profileâ€¦"
+            syncStatus = "Saving merged profile…"
             let revision = syncRevision
             try await sync.push(syncID: canonical, snapshot: currentSnapshot())
             syncStatus = remote == nil ? "Cloud profile created. Use this same ID on your other devices." : "Cloud profile merged and synced."
@@ -424,6 +425,7 @@ final class AppStore: ObservableObject {
             local.snapshot.pornhub.auth.session = session
             if touch { local.snapshot.rule34.updatedAt = timestamp(); local.snapshot.pornhub.updatedAt = timestamp() }
             persistLocal()
+            if touch, !syncID.isEmpty { queueSync() }
         } catch { lastError = error.localizedDescription }
     }
 
@@ -432,7 +434,7 @@ final class AppStore: ObservableObject {
         guard !isSyncing else { throw APIError.server("Sync is already running. Please wait.") }
         let identity = syncID
         _ = try QuicktickSyncCrypto.parse(identity)
-        isSyncing = true; syncFailed = false; syncStatus = "Syncingâ€¦"
+        isSyncing = true; syncFailed = false; syncStatus = "Syncing…"
         let flight = Task { @MainActor in
             let (remote, _) = try await self.sync.pull(syncID: identity)
             guard self.syncID == identity else { throw CancellationError() }

@@ -28,6 +28,19 @@ final class SyncMergeTests: XCTestCase {
         XCTAssertTrue(merged.preferences.value.done)
         XCTAssertEqual(merged.favoriteMeta["rule34:1"]?.updatedAt, 200)
     }
+    func testLegacyV1ProfileRestoresCredentialsWithoutOptionalSections() throws {
+        let wire = Data(#"{"version":1,"updatedAt":400,"rule34":{"updatedAt":300,"credentials":{"userId":"synthetic-user","apiKey":"synthetic-key","remember":false}}}"#.utf8)
+        let remote = try JSONDecoder().decode(QuicktickSyncSnapshot.self, from: wire)
+        let merged = try QuicktickSyncSnapshot.empty.merging(remote)
+        XCTAssertEqual(merged.rule34.credentials.userId, "synthetic-user")
+        XCTAssertEqual(merged.rule34.credentials.apiKey, "synthetic-key")
+        XCTAssertFalse(merged.rule34.credentials.remember)
+        XCTAssertTrue(merged.favoriteMeta.isEmpty)
+        XCTAssertEqual(merged.preferences.updatedAt, 0)
+    }
+    func testFutureWireSchemaFailsBeforeIdentityCanBeReplaced() {
+        XCTAssertThrowsError(try JSONDecoder().decode(QuicktickSyncSnapshot.self, from: Data(#"{"version":2}"#.utf8)))
+    }
     func testRejectsFutureSchema() {
         var remote = QuicktickSyncSnapshot.empty; remote.version = 2
         XCTAssertThrowsError(try QuicktickSyncSnapshot.empty.merging(remote))

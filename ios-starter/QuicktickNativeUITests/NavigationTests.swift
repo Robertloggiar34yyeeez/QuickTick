@@ -1,6 +1,13 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+    }
+    override func tearDownWithError() throws {
+        XCUIDevice.shared.orientation = .portrait
+    }
     @MainActor func testFourTabsSettingsAndScrollToTop() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
@@ -60,7 +67,11 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(frame.frame.width / frame.frame.height,320.0 / 180,accuracy:0.05)
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
             XCUIDevice.shared.orientation = orientation
-            XCTAssertTrue(playback.waitForExistence(timeout:5))
+            // On a short landscape window the Home header can move media below
+            // the viewport. Scroll it into view before asserting playback.
+            for _ in 0..<4 { if playback.isHittable { break }; app.swipeUp() }
+            XCTAssertTrue(playback.isHittable)
+            XCTAssertTrue(frame.waitForExistence(timeout:10))
             XCTAssertLessThanOrEqual(frame.frame.width,321)
             let capture = XCTAttachment(screenshot:app.screenshot());capture.name = "Adaptive native media \(orientation.rawValue)";capture.lifetime = .keepAlways;add(capture)
         }
@@ -72,7 +83,7 @@ final class NavigationTests: XCTestCase {
 
     @MainActor func testImmersiveRailSnapsAndDoubleTapLikes() {
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing", "--compact-ui-testing"]; app.launch()
+        app.launchArguments = ["--ui-testing"]; app.launch()
         app.buttons["tab-Immersive"].tap()
         let like = app.buttons["immersive-Like"]
         XCTAssertTrue(like.waitForExistence(timeout: 10))
@@ -101,7 +112,7 @@ final class NavigationTests: XCTestCase {
 
     @MainActor func testTagsHiddenUntilRequestedAndActionsHaveRoom() {
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing", "--compact-ui-testing"]; app.launch()
+        app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.buttons["View tags"].firstMatch.waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["#test_tag"].exists)
         let labels = ["Like", "Less", "Download", "Comments"]
@@ -140,8 +151,10 @@ final class NavigationTests: XCTestCase {
         let key = app.secureTextFields["Rule34 API key"]
         XCTAssertNotEqual(key.value as? String, "Rule34 API key")
         XCTAssertFalse((key.value as? String ?? "").isEmpty)
-        app.swipeUp()
-        XCTAssertEqual(app.textFields["Pornhub username"].value as? String, "synced-test-name")
+        let syncedName = app.textFields["Pornhub username"]
+        for _ in 0..<5 { if syncedName.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(syncedName.waitForExistence(timeout:5))
+        XCTAssertEqual(syncedName.value as? String, "synced-test-name")
         let session = app.secureTextFields["Supported Pornhub session"]
         XCTAssertNotEqual(session.value as? String, "Supported Pornhub session")
         let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Synced access fields (synthetic data)"; screenshot.lifetime = .keepAlways; add(screenshot)

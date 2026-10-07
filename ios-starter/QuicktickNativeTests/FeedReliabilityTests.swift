@@ -20,6 +20,13 @@ private final class FeedModeProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 final class FeedReliabilityTests: XCTestCase {
+    @MainActor func testLazyPaginationDoesNotFetchBeforeInitialRefresh() async {
+        let store = AppStore()
+        await store.loadMore()
+        XCTAssertTrue(store.posts.isEmpty)
+        XCTAssertNil(store.lastError)
+        XCTAssertFalse(store.isLoading)
+    }
     @MainActor func testModeChangeInvalidatesPlaybackAndObsoleteRecommendationResult() async throws {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
         let session = URLSession(configuration: config);defer { session.invalidateAndCancel() }

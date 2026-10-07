@@ -65,6 +65,7 @@ final class AppStore: ObservableObject {
     func bootstrap() async {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+            pageFlight?.cancel(); hasMore = false; lastError = nil
             if ProcessInfo.processInfo.arguments.contains("--ui-testing-sync-login") { syncID = UITestSyncSupport.syncID }
             tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true)
             posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []
@@ -235,7 +236,9 @@ final class AppStore: ObservableObject {
     }
 
     func loadMore(immersive: Bool = false) async {
-        guard !isLoading, hasMore else { return }
+        // The initial page belongs to bootstrap/refresh. Lazy footer appearance
+        // must not race credential restoration or start a second page-one request.
+        guard !posts.isEmpty, !isLoading, hasMore else { return }
         // Reserve loading synchronously, so multiple lazy-cell callbacks share one page request.
         isLoading = true
         let flight = Task { await performLoadMore(immersive: immersive) }; pageFlight = flight

@@ -69,6 +69,14 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(VisiblePostSelector.select(frames: frames,viewport: viewport,current: "first"),"next")
         XCTAssertNil(VisiblePostSelector.select(frames: ["gone":CGRect(x: 0,y: 800,width: 390,height: 100)],viewport: viewport,current: nil))
     }
+    func testPlaybackUsesMediaBoundsWhenMetadataIsBelowLandscapeViewport() {
+        let viewport = CGRect(x: 0, y: 0, width: 874, height: 254)
+        let visibleMedia = CGRect(x: 277, y: 164, width: 320, height: 80)
+        let cardWithActions = CGRect(x: 277, y: 164, width: 320, height: 220)
+        XCTAssertNil(VisiblePostSelector.select(frames: ["video": cardWithActions], viewport: viewport, current: nil))
+        XCTAssertEqual(VisiblePostSelector.select(frames: ["video": visibleMedia], viewport: viewport, current: nil), "video")
+        XCTAssertEqual(VisiblePostSelector.select(frames: ["video": visibleMedia], viewport: viewport, current: "video"), "video")
+    }
     func testCenteredImageDoesNotSuppressVisibleVideoOnTablet() {
         let viewport = CGRect(x: 0, y: 0, width: 1024, height: 1200)
         let frames = ["video": CGRect(x: 352, y: 220, width: 320, height: 280), "image": CGRect(x: 352, y: 520, width: 320, height: 480)]

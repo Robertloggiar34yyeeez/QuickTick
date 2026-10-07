@@ -27,6 +27,13 @@ struct PostCardView: View {
     var body: some View {
         VStack(spacing: 0) {
             media.frame(width: mediaSize.width, height: mediaSize.height).clipped()
+                .background {
+                    if playbackTab == 0 {
+                        GeometryReader { geometry in
+                            Color.clear.preference(key: HomeVisibleFrames.self, value: [post.stableID: geometry.frame(in: .named("home-viewport"))])
+                        }
+                    }
+                }
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("post-media-\(post.stableID)")
             if let playbackError { Text(playbackError).font(.caption).foregroundStyle(.orange).padding(8) }

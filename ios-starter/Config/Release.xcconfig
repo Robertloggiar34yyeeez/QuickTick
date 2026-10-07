@@ -1,2 +1,0 @@
-QUICKTICK_API_BASE_URL = https:/$()/quick-tick-webb.vercel.app
-EXCLUDED_SOURCE_FILE_NAMES = $(inherited) UITestClip.mp4

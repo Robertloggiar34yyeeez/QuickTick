@@ -37,7 +37,6 @@ struct HomeFeedView: View {
                 ForEach(store.posts, id: \.stableID) { post in
                     PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width - 32), height: viewport.size.height))
                         .frame(maxWidth: .infinity)
-                        .background { GeometryReader { geometry in Color.clear.preference(key: HomeVisibleFrames.self, value: [post.stableID: geometry.frame(in: .named("home-viewport"))]) } }
                         .onAppear {
                         if let index = store.posts.firstIndex(where: { $0.stableID == post.stableID }), index >= store.posts.count - 4 { Task { await store.loadMore() } }
                     }
@@ -63,7 +62,7 @@ struct HomeFeedView: View {
         }
         .coordinateSpace(name: "home-viewport")
         .onPreferenceChange(HomeVisibleFrames.self) { visibleFrames = $0 }
-        .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
+        .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
             let candidate = visibleCandidate(viewport: viewport.size)
             do { try await Task.sleep(for: .milliseconds(120)); try Task.checkCancellation() } catch { return }
             guard store.activeTab == 0, store.isForeground else { return }
@@ -127,7 +126,7 @@ struct HomeFeedView: View {
     }
 }
 
-private struct HomeVisibleFrames: PreferenceKey {
+struct HomeVisibleFrames: PreferenceKey {
     static let defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, next in next }) }
 }

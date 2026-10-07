@@ -304,11 +304,14 @@ final class AppStore: ObservableObject {
     func recordComplete(_ post: Post) { Task { await record(.complete, post: post, bridgeType: "complete") } }
     func recordWatch(_ post: Post, seconds: Double, completion: Double) { Task { await record(.watched(seconds: seconds, completion: completion), post: post, bridgeType: "watch", value: seconds) } }
 
-    private func adaptRecommendationTail(token: UUID) async {
-        guard activeTab == 0 else { return }
-        let source = posts; let active = inlinePlaybackID
+    func adaptRecommendationTail(token: UUID) async {
+        // A tab transition briefly has no active Home post. Ranking that whole
+        // array would move the saved scroll anchor before playback reactivates.
+        guard activeTab == 0, let active = inlinePlaybackID else { return }
+        let source = posts
+        guard let activeIndex = source.firstIndex(where: { $0.stableID == active }) else { return }
         // Freeze everything through the visible post: engagement never moves the current card.
-        let prefixCount = active.flatMap { id in source.firstIndex(where: { $0.stableID == id }).map { $0 + 1 } } ?? 0
+        let prefixCount = activeIndex + 1
         let tail = Array(source.dropFirst(prefixCount))
         let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: Array(source.prefix(prefixCount)))
         guard generation == token, feedSort == "recommended", posts.map(\.stableID) == source.map(\.stableID), inlinePlaybackID == active else { return }

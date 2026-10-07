@@ -21,6 +21,17 @@ private final class FeedModeProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 final class FeedReliabilityTests: XCTestCase {
+    @MainActor func testRecommendationAdaptationWaitsForVisibleHomeAnchor() async {
+        let store = AppStore(); store.selectedProvider = .eporner
+        let first = Post(key: "first", id: "1", provider: "Eporner", tags: ["baking"], type: "video")
+        let next = Post(key: "next", id: "2", provider: "Eporner", tags: ["racecar"], type: "video")
+        let liked = Post(key: "liked", id: "3", provider: "Eporner", tags: ["racecar"])
+        await store.recommendations.record(.like, post: liked)
+        store.posts = [first, next]
+        XCTAssertNil(store.inlinePlaybackID)
+        await store.adaptRecommendationTail(token: store.feedRevision)
+        XCTAssertEqual(store.posts.map(\.stableID), ["first", "next"])
+    }
     @MainActor func testLazyPaginationDoesNotFetchBeforeInitialRefresh() async {
         let store = AppStore()
         await store.loadMore()

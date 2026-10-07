@@ -8,6 +8,7 @@ struct PostCardView: View {
     @EnvironmentObject private var store: AppStore
     let post: Post
     var available = CGSize(width: 400, height: 800)
+    var playbackTab = 0
     @State private var nativeSize: CGSize?
     @State private var comments = false
     @State private var tags = false
@@ -21,7 +22,7 @@ struct PostCardView: View {
     @State private var playbackError: String?
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
-    @State private var playbackOwner = "home"
+    private var playbackOwner: String { playbackTab == 2 ? "favorites" : "home" }
     private var mediaSize: CGSize { MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: (post.nativeSize.map { post.type.lowercased() == "image" && $0.height > $0.width * 4 ? 2 / 3 : $0.width / $0.height }) ?? mediaAspect, available: available) }
     var body: some View {
         VStack(spacing: 0) {
@@ -48,10 +49,15 @@ struct PostCardView: View {
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl) }
             .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision)") {
-                guard store.inlinePlaybackID == post.stableID, (store.activeTab == 0 || store.activeTab == 2), store.isForeground else { stopPlayback(); return }
+                guard !Task.isCancelled else { return }
+                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground else { stopPlayback(); return }
                 await preparePlayback()
             }
-            .onDisappear { stopPlayback(); if store.inlinePlaybackID == post.stableID { store.inlinePlaybackID = nil } }
+            .onDisappear {
+                // Home visibility owns the active ID. A delayed disappearance
+                // from the outgoing tab must not clear a reactivated Home post.
+                if playbackTab != 0 || store.activeTab != playbackTab || store.inlinePlaybackID != post.stableID { stopPlayback() }
+            }
             .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Just(AVPlayer.TimeControlStatus.paused).eraseToAnyPublisher()) { if player != nil { playing = $0 == .playing } }
             .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Just(AVPlayerItem.Status.unknown).eraseToAnyPublisher()) { status in
                 if status == .failed { playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."; playing = false; store.players.release(post.stableID) }
@@ -103,16 +109,15 @@ struct PostCardView: View {
         .onTapGesture { if !post.isImmersiveMedia { fullImage = true } }
     }
     private func preparePlayback() async {
-        playbackOwner = store.activeTab == 2 ? "favorites" : "home"
         preparing = true; playbackError = nil; playing = false
         defer { preparing = false; reportWatch() }
         do {
             let resolved = try await store.resolver.resolve(post)
-            guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, let url = URL(string: resolved.mediaUrl) else { return }
+            guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, let url = URL(string: resolved.mediaUrl) else { return }
             if post.type.lowercased() == "gif" {
                 gifURL = url; playing = store.pausedPlaybackID != post.stableID; preparing = false
                 if playing, store.activeTab == 0 { store.recordImpression(post) }
-                while !Task.isCancelled, store.inlinePlaybackID == post.stableID, (store.activeTab == 0 || store.activeTab == 2), store.isForeground {
+                while !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground {
                     do { try await Task.sleep(for: .seconds(1)) } catch { break }
                     if playing, store.activeTab == 0 { watchSeconds += 1; if watchSeconds >= 10 { reportWatch() } }
                 }
@@ -129,7 +134,7 @@ struct PostCardView: View {
                 if !Task.isCancelled, store.inlinePlaybackID == post.stableID, abs(display.height) > 0 { nativeSize = CGSize(width: abs(display.width), height: abs(display.height)); mediaAspect = abs(display.width / display.height) }
             }
             if store.pausedPlaybackID != post.stableID, store.activeTab == 0 { store.recordImpression(post) }
-            while !Task.isCancelled, store.inlinePlaybackID == post.stableID, (store.activeTab == 0 || store.activeTab == 2), store.isForeground {
+            while !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if p.timeControlStatus == .playing, store.activeTab == 0 {
                     watchSeconds += 1

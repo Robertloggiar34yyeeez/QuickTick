@@ -63,7 +63,7 @@ struct HomeFeedView: View {
         }
         .coordinateSpace(name: "home-viewport")
         .onPreferenceChange(HomeVisibleFrames.self) { visibleFrames = $0 }
-        .task(id: visibleCandidate(viewport: viewport.size)) {
+        .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
             let candidate = visibleCandidate(viewport: viewport.size)
             do { try await Task.sleep(for: .milliseconds(120)); try Task.checkCancellation() } catch { return }
             guard store.activeTab == 0, store.isForeground else { return }

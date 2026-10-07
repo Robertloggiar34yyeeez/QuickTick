@@ -53,7 +53,7 @@ struct TasteOnboardingView: View {
 struct FavoritesView: View {
     @EnvironmentObject private var store: AppStore
     var body: some View {
-        ScrollView { LazyVStack { ForEach(store.favorites.values.sorted { $0.stableID < $1.stableID }, id: \.stableID) { PostCardView(post: $0) } }.padding() }
+        ScrollView { LazyVStack { ForEach(store.favorites.values.sorted { $0.stableID < $1.stableID }, id: \.stableID) { PostCardView(post: $0, playbackTab: 2) } }.padding() }
             .scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Favorites")
     }
 }

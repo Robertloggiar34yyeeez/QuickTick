@@ -70,16 +70,26 @@ final class NavigationTests: XCTestCase {
             // On a short landscape window the Home header can move media below
             // the viewport. Scroll it into view before asserting playback.
             let scroll = app.scrollViews.firstMatch
+            let top = app.navigationBars.firstMatch.frame.maxY
+            let bottom = app.buttons["tab-Home"].frame.minY
+            let viewport = CGRect(x: app.frame.minX, y: top, width: app.frame.width, height: max(1, bottom - top)).insetBy(dx: 0, dy: 12)
             for _ in 0..<8 {
-                if playback.isHittable { break }
+                if viewport.contains(playback.frame) { break }
                 // Short drags avoid flinging past this small, native-size video.
-                let below = playback.frame.midY > app.frame.midY
-                let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: below ? 0.65 : 0.45))
-                let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: below ? 0.45 : 0.65))
+                // XCTest cannot compute a hit point for controls occluded by
+                // the bottom bar; use their bounds until fully in the viewport.
+                let below = playback.frame.midY > viewport.midY
+                let distance = min(45, viewport.height / 4)
+                let origin = scroll.coordinate(withNormalizedOffset: .zero)
+                let start = origin.withOffset(CGVector(dx: app.frame.midX, dy: viewport.midY + (below ? distance : -distance)))
+                let end = origin.withOffset(CGVector(dx: app.frame.midX, dy: viewport.midY + (below ? -distance : distance)))
                 start.press(forDuration: 0.05, thenDragTo: end)
             }
+            XCTAssertTrue(viewport.contains(playback.frame))
             XCTAssertTrue(playback.isHittable)
             XCTAssertTrue(frame.waitForExistence(timeout:10))
+            expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
+            waitForExpectations(timeout: 10)
             XCTAssertLessThanOrEqual(frame.frame.width,321)
             let capture = XCTAttachment(screenshot:app.screenshot());capture.name = "Adaptive native media \(orientation.rawValue)";capture.lifetime = .keepAlways;add(capture)
         }

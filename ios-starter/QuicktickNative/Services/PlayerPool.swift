@@ -24,8 +24,13 @@ final class PlayerPool: ObservableObject {
     }
 
     func activate(key: String, url: URL, muted: Bool, owner: String = "home") -> AVPlayer {
-        pauseAll()
+        // Feed transitions must preserve the next clips' pending prerolls.
+        // pauseAll is reserved for tab/background transitions.
+        for (otherKey, other) in players where otherKey != key && other.rate != 0 { other.pause() }
+        activeKey = nil; activeOwner = nil
         let p = player(for: key, url: url)
+        warmObservers.removeValue(forKey: key)
+        p.cancelPendingPrerolls()
         activeKey = key; activeOwner = owner; p.isMuted = muted; p.play()
         return p
     }

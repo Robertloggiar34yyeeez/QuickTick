@@ -25,6 +25,13 @@ struct VisiblePostSelector {
 }
 
 enum MediaSizing {
+    // Full viewing canvas: deliberately separate from the bounded Home cards.
+    static func immersive(aspect: CGFloat, available: CGSize) -> CGSize {
+        let ratio = aspect.isFinite && aspect > 0 ? aspect : 16 / 9
+        let width = max(1, min(available.width, max(1, available.height) * ratio))
+        return CGSize(width: width, height: width / ratio)
+    }
+
     static func size(native: CGSize?, aspect: CGFloat, available: CGSize) -> CGSize {
         let ratio = aspect.isFinite && aspect > 0 ? aspect : 4 / 3
         let wide = available.width > 600

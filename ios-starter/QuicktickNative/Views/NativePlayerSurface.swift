@@ -7,7 +7,8 @@ struct NativePlayerSurface: UIViewRepresentable {
     let player: AVPlayer
     let fill: Bool
     @Binding var ready: Bool
-    func makeUIView(context: Context) -> PlayerLayerView { let view = PlayerLayerView(); view.isAccessibilityElement = true; view.accessibilityIdentifier = "video-frame"; return view }
+    var accessibilityID = "video-frame"
+    func makeUIView(context: Context) -> PlayerLayerView { let view = PlayerLayerView(); view.isAccessibilityElement = true; view.accessibilityIdentifier = accessibilityID; return view }
     func updateUIView(_ view: PlayerLayerView, context: Context) {
         context.coordinator.ready = $ready
         view.accessibilityValue = view.layerPlayer.isReadyForDisplay ? "Ready" : "Loading"

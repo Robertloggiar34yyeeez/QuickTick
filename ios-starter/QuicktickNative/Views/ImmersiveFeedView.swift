@@ -18,13 +18,16 @@ struct ImmersiveFeedView: View {
     @StateObject private var previews = ImmersivePreviewCache()
 
     private var mediaPosts: [Post] { posts.filter(\.isImmersiveMedia) }
+    private var presentationActive: Bool {
+        offline ? store.activeTab == 3 : (onClose != nil ? store.activeTab == 0 : store.activeTab == 1)
+    }
 
     var body: some View {
         GeometryReader { geo in
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
                     ForEach(mediaPosts, id: \.stableID) { post in
-                        ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: offline || onClose != nil || store.activeTab == 1, previews: previews)
+                        ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: presentationActive, previews: previews)
                             .frame(width: geo.size.width, height: geo.size.height)
                             .id(post.stableID)
                     }
@@ -44,29 +47,39 @@ struct ImmersiveFeedView: View {
         .toolbarBackground(AppTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar(.hidden, for: .navigationBar)
-        .safeAreaInset(edge: .top, spacing: 0) {
+        .overlay(alignment: .top) {
             VStack(spacing: 0) {
-                ZStack {
-                    Text(offline ? "Offline" : "Immersive").font(.headline)
-                    HStack(spacing: 12) {
+                HStack(spacing: 12) {
                     if let onClose { Button(action: onClose) { Image(systemName: "chevron.left").frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("Back") }
+                    Text(offline ? "Offline" : "Immersive").font(.subheadline.weight(.semibold)).shadow(color: .black, radius: 4)
+                    Spacer(minLength: 0)
                     if !offline && onClose == nil {
                         Menu { ForEach(Provider.allCases) { provider in
                             Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
-                        } } label: { Text(store.selectedProvider.displayName).font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.accent) }
+                        } } label: {
+                            Text(store.selectedProvider.displayName).font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12).frame(height: 44)
+                                .background(.black.opacity(0.55), in: Capsule())
+                                .overlay(Capsule().stroke(.white.opacity(0.15)))
+                        }
                     }
-                    Spacer(minLength: 0)
                     if !offline {
-                        Button { searchVisible.toggle() } label: { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("Search")
+                        Button { searchVisible.toggle() } label: {
+                            Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)
+                                .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+                        }.buttonStyle(.plain).accessibilityLabel("Search")
                         SettingsLauncher(isPresented: $showSettings)
                     }
-                    }
                 }.padding(.horizontal, 16).frame(height: 52)
-                if searchVisible && !offline { NativeSearchBar(immersive: true).padding(.horizontal, 12).padding(.bottom, 8) }
-            }.background(.ultraThinMaterial).overlay(alignment: .bottom) { Color.white.opacity(0.12).frame(height: 0.5) }
+                if searchVisible && !offline { NativeSearchBar(immersive: true).padding(12).background(.black.opacity(0.85)) }
+            }
         }
-        .task { if activeID == nil { activeID = mediaPosts.first?.stableID }; if !offline && posts.isEmpty { await store.refresh(immersive: true) } }
-        .task(id: "\(activeID ?? ""):\(mediaPosts.count)") { await prewarm() }
+        .task(id: presentationActive) {
+            guard presentationActive else { return }
+            if activeID == nil { activeID = mediaPosts.first?.stableID }
+            if !offline && posts.isEmpty { await store.refresh(immersive: true) }
+        }
+        .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.isForeground):\(store.feedRevision)") { await prewarm() }
         .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
             if activeID == nil || !keys.contains(activeID ?? "") {
                 activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
@@ -77,32 +90,38 @@ struct ImmersiveFeedView: View {
         .onDisappear { if store.players.activeOwner == "immersive" { store.players.releaseAll() } }
     }
     private func prewarm() async {
+        guard presentationActive, store.isForeground, !Task.isCancelled else { return }
         let clips = mediaPosts
         guard let activeID, let index = clips.firstIndex(where: { $0.stableID == activeID }) else {
             if !offline && !store.isLoading && store.hasMore { await store.loadMore(immersive: true) }
             return
         }
-        let range = max(0, index - 1)...min(clips.count - 1, index + 3)
-        store.players.retain(Set(range.map { clips[$0].stableID }))
-        previews.retain(Set(range.map { clips[$0].stableID }))
+        // Three slots: current + next two. Four concurrent neighbours previously
+        // evicted the immediate next clip before the user scrolled to it.
+        let playerRange = index...min(clips.count - 1, index + 2)
+        let previewRange = max(0, index - 1)...min(clips.count - 1, index + 2)
+        store.players.retain(Set(playerRange.map { clips[$0].stableID }))
+        previews.retain(Set(previewRange.map { clips[$0].stableID }))
         let offlineMode = offline
+        let presentingTab = offline ? 3 : (onClose != nil ? 0 : 1)
         let feedStore = store
         let resolver = store.resolver
         let pool = store.players
         let previewCache = previews
         await withTaskGroup(of: Void.self) { group in
-            for i in range {
+            for i in previewRange {
                 let post = clips[i]
                 group.addTask { await previewCache.load(post) }
             }
-            for i in range where i != index && clips[i].type.lowercased() == "video" {
-                let post = clips[i]
-                group.addTask {
+            group.addTask { @MainActor in
+                // Nearest first; do not compete with the visible player.
+                for i in playerRange where i != index && clips[i].type.lowercased() == "video" {
+                    let post = clips[i]
                     let url: URL?
                     if offlineMode { url = URL(string: post.mediaUrl) }
                     else { url = try? await resolver.resolve(post).mediaUrlURL }
-                    guard !Task.isCancelled, let url else { return }
-                    await pool.prewarm(key: post.stableID, url: url)
+                    guard !Task.isCancelled, feedStore.isForeground, feedStore.activeTab == presentingTab else { return }
+                    if let url { pool.prewarm(key: post.stableID, url: url) }
                 }
             }
             if !offline, index >= clips.count - 8 {
@@ -148,7 +167,7 @@ private struct ImmersiveItemView: View {
                         .overlay(Color.black.opacity(0.25))
                 }
                 if let player {
-                    NativePlayerSurface(player: player, fill: geo.size.width <= 600 && store.immersionFraming, ready: $ready)
+                    NativePlayerSurface(player: player, fill: geo.size.width <= 600 && store.immersionFraming, ready: $ready, accessibilityID: "immersive-video-surface")
                         .frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height)
                         .opacity(ready ? 1 : 0)
                 }
@@ -178,14 +197,14 @@ private struct ImmersiveItemView: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
-            .overlay(alignment: .bottomTrailing) { actionRail.padding(.trailing, geo.size.width > 600 ? max(16, (geo.size.width - fittedSize(geo.size).width) / 2 + 12) : 12).padding(.bottom, 100) }
+            .overlay(alignment: .bottomTrailing) { actionRail.padding(.trailing, geo.size.width > 600 ? 24 : 12).padding(.bottom, 100) }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 0) {
                     HStack(spacing: 12) {
                         Text(post.provider.uppercased()).font(.caption.weight(.bold)).tracking(1.5)
+                        Button("View tags") { showTags = true }.font(.caption.weight(.semibold)).frame(minHeight: 44)
                         Spacer(minLength: 0)
-                        Button("View tags") { showTags = true }.font(.caption.weight(.semibold))
-                    }.padding(.horizontal, 16).background(.ultraThinMaterial)
+                    }.shadow(color: .black, radius: 4).padding(.leading, 16).padding(.trailing, 88)
                     if post.type.lowercased() == "video" { timeline }
                 }
             }
@@ -333,7 +352,7 @@ private struct ImmersiveItemView: View {
     private func fittedSize(_ available: CGSize) -> CGSize {
         if available.width <= 600 { return available }
         let size = mediaSize ?? post.nativeSize
-        return MediaSizing.size(native: size, aspect: size.map { $0.width / max(1,$0.height) } ?? 4/3, available: available)
+        return MediaSizing.immersive(aspect: size.map { $0.width / max(1,$0.height) } ?? 16/9, available: available)
     }
     private func endExposure() {
         store.players.pause(post.stableID, owner: "immersive")

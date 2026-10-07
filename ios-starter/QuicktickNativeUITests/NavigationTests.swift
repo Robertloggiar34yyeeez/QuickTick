@@ -8,6 +8,34 @@ final class NavigationTests: XCTestCase {
     override func tearDown() async throws {
         await MainActor.run { XCUIDevice.shared.orientation = .portrait }
     }
+    @MainActor func testImmersiveIPadCanvasAndSideNavigation() throws {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        guard app.frame.width > 600 else { throw XCTSkip("iPad canvas regression runs on the iPad simulator") }
+        app.buttons["tab-Immersive"].tap()
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            let surface = app.otherElements["immersive-video-surface"].firstMatch
+            XCTAssertTrue(surface.waitForExistence(timeout: 15))
+            expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: surface)
+            waitForExpectations(timeout: 15)
+            XCTAssertGreaterThan(surface.frame.width, app.frame.width * 0.85)
+            XCTAssertEqual(surface.frame.width / surface.frame.height, 16.0 / 9, accuracy: 0.05)
+            let home = app.buttons["tab-Home"], immersive = app.buttons["tab-Immersive"]
+            XCTAssertTrue(home.isHittable); XCTAssertTrue(immersive.isHittable)
+            XCTAssertEqual(home.frame.midX, immersive.frame.midX, accuracy: 1)
+            XCTAssertLessThan(home.frame.midX, app.frame.width * 0.1)
+            let like = app.buttons["immersive-Like"]
+            XCTAssertTrue(like.isHittable)
+            XCTAssertGreaterThan(like.frame.midX, app.frame.width * 0.9)
+            XCTAssertTrue(app.buttons["open-settings"].isHittable)
+            XCTAssertTrue(app.otherElements["immersive-progress"].exists)
+            XCTAssertEqual(app.tabBars.count, 0)
+            let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Immersive iPad full canvas \(orientation.rawValue)"; capture.lifetime = .keepAlways; add(capture)
+        }
+        app.buttons["tab-Home"].tap()
+        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+    }
+
     @MainActor func testFourTabsSettingsAndScrollToTop() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))

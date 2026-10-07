@@ -1,12 +1,12 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         continueAfterFailure = false
-        XCUIDevice.shared.orientation = .portrait
+        await MainActor.run { XCUIDevice.shared.orientation = .portrait }
     }
-    override func tearDownWithError() throws {
-        XCUIDevice.shared.orientation = .portrait
+    override func tearDown() async throws {
+        await MainActor.run { XCUIDevice.shared.orientation = .portrait }
     }
     @MainActor func testFourTabsSettingsAndScrollToTop() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()

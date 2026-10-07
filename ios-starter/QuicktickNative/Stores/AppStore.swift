@@ -238,7 +238,7 @@ final class AppStore: ObservableObject {
     func loadMore(immersive: Bool = false) async {
         // The initial page belongs to bootstrap/refresh. Lazy footer appearance
         // must not race credential restoration or start a second page-one request.
-        guard !posts.isEmpty, !isLoading, hasMore else { return }
+        guard nextPage > 1, !isLoading, hasMore else { return }
         // Reserve loading synchronously, so multiple lazy-cell callbacks share one page request.
         isLoading = true
         let flight = Task { await performLoadMore(immersive: immersive) }; pageFlight = flight

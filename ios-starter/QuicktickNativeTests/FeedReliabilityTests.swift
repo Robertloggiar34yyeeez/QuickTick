@@ -9,8 +9,9 @@ private final class FeedModeProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let sort = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "sort" }?.value ?? "recommended"
-        let post = Post(key: "\(sort):1", id: "1", provider: "Eporner", type: "video")
-        let data = try! JSONEncoder().encode(PostPage(items: [post], hasMore: false))
+        let page = Int(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value ?? "1") ?? 1
+        let post = Post(key: "\(sort):\(page)", id: String(page), provider: "Eporner", tags: [page == 1 ? "filtered" : "keep"], type: "video")
+        let data = try! JSONEncoder().encode(PostPage(items: [post], hasMore: page == 1))
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: [:])!
         DispatchQueue.global().asyncAfter(deadline: .now() + (sort == "recommended" ? 0.15 : 0)) { [self] in
             client?.urlProtocol(self,didReceive: response,cacheStoragePolicy: .notAllowed)
@@ -26,6 +27,17 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertTrue(store.posts.isEmpty)
         XCTAssertNil(store.lastError)
         XCTAssertFalse(store.isLoading)
+    }
+    @MainActor func testPaginationContinuesAfterFullyFilteredInitialPage() async {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
+        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
+        let store = AppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"), session: session))
+        store.selectedProvider = .eporner; store.feedSort = "recent"; store.exclusions = ["filtered"]
+        await store.refresh()
+        XCTAssertTrue(store.posts.isEmpty); XCTAssertTrue(store.hasMore)
+        await store.loadMore()
+        XCTAssertEqual(store.posts.map(\.stableID), ["recent:2"])
+        XCTAssertFalse(store.hasMore)
     }
     @MainActor func testModeChangeInvalidatesPlaybackAndObsoleteRecommendationResult() async throws {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]

@@ -86,8 +86,11 @@ final class NavigationTests: XCTestCase {
                 let below = media.frame.midY > viewport.midY
                 let distance = min(45, max(8, abs(media.frame.midY - viewport.midY) / 2))
                 let origin = scroll.coordinate(withNormalizedOffset: .zero)
-                let start = origin.withOffset(CGVector(dx: app.frame.midX, dy: viewport.midY + (below ? distance : -distance)))
-                let end = origin.withOffset(CGVector(dx: app.frame.midX, dy: viewport.midY + (below ? -distance : distance)))
+                let dragX = scroll.frame.width * 0.92
+                // The center can intersect the search field or media controls.
+                // Drag in the clear side margin owned by the feed ScrollView.
+                let start = origin.withOffset(CGVector(dx: dragX, dy: viewport.midY + (below ? distance : -distance)))
+                let end = origin.withOffset(CGVector(dx: dragX, dy: viewport.midY + (below ? -distance : distance)))
                 start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.3)
             }
             XCTAssertTrue(viewport.contains(media.frame), "Media \(media.frame) must fit viewport \(viewport)")

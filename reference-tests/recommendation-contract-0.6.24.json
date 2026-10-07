@@ -1,0 +1,41 @@
+{
+  "version": "0.6.24",
+  "cases": [
+    {
+      "name": "recurring positive common denominator",
+      "provider": "rule34",
+      "events": [
+        {"type":"like","tags":["samus_aran","zero_suit","blonde_hair"]},
+        {"type":"download","tags":["samus_aran","metroid","cosplay"]},
+        {"type":"search","query":"samus_aran"}
+      ],
+      "expect": "samus_aran candidates outrank unrelated candidates"
+    },
+    {
+      "name": "single less does not poison all co-tags",
+      "provider": "rule34",
+      "events": [
+        {"type":"less","tags":["scat","blue_hair","outdoors","solo"]}
+      ],
+      "expect": "blue_hair/outdoors without scat are not hard filtered from one Less"
+    },
+    {
+      "name": "recurring negative common denominator",
+      "provider": "rule34",
+      "events": [
+        {"type":"less","tags":["scat","blue_hair","outdoors"]},
+        {"type":"less","tags":["scat","red_hair","indoors"]},
+        {"type":"less","tags":["scat","cosplay"]}
+      ],
+      "expect": "scat accumulates stronger negative evidence than incidental co-tags and can become a hard Recommended filter"
+    },
+    {
+      "name": "gorse cannot override hard negative",
+      "provider": "rule34",
+      "notInto": ["blocked_theme"],
+      "gorseScore": 1.0,
+      "candidateTags": ["blocked_theme"],
+      "expect": "candidate remains excluded"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "provider": "rule34",
+      "type": "video",
+      "key": "rule34:fixture",
+      "tags": [
+        "example"
+      ],
+      "id": "fixture"
+    }
+  ],
+  "hasMore": true
+}

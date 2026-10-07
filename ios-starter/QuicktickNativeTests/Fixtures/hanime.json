@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "provider": "hanime",
+      "type": "video",
+      "key": "hanime:fixture",
+      "tags": [
+        "example"
+      ],
+      "id": "fixture"
+    }
+  ],
+  "hasMore": true
+}

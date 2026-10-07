@@ -119,6 +119,7 @@ private struct ImmersiveItemView: View {
     let offline: Bool
     let active: Bool
     @ObservedObject var previews: ImmersivePreviewCache
+    @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
     @State private var ready = false
     @State private var playing = true
@@ -146,11 +147,12 @@ private struct ImmersiveItemView: View {
                         .overlay(Color.black.opacity(0.25))
                 }
                 if let player {
-                    NativePlayerSurface(player: player, fill: store.immersionFraming, ready: $ready)
+                    NativePlayerSurface(player: player, fill: geo.size.width <= 600 && store.immersionFraming, ready: $ready)
+                        .frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height)
                         .opacity(ready ? 1 : 0)
                 }
                 if post.type.lowercased() == "gif", active, let gifURL {
-                    AnimatedGIFSurface(url: gifURL, playing: playing).allowsHitTesting(false)
+                    AnimatedGIFSurface(url: gifURL, playing: playing, onSize: { mediaSize = $0 }).frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height).allowsHitTesting(false)
                 }
                 Color.clear.contentShape(Rectangle())
                     .accessibilityIdentifier("immersive-media-\(post.stableID)")
@@ -175,7 +177,7 @@ private struct ImmersiveItemView: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
-            .overlay(alignment: .bottomTrailing) { actionRail.padding(.trailing, 12).padding(.bottom, 100) }
+            .overlay(alignment: .bottomTrailing) { actionRail.padding(.trailing, geo.size.width > 600 ? max(16, (geo.size.width - fittedSize(geo.size).width) / 2 + 12) : 12).padding(.bottom, 100) }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 0) {
                     HStack(spacing: 12) {
@@ -323,7 +325,17 @@ private struct ImmersiveItemView: View {
                 p.seek(to: CMTime(seconds: 180, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: { _ in })
             }
             if playing { p.play() }; error = nil
+            if let asset = p.currentItem?.asset, let track = try? await asset.loadTracks(withMediaType: .video).first,
+               let size = try? await track.load(.naturalSize), let transform = try? await track.load(.preferredTransform) {
+                let actual = size.applying(transform)
+                if !Task.isCancelled, active, abs(actual.height) > 0 { mediaSize = CGSize(width: abs(actual.width), height: abs(actual.height)) }
+            }
         } catch { self.error = error.localizedDescription }
+    }
+    private func fittedSize(_ available: CGSize) -> CGSize {
+        if available.width <= 600 { return available }
+        let size = mediaSize ?? post.nativeSize
+        return MediaSizing.size(native: size, aspect: size.map { $0.width / max(1,$0.height) } ?? 4/3, available: available)
     }
     private func endExposure() {
         player?.pause()

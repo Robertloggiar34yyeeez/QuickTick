@@ -22,7 +22,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install 'torch==2.5.1' 'transformers==4.46.3' 'coremltools==8.3.0' 'numpy==1.26.4'
+          python -m pip install 'torch==2.5.0' 'transformers==4.46.3' 'coremltools==8.3.0' 'numpy==1.26.4'
           python scripts/prepare-semantic-model.py
       - name: Build and test native iOS app
         shell: bash

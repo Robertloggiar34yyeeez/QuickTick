@@ -24,7 +24,7 @@ def inputs(text):
  return t["input_ids"],t["attention_mask"]
 wrapper=Embed().eval();example=inputs("Formula 1 engineering and aerodynamics")
 traced=torch.jit.trace(wrapper,example,strict=False)
-model=ct.convert(traced,inputs=[ct.TensorType(name="input_ids",shape=(1,96),dtype=np.int32),ct.TensorType(name="attention_mask",shape=(1,96),dtype=np.int32)],outputs=[ct.TensorType(name="embedding",dtype=np.float32)],minimum_deployment_target=ct.target.iOS17,compute_precision=ct.precision.FLOAT16,compute_units=ct.ComputeUnit.CPU_ONLY)
+model=ct.convert(traced,inputs=[ct.TensorType(name="input_ids",shape=(1,96),dtype=np.int32),ct.TensorType(name="attention_mask",shape=(1,96),dtype=np.int32)],outputs=[ct.TensorType(name="embedding",dtype=np.float32)],minimum_deployment_target=ct.target.iOS17,compute_precision=ct.precision.FLOAT32,compute_units=ct.ComputeUnit.CPU_ONLY)
 model.author="TaylorAI / QuickTick Core ML conversion"
 model.license="MIT"
 model.short_description="Pinned bge-micro-v2, 384-dimensional normalized masked mean embeddings; 96 WordPiece tokens."
@@ -41,5 +41,5 @@ for text in texts:
 sim=lambda a,b:float(np.dot(a,b)/(np.linalg.norm(a)*np.linalg.norm(b)))
 assert min(parity)>.995,parity
 assert sim(vectors[0],vectors[1])>sim(vectors[0],vectors[2])+.10
-report={"model":MODEL,"revision":REVISION,"dimensions":384,"parameters":sum(p.numel() for p in base.parameters()),"compiledBytes":sum(p.stat().st_size for p in (OUT/"BGEMicro.mlmodelc").rglob("*") if p.is_file()),"macCPUInferenceMs":times,"parityCosine":parity,"relatedCosine":sim(vectors[0],vectors[1]),"unrelatedCosine":sim(vectors[0],vectors[2]),"devicePerformance":"Not measured on a physical iPhone/iPad"}
+report={"model":MODEL,"revision":REVISION,"dimensions":384,"precision":"float32 (float16 conversion produced NaNs; parity gate rejected it)","parameters":sum(p.numel() for p in base.parameters()),"compiledBytes":sum(p.stat().st_size for p in (OUT/"BGEMicro.mlmodelc").rglob("*") if p.is_file()),"macCPUInferenceMs":times,"parityCosine":parity,"relatedCosine":sim(vectors[0],vectors[1]),"unrelatedCosine":sim(vectors[0],vectors[2]),"devicePerformance":"Not measured on a physical iPhone/iPad"}
 Path("logs").mkdir(exist_ok=True);Path("logs/semantic-model-benchmark.json").write_text(json.dumps(report,indent=2));print(json.dumps(report))

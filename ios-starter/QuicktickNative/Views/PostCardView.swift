@@ -69,7 +69,7 @@ struct PostCardView: View {
                     NativePlayerSurface(player: player, fill: false, ready: $ready).opacity(ready ? 1 : 0)
                 }.aspectRatio(mediaAspect, contentMode: .fit)
             } else if let gifURL {
-                AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true)
+                AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true, onSize: { nativeSize = $0; mediaAspect = $0.width / max(1,$0.height) })
             } else if post.type.lowercased() == "image" {
                 CachedMediaImage(url: post.cardPreviewURL, pixels: Int(mediaSize.width * 3), comic: true) { decoded in nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height) }
             } else { PosterView(url: post.cardPreviewURL) }

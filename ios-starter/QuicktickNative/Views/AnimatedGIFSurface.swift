@@ -37,6 +37,7 @@ struct AnimatedGIFSurface: View {
     let url: URL
     var playing = true
     var naturalAspect = false
+    var onSize: ((CGSize) -> Void)?
     @State private var frames: GIFFrames?
     @State private var failed = false
     var body: some View {
@@ -50,12 +51,10 @@ struct AnimatedGIFSurface: View {
             else { ProgressView().tint(.white) }
         }.task(id: url) {
             do {
-                let data: Data
-                if url.isFileURL { data = try Data(contentsOf: url) }
-                else { (data, _) = try await URLSession.shared.data(from: url) }
+                let data = try await MediaImagePipeline.shared.data(url: url)
                 let decoded = await Task.detached(priority: .userInitiated) { GIFFrames.decode(data) }.value
                 guard !Task.isCancelled else { return }
-                frames = decoded; failed = decoded == nil
+                frames = decoded; failed = decoded == nil; if let size = decoded?.images.first?.size { onSize?(size) }
             } catch { if !Task.isCancelled { failed = true } }
         }
     }

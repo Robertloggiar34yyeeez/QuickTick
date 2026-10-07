@@ -84,6 +84,7 @@ final class FeedReliabilityTests: XCTestCase {
         let tablet = CGRect(x: 0, y: 0, width: 1024, height: 1200)
         let bothVisible = ["first": CGRect(x: 352, y: 220, width: 320, height: 280), "next": CGRect(x: 352, y: 506, width: 320, height: 280)]
         XCTAssertEqual(VisiblePostSelector.select(frames: bothVisible, viewport: tablet, current: nil), "first")
+        XCTAssertEqual(VisiblePostSelector.select(frames: bothVisible, viewport: tablet, current: "first"), "first")
     }
     @MainActor func testPlayerPoolChangesURLForSameIdentityAndPausesOnTabAndBackground() {
         let store = AppStore();let pool = store.players

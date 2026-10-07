@@ -64,6 +64,7 @@ final class NavigationTests: XCTestCase {
         expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: frame)
         waitForExpectations(timeout: 15)
         XCTAssertLessThanOrEqual(frame.frame.width,321)
+        XCTAssertGreaterThan(frame.frame.height, 0)
         XCTAssertEqual(frame.frame.width / frame.frame.height,320.0 / 180,accuracy:0.05)
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
             XCUIDevice.shared.orientation = orientation
@@ -91,6 +92,8 @@ final class NavigationTests: XCTestCase {
             expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
             waitForExpectations(timeout: 10)
             XCTAssertLessThanOrEqual(frame.frame.width,321)
+            XCTAssertGreaterThan(frame.frame.height, 0)
+            XCTAssertEqual(frame.frame.width / frame.frame.height, 320.0 / 180, accuracy: 0.05)
             let capture = XCTAttachment(screenshot:app.screenshot());capture.name = "Adaptive native media \(orientation.rawValue)";capture.lifetime = .keepAlways;add(capture)
         }
         XCUIDevice.shared.press(.home);app.activate()

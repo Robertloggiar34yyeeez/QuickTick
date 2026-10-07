@@ -76,7 +76,9 @@ struct PostCardView: View {
             if let player {
                 ZStack {
                     PosterView(url: post.cardPreviewURL)
-                    NativePlayerSurface(player: player, fill: false, ready: $ready).opacity(ready ? 1 : 0)
+                    NativePlayerSurface(player: player, fill: false, ready: $ready)
+                        .frame(width: mediaSize.width, height: mediaSize.height)
+                        .opacity(ready ? 1 : 0)
                 }.aspectRatio(mediaSize.width / max(1,mediaSize.height), contentMode: .fit)
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true, onSize: { nativeSize = $0; mediaAspect = $0.width / max(1,$0.height) })

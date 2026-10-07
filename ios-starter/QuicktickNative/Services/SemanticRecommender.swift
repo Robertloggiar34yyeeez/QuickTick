@@ -154,7 +154,7 @@ actor SemanticRecommender {
         } else { profile.negative = Self.blend(profile.negative, vector, alpha: min(0.6, abs(weight) * 0.1)) }
         if let creator = post.creator, !creator.isEmpty {
             profile.creators[creator] = max(-1, min(1, (profile.creators[creator] ?? 0) * 0.95 + weight * 0.1))
-            profile.creators = Dictionary(profile.creators.sorted { abs($0.value) > abs($1.value) }.prefix(48), uniquingKeysWith: { first, _ in first })
+            profile.creators = Dictionary(profile.creators.sorted { abs($0.value) > abs($1.value) }.prefix(48).map { ($0.key, $0.value) }, uniquingKeysWith: { first, _ in first })
         }
         profile.updated = Date(); disk.profiles[post.provider.lowercased()] = profile; persist()
     }
@@ -163,8 +163,10 @@ actor SemanticRecommender {
         for post in posts {
             guard let vector = disk.embeddings[key(post)] else { continue }
             let profile = disk.profiles[post.provider.lowercased()] ?? SemanticInterest()
+            let recentDecay = exp(-max(0, Date().timeIntervalSince(profile.updated)) / (7 * 86400))
+            let longDecay = exp(-max(0, Date().timeIntervalSince(profile.updated)) / (30 * 86400))
             let age = post.createdAt.map { max(0, Date().timeIntervalSince1970 - $0) }
-            result[post.stableID] = SemanticScore(recent: max(0, Self.cosine(vector, profile.recent)), longTerm: max(0, Self.cosine(vector, profile.longTerm)), negative: max(0, Self.cosine(vector, profile.negative)), creator: Double(profile.creators[post.creator ?? ""] ?? 0), freshness: age.map { exp(-$0 / (7 * 86400)) } ?? 0, cacheHit: true)
+            result[post.stableID] = SemanticScore(recent: max(0, Self.cosine(vector, profile.recent)) * recentDecay, longTerm: max(0, Self.cosine(vector, profile.longTerm)) * longDecay, negative: max(0, Self.cosine(vector, profile.negative)) * longDecay, creator: Double(profile.creators[post.creator ?? ""] ?? 0), freshness: age.map { exp(-$0 / (7 * 86400)) } ?? 0, cacheHit: true)
         }
         return result
     }

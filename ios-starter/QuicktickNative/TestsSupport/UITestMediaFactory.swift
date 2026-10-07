@@ -37,7 +37,7 @@ actor UITestMediaFactory {
         let prefix = recommended ? "test" : "home"
         var video = Post(key: "\(prefix):video",id: "1",provider: "Rule34",tags: ["test_tag"],mediaUrl: clip.absoluteString,thumbUrl: image.absoluteString,type: "video");video.width=320;video.height=180
         var comic = Post(key: "\(prefix):image",id: "2",provider: "Rule34",tags: ["still_tag"],mediaUrl: image.absoluteString,type: "image");comic.width=320;comic.height=1600
-        var next = video;next.key="\(prefix):next";next.id="3"
+        var next = Post(key:"\(prefix):next",id:"3",provider:video.provider,tags:video.tags,mediaUrl:video.mediaUrl,thumbUrl:video.thumbUrl,type:"video");next.width=320;next.height=180
         return [video,comic,next]
     }
 }

@@ -2,7 +2,8 @@ import Foundation
 
 actor RecommendationEngine {
     private(set) var state = RecommendationState()
-    let semantic = SemanticRecommender()
+    let semantic: SemanticRecommender
+    init(semantic: SemanticRecommender = SemanticRecommender()) { self.semantic = semantic }
     struct DebugScore: Sendable {
         let semantic: SemanticScore
         let tags: Double
@@ -277,11 +278,11 @@ actor RecommendationEngine {
                 var value = entry.base - diversity
                 // Every eighth slot favors an unseen lower-affinity candidate, bounded by negative preferences.
                 if chosen.count % 8 == 7, entry.seen == 0 { value += 2 * (1 - (semanticScores[entry.post.stableID]?.recent ?? 0)) }
-                debugScores[entry.post.stableID] = DebugScore(semantic: semanticScores[entry.post.stableID] ?? SemanticScore(), tags: entry.tags, diversity: diversity, seen: entry.seen, final: value)
                 if immediate >= 2 { value -= 9 }
                 if immediate >= 3 { value -= 15 }
                 if overlap >= 4 { value -= 11 }
                 if overlap >= 6 { value -= 18 }
+                debugScores[entry.post.stableID] = DebugScore(semantic: semanticScores[entry.post.stableID] ?? SemanticScore(), tags: entry.tags, diversity: diversity, seen: entry.seen, final: value)
                 if value > bestScore { bestScore = value; bestIndex = index }
             }
             chosen.append(pool.remove(at: bestIndex).post)

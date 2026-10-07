@@ -46,6 +46,9 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertFalse(pool.player(for: "one",url: b) === first)
         _ = pool.activate(key: "two",url: b,muted: true);XCTAssertEqual(first.rate,0)
         store.activeTab = 1;XCTAssertNil(pool.activeKey)
+        let immersive = pool.activate(key: "same",url: a,muted: false,owner: "immersive")
+        pool.pause("same",owner: "home")
+        XCTAssertEqual(pool.activeKey,"same");XCTAssertTrue(pool.player(for:"same",url:a) === immersive)
         _ = pool.activate(key: "three",url: a,muted: false);store.isForeground = false;XCTAssertNil(pool.activeKey)
         XCTAssertLessThanOrEqual(pool.count,3)
     }

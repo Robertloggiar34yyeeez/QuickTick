@@ -19,10 +19,12 @@ struct PostCardView: View {
     @State private var preparing = false
     @State private var mediaAspect: CGFloat = 4 / 3
     @State private var playbackError: String?
+    @State private var watchSeconds = 0.0
+    @State private var completion = 0.0
     private var mediaSize: CGSize { MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: (post.nativeSize.map { post.type.lowercased() == "image" && $0.height > $0.width * 4 ? 2 / 3 : $0.width / $0.height }) ?? mediaAspect, available: available) }
     var body: some View {
         VStack(spacing: 0) {
-            media.frame(width: mediaSize.width, height: mediaSize.height).clipped()
+            media.frame(width: mediaSize.width, height: mediaSize.height).clipped().accessibilityIdentifier("post-media-\(post.stableID)")
             if let playbackError { Text(playbackError).font(.caption).foregroundStyle(.orange).padding(8) }
             VStack(spacing: 8) {
                 HStack {
@@ -40,6 +42,7 @@ struct PostCardView: View {
         }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 22))
             .clipShape(RoundedRectangle(cornerRadius: 22))
             .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.07), lineWidth: 1))
+            .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
             .sheet(isPresented: $comments) { CommentsView(post: post) }
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl) }
@@ -57,7 +60,7 @@ struct PostCardView: View {
             .onChange(of: store.muted) { _, value in player?.isMuted = value }
             .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
                 guard let item = note.object as? AVPlayerItem, item === player?.currentItem else { return }
-                player?.seek(to: .zero); if playing { player?.play() }
+                if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground { store.recordComplete(post); store.recordReplay(post); player?.seek(to: .zero); if playing { player?.play() } }
             }
     }
 
@@ -100,7 +103,7 @@ struct PostCardView: View {
     }
     private func preparePlayback() async {
         preparing = true; playbackError = nil; playing = false
-        defer { preparing = false }
+        defer { preparing = false; reportWatch() }
         do {
             let resolved = try await store.resolver.resolve(post)
             guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, let url = URL(string: resolved.mediaUrl) else { return }
@@ -115,9 +118,23 @@ struct PostCardView: View {
                 let display = size.applying(transform)
                 if !Task.isCancelled, store.inlinePlaybackID == post.stableID, abs(display.height) > 0 { nativeSize = CGSize(width: abs(display.width), height: abs(display.height)); mediaAspect = abs(display.width / display.height) }
             }
+            if store.pausedPlaybackID != post.stableID { store.recordImpression(post) }
+            while !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground {
+                do { try await Task.sleep(for: .seconds(1)) } catch { break }
+                if p.timeControlStatus == .playing {
+                    watchSeconds += 1
+                    let length = p.currentItem?.duration.seconds ?? 0
+                    if length.isFinite, length > 0 { completion = min(1,max(0,p.currentTime().seconds / length)) }
+                    if watchSeconds >= 10 { reportWatch() }
+                }
+            }
         } catch { if !Task.isCancelled { playbackError = error.localizedDescription; playing = false } }
     }
-    private func stopPlayback() { store.players.pause(post.stableID); player?.pause(); player = nil; gifURL = nil; ready = false; playing = false }
+    private func reportWatch() {
+        if watchSeconds >= 2 { store.recordWatch(post, seconds: watchSeconds, completion: completion) }
+        watchSeconds = 0
+    }
+    private func stopPlayback() { store.players.pause(post.stableID, owner: "home"); player = nil; gifURL = nil; ready = false; playing = false }
 }
 
 private struct FullComicView: View {

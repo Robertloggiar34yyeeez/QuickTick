@@ -24,7 +24,7 @@ struct ImmersiveFeedView: View {
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
                     ForEach(mediaPosts, id: \.stableID) { post in
-                        ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, previews: previews)
+                        ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: offline || onClose != nil || store.activeTab == 1, previews: previews)
                             .frame(width: geo.size.width, height: geo.size.height)
                             .id(post.stableID)
                     }
@@ -74,7 +74,7 @@ struct ImmersiveFeedView: View {
             }
         }
         .onChange(of: activeID) { _, key in if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index } }
-        .onDisappear { store.players.releaseAll() }
+        .onDisappear { if store.players.activeOwner == "immersive" { store.players.releaseAll() } }
     }
     private func prewarm() async {
         let clips = mediaPosts
@@ -118,6 +118,7 @@ private struct ImmersiveItemView: View {
     let post: Post
     let offline: Bool
     let active: Bool
+    let presentationActive: Bool
     @ObservedObject var previews: ImmersivePreviewCache
     @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
@@ -205,8 +206,8 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
-            guard active, store.activeTab == 1, store.isForeground else { endExposure(); player = nil; ready = false; gifURL = nil; return }
+        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
+            guard active, presentationActive, store.isForeground else { endExposure(); player = nil; ready = false; gifURL = nil; return }
             exposureStarted = .now
             progress = 0; duration = 0; scrubbing = false; error = nil
             await prepare()
@@ -314,9 +315,9 @@ private struct ImmersiveItemView: View {
                 guard let remote = URL(string: resolved.mediaUrl) else { throw URLError(.badURL) }
                 url = remote
             }
-            guard !Task.isCancelled, active, store.activeTab == 1, store.isForeground else { return }
+            guard !Task.isCancelled, active, presentationActive, store.isForeground else { return }
             if post.type.lowercased() == "gif" { gifURL = url; return }
-            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted)
+            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: "immersive")
             player = p; p.isMuted = store.muted
             // Start immediately. Duration metadata must never delay the first frame.
             if let resume = store.resumePosition(post.stableID), resume > 0 {
@@ -338,7 +339,7 @@ private struct ImmersiveItemView: View {
         return MediaSizing.size(native: size, aspect: size.map { $0.width / max(1,$0.height) } ?? 4/3, available: available)
     }
     private func endExposure() {
-        player?.pause()
+        store.players.pause(post.stableID, owner: "immersive")
         guard let started = exposureStarted else { return }
         let elapsed = Date().timeIntervalSince(started)
         if let player, player.currentItem?.status == .readyToPlay { store.saveResume(post.stableID, seconds: player.currentTime().seconds) }

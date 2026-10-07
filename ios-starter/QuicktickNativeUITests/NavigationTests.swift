@@ -49,6 +49,27 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 5))
     }
 
+    @MainActor func testAdaptiveMediaAcrossOrientationsAndForeground() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        let frame = app.otherElements["video-frame"].firstMatch
+        let playback = app.buttons["inline-play-test:video"]
+        XCTAssertTrue(frame.waitForExistence(timeout: 15))
+        expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: frame)
+        waitForExpectations(timeout: 15)
+        XCTAssertLessThanOrEqual(frame.frame.width,321)
+        XCTAssertEqual(frame.frame.width / frame.frame.height,320.0 / 180,accuracy:0.05)
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            XCTAssertTrue(playback.waitForExistence(timeout:5))
+            XCTAssertLessThanOrEqual(frame.frame.width,321)
+            let capture = XCTAttachment(screenshot:app.screenshot());capture.name = "Adaptive native media \(orientation.rawValue)";capture.lifetime = .keepAlways;add(capture)
+        }
+        XCUIDevice.shared.press(.home);app.activate()
+        expectation(for:NSPredicate(format:"value == %@","Playing"),evaluatedWith:playback)
+        waitForExpectations(timeout:15)
+        XCUIDevice.shared.orientation = .portrait
+    }
+
     @MainActor func testImmersiveRailSnapsAndDoubleTapLikes() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--compact-ui-testing"]; app.launch()

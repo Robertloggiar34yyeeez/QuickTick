@@ -111,7 +111,7 @@ final class AppStore: ObservableObject {
         let canonical = try QuicktickSyncCrypto.parse(value).full
         if let flight = syncFlight { _ = try? await flight.value }
         guard !isSyncing else { throw APIError.server("Sync is already running. Please wait.") }
-        isSyncing = true; syncFailed = false; syncStatus = "Checking cloud profile…"
+        isSyncing = true; syncFailed = false; syncStatus = "Checking cloud profileâ€¦"
         defer { isSyncing = false }
         do {
             // Verify the server response and decrypt before replacing a working identity.
@@ -121,7 +121,7 @@ final class AppStore: ObservableObject {
             syncTask?.cancel()
             if let remote { try await applySyncSnapshot(remote) }
             await recommendationBridge.clearBackoff()
-            syncStatus = "Saving merged profile…"
+            syncStatus = "Saving merged profileâ€¦"
             let revision = syncRevision
             try await sync.push(syncID: canonical, snapshot: currentSnapshot())
             syncStatus = remote == nil ? "Cloud profile created. Use this same ID on your other devices." : "Cloud profile merged and synced."
@@ -233,9 +233,9 @@ final class AppStore: ObservableObject {
         await withTaskCancellationHandler { await flight.value } onCancel: { flight.cancel() }
     }
     private func performLoadMore(immersive: Bool) async {
-        guard !Task.isCancelled else { return }
-        guard hasMore else { return }
         let token = generation
+        defer { if token == generation { isLoading = false } }
+        guard !Task.isCancelled, hasMore else { return }
         let provider = selectedProvider
         isLoading = true
         defer { if token == generation { isLoading = false } }
@@ -407,7 +407,7 @@ final class AppStore: ObservableObject {
         guard !isSyncing else { throw APIError.server("Sync is already running. Please wait.") }
         let identity = syncID
         _ = try QuicktickSyncCrypto.parse(identity)
-        isSyncing = true; syncFailed = false; syncStatus = "Syncing…"
+        isSyncing = true; syncFailed = false; syncStatus = "Syncingâ€¦"
         let flight = Task { @MainActor in
             let (remote, _) = try await self.sync.pull(syncID: identity)
             guard self.syncID == identity else { throw CancellationError() }

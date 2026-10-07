@@ -46,9 +46,7 @@ struct HomeFeedView: View {
                 if store.hasMore {
                     Button("Load more") { Task { await store.loadMore() } }
                         .frame(maxWidth: .infinity, minHeight: 44)
-                        .task(id: "\(store.posts.count):\(store.isLoading)") {
-                            if !store.isLoading && store.lastError == nil { await store.loadMore() }
-                        }
+                        .onAppear { if !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
                 }
             }.frame(maxWidth: 720).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
         }

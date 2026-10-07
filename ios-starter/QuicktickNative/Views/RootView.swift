@@ -12,6 +12,7 @@ struct RootView: View {
             let sideNavigation = store.activeTab == 1 && geometry.size.width > 600
             // Mount one native navigation host. Opacity-hidden stacks still
             // export UIKit toolbars/accessibility controls and waste resources.
+            VStack(spacing: 0) {
             Group {
                 switch store.activeTab {
                 case 1:
@@ -24,13 +25,13 @@ struct RootView: View {
                     NavigationStack { HomeFeedView(showSettings: $showSettings, scrollAnchor: $homeAnchor) }
                 }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if !sideNavigation {
                     HStack(spacing: 6) { tabButtons(vertical: false) }
                         .padding(.horizontal, 12).padding(.vertical, 6).background(.black)
                         .overlay(alignment: .top) { Color.white.opacity(0.1).frame(height: 0.5) }
                 }
-            }
+            }.frame(width: geometry.size.width, height: geometry.size.height)
             .overlay(alignment: .leading) {
                 if sideNavigation {
                     VStack(spacing: 6) { tabButtons(vertical: true) }

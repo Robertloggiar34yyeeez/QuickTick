@@ -56,7 +56,9 @@ final class NavigationTests: XCTestCase {
         app.buttons["Toggle search"].tap()
         let fields = app.textFields.matching(identifier: "feed-search-input")
         XCTAssertEqual(fields.count, 1)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         fields.firstMatch.typeText("engineering")
+        XCTAssertEqual(fields.firstMatch.value as? String, "engineering")
         app.buttons["Search"].firstMatch.tap()
         XCTAssertTrue(fields.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(fields.count, 1)
@@ -167,6 +169,9 @@ final class NavigationTests: XCTestCase {
         let like = app.buttons["immersive-Like"]
         XCTAssertTrue(like.waitForExistence(timeout: 10))
         let actions = ["Like", "Less", "Comments", "Download", "Mute"].map { app.buttons["immersive-\($0)"] }
+        let progress = app.otherElements["immersive-progress"]
+        XCTAssertTrue(progress.isHittable)
+        XCTAssertLessThanOrEqual(progress.frame.maxY, app.buttons["tab-Home"].frame.minY)
         for action in actions {
             XCTAssertTrue(action.isHittable)
             XCTAssertGreaterThanOrEqual(action.frame.width, 44)

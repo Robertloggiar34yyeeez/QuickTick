@@ -50,9 +50,19 @@ struct HomeFeedView: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .onAppear { if store.activeTab == 0 && !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
                 }
-            }.scrollTargetLayout().frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
+            }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
         }
-        .scrollPosition(id: $scrollAnchor, anchor: .top)
+        // A regular feed must keep free scroll offsets through rotation and
+        // keyboard changes. Restore its anchor only when this host mounts;
+        // continuously binding a .top target fought scrollTo and focus changes.
+        .task {
+            if let scrollAnchor, store.posts.contains(where: { $0.stableID == scrollAnchor }) {
+                proxy.scrollTo(scrollAnchor, anchor: .top)
+            }
+        }
+        .onDisappear {
+            scrollAnchor = visibleFrames.min(by: { abs($0.value.minY) < abs($1.value.minY) })?.key
+        }
         .overlay(alignment: .bottomLeading) {
             Group {
                 Button {

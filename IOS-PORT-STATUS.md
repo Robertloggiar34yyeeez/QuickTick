@@ -1,9 +1,11 @@
 # Native iOS status — 7 October 2026
 
-QuickTick remains native SwiftUI/UIKit, iOS 17+, Swift 6, iPhone/iPad. The existing Vercel API and Sync v1 contracts are preserved.
+QuickTick remains native SwiftUI/UIKit, iOS 17+, Swift 6, iPhone/iPad. Vercel API and Sync v1 contracts are preserved.
 
-See PRODUCTION-PASS-AUDIT.md for state owners/root causes and PRODUCTION-PASS-REPORT.md for all 26 requested report points, implementation details, benchmarks and remaining tests.
+The latest completed Mac validation passed 44 unit tests and six of seven iPhone UI tests, including Home playback after returning from Immersive and Home/Recommended switching. The remaining rotation test now uses short directed drags instead of full-screen swipes that overshot the native-size video.
 
-Local validation passes: 52 Swift files parse; Xcode project/targets/resources references resolve; independent AES-GCM Sync vector matches. RedGIFs and Eporner live feed probes return pageable content. Hanime currently returns 502 and Pornhub is empty; Rule34 requires credentials.
+The immersive progress bar now has a transparent container and thin translucent track. Actual seeking, accessibility adjustments and the 44-point touch area are preserved.
 
-The pinned BGE Micro float32 Core ML conversion passed on a Mac runner. The corrected Swift source still requires Apple build/type checking and execution of 40 unit tests / seven UI tests, targeted iPad paths and release archive. GitHub account billing prevents the runner from starting. No new build-5 IPA has been produced, and no physical-device performance claims are made.
+Run 37642679045 failed at startup before a Mac runner was assigned. GitHub reported an unexpected internal error, and the failed-jobs retry API rejected the retry. No new IPA has been produced. A fresh workflow run must pass iPhone/iPad tests and unsigned release archiving before delivery.
+
+The exact source for commit 311219792b1c3c4078029d52f1eec36cafd4869c was uploaded to the QuickTick iOS Revisions Drive folder, downloaded back and checksum verified. Real-device audio, slow provider networks and sustained memory/battery measurements remain pending.

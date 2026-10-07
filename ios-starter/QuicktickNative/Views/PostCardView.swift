@@ -33,6 +33,7 @@ struct PostCardView: View {
                     Text(post.provider.uppercased()).font(.caption.weight(.bold)).tracking(1.5).foregroundStyle(.white.opacity(0.8))
                     Spacer()
                     Button("View tags") { tags = true }.font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.7))
+                        .frame(minHeight: 44)
                 }
                 HStack(spacing: 0) {
                     ActionIcon(title: "Like", symbol: store.favorites[post.stableID] == nil ? "heart" : "heart.fill", selected: store.favorites[post.stableID] != nil) { store.toggleFavorite(post) }
@@ -86,6 +87,7 @@ struct PostCardView: View {
                 CachedMediaImage(url: post.cardPreviewURL, pixels: Int(mediaSize.width * 3), comic: true) { decoded in nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height) }
             } else { PosterView(url: post.cardPreviewURL) }
         }
+        .frame(width: mediaSize.width, height: mediaSize.height)
         .overlay(alignment: .bottomTrailing) {
             if post.isImmersiveMedia {
                 Button {
@@ -96,7 +98,7 @@ struct PostCardView: View {
                     HStack(spacing: 8) {
                         if preparing { ProgressView() } else { Image(systemName: playing ? "pause.fill" : "play.fill") }
                         Text(playing ? "Pause" : "Play")
-                    }.font(.subheadline.weight(.semibold)).padding(12).background(.ultraThinMaterial, in: Capsule())
+                    }.font(.subheadline.weight(.semibold)).padding(12).frame(minHeight: 44).background(.ultraThinMaterial, in: Capsule())
                 }.disabled(preparing).buttonStyle(.plain).padding(10)
                     .accessibilityIdentifier("inline-play-\(post.stableID)")
                     .accessibilityLabel(playing ? "Pause media" : "Play media")

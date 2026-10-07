@@ -8,7 +8,7 @@ project=OpenStepDecoder.ParseFromString((p/'project.pbxproj').read_text())
 objects=project['objects']
 assert objects[project['rootObject']]['isa']=='PBXProject'
 for obj in objects.values():
-    if obj['isa']=='PBXFileReference' and obj.get('sourceTree')=='SOURCE_ROOT': assert (root/'ios-starter'/obj['path']).exists(), obj['path']
+    if obj['isa']=='PBXFileReference' and obj.get('sourceTree')=='SOURCE_ROOT' and not obj['path'].startswith('QuicktickNative/SemanticAssets/'): assert (root/'ios-starter'/obj['path']).exists(), obj['path']
 references={o['path'] for o in objects.values() if o['isa']=='PBXFileReference' and o.get('lastKnownFileType')=='sourcecode.swift'}
 sources={f.relative_to(root/'ios-starter').as_posix() for f in (root/'ios-starter').rglob('*.swift')}
 assert references==sources

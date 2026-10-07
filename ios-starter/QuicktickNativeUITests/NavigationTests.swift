@@ -21,13 +21,24 @@ final class NavigationTests: XCTestCase {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         let playback = app.buttons["inline-play-test:video"]
         XCTAssertTrue(playback.waitForExistence(timeout: 10))
+        let actualFrame = app.otherElements["video-frame"].firstMatch
+        XCTAssertTrue(actualFrame.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: actualFrame)
+        waitForExpectations(timeout: 10)
+        expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
+        waitForExpectations(timeout: 10)
         playback.tap()
-        XCTAssertEqual(playback.value as? String, "Playing")
-        playback.tap()
-        XCTAssertEqual(playback.value as? String, "Paused")
+        expectation(for: NSPredicate(format: "value == %@", "Paused"), evaluatedWith: playback)
+        waitForExpectations(timeout: 5)
         playback.tap()
         app.buttons["tab-Immersive"].tap(); app.buttons["tab-Home"].tap()
-        XCTAssertEqual(playback.value as? String, "Paused")
+        expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
+        waitForExpectations(timeout: 10)
+        app.buttons["feed-recent"].tap()
+        XCTAssertTrue(app.buttons["inline-play-home:video"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["inline-play-test:video"].exists)
+        app.buttons["feed-recommended"].tap()
+        XCTAssertTrue(app.buttons["inline-play-test:video"].waitForExistence(timeout: 10))
         let full = app.buttons["View full image"].firstMatch
         for _ in 0..<3 { if full.isHittable { break }; app.swipeUp() }
         XCTAssertTrue(full.isHittable); full.tap()

@@ -203,8 +203,8 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: active) {
-            guard active else { endExposure(); player = nil; ready = false; gifURL = nil; return }
+        .task(id: "\(active):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
+            guard active, store.activeTab == 1, store.isForeground else { endExposure(); player = nil; ready = false; gifURL = nil; return }
             exposureStarted = .now
             progress = 0; duration = 0; scrubbing = false; error = nil
             await prepare()
@@ -312,9 +312,9 @@ private struct ImmersiveItemView: View {
                 guard let remote = URL(string: resolved.mediaUrl) else { throw URLError(.badURL) }
                 url = remote
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, active, store.activeTab == 1, store.isForeground else { return }
             if post.type.lowercased() == "gif" { gifURL = url; return }
-            let p = store.players.player(for: post.stableID, url: url)
+            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted)
             player = p; p.isMuted = store.muted
             // Start immediately. Duration metadata must never delay the first frame.
             if let resume = store.resumePosition(post.stableID), resume > 0 {
@@ -342,23 +342,25 @@ private struct ImmersiveItemView: View {
 
 struct PosterView: View {
     let url: String
+    var body: some View { CachedMediaImage(url: url, pixels: 1024) }
+}
+
+struct CachedMediaImage: View {
+    let url: String
+    var pixels = 1024
+    var comic = false
+    var onDecoded: ((DecodedMediaImage) -> Void)?
+    @State private var decoded: DecodedMediaImage?
+    @State private var failed = false
     var body: some View {
-        if let file = URL(string: url), file.isFileURL, let image = UIImage(contentsOfFile: file.path) {
-            Image(uiImage: image).resizable().scaledToFit()
-        } else if url.isEmpty {
-            placeholder
-        } else {
-            AsyncImage(url: URL(string: url)) { phase in
-                switch phase {
-                case .success(let image): image.resizable().scaledToFit()
-                case .failure: placeholder
-                default: placeholder.overlay { ProgressView().tint(.white) }
-                }
-            }
+        Group {
+            if let decoded { Image(uiImage: UIImage(cgImage: decoded.image)).resizable().scaledToFit() }
+            else { Color(white: 0.035).overlay { Image(systemName: failed ? "photo.badge.exclamationmark" : "photo").foregroundStyle(.white.opacity(0.25)) } }
+        }.task(id: "\(url):\(pixels):\(comic)") {
+            decoded = nil; failed = false
+            do { let image = try await MediaImagePipeline.shared.image(raw: url, pixels: pixels, comicPreview: comic); try Task.checkCancellation(); decoded = image; onDecoded?(image) }
+            catch { if !Task.isCancelled { failed = !url.isEmpty } }
         }
-    }
-    private var placeholder: some View {
-        AppTheme.canvas.aspectRatio(4/3, contentMode: .fit).overlay { Image(systemName: "play.rectangle").font(.system(size: 44, weight: .light)).foregroundStyle(.white.opacity(0.25)) }
     }
 }
 
@@ -381,20 +383,10 @@ struct PosterView: View {
             return
         }
         #endif
-        let raw = post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl
-        guard let url = URL(string: raw), !raw.isEmpty else { return }
         do {
-            let data: Data
-            if url.isFileURL { data = try Data(contentsOf: url) }
-            else {
-                let (body, response) = try await URLSession.shared.data(from: url)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
-                data = body
-            }
-            guard !Task.isCancelled, retained.contains(key), data.count <= 8_000_000,
-                  let source = CGImageSourceCreateWithData(data as CFData, nil),
-                  let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 960, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else { return }
-            images[key] = UIImage(cgImage: thumbnail)
-        } catch { /* Keep the gradient while a preview is unavailable. */ }
+            let decoded = try await MediaImagePipeline.shared.image(raw: post.cardPreviewURL, pixels: 960)
+            guard !Task.isCancelled, retained.contains(key) else { return }
+            images[key] = UIImage(cgImage: decoded.image)
+        } catch { /* Black fallback when the provider supplies no preview. */ }
     }
 }

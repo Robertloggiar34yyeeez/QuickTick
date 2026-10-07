@@ -2,10 +2,13 @@ import SwiftUI
 import AVKit
 import ImageIO
 import QuartzCore
+import Combine
 
 struct PostCardView: View {
     @EnvironmentObject private var store: AppStore
     let post: Post
+    var available = CGSize(width: 400, height: 800)
+    @State private var nativeSize: CGSize?
     @State private var comments = false
     @State private var tags = false
     @State private var fullImage = false
@@ -16,9 +19,10 @@ struct PostCardView: View {
     @State private var preparing = false
     @State private var mediaAspect: CGFloat = 4 / 3
     @State private var playbackError: String?
+    private var mediaSize: CGSize { MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: (post.nativeSize.map { post.type.lowercased() == "image" && $0.height > $0.width * 4 ? 2 / 3 : $0.width / $0.height }) ?? mediaAspect, available: available) }
     var body: some View {
         VStack(spacing: 0) {
-            media.frame(maxWidth: .infinity).clipped()
+            media.frame(width: mediaSize.width, height: mediaSize.height).clipped()
             if let playbackError { Text(playbackError).font(.caption).foregroundStyle(.orange).padding(8) }
             VStack(spacing: 8) {
                 HStack {
@@ -33,17 +37,23 @@ struct PostCardView: View {
                     ActionIcon(title: "Comments", symbol: "bubble.left") { comments = true }
                 }
             }.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 4)
-        }.background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 22))
+        }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 22))
             .clipShape(RoundedRectangle(cornerRadius: 22))
             .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.07), lineWidth: 1))
             .sheet(isPresented: $comments) { CommentsView(post: post) }
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl) }
-            .task(id: store.inlinePlaybackID) {
-                guard store.inlinePlaybackID == post.stableID else { stopPlayback(); return }
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision)") {
+                guard store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground else { stopPlayback(); return }
                 await preparePlayback()
             }
             .onDisappear { stopPlayback(); if store.inlinePlaybackID == post.stableID { store.inlinePlaybackID = nil } }
+            .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Just(AVPlayer.TimeControlStatus.paused).eraseToAnyPublisher()) { playing = $0 == .playing }
+            .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Just(AVPlayerItem.Status.unknown).eraseToAnyPublisher()) { status in
+                if status == .failed { playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."; playing = false; store.players.release(post.stableID) }
+            }
+            .onChange(of: comments) { _, shown in if shown { store.pausedPlaybackID = post.stableID; store.players.pause(post.stableID) } }
+            .onChange(of: fullImage) { _, shown in if shown { store.players.pauseAll() } }
             .onChange(of: store.muted) { _, value in player?.isMuted = value }
             .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
                 guard let item = note.object as? AVPlayerItem, item === player?.currentItem else { return }
@@ -61,14 +71,14 @@ struct PostCardView: View {
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true)
             } else if post.type.lowercased() == "image" {
-                ComicCardPreview(url: post.cardPreviewURL)
+                CachedMediaImage(url: post.cardPreviewURL, pixels: Int(mediaSize.width * 3), comic: true) { decoded in nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height) }
             } else { PosterView(url: post.cardPreviewURL) }
         }
         .overlay(alignment: .bottomTrailing) {
             if post.isImmersiveMedia {
                 Button {
                     if store.inlinePlaybackID == post.stableID {
-                        playing.toggle(); playing ? player?.play() : player?.pause()
+                        store.pausedPlaybackID = store.pausedPlaybackID == post.stableID ? nil : post.stableID
                     } else { store.inlinePlaybackID = post.stableID }
                 } label: {
                     HStack(spacing: 8) {
@@ -89,75 +99,25 @@ struct PostCardView: View {
         .onTapGesture { if !post.isImmersiveMedia { fullImage = true } }
     }
     private func preparePlayback() async {
-        preparing = true; playbackError = nil; playing = true
+        preparing = true; playbackError = nil; playing = false
         defer { preparing = false }
-        #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
-        #endif
         do {
             let resolved = try await store.resolver.resolve(post)
             guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, let url = URL(string: resolved.mediaUrl) else { return }
-            if post.type.lowercased() == "gif" { gifURL = url; return }
-            let p = AVPlayer(url: url); p.isMuted = store.muted; player = p; p.play(); preparing = false
+            if post.type.lowercased() == "gif" { gifURL = url; playing = store.pausedPlaybackID != post.stableID; return }
+            let p: AVPlayer
+            if store.pausedPlaybackID == post.stableID { p = store.players.player(for: post.stableID, url: url); p.pause() }
+            else { p = store.players.activate(key: post.stableID, url: url, muted: store.muted) }
+            player = p; preparing = false
             // Start playback first; size discovery adjusts the card independently.
             if let asset = p.currentItem?.asset, let track = try? await asset.loadTracks(withMediaType: .video).first,
                let size = try? await track.load(.naturalSize), let transform = try? await track.load(.preferredTransform) {
                 let display = size.applying(transform)
-                if !Task.isCancelled, abs(display.height) > 0 { mediaAspect = abs(display.width / display.height) }
+                if !Task.isCancelled, store.inlinePlaybackID == post.stableID, abs(display.height) > 0 { nativeSize = CGSize(width: abs(display.width), height: abs(display.height)); mediaAspect = abs(display.width / display.height) }
             }
         } catch { if !Task.isCancelled { playbackError = error.localizedDescription; playing = false } }
     }
-    private func stopPlayback() { player?.pause(); player = nil; gifURL = nil; ready = false; playing = false }
-}
-
-private struct ComicCardPreview: View {
-    let url: String
-    @State private var preview: DecodedCardPreview?
-    var body: some View {
-        Group {
-            if let preview {
-                Image(uiImage: preview.image).resizable().aspectRatio(preview.image.size, contentMode: .fit)
-                    .overlay(alignment: .topLeading) {
-                        if preview.isComic { Text("Comic preview").font(.caption.weight(.semibold)).padding(8).background(.ultraThinMaterial, in: Capsule()).padding(10) }
-                    }
-            } else { PosterView(url: "") }
-        }.task(id: url) {
-            guard !url.isEmpty, let location = URL(string: url, relativeTo: QuicktickAPIClient.configuredBaseURL())?.absoluteURL else { return }
-            do {
-                let data: Data
-                if location.isFileURL { data = try Data(contentsOf: location) }
-                else {
-                    let (body, response) = try await URLSession.shared.data(from: location)
-                    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
-                    data = body
-                }
-                let decoded = await Task.detached(priority: .userInitiated) { DecodedCardPreview.decode(data) }.value
-                guard !Task.isCancelled else { return }; preview = decoded
-            } catch { /* The feed keeps its preview placeholder on failure. */ }
-        }
-    }
-}
-
-private struct DecodedCardPreview: @unchecked Sendable {
-    let image: UIImage
-    let isComic: Bool
-    static func decode(_ data: Data) -> Self? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
-              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat, width > 0, height > 0 else { return nil }
-        if height > width * 4,
-           let full = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
-           let top = full.cropping(to: CGRect(x: 0, y: 0, width: width, height: min(height, width * 1.5))) {
-            let size = CGSize(width: min(1200, width), height: min(1200, width) * 1.5)
-            let format = UIGraphicsImageRendererFormat(); format.scale = 1
-            let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in UIImage(cgImage: top).draw(in: CGRect(origin: .zero, size: size)) }
-            return Self(image: image, isComic: true)
-        }
-        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 2048, kCGImageSourceCreateThumbnailWithTransform: true]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        return Self(image: UIImage(cgImage: image), isComic: false)
-    }
+    private func stopPlayback() { store.players.pause(post.stableID); player?.pause(); player = nil; gifURL = nil; ready = false; playing = false }
 }
 
 private struct FullComicView: View {

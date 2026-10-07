@@ -2,6 +2,18 @@ import Foundation
 
 actor RecommendationEngine {
     private(set) var state = RecommendationState()
+    let semantic = SemanticRecommender()
+    struct DebugScore: Sendable {
+        let semantic: SemanticScore
+        let tags: Double
+        let diversity: Double
+        let seen: Double
+        let final: Double
+    }
+    private(set) var debugScores: [String: DebugScore] = [:]
+    private(set) var rankLatencyMs = 0.0
+    func prepareSemantic(_ posts: [Post]) async { await semantic.prepare(posts) }
+
 
     private let maxTerms = 140
     private let maxSeen = 420
@@ -23,7 +35,8 @@ actor RecommendationEngine {
         return state
     }
 
-    func reset(provider: Provider? = nil) {
+    func reset(provider: Provider? = nil) async {
+        await semantic.reset()
         if let provider { state.profiles[provider.rawValue] = RecommendationProfile() }
         else { state = RecommendationState() }
     }
@@ -96,7 +109,8 @@ actor RecommendationEngine {
         state.profiles[provider.rawValue] = normalized(profile)
     }
 
-    func record(_ event: RecommendationEvent, post: Post) {
+    func record(_ event: RecommendationEvent, post: Post) async {
+        await semantic.record(event, post: post)
         let source = post.provider.lowercased()
         let signalTerms = terms(for: post)
         var profile = profile(for: source)
@@ -224,10 +238,21 @@ actor RecommendationEngine {
         return score
     }
 
-    func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], limit: Int? = nil) -> [Post] {
+    func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
+        let start = Date(); defer { rankLatencyMs = Date().timeIntervalSince(start) * 1000 }
+        let semanticScores = await semantic.scores(candidates)
+        let vectors = await semantic.diversityVectors(candidates + recent)
+        let weights = semantic.weights
+        debugScores = [:]
         var pool = candidates.filter { !isHardDisliked($0, taste: taste) }
             .enumerated()
-            .map { (post: $0.element, base: score($0.element, taste: taste, recent: recent, collaborativeScores: collaborativeScores) - Double($0.offset) * 0.002) }
+             .map { entry in
+                let raw = score(entry.element, taste: taste, recent: recent, collaborativeScores: collaborativeScores)
+                let seen = profile(for: entry.element.provider.lowercased()).recentSeen.contains(entry.element.stableID) ? -1000.0 : 0
+                let tags = tanh((raw - seen) / 35) * 8
+                let semantic = semanticScores[entry.element.stableID] ?? SemanticScore()
+                return (post: entry.element, base: tags + semantic.total(weights) + seen - Double(entry.offset) * 0.002, tags: tags, seen: seen)
+            }
         var chosen: [Post] = []
         let target = min(limit ?? pool.count, pool.count)
 
@@ -242,7 +267,17 @@ actor RecommendationEngine {
                 let candidateTerms = terms(for: entry.post)
                 let overlap = candidateTerms.filter(contextTerms.contains).count
                 let immediate = candidateTerms.filter(lastTerms.contains).count
-                var value = entry.base - Double(overlap) * 2.8 - Double(immediate) * 5.1
+                var diversity = min(8, Double(overlap) * 0.5 + Double(immediate) * 1.0)
+                if let vector = vectors[entry.post.stableID] {
+                    let similar = context.compactMap { vectors[$0.stableID] }.map { SemanticRecommender.cosine(vector, $0) }.max() ?? 0
+                    diversity += max(0, similar - 0.70) * 10
+                    if similar > 0.94 { diversity += 8 }
+                }
+                if let creator = entry.post.creator, context.suffix(3).contains(where: { $0.creator == creator }) { diversity += 3 }
+                var value = entry.base - diversity
+                // Every eighth slot favors an unseen lower-affinity candidate, bounded by negative preferences.
+                if chosen.count % 8 == 7, entry.seen == 0 { value += 2 * (1 - (semanticScores[entry.post.stableID]?.recent ?? 0)) }
+                debugScores[entry.post.stableID] = DebugScore(semantic: semanticScores[entry.post.stableID] ?? SemanticScore(), tags: entry.tags, diversity: diversity, seen: entry.seen, final: value)
                 if immediate >= 2 { value -= 9 }
                 if immediate >= 3 { value -= 15 }
                 if overlap >= 4 { value -= 11 }

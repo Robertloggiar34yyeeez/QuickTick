@@ -8,9 +8,22 @@ permissions:
 jobs:
   ios:
     runs-on: macos-latest
-    timeout-minutes: 35
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: bge-micro-3edf6d7-v1
+      - name: Prepare pinned on-device embedding model
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install 'torch==2.5.1' 'transformers==4.46.3' 'coremltools==8.3.0' 'numpy==1.26.4'
+          python scripts/prepare-semantic-model.py
       - name: Build and test native iOS app
         shell: bash
         run: |

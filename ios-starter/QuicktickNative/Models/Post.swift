@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
     let key: String
@@ -25,11 +26,19 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
         }) ?? thumbUrl
     }
 
+    var width: Double?
+    var height: Double?
+    var caption: String?
+    var creator: String?
+    var category: String?
+    var createdAt: Double?
+    var nativeSize: CGSize? { guard let width, let height, width > 0, height > 0 else { return nil }; return CGSize(width: width, height: height) }
+
     var stableID: String { key.isEmpty ? "\(provider):\(id)" : key }
     var providerKey: Provider? { Provider(rawValue: provider.lowercased().replacingOccurrences(of: " ", with: "")) }
 
     enum CodingKeys: String, CodingKey {
-        case key, id, provider, score, tags, mediaUrl, previewUrl, thumbUrl, pageUrl, type, embedUrl
+        case key, id, provider, score, tags, mediaUrl, previewUrl, thumbUrl, pageUrl, type, embedUrl, width, height, caption, creator, category, createdAt
     }
 
     init(key: String, id: String, provider: String, score: Double = 0, tags: [String] = [], mediaUrl: String = "", previewUrl: String = "", thumbUrl: String = "", pageUrl: String = "", type: String = "", embedUrl: String? = nil) {
@@ -51,6 +60,8 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
         pageUrl = try c.decodeIfPresent(String.self, forKey: .pageUrl) ?? ""
         type = try c.decodeIfPresent(String.self, forKey: .type) ?? ""
         embedUrl = try c.decodeIfPresent(String.self, forKey: .embedUrl)
+        width = try? c.decode(Double.self, forKey: .width); height = try? c.decode(Double.self, forKey: .height)
+        caption = try? c.decode(String.self, forKey: .caption); creator = try? c.decode(String.self, forKey: .creator); category = try? c.decode(String.self, forKey: .category); createdAt = try? c.decode(Double.self, forKey: .createdAt)
     }
 }
 

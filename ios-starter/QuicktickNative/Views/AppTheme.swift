@@ -6,6 +6,13 @@ enum AppTheme {
     static let accent = Color(red: 0.60, green: 0.43, blue: 1)
     static let gradient = LinearGradient(colors: [accent, Color(red: 0.25, green: 0.62, blue: 0.95)], startPoint: .topLeading, endPoint: .bottomTrailing)
     static let canvas = Color.black
+    static let small: CGFloat = 8
+    static let contentMargin: CGFloat = 16
+    static let sectionGap: CGFloat = 24
+    static let controlHeight: CGFloat = 44
+    static let controlRadius: CGFloat = 14
+    static let cardRadius: CGFloat = 22
+    static let feedWidth: CGFloat = 680
 }
 
 struct ActionIcon: View {

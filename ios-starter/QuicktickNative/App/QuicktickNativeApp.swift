@@ -13,7 +13,7 @@ struct QuicktickNativeApp: App {
                 .environmentObject(store)
                 .preferredColorScheme(.dark)
                 .task { await store.bootstrap() }
-                .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await store.syncWhenActive() } } }
+                .onChange(of: scenePhase) { _, phase in store.isForeground = phase == .active; if phase == .active { Task { await store.syncWhenActive() } } }
         }
     }
 }

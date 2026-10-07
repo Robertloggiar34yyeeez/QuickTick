@@ -25,6 +25,10 @@ catalog='QuicktickNative/Assets.xcassets'
 if (ROOT/catalog).exists():
     ref=add('file:'+catalog,'PBXFileReference',lastKnownFileType='folder.assetcatalog',path=catalog,sourceTree='SOURCE_ROOT')
     refs.append(ref); resource_ids[catalog]=add('build:'+catalog,'PBXBuildFile',fileRef=ref)
+for name in ['BGEMicro.mlmodelc','bge-vocab.txt','bge-license.txt']:
+    rel='QuicktickNative/SemanticAssets/'+name
+    ref=add('file:'+rel,'PBXFileReference',lastKnownFileType='folder' if name.endswith('.mlmodelc') else 'text',path=rel,sourceTree='SOURCE_ROOT')
+    refs.append(ref);resource_ids[rel]=add('build:'+rel,'PBXBuildFile',fileRef=ref)
 products=[]; targets=[]
 for name,kind in [('QuicktickNative','application'),('QuicktickNativeTests','bundle.unit-test'),('QuicktickNativeUITests','bundle.ui-testing')]:
     if not (ROOT/name).exists(): continue
@@ -39,7 +43,7 @@ for name,kind in [('QuicktickNative','application'),('QuicktickNativeTests','bun
         settings={'PRODUCT_BUNDLE_IDENTIFIER':'com.quicktick.'+name,'PRODUCT_NAME':'$(TARGET_NAME)','GENERATE_INFOPLIST_FILE':'YES','SWIFT_VERSION':'6.0','IPHONEOS_DEPLOYMENT_TARGET':'17.0','TARGETED_DEVICE_FAMILY':'1,2','CODE_SIGN_STYLE':'Automatic','SWIFT_EMIT_LOC_STRINGS':'YES'}
         extra={}
         if app:
-            settings.update({'MARKETING_VERSION':'0.6.24','CURRENT_PROJECT_VERSION':'4','INFOPLIST_KEY_QUICKTICK_API_BASE_URL':'$(QUICKTICK_API_BASE_URL)','INFOPLIST_KEY_UIApplicationSceneManifest_Generation':'YES','INFOPLIST_KEY_UILaunchScreen_Generation':'YES','INFOPLIST_KEY_UISupportedInterfaceOrientations':'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad':'UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_CFBundleDisplayName':'Quicktick','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
+            settings.update({'MARKETING_VERSION':'0.6.24','CURRENT_PROJECT_VERSION':'5','INFOPLIST_KEY_QUICKTICK_API_BASE_URL':'$(QUICKTICK_API_BASE_URL)','INFOPLIST_KEY_UIApplicationSceneManifest_Generation':'YES','INFOPLIST_KEY_UILaunchScreen_Generation':'YES','INFOPLIST_KEY_UISupportedInterfaceOrientations':'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad':'UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_CFBundleDisplayName':'Quicktick','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
             extra['baseConfigurationReference']=uid('file:Config/'+config+'.xcconfig')
             settings['ASSETCATALOG_COMPILER_APPICON_NAME']='AppIcon'
             settings['GENERATE_INFOPLIST_FILE']='NO'

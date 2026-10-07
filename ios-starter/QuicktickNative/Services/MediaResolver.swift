@@ -23,8 +23,11 @@ actor MediaResolver {
 
     private func fetch(_ post: Post) async throws -> ResolvedMedia {
         if let (media, date) = cache[post.stableID], Date().timeIntervalSince(date) < 180 { return media }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing"), URL(string: post.mediaUrl)?.isFileURL == true { return ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type) }
+        #endif
         if (post.providerKey == .rule34 || post.type == "image" || post.type == "gif"), !post.mediaUrl.isEmpty {
-            return ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type)
+            return ResolvedMedia(mediaUrl: try await api.absoluteMediaURL(post.mediaUrl).absoluteString, type: post.type)
         }
         let path: String
         switch post.provider.lowercased() {
@@ -32,7 +35,7 @@ actor MediaResolver {
         case "eporner": path = "/api/eporner-media"
         case "hanime": path = "/api/hanime-media"
         case "redgifs": path = "/api/redgifs-media"
-        default: return ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type)
+        default: return ResolvedMedia(mediaUrl: try await api.absoluteMediaURL(post.mediaUrl).absoluteString, type: post.type)
         }
         let data = try await api.request(path: path, query: [URLQueryItem(name: "id", value: post.id), URLQueryItem(name: "json", value: "1")])
         var media = try JSONDecoder().decode(ResolvedMedia.self, from: data)

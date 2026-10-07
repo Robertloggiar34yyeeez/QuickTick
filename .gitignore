@@ -21,3 +21,5 @@ native-repository/
 app-state-v*.json
 recommendations-v*.json
 downloads.json
+
+ios-starter/QuicktickNative/SemanticAssets/

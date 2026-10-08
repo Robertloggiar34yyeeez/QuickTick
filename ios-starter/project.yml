@@ -6,7 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: 6.0
-    CURRENT_PROJECT_VERSION: 11
+    CURRENT_PROJECT_VERSION: 12
     MARKETING_VERSION: 0.6.24
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES

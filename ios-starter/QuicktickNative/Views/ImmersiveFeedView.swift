@@ -312,7 +312,8 @@ private struct ImmersiveItemView: View {
                 })
                 .accessibilityElement().accessibilityLabel("Video progress")
                 .accessibilityValue("\(Int(progress * 100)) percent")
-                .accessibilityIdentifier("immersive-progress")
+                .accessibilityIdentifier(active ? "immersive-progress" : "inactive-progress-\(post.stableID)")
+                .accessibilityHidden(!active)
                 .accessibilityAdjustableAction { direction in
                     guard duration > 0 else { return }
                     let delta = direction == .increment ? 0.05 : -0.05

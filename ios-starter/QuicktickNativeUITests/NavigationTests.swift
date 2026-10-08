@@ -28,7 +28,7 @@ final class NavigationTests: XCTestCase {
             XCTAssertTrue(like.isHittable)
             XCTAssertGreaterThan(like.frame.midX, app.frame.width * 0.9)
             XCTAssertTrue(app.buttons["open-settings"].isHittable)
-            XCTAssertTrue(app.otherElements["immersive-progress"].exists)
+            XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "immersive-progress").count, 1)
             XCTAssertEqual(app.tabBars.count, 0)
             let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Immersive iPad full canvas \(orientation.rawValue)"; capture.lifetime = .keepAlways; add(capture)
         }
@@ -175,12 +175,22 @@ final class NavigationTests: XCTestCase {
             XCTAssertEqual(action.frame.midX, like.frame.midX, accuracy: 1)
         }
         for index in 1..<actions.count { XCTAssertGreaterThan(actions[index].frame.minY, actions[index - 1].frame.maxY) }
-        let progress = app.otherElements["immersive-progress"]
+        let progressElements = app.descendants(matching: .any).matching(identifier: "immersive-progress")
+        XCTAssertEqual(progressElements.count, 1)
+        let progress = progressElements.firstMatch
         XCTAssertTrue(progress.isHittable)
         XCTAssertLessThanOrEqual(progress.frame.maxY, app.buttons["tab-Home"].frame.minY)
+        XCTAssertGreaterThanOrEqual(progress.frame.height, 44)
         XCTAssertTrue(progress.exists)
         let before = like.frame
         let center = app.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.45))
+        let surface = app.otherElements["immersive-video-surface"].firstMatch
+        expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: surface)
+        waitForExpectations(timeout: 10)
+        center.tap() // Pause before verifying an exact seek, independent of elapsed time.
+        progress.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)).tap()
+        let percentage = Int((progress.value as? String ?? "").split(separator: " ").first ?? "") ?? -1
+        XCTAssertEqual(Double(percentage), 75, accuracy: 4)
         center.doubleTap()
         XCTAssertEqual(like.value as? String, "Liked")
         center.doubleTap()

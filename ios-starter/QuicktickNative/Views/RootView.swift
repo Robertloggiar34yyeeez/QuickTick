@@ -37,7 +37,7 @@ struct RootView: View {
                     VStack(spacing: 6) { tabButtons(vertical: true) }
                         .padding(6).background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 22))
                         .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.14), lineWidth: 1))
-                        .padding(.leading, 16).accessibilityIdentifier("immersive-navigation-rail")
+                        .padding(.leading, 16)
                 }
             }
         }.tint(.white).background(.black)

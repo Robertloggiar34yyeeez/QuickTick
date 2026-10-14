@@ -13,14 +13,14 @@ def serialize(value, level=0):
     return '"'+str(value).replace('\\','\\\\').replace('"','\\"')+'"'
 refs=[]; source_ids={}; resource_ids={}
 for path in sorted(ROOT.rglob('*')):
-    if not path.is_file() or path.suffix not in ('.swift','.json','.xcconfig','.plist','.entitlements'): continue
+    if not path.is_file() or path.suffix not in ('.swift','.json','.xcconfig','.plist','.entitlements','.mp4'): continue
     rel=path.relative_to(ROOT).as_posix()
     if '.xcassets/' in rel: continue
     if not rel.startswith(('QuicktickNative/','QuicktickNativeTests/','QuicktickNativeUITests/','Config/')): continue
-    ref=add('file:'+rel,'PBXFileReference',lastKnownFileType={'.swift':'sourcecode.swift','.json':'text.json','.xcconfig':'text.xcconfig','.plist':'text.plist.xml','.entitlements':'text.plist.entitlements'}[path.suffix],path=rel,sourceTree='SOURCE_ROOT')
+    ref=add('file:'+rel,'PBXFileReference',lastKnownFileType={'.swift':'sourcecode.swift','.json':'text.json','.xcconfig':'text.xcconfig','.plist':'text.plist.xml','.entitlements':'text.plist.entitlements','.mp4':'file'}[path.suffix],path=rel,sourceTree='SOURCE_ROOT')
     refs.append(ref)
     if path.suffix=='.swift': source_ids[rel]=add('build:'+rel,'PBXBuildFile',fileRef=ref)
-    if path.suffix=='.json': resource_ids[rel]=add('build:'+rel,'PBXBuildFile',fileRef=ref)
+    if path.suffix in ('.json','.mp4'): resource_ids[rel]=add('build:'+rel,'PBXBuildFile',fileRef=ref)
 catalog='QuicktickNative/Assets.xcassets'
 if (ROOT/catalog).exists():
     ref=add('file:'+catalog,'PBXFileReference',lastKnownFileType='folder.assetcatalog',path=catalog,sourceTree='SOURCE_ROOT')

@@ -27,6 +27,20 @@ jobs:
           # 2.2.2 is the last PyTorch release with Intel macOS wheels.
           python -m pip install 'torch==2.2.2' 'transformers==4.46.3' 'coremltools==8.3.0' 'numpy==1.26.4'
           python scripts/prepare-semantic-model.py
+      - name: Archive real iPhone build without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination 'generic/platform=iOS' -archivePath build/QuicktickNative.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive | tee logs/xcodebuild-archive.txt
+      - name: Package unsigned IPA with verified user-provided xtool source
+        shell: bash
+        run: bash scripts/package-with-xtool.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QuickTick-0.6.25-unsigned-IPA
+          path: build/export/
+          if-no-files-found: error
+          retention-days: 14
       - name: Build and test native iOS app
         shell: bash
         run: |
@@ -56,20 +70,6 @@ jobs:
           if [ -d logs/QuicktickIPadTests.xcresult ]; then
             xcrun xcresulttool export attachments --path logs/QuicktickIPadTests.xcresult --output-path logs/ipad-screenshots || true
           fi
-      - name: Archive real iPhone build without signing
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination 'generic/platform=iOS' -archivePath build/QuicktickNative.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive | tee logs/xcodebuild-archive.txt
-      - name: Package unsigned IPA with verified user-provided xtool source
-        shell: bash
-        run: bash scripts/package-with-xtool.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: QuickTick-0.6.25-unsigned-IPA
-          path: build/export/
-          if-no-files-found: error
-          retention-days: 14
       - uses: actions/upload-artifact@v4
         if: always()
         with:

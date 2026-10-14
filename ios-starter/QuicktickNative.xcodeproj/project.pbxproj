@@ -279,6 +279,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "60E93205A75B91DE3BE3FF87";
 		};
+		"7F7610B70DF2D38F9C5E70C8" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "file";
+			"path" = "QuicktickNative/TestsSupport/UITestClip.mp4";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"7FEB380820F684616DCC2353" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "7F7610B70DF2D38F9C5E70C8";
+		};
 		"7D831797AC7A7A23AD7F0698" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -715,6 +725,7 @@
 			"isa" = "PBXResourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
+				"7FEB380820F684616DCC2353",
 				"3238D0253CD3CF7340AAF0BF",
 				"9E60231250AFB54880FB7BF6",
 				"FAC6CAA41D3E049244AD5EA3",
@@ -1070,6 +1081,7 @@
 				"7C54B72DC1B9E24B33CFEBC1",
 				"69C8057082F6B7A8ACC94A3D",
 				"60E93205A75B91DE3BE3FF87",
+				"7F7610B70DF2D38F9C5E70C8",
 				"7D831797AC7A7A23AD7F0698",
 				"2B2B7A4CE68DA91301C4F881",
 				"D08EEE6354DE3E85DD6233EA",

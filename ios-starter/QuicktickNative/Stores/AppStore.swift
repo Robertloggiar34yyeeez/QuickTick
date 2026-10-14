@@ -235,7 +235,6 @@ final class AppStore: ObservableObject {
                 if !filtered.isEmpty || !hasMore { break }
             }
             let taste = tasteChoice(for: provider)
-            let firstBatchNextPage = nextPage
 
             let immediate = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(filtered, taste: taste, recent: posts) : filtered
             guard generation == token, !Task.isCancelled else { return }

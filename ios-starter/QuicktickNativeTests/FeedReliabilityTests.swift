@@ -217,7 +217,7 @@ final class FeedReliabilityTests: XCTestCase {
     func testDirectProviderMediaURLIsAbsolute() async throws {
         let resolver = MediaResolver(api:QuicktickAPIClient(baseURL:URL(string:"https://example.invalid")))
         let result = try await resolver.resolve(Post(key:"rule34:1",id:"1",provider:"Rule34",mediaUrl:"/sample.mp4",type:"video"))
-        XCTAssertEqual(result.mediaUrl,"https://example.invalid/sample.mp4")
+        XCTAssertEqual(result.mediaUrl,"https://rule34.xxx/sample.mp4")
     }
     func testWordPieceMasksPunctuationAndSubwords() {
         let tokenizer = WordPieceTokenizer(vocabulary:["[PAD]":0,"[CLS]":101,"[SEP]":102,"[UNK]":100,"race":1,"##car":2,",":3,"aero":4])

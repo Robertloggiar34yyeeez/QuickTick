@@ -15,6 +15,10 @@ assert references==sources
 scheme=ET.parse(p/'xcshareddata/xcschemes/QuicktickNative.xcscheme')
 for ref in scheme.findall('.//BuildableReference'): assert ref.attrib['BlueprintIdentifier'] in objects
 assert len(scheme.findall('.//TestableReference'))==2
+clip=next((key for key,obj in objects.items() if obj['isa']=='PBXFileReference' and obj.get('path')=='QuicktickNative/TestsSupport/UITestClip.mp4'),None)
+assert clip is not None, 'UI test clip must survive project regeneration'
+clip_builds={key for key,obj in objects.items() if obj['isa']=='PBXBuildFile' and obj.get('fileRef')==clip}
+assert any(clip_builds.intersection(obj.get('files',[])) for obj in objects.values() if obj['isa']=='PBXResourcesBuildPhase'), 'UI test clip is not bundled'
 for fixture in (root/'ios-starter/QuicktickNativeTests/Fixtures').glob('*.json'):
     j=json.loads(fixture.read_text(encoding='utf-8-sig')); assert j['items'][0]['provider']==fixture.stem
 vector=json.loads((root/'reference-tests/sync-vector-v1.json').read_text())['syncId']

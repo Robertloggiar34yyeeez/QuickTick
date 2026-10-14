@@ -21,7 +21,6 @@ struct SettingsView: View {
                     Task { do { try await store.setCloudSyncEnabled(enabled) } catch { status = error.localizedDescription } }
                 })).accessibilityIdentifier("cloud-sync-toggle")
                 Text("Off by default. When enabled, encrypted Favorites, provider access and preferences are sent to your QuickTick website. Feeds and recommendations always run independently.").font(.footnote).foregroundStyle(.secondary)
-                Text("Enable Sync only if you want to share Favorites, access settings and preferences with your other devices.").font(.footnote).foregroundStyle(.secondary)
                 HStack {
                     Button("Copy my Sync ID") { UIPasteboard.general.string = store.syncID; status = "Sync ID copied." }
                         .disabled(!store.cloudSyncEnabled || store.syncID.isEmpty)

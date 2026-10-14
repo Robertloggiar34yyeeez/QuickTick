@@ -3,8 +3,9 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 python3 scripts/prepare-xtool.py
+xcrun simctl shutdown all || true
 export XTOOL_VERSION="drive-archive-d802c719e43fb2d66a7c7879f7dff75bfdd96a27"
-swift build --package-path tools/xtool-source --configuration release --product xtool 2>&1 | tee logs/xtool-tool-build.txt
+swift build --package-path tools/xtool-source --configuration release --jobs 2 --product xtool 2>&1 | tee logs/xtool-tool-build.txt
 XTOOL_BIN_DIR=$(swift build --package-path tools/xtool-source --configuration release --show-bin-path)
 XTOOL_BIN="$XTOOL_BIN_DIR/xtool"
 "$XTOOL_BIN" --help > logs/xtool-help.txt

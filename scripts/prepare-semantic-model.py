@@ -2,7 +2,7 @@
 Build-time only; no Python/MLX/transformers dependency ships in the app.
 """
 from pathlib import Path
-import json,time,hashlib,subprocess,shutil
+import json,time,hashlib,subprocess,shutil,platform
 import torch,numpy as np,coremltools as ct
 from transformers import AutoModel,AutoTokenizer
 MODEL="TaylorAI/bge-micro-v2"
@@ -42,4 +42,5 @@ sim=lambda a,b:float(np.dot(a,b)/(np.linalg.norm(a)*np.linalg.norm(b)))
 assert min(parity)>.995,parity
 assert sim(vectors[0],vectors[1])>sim(vectors[0],vectors[2])+.10
 report={"model":MODEL,"revision":REVISION,"dimensions":384,"precision":"float32 (float16 conversion produced NaNs; parity gate rejected it)","parameters":sum(p.numel() for p in base.parameters()),"compiledBytes":sum(p.stat().st_size for p in (OUT/"BGEMicro.mlmodelc").rglob("*") if p.is_file()),"macCPUInferenceMs":times,"parityCosine":parity,"relatedCosine":sim(vectors[0],vectors[1]),"unrelatedCosine":sim(vectors[0],vectors[2]),"devicePerformance":"Not measured on a physical iPhone/iPad"}
+report.update({"buildHostArchitecture":platform.machine(),"torchVersion":torch.__version__,"coremltoolsVersion":ct.__version__})
 Path("logs").mkdir(exist_ok=True);Path("logs/semantic-model-benchmark.json").write_text(json.dumps(report,indent=2));print(json.dumps(report))

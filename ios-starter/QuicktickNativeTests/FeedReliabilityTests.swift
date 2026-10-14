@@ -94,6 +94,12 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertNil(store.inlinePlaybackID)
         await store.adaptRecommendationTail(token: store.feedRevision)
         XCTAssertEqual(store.posts.map(\.stableID), ["first", "next"])
+        let visibleComic = Post(key: "comic", id: "4", provider: "Eporner", tags: ["baking"], type: "image")
+        store.posts = [first, visibleComic, next]
+        store.inlinePlaybackID = first.stableID
+        store.protectVisibleHomePosts([first.stableID, visibleComic.stableID])
+        await store.adaptRecommendationTail(token: store.feedRevision)
+        XCTAssertEqual(store.posts.map(\.stableID), ["first", "comic", "next"], "Ranking must not replace a visible comic with another video")
     }
     @MainActor func testLazyPaginationDoesNotFetchBeforeInitialRefresh() async {
         let store = AppStore()

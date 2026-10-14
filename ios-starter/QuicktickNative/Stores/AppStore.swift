@@ -10,7 +10,7 @@ final class AppStore: ObservableObject {
         }
     }
     @Published var posts: [Post] = []
-    @Published var activeTab = 0 { didSet { if oldValue != activeTab { inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
+    @Published var activeTab = 0 { didSet { if oldValue != activeTab { protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
     @Published var isForeground = true { didSet { if !isForeground { players.pauseAll() } } }
     @Published var pausedPlaybackID: String?
     @Published var inlinePlaybackID: String? { didSet { if oldValue != inlinePlaybackID { pausedPlaybackID = nil; players.pauseAll() } } }
@@ -359,17 +359,27 @@ final class AppStore: ObservableObject {
     func recordComplete(_ post: Post) { Task { await record(.complete, post: post) } }
     func recordWatch(_ post: Post, seconds: Double, completion: Double) { Task { await record(.watched(seconds: seconds, completion: completion), post: post) } }
 
+    private var protectedHomePostIDs: Set<String> = []
+    func protectVisibleHomePosts(_ keys: Set<String>) {
+        guard activeTab == 0 else { return }
+        protectedHomePostIDs = keys
+    }
+
     func adaptRecommendationTail(token: UUID) async {
         // A tab transition briefly has no active Home post. Ranking that whole
         // array would move the saved scroll anchor before playback reactivates.
         guard activeTab == 0, let active = inlinePlaybackID else { return }
         let source = posts
         guard let activeIndex = source.firstIndex(where: { $0.stableID == active }) else { return }
-        // Freeze everything through the visible post: engagement never moves the current card.
-        let prefixCount = activeIndex + 1
+        // Several cards can be visible, particularly on iPad. Moving a still
+        // below the active video can expose another clip and steal playback.
+        // Geometry remains owned by Home; this set only protects ranking.
+        let protected = protectedHomePostIDs.union([active])
+        let prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
         let tail = Array(source.dropFirst(prefixCount))
         let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: Array(source.prefix(prefixCount)))
-        guard generation == token, feedSort == "recommended", posts.map(\.stableID) == source.map(\.stableID), inlinePlaybackID == active else { return }
+        guard generation == token, activeTab == 0, feedSort == "recommended", posts.map(\.stableID) == source.map(\.stableID), inlinePlaybackID == active,
+              protectedHomePostIDs.isSubset(of: Set(source.prefix(prefixCount).map(\.stableID))) else { return }
         posts = Array(source.prefix(prefixCount)) + ranked
     }
 

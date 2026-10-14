@@ -78,7 +78,11 @@ struct HomeFeedView: View {
             if store.activeTab == 0 && store.feedMediaOnly { await store.refresh() }
         }
         .coordinateSpace(name: "home-viewport")
-        .onPreferenceChange(HomeVisibleFrames.self) { visibleFrames = $0 }
+        .onPreferenceChange(HomeVisibleFrames.self) { frames in
+            visibleFrames = frames
+            let bounds = CGRect(origin: .zero, size: viewport.size)
+            store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
+        }
         .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
             let candidate = visibleCandidate(viewport: viewport.size)
             do { try await Task.sleep(for: .milliseconds(120)); try Task.checkCancellation() } catch { return }

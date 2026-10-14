@@ -1,33 +1,24 @@
-# Native Quicktick 0.6.24
+# Current native build: 0.6.25
 
-**Production pass (build 5): source implemented, Apple build/tests blocked by GitHub account billing. See PRODUCTION-PASS-REPORT.md.**
+Direct provider APIs and on-device recommendations; website Sync is optional and off by default. See [native architecture](ARCHITECTURE.md) and [0.6.25 changes](DIRECT-API-0.6.25.md). Packaging uses the verified xtool source supplied on Drive. Historical 0.6.24 notes below describe the previous website-proxy implementation.
 
-Open `ios-starter/QuicktickNative.xcodeproj` on macOS with current Xcode. The shared QuicktickNative scheme includes the app, deterministic unit tests and navigation UI tests. Minimum deployment: iOS 17; Swift 6.
+# Quicktick Native iOS Codex Handoff — Web 0.6.24
 
-The API base URL is https://quick-tick-webb.vercel.app. Config xcconfig uses `https:/$()/` to preserve the URL through Xcode's comment parser. Rule34 credentials and supported Pornhub session material are entered in Settings and saved in Keychain. No passwords or Gorse server credentials belong in the app.
+This package continues the existing native iOS port against the effective Quicktick web behavior through **0.6.24**. It is not a WebView wrapper.
 
-Build/test from the source root (first prepare the bundled model; Python is build-time only):
+Start with `CODEX-MASTER-PROMPT.md`. `reference-web/` is the API/behavior source of truth, reconstructed by applying the 0.6.20 → 0.6.21 → 0.6.22 → 0.6.23 → 0.6.24 patches in order. `dist/` is intentionally excluded because Vercel builds it.
 
-```sh
-python3 -m pip install torch==2.5.0 transformers==4.46.3 coremltools==8.3.0 numpy==1.26.4
-python3 scripts/prepare-semantic-model.py
-xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
-xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual test
-```
+The iOS starter now includes the 0.6.24 local common-denominator recommendation model and an optional `RecommendationBridge` that talks only to Vercel `/api/recommend`. The native binary must never contain Gorse credentials. If Gorse is unavailable, the local recommender remains functional.
 
-Choose a simulator actually installed in your Xcode if iPhone 17 is unavailable. GitHub Actions selects an available iPhone automatically. The previous build 4 passed native simulator tests and an iPhoneOS archive; those results do not validate the current build-5 source. It produces an unsigned IPA for user-requested AltStore/Sideloadly signing. See IOS-PORT-STATUS.md for the exact tested commit and remaining device checks.
+The package also carries current provider behavior: RedGIFs playback via the Quicktick media proxy, Hanime server-first public catalog/media resolution, Eporner resolver prewarming expectations, Pornhub supported session handling, Rule34 credentials/comments, exact QT6 cloud Sync compatibility, and native/offline download requirements.
 
-Project generation is optional: `python3 scripts/generate-xcode-project.py` regenerates the checked-in native project deterministically; XcodeGen's `ios-starter/project.yml` is also provided. No WebView implementation is shipped. `reference-web` is development/API reference only.
+Before live testing, set `QUICKTICK_API_BASE_URL` in the xcconfig files to the existing Quicktick Vercel deployment. If Gorse is desired, configure it on the Vercel/server side only; no additional iOS secret is required.
 
-Portable checks:
+## Required Codex delivery workflow
 
-```sh
-python3 scripts/verify-sync-vector.py
-python3 -m pip install --target scripts/parser-deps tree-sitter tree-sitter-swift
-python3 scripts/check-swift-syntax.py
-```
-
-The crypto check requires Python cryptography. Syntax parsing does not replace Swift type checking or Apple tests. Live provider probes are separate (`scripts/probe-providers.py`). See IOS-PORT-STATUS.md for actual results, remaining verification and delivery limitations.
+The bundled `CODEX-MASTER-PROMPT.md` now requires Codex to use the user's connected GitHub account for native iOS source control and, when the Windows Google Drive desktop mount is accessible, copy each completed revision to `E:\Meine Ablage\QuickTick iOS Revisions` with hash verification. Codex must report honestly when either destination is unavailable.
 
 
-Revision build 4: black native design, gradient buttons, four tabs, Settings at top right and Home scroll-to-top. Includes the Q/checkmark icon, snapped frosted Immersive controls with blurred previews, elapsed scrubber and double-tap Like; inline Home video/GIF playback and full comic zoom/close; audio-session and pagination fixes; and populated Sync login fields. See IMMERSIVE-RELEASE-NOTES.md and the verified GitHub run in GITHUB-BUILD-STATUS.md. Simulator tests use ad hoc signing and Simulator.entitlements to exercise real Keychain storage. The device IPA remains unsigned.
+## Required GitHub destination (r3)
+
+Codex must replace the current tracked contents of `https://github.com/Robertloggiar34yyeeez/QuickTick` with the native iOS project while preserving repository history. Do not create a separate iOS repository. Final revision artifacts must also be copied to `E:\\Meine Ablage\\QuickTick iOS Revisions` when that mounted Drive path is available.

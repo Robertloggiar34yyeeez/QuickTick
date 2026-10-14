@@ -10,7 +10,7 @@ assert objects[project['rootObject']]['isa']=='PBXProject'
 for obj in objects.values():
     if obj['isa']=='PBXFileReference' and obj.get('sourceTree')=='SOURCE_ROOT' and not obj['path'].startswith('QuicktickNative/SemanticAssets/'): assert (root/'ios-starter'/obj['path']).exists(), obj['path']
 references={o['path'] for o in objects.values() if o['isa']=='PBXFileReference' and o.get('lastKnownFileType')=='sourcecode.swift'}
-sources={f.relative_to(root/'ios-starter').as_posix() for f in (root/'ios-starter').rglob('*.swift')}
+sources={f.relative_to(root/'ios-starter').as_posix() for f in (root/'ios-starter').rglob('*.swift') if f.relative_to(root/'ios-starter').parts[0] in ['QuicktickNative','QuicktickNativeTests','QuicktickNativeUITests']}
 assert references==sources
 scheme=ET.parse(p/'xcshareddata/xcschemes/QuicktickNative.xcscheme')
 for ref in scheme.findall('.//BuildableReference'): assert ref.attrib['BlueprintIdentifier'] in objects

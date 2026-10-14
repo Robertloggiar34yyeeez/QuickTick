@@ -114,7 +114,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         onCompleted?(Post(key: record.key, id: record.postID, provider: record.provider, tags: record.tags))
     }
     private func cacheThumbnail(_ record: DownloadRecord) async {
-        guard let url = URL(string: record.thumbnailRemoteURL), let (data, response) = try? await URLSession.shared.data(from: url), (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+        guard let url = NativeProviderAPI.mediaURL(record.thumbnailRemoteURL), let (data, response) = try? await URLSession.shared.data(from: url), (response as? HTTPURLResponse)?.statusCode == 200 else { return }
         let dir = root.appendingPathComponent(Self.safeName(record.key))
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

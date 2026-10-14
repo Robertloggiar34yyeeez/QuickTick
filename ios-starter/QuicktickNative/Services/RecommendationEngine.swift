@@ -19,7 +19,7 @@ actor RecommendationEngine {
 
 
     private let maxTerms = 140
-    private let maxSeen = 420
+    private let maxSeen = 2048
     private let maxQueries = 14
     private let stopwords: Set<String> = [
         "the","and","for","with","this","that","from","your","you","are","was","were","has","have","had",
@@ -41,8 +41,28 @@ actor RecommendationEngine {
     // Candidate acquisition must advance too: ranking page one cannot discover
     // new posts, regardless of the already-seen penalty.
     func candidatePage(context: String) -> Int { max(1, state.candidatePages[context] ?? 1) }
+    struct CandidateRequest: Sendable {
+        let context: String
+        let query: ParsedQuery
+        let page: Int
+        let focused: Bool
+    }
+    // Acquisition, not only reranking, follows engagement. Three of four
+    // requests rotate across strong interests; the fourth browses broadly.
+    // Each query owns its cursor in the existing persisted recommendation state.
+    func candidateRequest(context: String, provider: Provider, taste: TasteChoice, excluded: [String]) -> CandidateRequest {
+        let blocked = Set(excluded.map { $0.lowercased() })
+        let interests = positiveTermEntries(source: provider.rawValue, taste: taste, limit: 6).filter { $0.1 >= 3 && !blocked.contains($0.0.lowercased()) }.prefix(3).map { $0.0 }
+        let roundKey = context + "|round"
+        let round = max(0, (state.candidatePages[roundKey] ?? 1) - 1)
+        advanceCandidatePage(context: roundKey, nextPage: (round + 1) % 12_000 + 1)
+        let focused = !interests.isEmpty && round % 4 != 3
+        let terms = focused ? [interests[(round / 4 * 3 + round % 4) % interests.count]] : []
+        let key = context + "|query:" + terms.joined(separator: " ")
+        return CandidateRequest(context: key, query: ParsedQuery(included: terms, excluded: excluded), page: candidatePage(context: key), focused: focused)
+    }
     func advanceCandidatePage(context: String, nextPage: Int) {
-        if state.candidatePages.count >= 32, state.candidatePages[context] == nil {
+        if state.candidatePages.count >= 96, state.candidatePages[context] == nil {
             state.candidatePages.removeValue(forKey: state.candidatePages.keys.sorted().first!)
         }
         state.candidatePages[context] = max(1, nextPage)
@@ -62,7 +82,7 @@ actor RecommendationEngine {
 
     func terms(for post: Post) -> [String] {
         let source = post.provider.lowercased()
-        let raw = post.tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let raw = (post.tags + [post.caption, post.category].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         if source == Provider.rule34.rawValue {
             return Array(Set(raw.map { $0.lowercased() })).sorted().prefix(36).map { $0 }
         }
@@ -81,7 +101,7 @@ actor RecommendationEngine {
     func themeSignatures(for post: Post) -> [String] {
         let source = post.provider.lowercased()
         var result: [String] = []
-        for raw in post.tags.prefix(24) {
+        for raw in (post.tags + [post.caption, post.category].compactMap { $0 }).prefix(24) {
             let normalized = raw.lowercased()
                 .replacingOccurrences(of: "_", with: " ")
                 .replacingOccurrences(of: "-", with: " ")
@@ -266,7 +286,8 @@ actor RecommendationEngine {
         let themes = Dictionary(uniqueKeysWithValues:Set(candidates.map { $0.provider.lowercased() }).map { source in
             (source,positiveTermEntries(source:source,taste:taste,limit:3).map { $0.0 })
         })
-        var pool = candidates.filter { !isHardDisliked($0, taste: taste) }
+        var unique = Set<String>()
+        var pool = candidates.filter { unique.insert($0.stableID).inserted && !isHardDisliked($0, taste: taste) }
             .enumerated()
              .map { entry in
                 let raw = score(entry.element, taste: taste, recent: recent, collaborativeScores: collaborativeScores)
@@ -279,7 +300,7 @@ actor RecommendationEngine {
         let target = min(limit ?? pool.count, pool.count)
 
         while chosen.count < target, !pool.isEmpty {
-            let context = chosen.isEmpty ? Array(recent.suffix(8)) : Array(chosen.suffix(8))
+            let context = Array((recent + chosen).suffix(8))
             let contextTerms = Set(context.flatMap { terms(for: $0) })
             let lastTerms = Set(context.last.map { terms(for: $0) } ?? [])
             var bestIndex = 0
@@ -295,7 +316,7 @@ actor RecommendationEngine {
                     diversity += max(0, similar - 0.70) * weights.semanticDiversity
                     if similar > 0.94 { diversity += weights.nearDuplicate }
                 }
-                if let creator = entry.post.creator, context.suffix(3).contains(where: { $0.creator == creator }) { diversity += weights.creatorRepeat }
+                if let creator = entry.post.creator, !creator.isEmpty, context.suffix(3).contains(where: { $0.creator == creator }) { diversity += weights.creatorRepeat }
                 var value = entry.base - diversity
                 // Every eighth slot favors an unseen lower-affinity candidate, bounded by negative preferences.
                 if chosen.count % 8 == 7, entry.seen == 0 { value += weights.exploration * (1 - (semanticScores[entry.post.stableID]?.recent ?? 0)) }

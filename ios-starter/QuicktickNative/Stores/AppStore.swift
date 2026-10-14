@@ -22,7 +22,8 @@ final class AppStore: ObservableObject {
     @Published var tasteSetup = TasteSetup()
     @Published var lastError: String?
     @Published private(set) var syncID = ""
-    @Published private(set) var recommendationMode = "Local 0.6.24"
+    @Published private(set) var cloudSyncEnabled = false
+    @Published private(set) var recommendationMode = "On-device recommendations"
     @Published private(set) var isLoading = false
     @Published private(set) var hasMore = true
     @Published var learnedInterests: [String] = []
@@ -54,7 +55,6 @@ final class AppStore: ObservableObject {
     let recommendations = RecommendationEngine()
     let players = PlayerPool()
     let recommendationPersistence = RecommendationPersistence()
-    let recommendationBridge: RecommendationBridge
     lazy var resolver = MediaResolver(api: api)
     lazy var downloads = DownloadManager(resolver: resolver)
     lazy var sync = QuicktickSyncService(api: api)
@@ -62,14 +62,13 @@ final class AppStore: ObservableObject {
     init(api: QuicktickAPIClient = QuicktickAPIClient(), localStorage: LocalStateStore = LocalStateStore()) {
         self.localStorage = localStorage
         self.api = api
-        self.recommendationBridge = RecommendationBridge(api: api)
     }
 
     func bootstrap() async {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
             pageFlight?.cancel(); hasMore = false; lastError = nil
-            if ProcessInfo.processInfo.arguments.contains("--ui-testing-sync-login") { syncID = UITestSyncSupport.syncID }
+            if ProcessInfo.processInfo.arguments.contains("--ui-testing-sync-login") { syncID = UITestSyncSupport.syncID; cloudSyncEnabled = true; await api.setCloudSyncEnabled(true) }
             tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true)
             posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []
             if ProcessInfo.processInfo.arguments.contains("--ui-testing-download-images") { downloads.useUITestDownloads(posts) }
@@ -80,6 +79,8 @@ final class AppStore: ObservableObject {
         do {
             let savedState = try localStorage.load()
             local = savedState
+            cloudSyncEnabled = savedState.cloudSyncEnabled ?? false
+            await api.setCloudSyncEnabled(cloudSyncEnabled)
             favorites = local.snapshot.favorites; exclusions = local.snapshot.exclusions.tags
             tasteSetup = local.snapshot.preferences.value
             immersionFraming = savedState.immersionFraming
@@ -89,7 +90,7 @@ final class AppStore: ObservableObject {
         } catch { restoreFailed = true; storageWarning = error.localizedDescription }
         if let saved = KeychainStore.get(account: "quicktick-sync-id"), (try? QuicktickSyncCrypto.parse(saved)) != nil {
             syncID = saved
-        } else {
+        } else if cloudSyncEnabled {
             let generated = QuicktickSyncCrypto.generate()
             do { try KeychainStore.set(generated, account: "quicktick-sync-id"); syncID = generated }
             catch { lastError = "Keychain: \(error.localizedDescription)" }
@@ -112,21 +113,38 @@ final class AppStore: ObservableObject {
         await refresh()
     }
 
+    func setCloudSyncEnabled(_ enabled: Bool) async throws {
+        syncTask?.cancel(); syncFlight?.cancel()
+        cloudSyncEnabled = enabled
+        await api.setCloudSyncEnabled(enabled)
+        if enabled, syncID.isEmpty {
+            let generated = QuicktickSyncCrypto.generate()
+            do { try KeychainStore.set(generated, account: "quicktick-sync-id"); syncID = generated }
+            catch { cloudSyncEnabled = false; await api.setCloudSyncEnabled(false); throw error }
+        }
+        local.cloudSyncEnabled = enabled
+        syncFailed = false
+        syncStatus = enabled ? "Website Sync enabled. Use Sync now or connect your existing ID." : "Website Sync is off. Your profile stays on this device."
+        persistLocal()
+    }
+
     func connectSyncID(_ value: String) async throws {
+        guard cloudSyncEnabled else { throw APIError.server("Enable optional website Sync first.") }
         let canonical = try QuicktickSyncCrypto.parse(value).full
         if let flight = syncFlight { _ = try? await flight.value }
         guard !isSyncing else { throw APIError.server("Sync is already running. Please wait.") }
-        isSyncing = true; syncFailed = false; syncStatus = "Checking cloud profile…"
+        isSyncing = true; syncFailed = false; syncStatus = "Checking cloud profileÃ¢â‚¬Â¦"
         defer { isSyncing = false }
         do {
             // Verify the server response and decrypt before replacing a working identity.
             let (remote, _) = try await sync.pull(syncID: canonical)
+            try Task.checkCancellation()
+            guard cloudSyncEnabled else { throw CancellationError() }
             try KeychainStore.set(canonical, account: "quicktick-sync-id")
             syncID = canonical
             syncTask?.cancel()
             if let remote { try await applySyncSnapshot(remote) }
-            await recommendationBridge.clearBackoff()
-            syncStatus = "Saving merged profile…"
+            syncStatus = "Saving merged profileÃ¢â‚¬Â¦"
             let revision = syncRevision
             try await sync.push(syncID: canonical, snapshot: currentSnapshot())
             syncStatus = remote == nil ? "Cloud profile created. Use this same ID on your other devices." : "Cloud profile merged and synced."
@@ -139,7 +157,7 @@ final class AppStore: ObservableObject {
     }
 
     func syncWhenActive() async {
-        guard bootstrapped, !syncID.isEmpty, !isSyncing, Date().timeIntervalSince(lastSyncAttempt) >= 30 else { return }
+        guard cloudSyncEnabled, bootstrapped, !syncID.isEmpty, !isSyncing, Date().timeIntervalSince(lastSyncAttempt) >= 30 else { return }
         lastSyncAttempt = .now
         do {
             try await syncNow()
@@ -157,7 +175,7 @@ final class AppStore: ObservableObject {
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel(); semanticTask = nil
         generation = UUID(); feedRevision = generation; posts = []; encountered = []; nextPage = 1
         hasMore = true; candidateContext = nil; isLoading = false; lastError = nil; inlinePlaybackID = nil; players.releaseAll()
-        learnedInterests = []; recommendationMode = "Local 0.6.24"
+        learnedInterests = []; recommendationMode = "On-device recommendations"
     }
 
     func refresh(immersive: Bool = false, trainSearch: Bool = false) async {
@@ -191,16 +209,19 @@ final class AppStore: ObservableObject {
             let context = provider.rawValue + "|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
             candidateContext = personalized ? context : nil
             let previous = Set(posts.map(\.stableID))
-            var requestedPage = personalized ? await recommendations.candidatePage(context: context) : 1
+            var requestedPage = 1
             guard generation == token, !Task.isCancelled else { return }
             encountered = []
             var filtered: [Post] = []
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
             for _ in 0..<5 {
-                let page = try await api.posts(provider: provider, query: parsed, page: requestedPage, sort: requestedSort, immersive: mediaOnly)
+                let response = try await fetchCandidates(provider: provider, parsed: parsed, context: personalized ? context : nil, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly)
+                let acquisition = response.request
+                let page = response.page
+                requestedPage = acquisition?.page ?? requestedPage
                 guard generation == token, !Task.isCancelled else { return }
                 requestedPage += 1
-                nextPage = requestedPage; hasMore = page.hasMore ?? !page.items.isEmpty
+                nextPage = requestedPage; hasMore = (page.hasMore ?? !page.items.isEmpty) || acquisition?.focused == true
                 var incoming = page.items.filter { post in
                     encountered.insert(post.stableID).inserted && (!mediaOnly || post.isImmersiveMedia)
                         && banned.isDisjoint(with: Set(post.tags.map { $0.lowercased() }))
@@ -208,7 +229,7 @@ final class AppStore: ObservableObject {
                 if personalized {
                     incoming = await recommendations.unseen(incoming.filter { !previous.contains($0.stableID) })
                     guard generation == token, !Task.isCancelled else { return }
-                    await recommendations.advanceCandidatePage(context: context, nextPage: hasMore ? nextPage : 1)
+                    await recommendations.advanceCandidatePage(context: acquisition?.context ?? context, nextPage: (page.hasMore ?? !page.items.isEmpty) ? nextPage : 1)
                 }
                 filtered = incoming
                 if !filtered.isEmpty || !hasMore { break }
@@ -230,26 +251,7 @@ final class AppStore: ObservableObject {
             }
             isLoading = false
             releasedLoading = true
-            var gorseScores: [String: Double] = [:]
-            var mode = "Local 0.6.24"
-            if parsed.included.isEmpty, feedSort == "recommended", !syncID.isEmpty, filtered.count >= 2 {
-                let positive = await recommendations.positiveTerms(provider: provider, taste: taste)
-                let negative = await recommendations.negativeTerms(provider: provider, taste: taste)
-                if let remote = await recommendationBridge.rank(posts: filtered, provider: provider, syncID: syncID, positiveTerms: positive, negativeTerms: negative) {
-                    gorseScores = remote
-                    mode = "Hybrid local + Gorse"
-                } else {
-                    mode = "Local 0.6.24 fallback"
-                }
-            }
-
-            let ranked = parsed.included.isEmpty && feedSort == "recommended"
-                ? await recommendations.rank(filtered, taste: taste, recent: posts, collaborativeScores: gorseScores)
-                : filtered
-            guard generation == token, !Task.isCancelled else { return }
-            // Do not reorder a playing feed after background recommendations arrive.
-            if !mediaOnly, inlinePlaybackID == nil, nextPage == firstBatchNextPage, posts.map(\.stableID) == immediate.map(\.stableID) { posts = ranked }
-            recommendationMode = mode
+            recommendationMode = "On-device recommendations"
             let interests = await recommendations.positiveTerms(provider: provider, taste: taste)
             guard generation == token, !Task.isCancelled else { return }
             learnedInterests = interests
@@ -280,15 +282,18 @@ final class AppStore: ObservableObject {
             // Skip sparse, duplicate and fully filtered pages without waiting for
             // a last-card onAppear that will never fire again.
             for attempt in 0..<5 {
-            let page = try await api.posts(provider: provider, query: parsed, page: nextPage, sort: feedSort, immersive: feedMediaOnly)
+            let response = try await fetchCandidates(provider: provider, parsed: parsed, context: candidateContext, page: nextPage, sort: feedSort, mediaOnly: feedMediaOnly)
+            let acquisition = response.request
+            let requestedPage = acquisition?.page ?? nextPage
+            let page = response.page
             guard generation == token, !Task.isCancelled else { return }
-            nextPage += 1; hasMore = page.hasMore ?? !page.items.isEmpty
+            nextPage = requestedPage + 1; hasMore = (page.hasMore ?? !page.items.isEmpty) || acquisition?.focused == true
             let banned = Set((exclusions + parsed.excluded).map { $0.lowercased() })
             var candidates = page.items.filter { encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia) && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
             if let context = candidateContext {
                 candidates = await recommendations.unseen(candidates)
                 guard generation == token, !Task.isCancelled else { return }
-                await recommendations.advanceCandidatePage(context: context, nextPage: hasMore ? nextPage : 1)
+                await recommendations.advanceCandidatePage(context: acquisition?.context ?? context, nextPage: (page.hasMore ?? !page.items.isEmpty) ? nextPage : 1)
             }
             let ranked = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(candidates, taste: tasteChoice(for: provider), recent: posts) : candidates
             guard generation == token, !Task.isCancelled else { return }
@@ -311,6 +316,24 @@ final class AppStore: ObservableObject {
         } catch { if token == generation, !Task.isCancelled { lastError = error.localizedDescription } }
     }
 
+    private func fetchCandidates(provider: Provider, parsed: ParsedQuery, context: String?, page: Int, sort: String, mediaOnly: Bool) async throws -> (page: PostPage, request: RecommendationEngine.CandidateRequest?) {
+        let acquisition: RecommendationEngine.CandidateRequest?
+        if let context { acquisition = await recommendations.candidateRequest(context: context, provider: provider, taste: tasteChoice(for: provider), excluded: exclusions + parsed.excluded) }
+        else { acquisition = nil }
+        do {
+            let result = try await api.posts(provider: provider, query: acquisition?.query ?? parsed, page: acquisition?.page ?? page, sort: sort, immersive: mediaOnly)
+            return (result, acquisition)
+        } catch {
+            // A failed interest search must not remove a provider's working
+            // public browse feed. Explicit user searches never broaden silently.
+            guard let context, acquisition?.focused == true, !Task.isCancelled else { throw error }
+            let key = context + "|query:"
+            let broad = RecommendationEngine.CandidateRequest(context: key, query: ParsedQuery(included: [], excluded: exclusions + parsed.excluded), page: await recommendations.candidatePage(context: key), focused: false)
+            let result = try await api.posts(provider: provider, query: broad.query, page: broad.page, sort: sort, immersive: mediaOnly)
+            return (result, broad)
+        }
+    }
+
     func toggleFavorite(_ post: Post) {
         let event: RecommendationEvent
         if favorites[post.stableID] != nil {
@@ -331,11 +354,11 @@ final class AppStore: ObservableObject {
         downloads.download(post)
     }
 
-    func recordImpression(_ post: Post) { Task { await record(.impression, post: post, bridgeType: "impression") } }
-    func recordQuickSkip(_ post: Post) { Task { await record(.quickSkip, post: post, bridgeType: "skip") } }
-    func recordReplay(_ post: Post) { Task { await record(.replay, post: post, bridgeType: "replay") } }
-    func recordComplete(_ post: Post) { Task { await record(.complete, post: post, bridgeType: "complete") } }
-    func recordWatch(_ post: Post, seconds: Double, completion: Double) { Task { await record(.watched(seconds: seconds, completion: completion), post: post, bridgeType: "watch", value: seconds) } }
+    func recordImpression(_ post: Post) { Task { await record(.impression, post: post) } }
+    func recordQuickSkip(_ post: Post) { Task { await record(.quickSkip, post: post) } }
+    func recordReplay(_ post: Post) { Task { await record(.replay, post: post) } }
+    func recordComplete(_ post: Post) { Task { await record(.complete, post: post) } }
+    func recordWatch(_ post: Post, seconds: Double, completion: Double) { Task { await record(.watched(seconds: seconds, completion: completion), post: post) } }
 
     func adaptRecommendationTail(token: UUID) async {
         // A tab transition briefly has no active Home post. Ranking that whole
@@ -353,13 +376,8 @@ final class AppStore: ObservableObject {
 
     func resetRecommendations() async {
         await recommendations.reset()
-        await recommendationPersistence.clear()
-        if !syncID.isEmpty {
-            var failures = 0
-            for provider in Provider.allCases { if !(await recommendationBridge.reset(provider: provider, syncID: syncID)) { failures += 1 } }
-            resetStatus = failures == 0 ? "Local and collaborative history reset." : "Local history reset. Collaborative reset unavailable for \(failures) providers."
-        }
-        recommendationMode = "Local 0.6.24"
+        await persistRecommendations()
+        resetStatus = "Learned history cleared on this device."
         await refresh()
     }
 
@@ -395,28 +413,10 @@ final class AppStore: ObservableObject {
         tasteSetup.sources[provider.rawValue] ?? TasteChoice()
     }
 
-    private func record(_ event: RecommendationEvent, post: Post, bridgeType explicitType: String? = nil, value: Double = 1) async {
+    private func record(_ event: RecommendationEvent, post: Post) async {
         await recommendations.record(event, post: post)
         await persistRecommendations()
         if feedSort == "recommended" { await adaptRecommendationTail(token: generation) }
-        guard let provider = post.providerKey, !syncID.isEmpty else { return }
-        let taste = tasteChoice(for: provider)
-        let positive = await recommendations.positiveTerms(provider: provider, taste: taste)
-        let negative = await recommendations.negativeTerms(provider: provider, taste: taste)
-        let bridgeType = explicitType ?? {
-            switch event {
-            case .impression: return "impression"
-            case .like: return "like"
-            case .unlike: return "unlike"
-            case .less: return "less"
-            case .download: return "download"
-            case .quickSkip: return "skip"
-            case .watched: return "watch"
-            case .replay: return "replay"
-            case .complete: return "complete"
-            }
-        }()
-        await recommendationBridge.feedback(post: post, provider: provider, syncID: syncID, type: bridgeType, value: value, positiveTerms: positive, negativeTerms: negative)
     }
 
     private func persistRecommendations() async {
@@ -462,14 +462,16 @@ final class AppStore: ObservableObject {
     }
 
     func syncNow() async throws {
+        guard cloudSyncEnabled else { throw APIError.server("Website Sync is off.") }
         if let flight = syncFlight { try await flight.value; return }
         guard !isSyncing else { throw APIError.server("Sync is already running. Please wait.") }
         let identity = syncID
         _ = try QuicktickSyncCrypto.parse(identity)
-        isSyncing = true; syncFailed = false; syncStatus = "Syncing…"
+        isSyncing = true; syncFailed = false; syncStatus = "SyncingÃ¢â‚¬Â¦"
         let flight = Task { @MainActor in
             let (remote, _) = try await self.sync.pull(syncID: identity)
-            guard self.syncID == identity else { throw CancellationError() }
+            try Task.checkCancellation()
+            guard self.cloudSyncEnabled, self.syncID == identity else { throw CancellationError() }
             if let remote { try await self.applySyncSnapshot(remote) }
             let revision = self.syncRevision
             try await self.sync.push(syncID: identity, snapshot: self.currentSnapshot())
@@ -498,6 +500,7 @@ final class AppStore: ObservableObject {
     }
     private func persistLocal() {
         guard !restoreFailed else { return }
+        local.cloudSyncEnabled = cloudSyncEnabled
         local.snapshot = currentSnapshot(); local.immersionFraming = immersionFraming; local.muted = muted
         local.audioPreferenceVersion = 1
         // Credentials/session material belongs in Keychain, never in the ordinary state file.
@@ -508,6 +511,7 @@ final class AppStore: ObservableObject {
     }
     private func queueSync() {
         syncRevision += 1
+        guard cloudSyncEnabled, !syncID.isEmpty else { return }
         syncTask?.cancel()
         syncTask = Task {
             do { try await Task.sleep(for: .seconds(2)); try Task.checkCancellation(); try await syncNow() }

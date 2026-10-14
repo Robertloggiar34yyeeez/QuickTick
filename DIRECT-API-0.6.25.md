@@ -1,0 +1,9 @@
+# QuickTick 0.6.25 native networking
+
+Provider feeds, supported comments/autocomplete and public media resolution run in native Swift against the provider. The app does not use the QuickTick website as a feed/media proxy. Rule34 access is sent directly to api.rule34.xxx. RedGIFs obtains and coalesces its temporary provider token on the device. Eporner, Pornhub and Hanime use their provider endpoints. Provider outages, account requirements, regional restrictions and removed public APIs are reported; there is no hidden website fallback or challenge bypass.
+
+Recommendations, BGE embeddings, engagement learning, ranking and diversity run on-device. Candidate acquisition rotates three interest-focused requests with one broad exploration request, retaining independent persisted cursors. Consumed and duplicate posts are filtered. Current playback and the visible feed prefix remain stable while the unseen tail adapts. No recommendation feedback is uploaded to Vercel/Gorse.
+
+Website Sync is optional and OFF by default, including migration of old state files. A saved Sync ID is retained locally but does not opt an existing user in. Settings offers an explicit enable control. Both AppStore and the transport enforce opt-in. Turning it off cancels pending Sync work. Enabling it allows the existing encrypted Favorites/access/preferences contract with the website; it is not required for feeds, local recommendations, playback or downloads.
+
+The Xcode project remains the native regression test host. Packaging additionally builds the identical app sources with SwiftPM and xtool `dev build --configuration release --ipa`. The xtool revision and all source/resource hashes come from the user's `xtool-main.zip` on Drive. CI recovers the matching public upstream revision and verifies every file against that archive before execution; no private Drive download URL or Apple account is used. The final IPA is unsigned for AltStore/Sideloadly.

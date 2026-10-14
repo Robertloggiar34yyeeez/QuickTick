@@ -7,6 +7,8 @@ struct LocalAppState: Codable {
     var immersionFraming = false
     var muted = false
     var audioPreferenceVersion: Int? = nil
+    // Missing in older state files deliberately means OFF on upgrade.
+    var cloudSyncEnabled: Bool? = nil
 }
 
 struct LocalStateStore {

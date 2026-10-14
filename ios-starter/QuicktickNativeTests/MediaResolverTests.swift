@@ -16,7 +16,8 @@ private final class MediaProtocol: URLProtocol, @unchecked Sendable {
         Self.counter.increment()
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(#"{"mediaUrl":"https://example.invalid/video.mp4","type":"video"}"#.utf8))
+        let payload = request.url?.path.contains("/embed/") == true ? #"<script>var hash='00112233445566778899aabbccddeeff';</script>"# : #"{"sources":{"mp4":{"1080p":{"src":"https://example.invalid/video.mp4"}}}}"#
+        client?.urlProtocol(self, didLoad: Data(payload.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
@@ -37,7 +38,7 @@ final class MediaResolverTests: XCTestCase {
         let cached = try await resolver.resolve(post)
         XCTAssertEqual(first.mediaUrl, second.mediaUrl)
         XCTAssertEqual(cached.mediaUrl, first.mediaUrl)
-        XCTAssertEqual(MediaProtocol.counter.value - before, 1)
+        XCTAssertEqual(MediaProtocol.counter.value - before, 2)
     }
 }
 
@@ -49,8 +50,8 @@ private final class PaginationProtocol: URLProtocol, @unchecked Sendable {
         // Page two is all duplicates; page three adds a new batch. Each response
         // also contains a repeated ID, as several provider APIs can do.
         let offset = page <= 2 ? 0 : 10
-        let posts = (1...10).map { Post(key: "eporner:\($0 + offset)", id: "\($0 + offset)", provider: "Eporner", type: "video") }
-        let data = try! JSONEncoder().encode(PostPage(items: posts + [posts[0]], hasMore: page < 3))
+        let posts = (1...10).map { ["id": String($0 + offset), "title": "Fixture", "keywords": "fixture"] }
+        let data = try! JSONSerialization.data(withJSONObject: ["videos": posts + [posts[0]], "total_pages": 3])
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)

@@ -39,25 +39,7 @@ actor MediaResolver {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing"), URL(string: post.mediaUrl)?.isFileURL == true { return ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type) }
         #endif
-        if (post.providerKey == .rule34 || post.type == "image" || post.type == "gif"), !post.mediaUrl.isEmpty {
-            return ResolvedMedia(mediaUrl: try await api.absoluteMediaURL(post.mediaUrl).absoluteString, type: post.type)
-        }
-        let path: String
-        switch post.provider.lowercased() {
-        case "pornhub": path = "/api/pornhub-media"
-        case "eporner": path = "/api/eporner-media"
-        case "hanime": path = "/api/hanime-media"
-        case "redgifs": path = "/api/redgifs-media"
-        default: return ResolvedMedia(mediaUrl: try await api.absoluteMediaURL(post.mediaUrl).absoluteString, type: post.type)
-        }
-        let data = try await api.request(path: path, query: [URLQueryItem(name: "id", value: post.id), URLQueryItem(name: "json", value: "1")])
-        var media = try JSONDecoder().decode(ResolvedMedia.self, from: data)
-        guard !media.mediaUrl.isEmpty else { throw APIError.invalidResponse }
-        // RedGIFs always uses the validated, Range-compatible Vercel proxy.
-        if post.providerKey == .redgifs {
-            media.mediaUrl = "/api/redgifs-media?id=\(post.id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? post.id)"
-        }
-        media.mediaUrl = try await api.absoluteMediaURL(media.mediaUrl).absoluteString
+        let media = try await api.resolveMedia(post)
         cache[identity(post)] = (media, .now)
         if cache.count > 40 { cache.removeValue(forKey: cache.min { $0.value.1 < $1.value.1 }!.key) }
         return media

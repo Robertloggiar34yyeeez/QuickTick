@@ -68,6 +68,7 @@ final class SyncServiceTests: XCTestCase {
         let store = AppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"), session: session), localStorage: LocalStateStore(directory: directory))
         let syncID = QuicktickSyncCrypto.generate()
         let recordID = try QuicktickSyncCrypto.parse(syncID).recordID
+        try await store.setCloudSyncEnabled(true)
         try await store.connectSyncID(syncID)
         XCTAssertEqual(SyncResponseProtocol.capture.values(for: recordID).count, 1)
         await store.saveCredentials(user: "synthetic-user", key: "synthetic-key", session: "synthetic-session", remember: false, username: "synthetic-name")
@@ -90,13 +91,13 @@ final class SyncServiceTests: XCTestCase {
     }
     func testExistingProfileWithoutPayloadCannotBeTreatedAsEmpty() async {
         let session = session("missing-payload"); defer { session.invalidateAndCancel() }
-        let service = QuicktickSyncService(api: QuicktickAPIClient(baseURL: URL(string:"https://example.invalid"),session:session))
+        let service = QuicktickSyncService(api: QuicktickAPIClient(baseURL: URL(string:"https://example.invalid"),session:session,cloudSyncEnabled:true))
         do { _ = try await service.pull(syncID: QuicktickSyncCrypto.generate()); XCTFail("Must reject corrupt cloud profile before a subsequent upload") }
         catch { XCTAssertTrue(error is QuicktickSyncCryptoError) }
     }
     func testUnacknowledgedSaveIsNotReportedAsSuccess() async {
         let session = session("save-failed"); defer { session.invalidateAndCancel() }
-        let service = QuicktickSyncService(api: QuicktickAPIClient(baseURL: URL(string:"https://example.invalid"),session:session))
+        let service = QuicktickSyncService(api: QuicktickAPIClient(baseURL: URL(string:"https://example.invalid"),session:session,cloudSyncEnabled:true))
         do { try await service.push(syncID: QuicktickSyncCrypto.generate(), snapshot: .empty); XCTFail("Server refused the save") }
         catch { XCTAssertTrue(error is APIError) }
     }

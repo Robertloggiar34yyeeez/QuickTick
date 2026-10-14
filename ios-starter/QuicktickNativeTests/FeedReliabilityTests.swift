@@ -8,10 +8,12 @@ private final class FeedModeProtocol: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let sort = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "sort" }?.value ?? "recommended"
-        let page = Int(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value ?? "1") ?? 1
-        let post = Post(key: "\(sort):\(page)", id: String(page), provider: "Eporner", tags: [page == 1 ? "filtered" : "keep"], type: "video")
-        let data = try! JSONEncoder().encode(PostPage(items: [post], hasMore: page == 1))
+        let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let order = query.first { $0.name == "order" }?.value ?? "top-monthly"
+        let sort = order == "latest" ? "recent" : "recommended"
+        let page = Int(query.first { $0.name == "page" }?.value ?? "1") ?? 1
+        let json: [String: Any] = ["videos": [["id": "\(sort):\(page)", "title": "Fixture", "keywords": page == 1 ? "filtered" : "keep"]], "total_pages": 2]
+        let data = try! JSONSerialization.data(withJSONObject: json)
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: [:])!
         DispatchQueue.global().asyncAfter(deadline: .now() + (sort == "recommended" ? 0.15 : 0)) { [self] in
             client?.urlProtocol(self,didReceive: response,cacheStoragePolicy: .notAllowed)
@@ -25,10 +27,12 @@ private final class CandidatePageProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        let page = Int(query.first { $0.name == "page" }?.value ?? "1") ?? 1
-        let mode = query.first { $0.name == "mode" }?.value ?? "feed"
-        let post = Post(key: "\(mode):\(page)", id: String(page), provider: "Rule34", tags: ["engineering"], type: mode == "video" && page < 3 ? "image" : "video")
-        let data = try! JSONEncoder().encode(PostPage(items: [post], hasMore: page < 8))
+        let page = (Int(query.first { $0.name == "pid" }?.value ?? "0") ?? 0) + 1
+        let mode = query.first { $0.name == "tags" }?.value?.contains("video") == true ? "video" : "feed"
+        let video = mode != "video" || page >= 3
+        let json: [[String: Any]] = [["id": "\(mode):\(page)", "tags": "engineering", "file_url": "https://cdn.example.invalid/fixture.\(video ? "mp4" : "jpg")"]]
+        // A full raw page signals more pages even when local clip filtering removes it.
+        let data = try! JSONSerialization.data(withJSONObject: Array(repeating: json[0], count: mode == "video" ? 100 : 80))
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
     }
@@ -38,37 +42,37 @@ final class FeedReliabilityTests: XCTestCase {
     @MainActor private func candidateStore() -> (AppStore, URLSession) {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [CandidatePageProtocol.self]
         let session = URLSession(configuration: config)
-        return (AppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"), session: session)), session)
+        return (AppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"), session: session, credentials: ProviderCredentials(rule34User: "test-user", rule34Key: "synthetic-test-key"))), session)
     }
     @MainActor func testRecommendedRefreshAdvancesAndRestoresCandidateCursor() async {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
-        await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["feed:1"])
-        await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["feed:2"])
+        await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:1"])
+        await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:2"])
         let saved = await store.recommendations.snapshot()
         let (restored, anotherSession) = candidateStore(); defer { anotherSession.invalidateAndCancel() }
         await restored.recommendations.load(saved)
-        await restored.refresh(); XCTAssertEqual(restored.posts.map(\.stableID), ["feed:3"])
+        await restored.refresh(); XCTAssertEqual(restored.posts.map(\.stableID), ["rule34:feed:3"])
     }
     @MainActor func testConsumedCandidatePageIsSkippedInsteadOfReinserted() async {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
-        await store.recommendations.record(.impression, post: Post(key: "feed:1", id: "1", provider: "Rule34"))
-        await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["feed:2"])
+        await store.recommendations.record(.impression, post: Post(key: "rule34:feed:1", id: "1", provider: "Rule34"))
+        await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:2"])
     }
     @MainActor func testImmersiveRequestsVideoCandidatesAndSkipsSparsePages() async {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
         store.activeTab = 1
         await store.refresh(immersive: true)
-        XCTAssertTrue(store.feedMediaOnly); XCTAssertEqual(store.posts.map(\.stableID), ["video:3"])
+        XCTAssertTrue(store.feedMediaOnly); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:video:3"])
         await store.loadMore(immersive: true)
-        XCTAssertEqual(store.posts.map(\.stableID), ["video:3", "video:4"])
+        XCTAssertEqual(store.posts.map(\.stableID), ["rule34:video:3", "rule34:video:4"])
         store.activeTab = 0; await store.refresh()
-        XCTAssertFalse(store.feedMediaOnly); XCTAssertEqual(store.posts.map(\.stableID), ["feed:1"])
+        XCTAssertFalse(store.feedMediaOnly); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:1"])
     }
     @MainActor func testExplicitSearchKeepsFirstPageSemantics() async {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
         store.queryText = "engineering"
         await store.refresh(); await store.refresh()
-        XCTAssertEqual(store.posts.map(\.stableID), ["feed:1"])
+        XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:1"])
     }
     func testLegacyRecommendationStateAndDownloadedImageType() throws {
         let legacy = try JSONDecoder().decode(RecommendationState.self, from: Data("{\"version\":3,\"profiles\":{}}".utf8))
@@ -106,9 +110,9 @@ final class FeedReliabilityTests: XCTestCase {
         await store.refresh()
         // Refresh now skips the fully excluded page immediately instead of
         // relying on a footer appearance to request the first useful page.
-        XCTAssertEqual(store.posts.map(\.stableID), ["recent:2"]); XCTAssertFalse(store.hasMore)
+        XCTAssertEqual(store.posts.map(\.stableID), ["eporner:recent:2"]); XCTAssertFalse(store.hasMore)
         await store.loadMore()
-        XCTAssertEqual(store.posts.map(\.stableID), ["recent:2"])
+        XCTAssertEqual(store.posts.map(\.stableID), ["eporner:recent:2"])
         XCTAssertFalse(store.hasMore)
     }
     @MainActor func testModeChangeInvalidatesPlaybackAndObsoleteRecommendationResult() async throws {
@@ -120,9 +124,9 @@ final class FeedReliabilityTests: XCTestCase {
         store.inlinePlaybackID = "recommended:1";store.feedSort = "recent"
         XCTAssertTrue(store.posts.isEmpty);XCTAssertNil(store.inlinePlaybackID)
         await store.refresh();await old.value
-        XCTAssertEqual(store.posts.map(\.stableID),["recent:1"])
+        XCTAssertEqual(store.posts.map(\.stableID),["eporner:recent:1"])
         store.feedSort = "recommended";await store.refresh()
-        XCTAssertEqual(store.posts.map(\.stableID),["recommended:1"])
+        XCTAssertEqual(store.posts.map(\.stableID),["eporner:recommended:1"])
     }
     func testVisibleCardUsesCoverageAndHysteresis() {
         let viewport = CGRect(x: 0,y: 0,width: 390,height: 700)

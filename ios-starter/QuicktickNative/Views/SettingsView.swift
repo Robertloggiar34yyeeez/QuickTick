@@ -16,13 +16,17 @@ struct SettingsView: View {
     var body: some View {
         Form {
             if let storageWarning = store.storageWarning { Section("Storage needs attention") { Text(storageWarning).foregroundStyle(.orange) } }
-            Section("Quicktick Sync") {
-                Text("Use the same Sync ID on web and iOS to share Favorites, access settings and interests.").font(.footnote).foregroundStyle(.secondary)
+            Section("Optional website Sync") {
+                Toggle("Enable website Sync", isOn: Binding(get: { store.cloudSyncEnabled }, set: { enabled in
+                    Task { do { try await store.setCloudSyncEnabled(enabled) } catch { status = error.localizedDescription } }
+                })).accessibilityIdentifier("cloud-sync-toggle")
+                Text("Off by default. When enabled, encrypted Favorites, provider access and preferences are sent to your QuickTick website. Feeds and recommendations always run independently.").font(.footnote).foregroundStyle(.secondary)
+                Text("Enable Sync only if you want to share Favorites, access settings and preferences with your other devices.").font(.footnote).foregroundStyle(.secondary)
                 HStack {
                     Button("Copy my Sync ID") { UIPasteboard.general.string = store.syncID; status = "Sync ID copied." }
-                        .disabled(store.syncID.isEmpty)
+                        .disabled(!store.cloudSyncEnabled || store.syncID.isEmpty)
                     Spacer()
-                    Button("Sync now") { Task { do { try await store.syncNow(); await reloadAccessFields() } catch {} } }.disabled(store.isSyncing)
+                    Button("Sync now") { Task { do { try await store.syncNow(); await reloadAccessFields() } catch {} } }.disabled(!store.cloudSyncEnabled || store.isSyncing)
                 }.buttonStyle(.plain)
                 SecureField("Paste Sync ID from another device", text: $syncID)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
@@ -33,7 +37,7 @@ struct SettingsView: View {
                     Button("Connect and merge") { syncFieldFocused = false; Task {
                         do { try await store.connectSyncID(syncID); status = ""; await reloadAccessFields(); await store.refresh() }
                         catch { status = error.localizedDescription }
-                    } }.disabled(store.isSyncing || syncID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    } }.disabled(!store.cloudSyncEnabled || store.isSyncing || syncID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }.buttonStyle(.plain)
                 if store.isSyncing { ProgressView("Syncing profile…") }
                 Text(status.isEmpty ? store.syncStatus : status).accessibilityIdentifier("sync-status").font(.footnote).foregroundStyle(store.syncFailed ? .orange : .secondary)

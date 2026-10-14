@@ -30,7 +30,7 @@ actor MediaImagePipeline {
         }
     }
     func image(raw: String, pixels: Int, comicPreview: Bool = false) async throws -> DecodedMediaImage {
-        guard !raw.isEmpty, let url = URL(string: raw, relativeTo: QuicktickAPIClient.configuredBaseURL())?.absoluteURL else { throw URLError(.badURL) }
+        guard !raw.isEmpty, let url = URL(string: raw)?.isFileURL == true ? URL(string: raw) : NativeProviderAPI.mediaURL(raw) else { throw URLError(.badURL) }
         let bucket = min(2048, max(256, ((pixels + 255) / 256) * 256))
         let key = "\(url.absoluteString):\(bucket):\(comicPreview)"
         if let cached = images[key] { hits += 1; touch(key); return cached }
@@ -68,6 +68,7 @@ actor MediaImagePipeline {
     }
     func data(url: URL) async throws -> Data {
         if url.isFileURL { return try Data(contentsOf: url) }
+        guard NativeProviderAPI.mediaURL(url.absoluteString) != nil else { throw URLError(.badURL) }
         let key = url.absoluteString
         let pending: Task<Data, Error>
         if let shared = flights[key] { pending = shared }

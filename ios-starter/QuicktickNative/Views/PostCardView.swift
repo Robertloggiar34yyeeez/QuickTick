@@ -193,7 +193,7 @@ private struct FullComicView: View {
             }.buttonStyle(.plain).padding(12).accessibilityLabel("Close full image")
         }.task {
             do {
-                guard let location = URL(string: url, relativeTo: QuicktickAPIClient.configuredBaseURL())?.absoluteURL else { throw URLError(.badURL) }
+                guard let location = (URL(string: url)?.isFileURL == true ? URL(string: url) : NativeProviderAPI.mediaURL(url)) else { throw URLError(.badURL) }
                 let full = try await MediaImagePipeline.shared.fullImage(url: location)
                 guard !Task.isCancelled else { return }
                 image = UIImage(cgImage: full.image)

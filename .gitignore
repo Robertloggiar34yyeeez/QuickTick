@@ -23,3 +23,10 @@ recommendations-v*.json
 downloads.json
 
 ios-starter/QuicktickNative/SemanticAssets/
+
+# Local tool extraction / xtool build products
+tools/xtool-main/
+tools/xtool-source/
+.build/
+ios-starter/xtool/
+ios-starter/Config/xtool-Info.plist

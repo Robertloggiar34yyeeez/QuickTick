@@ -160,7 +160,8 @@ final class NavigationTests: XCTestCase {
             XCTAssertLessThanOrEqual(frame.frame.width,321)
             XCTAssertGreaterThan(frame.frame.height, 0)
             XCTAssertEqual(frame.frame.width / frame.frame.height, 320.0 / 180, accuracy: 0.05)
-            let capture = XCTAttachment(screenshot:app.screenshot());capture.name = "Adaptive native media \(orientation.rawValue)";capture.lifetime = .keepAlways;add(capture)
+            let capture = XCTAttachment(string: "orientation=\(orientation.rawValue) viewport=\(viewport) media=\(media.frame) player=\(frame.frame)")
+            capture.name = "Adaptive native media geometry";capture.lifetime = .keepAlways;add(capture)
         }
         XCUIDevice.shared.press(.home);app.activate()
         expectation(for:NSPredicate(format:"value == %@","Playing"),evaluatedWith:playback)

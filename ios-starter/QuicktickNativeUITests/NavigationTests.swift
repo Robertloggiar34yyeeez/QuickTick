@@ -33,6 +33,11 @@ final class NavigationTests: XCTestCase {
             let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Immersive iPad full canvas \(orientation.rawValue)"; capture.lifetime = .keepAlways; add(capture)
         }
         app.buttons["tab-Home"].tap()
+        // Home restores the media anchor instead of jumping to its header.
+        let restoredMedia = app.otherElements["post-media-test:video"]
+        XCTAssertTrue(restoredMedia.waitForExistence(timeout: 10))
+        XCTAssertTrue(restoredMedia.isHittable)
+        app.buttons["home-scroll-top"].tap()
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
     }
 

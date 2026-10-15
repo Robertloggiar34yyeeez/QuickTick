@@ -139,6 +139,8 @@ final class FeedReliabilityTests: XCTestCase {
         let frames = ["first":CGRect(x: 0,y: -260,width: 390,height: 300),"next":CGRect(x: 0,y: 100,width: 390,height: 400)]
         XCTAssertEqual(VisiblePostSelector.select(frames: frames,viewport: viewport,current: "first"),"next")
         XCTAssertNil(VisiblePostSelector.select(frames: ["gone":CGRect(x: 0,y: 800,width: 390,height: 100)],viewport: viewport,current: nil))
+        let pages = ["first": CGRect(x: 0, y: -700, width: 390, height: 700), "next": CGRect(x: 0, y: 0, width: 390, height: 700)]
+        XCTAssertEqual(VisiblePostSelector.select(frames: pages, viewport: viewport, current: "first"), "next", "A stale scroll restoration target must not keep the outgoing page active")
     }
     func testPlaybackUsesMediaBoundsWhenMetadataIsBelowLandscapeViewport() {
         let viewport = CGRect(x: 0, y: 0, width: 874, height: 254)

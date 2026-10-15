@@ -14,6 +14,9 @@ struct ImmersiveFeedView: View {
         _activeID = activePostID
     }
     @Binding private var activeID: String?
+    // SwiftUI's scroll target is a restoration request, not playback truth.
+    // On some OS versions it remains on an offscreen page after paging.
+    @State private var scrollTargetID: String?
     @State private var activeIndex = 0
     @State private var searchVisible = false
     @StateObject private var previews = ImmersivePreviewCache()
@@ -30,6 +33,11 @@ struct ImmersiveFeedView: View {
                     ForEach(mediaPosts, id: \.stableID) { post in
                         ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: presentationActive, previews: previews)
                             .frame(width: geo.size.width, height: geo.size.height)
+                            .background {
+                                GeometryReader { page in
+                                    Color.clear.preference(key: ImmersiveVisibleFrames.self, value: [post.stableID: page.frame(in: .named("immersive-viewport"))])
+                                }
+                            }
                             .id(post.stableID)
                     }
                 }.scrollTargetLayout().frame(width: geo.size.width)
@@ -38,7 +46,12 @@ struct ImmersiveFeedView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
             }.scrollTargetBehavior(.paging)
-                .scrollPosition(id: $activeID, anchor: .top)
+                .scrollPosition(id: $scrollTargetID, anchor: .top)
+                .coordinateSpace(name: "immersive-viewport")
+                .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
+                    guard presentationActive, store.isForeground else { return }
+                    activeID = VisiblePostSelector.select(frames: frames, viewport: CGRect(origin: .zero, size: geo.size), current: activeID)
+                }
                 .scrollIndicators(.hidden)
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
@@ -78,13 +91,15 @@ struct ImmersiveFeedView: View {
         .task(id: presentationActive) {
             guard presentationActive else { return }
             if activeID == nil { activeID = mediaPosts.first?.stableID }
+            scrollTargetID = activeID
             if !offline && (posts.isEmpty || !store.feedMediaOnly) { await store.refresh(immersive: true) }
         }
         .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision)") { await prewarm() }
-        .onChange(of: store.feedRevision) { _, _ in activeIndex = 0; activeID = nil }
+        .onChange(of: store.feedRevision) { _, _ in activeIndex = 0; activeID = nil; scrollTargetID = nil }
         .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
             if activeID == nil || !keys.contains(activeID ?? "") {
                 activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
+                scrollTargetID = activeID
                 if keys.isEmpty { activeIndex = 0 }
             }
         }
@@ -96,7 +111,7 @@ struct ImmersiveFeedView: View {
         guard offline || store.feedMediaOnly else { return }
         let clips = mediaPosts
         guard let activeID, let index = clips.firstIndex(where: { $0.stableID == activeID }) else {
-            if !offline && !store.isLoading && store.hasMore { await store.loadMore(immersive: true) }
+            if clips.isEmpty && !offline && !store.isLoading && store.hasMore { await store.loadMore(immersive: true) }
             return
         }
         // Three slots: current + next two. Four concurrent neighbours previously
@@ -135,6 +150,13 @@ struct ImmersiveFeedView: View {
         }
     }
 
+}
+
+private struct ImmersiveVisibleFrames: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
 }
 
 private struct ImmersiveItemView: View {

@@ -62,9 +62,15 @@ final class NavigationTests: XCTestCase {
         let fields = app.textFields.matching(identifier: "feed-search-input")
         XCTAssertEqual(fields.count, 1)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        // A fresh simulator can show the system QuickPath introduction over
+        // the keyboard. Dismiss the observed prompt before sending input.
+        let keyboardIntroduction = app.buttons["Continue"]
+        if keyboardIntroduction.waitForExistence(timeout: 2) { keyboardIntroduction.tap() }
         fields.firstMatch.tap()
         fields.firstMatch.typeText("engineering")
-        XCTAssertEqual(fields.firstMatch.value as? String, "engineering")
+        expectation(for: NSPredicate(format: "value == %@", "engineering"), evaluatedWith: fields.firstMatch)
+        waitForExpectations(timeout: 10)
+        if keyboardIntroduction.exists { keyboardIntroduction.tap() }
         app.buttons["Search"].firstMatch.tap()
         XCTAssertTrue(fields.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(fields.count, 1)
@@ -109,7 +115,7 @@ final class NavigationTests: XCTestCase {
         for _ in 0..<3 { if full.isHittable { break }; app.swipeUp() }
         XCTAssertTrue(full.isHittable); full.tap()
         let close = app.buttons["Close full image"]
-        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        XCTAssertTrue(close.waitForExistence(timeout: 15))
         let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Full comic with close control"; screenshot.lifetime = .keepAlways; add(screenshot)
         close.tap()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 5))

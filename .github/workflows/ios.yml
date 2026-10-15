@@ -78,9 +78,11 @@ jobs:
         run: |
           if [ -d logs/QuicktickTests.xcresult ]; then
             xcrun xcresulttool export attachments --path logs/QuicktickTests.xcresult --output-path logs/screenshots || true
+            xcrun xcresulttool export diagnostics --path logs/QuicktickTests.xcresult --output-path logs/diagnostics/iphone || true
           fi
           if [ -d logs/QuicktickIPadTests.xcresult ]; then
             xcrun xcresulttool export attachments --path logs/QuicktickIPadTests.xcresult --output-path logs/ipad-screenshots || true
+            xcrun xcresulttool export diagnostics --path logs/QuicktickIPadTests.xcresult --output-path logs/diagnostics/ipad || true
           fi
       - uses: actions/upload-artifact@v4
         if: always()
@@ -91,4 +93,5 @@ jobs:
             logs/*.json
             logs/screenshots/
             logs/ipad-screenshots/
+            logs/diagnostics/
           retention-days: 14

@@ -7,6 +7,7 @@ struct NativeSearchBar: View {
     @FocusState private var focused: Bool
     @State private var suggestions: [TagSuggestion] = []
     @State private var draft = ""
+    @State private var initialized = false
     init(immersive: Bool = false, focusRequested: Binding<Bool> = .constant(false)) {
         self.immersive = immersive; _focusRequested = focusRequested
     }
@@ -33,7 +34,9 @@ struct NativeSearchBar: View {
                 }
             }
         }.padding(10).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
-            .onAppear { draft = store.queryText }
+            .onAppear {
+                if !initialized { initialized = true; draft = store.queryText }
+            }
             .onChange(of: store.queryText) { _, query in if draft != query { draft = query } }
             .task(id: focusRequested) {
                 if focusRequested { focused = true; focusRequested = false }

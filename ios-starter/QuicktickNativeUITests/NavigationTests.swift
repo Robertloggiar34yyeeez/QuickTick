@@ -62,6 +62,7 @@ final class NavigationTests: XCTestCase {
         let fields = app.textFields.matching(identifier: "feed-search-input")
         XCTAssertEqual(fields.count, 1)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        fields.firstMatch.tap()
         fields.firstMatch.typeText("engineering")
         XCTAssertEqual(fields.firstMatch.value as? String, "engineering")
         app.buttons["Search"].firstMatch.tap()
@@ -241,19 +242,19 @@ final class NavigationTests: XCTestCase {
         input.tap()
         input.typeText("QT6-AAECAwQFBgcICQoLDA0ODw.ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8")
         app.buttons["Connect and merge"].tap()
-        let username = app.textFields["Rule34 user ID"]
+        let username = app.textFields["rule34-user-input"]
         let filled = NSPredicate(format: "value == %@", "synced-test-user")
         expectation(for: filled, evaluatedWith: username)
         waitForExpectations(timeout: 10)
         print("Sync UI status:", app.staticTexts["sync-status"].label)
-        let key = app.secureTextFields["Rule34 API key"]
+        let key = app.secureTextFields["rule34-key-input"]
         XCTAssertNotEqual(key.value as? String, "Rule34 API key")
         XCTAssertFalse((key.value as? String ?? "").isEmpty)
-        let syncedName = app.textFields["Pornhub username"]
+        let syncedName = app.textFields["pornhub-user-input"]
         for _ in 0..<5 { if syncedName.isHittable { break }; app.swipeUp() }
         XCTAssertTrue(syncedName.waitForExistence(timeout:5))
         XCTAssertEqual(syncedName.value as? String, "synced-test-name")
-        let session = app.secureTextFields["Supported Pornhub session"]
+        let session = app.secureTextFields["pornhub-session-input"]
         XCTAssertNotEqual(session.value as? String, "Supported Pornhub session")
         let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Synced access fields (synthetic data)"; screenshot.lifetime = .keepAlways; add(screenshot)
     }

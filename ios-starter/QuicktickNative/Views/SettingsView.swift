@@ -44,10 +44,14 @@ struct SettingsView: View {
             }
             Section("Provider access") {
                 TextField("Rule34 user ID", text: $user).textInputAutocapitalization(.never)
+                    .accessibilityIdentifier("rule34-user-input").accessibilityLabel("Rule34 user ID")
                 SecureField("Rule34 API key", text: $key)
+                    .accessibilityIdentifier("rule34-key-input").accessibilityLabel("Rule34 API key")
                 Toggle("Remember Rule34 credentials", isOn: $remember)
                 TextField("Pornhub username", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityIdentifier("pornhub-user-input").accessibilityLabel("Pornhub username")
                 SecureField("Supported Pornhub session", text: $session)
+                    .accessibilityIdentifier("pornhub-session-input").accessibilityLabel("Supported Pornhub session")
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
             }.disabled(store.isSyncing)
             Section("Learned interests · \(store.selectedProvider.displayName)") {

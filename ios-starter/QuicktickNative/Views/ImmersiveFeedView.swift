@@ -53,7 +53,7 @@ struct ImmersiveFeedView: View {
                     } actions: {
                         if !offline {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
-                                let seconds = max(0, Int(ceil((store.feedRetryAfter ?? .distantPast).timeIntervalSince(context.date))))
+                                let seconds = max(0, Int(min(86400, ceil((store.feedRetryAfter ?? .distantPast).timeIntervalSince(context.date)))))
                                 Button(seconds > 0 ? "Retry in \(seconds)s" : "Try again") {
                                     Task { await store.refresh(immersive: true) }
                                 }.disabled(store.isLoading || seconds > 0)
@@ -198,6 +198,7 @@ private struct ImmersiveItemView: View {
     @State private var duration = 0.0
     @State private var scrubbing = false
     @State private var error: String?
+    @State private var mediaRetry = 0
     @State private var showComments = false
     @State private var showTags = false
     @State private var gifURL: URL?
@@ -264,7 +265,7 @@ private struct ImmersiveItemView: View {
                         Text(error).font(.caption)
                         Button("Retry media") {
                             store.players.release(post.stableID); player = nil; ready = false; self.error = nil
-                            Task { await prepare() }
+                            mediaRetry += 1
                         }.frame(minHeight: 44)
                     }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
                 }
@@ -289,7 +290,7 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
+        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(mediaRetry)") {
             guard active, presentationActive, store.isForeground else { endExposure(); player = nil; ready = false; gifURL = nil; return }
             exposureStarted = .now
             progress = 0; duration = 0; scrubbing = false; error = nil
@@ -416,7 +417,7 @@ private struct ImmersiveItemView: View {
                 let actual = size.applying(transform)
                 if !Task.isCancelled, active, abs(actual.height) > 0 { mediaSize = CGSize(width: abs(actual.width), height: abs(actual.height)) }
             }
-        } catch { self.error = error.localizedDescription }
+        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
     private func fittedSize(_ available: CGSize) -> CGSize {
         if available.width <= 600 { return available }

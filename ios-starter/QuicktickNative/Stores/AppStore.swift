@@ -190,6 +190,16 @@ final class AppStore: ObservableObject {
         if let deadline = feedRetryAfter, deadline > .now {
             let mediaOnly = immersive || activeTab == 1
             if feedMediaOnly != mediaOnly { invalidateFeed(); feedMediaOnly = mediaOnly }
+            // Preference edits still apply locally while the provider is cooling
+            // down. No network retry or model inference is needed for this rank.
+            let provider = selectedProvider, revision = feedRevision
+            let taste = tasteChoice(for: provider)
+            if feedSort == "recommended", QueryParser.parse(queryText).included.isEmpty {
+                let ranked = await recommendations.rank(posts, taste: taste, recent: [])
+                guard selectedProvider == provider, feedRevision == revision,
+                      tasteChoice(for: provider).into == taste.into, tasteChoice(for: provider).notInto == taste.notInto else { return }
+                posts = ranked
+            }
             lastError = APIError.rateLimited(selectedProvider, deadline).localizedDescription; return
         }
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel()

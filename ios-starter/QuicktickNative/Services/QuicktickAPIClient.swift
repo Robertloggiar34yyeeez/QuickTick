@@ -18,7 +18,7 @@ enum APIError: LocalizedError {
         case .missingBaseURL: "Optional website Sync has no configured HTTPS server. Feeds do not need it."
         case .invalidResponse: "Invalid server response."
         case .server(let value): value
-        case .rateLimited(let provider, let date): "\(provider.displayName) is temporarily limiting requests. Try again in \(max(1, Int(ceil(date.timeIntervalSinceNow)))) seconds."
+        case .rateLimited(let provider, let date): "\(provider.displayName) is temporarily limiting requests. \(date.timeIntervalSinceNow > 86400 ? "Please try again later." : "Try again in \(max(1, Int(ceil(date.timeIntervalSinceNow)))) seconds.")"
         case .providerStatus(let provider, let status): "\(provider.displayName) returned HTTP \(status). Check provider access or try again later."
         }
     }

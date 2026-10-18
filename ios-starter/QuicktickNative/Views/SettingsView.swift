@@ -71,7 +71,7 @@ struct SettingsView: View {
                     do { sharedProfile = try await store.exportRecommendationProfile() }
                     catch { store.profileTransferError = error.localizedDescription }
                 } } label: { Label(preparingProfile ? "Preparing profile…" : "Share / AirDrop profile", systemImage: "square.and.arrow.up") }
-                    .disabled(preparingProfile).accessibilityIdentifier("share-recommendation-profile")
+                    .disabled(preparingProfile || !store.bootstrapped).accessibilityIdentifier("share-recommendation-profile")
                 Button("Import recommendation profile") { importingProfile = true }.accessibilityIdentifier("import-recommendation-profile")
                 Text("Transfers your chosen and learned interests, exclusions and semantic interests. No logins, Sync ID, downloaded files or individual viewing/search history. The file contains private interests; share it only with your chosen device.")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -120,7 +120,7 @@ struct ProfileImportConfirmation: ViewModifier {
     @EnvironmentObject private var store: AppStore
     var enabled = true
     func body(content: Content) -> some View {
-        content.alert("Import recommendation profile?", isPresented: Binding(get: { enabled && store.pendingProfileImport != nil }, set: { shown in if enabled && !shown { store.pendingProfileImport = nil } })) {
+        content.alert("Import recommendation profile?", isPresented: Binding(get: { enabled && store.bootstrapped && store.pendingProfileImport != nil }, set: { shown in if enabled && !shown { store.pendingProfileImport = nil } })) {
             if let profile = store.pendingProfileImport {
                 Button("Replace interests", role: .destructive) { Task { await store.importRecommendationProfile(profile) } }
             }

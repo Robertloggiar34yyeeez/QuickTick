@@ -2,6 +2,15 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
+    @MainActor func testImportCannotRaceInitialProfileRestoration() async {
+        let store = AppStore()
+        store.exclusions = ["existing"]
+        let transfer = RecommendationTransfer(preferences: TasteSetup(), exclusions: ["incoming"], state: RecommendationState(), semanticProfiles: [:])
+        await store.importRecommendationProfile(transfer)
+        XCTAssertEqual(store.exclusions, ["existing"])
+        XCTAssertNotNil(store.profileTransferError)
+        XCTAssertFalse(store.cloudSyncEnabled)
+    }
     func testPositiveAndNegativeTagsGuideRatherThanReplaceLearnedProfile() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var state = RecommendationState(); var profile = RecommendationProfile()

@@ -81,7 +81,9 @@ actor RecommendationTransferReader {
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         guard url.isFileURL, let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
               size <= 2 * 1024 * 1024 else { throw APIError.server("Select a QuickTick profile smaller than 2 MB.") }
-        return try Self.decode(Data(contentsOf: url))
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+        return try Self.decode(file.read(upToCount: 2 * 1024 * 1024 + 1) ?? Data())
     }
 }
 

@@ -55,7 +55,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var isSyncing = false
     private var syncFlight: Task<Void, Error>?
     private var syncRevision = 0
-    private var bootstrapped = false
+    @Published private(set) var bootstrapped = false
     private var lastSyncAttempt = Date.distantPast
     private var syncTask: Task<Void, Never>?
     private var restoreFailed = false
@@ -81,7 +81,7 @@ final class AppStore: ObservableObject {
             tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true)
             posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []
             if ProcessInfo.processInfo.arguments.contains("--ui-testing-download-images") { downloads.useUITestDownloads(posts) }
-            hasMore = false
+            hasMore = false; bootstrapped = true
             return
         }
         #endif
@@ -470,6 +470,7 @@ final class AppStore: ObservableObject {
 
     func importRecommendationProfile(_ document: RecommendationTransfer) async {
         do {
+            guard bootstrapped else { throw APIError.server("Wait for the current profile to finish loading, then try again.") }
             let valid = try document.validated()
             invalidateFeed()
             var state = RecommendationState(); state.profiles = valid.profiles

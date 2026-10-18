@@ -1,6 +1,17 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testRecommendationProfileCanBePreparedForNativeSharing() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        app.buttons["open-settings"].tap()
+        let share = app.buttons["share-recommendation-profile"]
+        for _ in 0..<7 { if share.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(share.isHittable); share.tap()
+        let nativeShare = app.buttons["airdrop-profile-share-link"]
+        XCTAssertTrue(nativeShare.waitForExistence(timeout: 10))
+        XCTAssertTrue(nativeShare.isHittable)
+        let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Native recommendation profile sharing"; capture.lifetime = .keepAlways; add(capture)
+    }
     override func setUp() async throws {
         continueAfterFailure = false
         await MainActor.run { XCUIDevice.shared.orientation = .portrait }

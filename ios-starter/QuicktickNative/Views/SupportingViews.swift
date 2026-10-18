@@ -34,7 +34,7 @@ struct TasteOnboardingView: View {
         NavigationStack {
             List {
                 Section("What would you like more of?") {
-                    Text("Add your own topics, tags or phrases. Separate multiple interests with commas.").font(.caption).foregroundStyle(.secondary)
+                    Text("Guide your existing learned profile with topics, tags or phrases. Separate interests with commas. Your history is kept.").font(.caption).foregroundStyle(.secondary)
                     TextField("Topics or keywords", text: $positiveDraft)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("positive-interest-input")
                     Button("Add interests") { addDraft(positive: true) }.disabled(positiveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -43,6 +43,7 @@ struct TasteOnboardingView: View {
                     }
                 }
                 Section("What would you rather avoid?") {
+                    Text("Reduces unwanted recommendations while keeping your other learned interests. Exact unwanted tags are excluded.").font(.caption).foregroundStyle(.secondary)
                     TextField("Unwanted topics or keywords", text: $negativeDraft).textInputAutocapitalization(.never).autocorrectionDisabled()
                     Button("Add exclusions") { addDraft(positive: false) }.disabled(negativeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     ForEach(notInto.sorted(), id: \.self) { term in

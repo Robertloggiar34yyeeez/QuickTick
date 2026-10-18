@@ -29,7 +29,14 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "search.htv-services.com" { payload = #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fixture\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"}]}]"}"# }
         else if path == "/api/v8/video" { payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/full.m3u8"}]}]}}"# }
         else if path == "/webmasters/search" { payload = #"{"videos":[{"video_id":"ph1","title":"Fixture","tags":[{"tag_name":"sample"}],"default_thumb":"https://cdn.pornhub.com/thumb.jpg"}]}"# }
-        else if path == "/view_video.php" { payload = #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/full.mp4"}]};</script>"# }
+        else if path == "/view_video.php" {
+            let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
+            payload = fallback ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://www.pornhub.com/removed-definition"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/valid.m3u8"}]};</script>"# : #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/full.mp4"}]};</script>"#
+        }
+        else if path == "/removed-definition" {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self); return
+        }
         else if path == "/api/sync" { payload = #"{"exists":false,"ok":true}"# }
         else { client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL)); return }
         let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: [:])!
@@ -57,6 +64,27 @@ private final class RateLimitProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class NativeProviderAPITests: XCTestCase {
+    func testPornhubUsesCanonicalPageAndSurvivesRemovedMP4Definition() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "ph:wrong-id", id: "wrong-id", provider: "Pornhub", pageUrl: "https://www.pornhub.com/view_video.php?viewkey=fallback", type: "video")
+        let media = try await api.resolveMedia(post)
+        XCTAssertEqual(media.mediaUrl, "https://cdn.pornhub.com/valid.m3u8")
+        XCTAssertEqual(media.type, "hls")
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/view_video.php" }.count, 1)
+    }
+    func testRule34BatchIsSmallAndStillIncludesNextPageMetadata() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        for immersive in [false, true] {
+            let page = try await api.posts(provider: .rule34, query: QueryParser.parse(""), page: 2, immersive: immersive)
+            XCTAssertEqual(page.items.count, 1)
+            XCTAssertEqual(page.items.first?.previewUrl, "https://media.rule34.xxx/clip.jpg")
+        }
+        for request in NativeProviderProtocol.log.snapshot() {
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertTrue(query.contains { $0.name == "limit" && $0.value == "40" })
+            XCTAssertTrue(query.contains { $0.name == "pid" && $0.value == "1" })
+        }
+    }
     private func rateSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [RateLimitProtocol.self]
         return URLSession(configuration: config)

@@ -483,19 +483,28 @@ struct PosterView: View {
 
 struct CachedMediaImage: View {
     let url: String
+    var preview = ""
     var pixels = 1024
     var comic = false
     var onDecoded: ((DecodedMediaImage) -> Void)?
     @State private var decoded: DecodedMediaImage?
+    @State private var previewDecoded: DecodedMediaImage?
     @State private var failed = false
     var body: some View {
         Group {
-            if let decoded { Image(uiImage: UIImage(cgImage: decoded.image)).resizable().scaledToFit() }
+            if let image = decoded ?? previewDecoded { Image(uiImage: UIImage(cgImage: image.image)).resizable().scaledToFit() }
             else { Color(white: 0.035).overlay { Image(systemName: failed ? "photo.badge.exclamationmark" : "photo").foregroundStyle(.white.opacity(0.25)) } }
         }.task(id: "\(url):\(pixels):\(comic)") {
             decoded = nil; failed = false
             do { let image = try await MediaImagePipeline.shared.image(raw: url, pixels: pixels, comicPreview: comic); try Task.checkCancellation(); decoded = image; onDecoded?(image) }
             catch { if !Task.isCancelled { failed = !url.isEmpty } }
+        }
+        .task(id: "\(url):\(preview)") {
+            previewDecoded = nil
+            guard !preview.isEmpty, preview != url else { return }
+            if let image = try? await MediaImagePipeline.shared.image(raw: preview, pixels: 512, comicPreview: comic), !Task.isCancelled {
+                previewDecoded = image
+            }
         }
     }
 }

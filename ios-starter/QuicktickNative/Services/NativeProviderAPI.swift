@@ -141,7 +141,7 @@ enum NativeProviderAPI {
         guard !credentials.rule34User.isEmpty, !credentials.rule34Key.isEmpty else {
             throw APIError.server("Add your Rule34 user ID and API key in Settings. They are sent directly to Rule34.")
         }
-        let limit = id == nil ? (immersive ? 100 : 80) : 1
+        let limit = id == nil ? 40 : 1
         var tags = query.included + query.excluded.map { "-" + $0 }
         if immersive { tags.append("( video ~ animated_gif )") }
         if sort == "popular" { tags.append("sort:score") }
@@ -166,7 +166,8 @@ enum NativeProviderAPI {
             guard !id.isEmpty, let media = mediaURL(rawMedia, provider: .rule34) else { return nil }
             var post = Post(key: "rule34:\(id)", id: id, provider: "Rule34", score: number(row["score"]),
                             tags: text(row["tags"]).split(whereSeparator: \.isWhitespace).map(String.init), mediaUrl: media.absoluteString,
-                            previewUrl: mediaURL(text(row["sample_url"] ?? row["preview_url"]), provider: .rule34)?.absoluteString ?? media.absoluteString,
+                            previewUrl: mediaURL(text(row["sample_url"]), provider: .rule34).flatMap { type($0.absoluteString) == "image" ? $0.absoluteString : nil }
+                                ?? mediaURL(text(row["preview_url"]), provider: .rule34)?.absoluteString ?? "",
                             thumbUrl: mediaURL(text(row["preview_url"]), provider: .rule34)?.absoluteString ?? "",
                             pageUrl: "https://rule34.xxx/index.php?page=post&s=view&id=\(id)", type: type(media.absoluteString))
             let width = number(row["width"]), height = number(row["height"])
@@ -374,7 +375,11 @@ extension NativeProviderAPI {
             guard let media = streams.compactMap({ mediaURL(text($0["url"]), provider: provider) }).first else { throw APIError.server("Hanime returned no public stream.") }
             return ResolvedMedia(mediaUrl: media.absoluteString, type: media.pathExtension == "m3u8" ? "hls" : "video")
         case .pornhub:
-            let page = try url("https://www.pornhub.com/view_video.php", [.init(name: "viewkey", value: post.id)])
+            let canonical = mediaURL(post.pageUrl, provider: provider)
+            let page: URL
+            if let canonical, ["pornhub.com", "www.pornhub.com"].contains(canonical.host ?? ""), canonical.path == "/view_video.php" {
+                page = canonical
+            } else { page = try url("https://www.pornhub.com/view_video.php", [.init(name: "viewkey", value: post.id)]) }
             let html = String(decoding: try await data(session: session, url: page, provider: provider, headers: cookieHeaders(credentials)), as: UTF8.self)
             guard let json = jsonFragment(html, after: "mediaDefinitions"), let raw = try JSONSerialization.jsonObject(with: json) as? [[String: Any]] else { throw APIError.server("Pornhub did not expose public media. Check your provider access.") }
             let sorted = raw.sorted { number($0["quality"]) > number($1["quality"]) }
@@ -383,12 +388,14 @@ extension NativeProviderAPI {
                     guard let candidate = mediaURL(text(definition["videoUrl"]), provider: provider) else { continue }
                     if ["mp4", "m3u8"].contains(candidate.pathExtension.lowercased()) { return ResolvedMedia(mediaUrl: candidate.absoluteString, type: format == "hls" ? "hls" : "video") }
                     guard candidate.host == "pornhub.com" || candidate.host?.hasSuffix(".pornhub.com") == true else { continue }
-                    let details = try await data(session: session, url: candidate, provider: provider, headers: cookieHeaders(credentials))
+                    let details: Data
+                    do { details = try await data(session: session, url: candidate, provider: provider, headers: cookieHeaders(credentials)) }
+                    catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 { continue }
                     let list = rows(try JSONSerialization.jsonObject(with: details)).sorted { number($0["quality"]) > number($1["quality"]) }
                     if let media = list.compactMap({ mediaURL(text($0["videoUrl"]), provider: provider) }).first { return ResolvedMedia(mediaUrl: media.absoluteString, type: "video") }
                 }
             }
-            throw APIError.server("Pornhub returned no playable public stream.")
+            throw APIError.server("Pornhub has no available stream for this post. It may have been removed or be unavailable in your region.")
         }
     }
     static func quality(_ value: String) -> Int { Int(value.filter(\.isNumber)) ?? 0 }

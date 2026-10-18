@@ -12,6 +12,7 @@ struct QuicktickNativeApp: App {
                 .environmentObject(store)
                 .preferredColorScheme(.dark)
                 .task { await store.bootstrap() }
+                .onOpenURL { url in Task { await store.previewRecommendationImport(url) } }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
                     store.handleMemoryPressure()
                 }

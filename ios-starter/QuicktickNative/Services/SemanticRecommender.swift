@@ -205,6 +205,8 @@ actor SemanticRecommender {
         guard old.count == new.count else { return new }; return zip(old,new).map { $0 * (1-alpha) + $1 * alpha }
     }
     func releaseModel() { model = nil; tokenizer = nil }
+    func transferableProfiles() -> [String: SemanticInterest] { restore(); return disk.profiles }
+    func replaceProfiles(_ profiles: [String: SemanticInterest]) { restore(); disk.profiles = profiles; persist() }
     func reset() { disk = SemanticDiskState(); restored = true; persist() }
     private func persist() {
         do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true); let data = try JSONEncoder().encode(disk); try data.write(to: directory.appendingPathComponent("state.json"), options: .atomic); changes = 0 }

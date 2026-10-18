@@ -1,4 +1,89 @@
 import Foundation
+import CoreTransferable
+import UniformTypeIdentifiers
+
+extension UTType {
+    static let quicktickProfile = UTType(exportedAs: "app.quicktick.recommendation-profile", conformingTo: .json)
+}
+
+/// Explicit, portable interests only. Never a Sync snapshot, credential store,
+/// downloaded file, embedding cache or per-post viewing/search history.
+struct RecommendationTransfer: Codable, Transferable, Sendable, Identifiable {
+    var id: UUID = UUID()
+    var format = "QuickTick recommendation profile"
+    var version = 1
+    var semanticVersion = "bge-micro-v2-3edf6d7-96-v1"
+    var preferences: TasteSetup
+    var exclusions: [String]
+    var profiles: [String: RecommendationProfile]
+    var semanticProfiles: [String: SemanticInterest]
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .quicktickProfile)
+            .suggestedFileName("QuickTick-Recommendations.quicktickprofile")
+    }
+
+    init(preferences: TasteSetup, exclusions: [String], state: RecommendationState, semanticProfiles: [String: SemanticInterest]) {
+        self.preferences = preferences; self.exclusions = exclusions
+        self.profiles = state.profiles.mapValues { profile in
+            var safe = profile
+            safe.recentSeen = []; safe.recentQueries = []; safe.stats = RecommendationStats()
+            let retained = Set(safe.terms.keys)
+            safe.related = safe.related.filter { retained.contains($0.key) }.mapValues { $0.filter { retained.contains($0.key) } }
+            safe.negativeThemes = Dictionary(safe.negativeThemes.sorted { $0.value > $1.value }.prefix(512), uniquingKeysWith: { first, _ in first })
+            return safe
+        }
+        self.semanticProfiles = semanticProfiles
+    }
+
+    func validated() throws -> Self {
+        let providers = Set(Provider.allCases.map(\.rawValue))
+        func strings(_ values: [String], limit: Int) -> Bool { values.count <= limit && values.allSatisfy { !$0.isEmpty && $0.count <= 180 } }
+        func numbers(_ values: [String: Double], limit: Int) -> Bool {
+            values.count <= limit && values.allSatisfy { $0.key.count <= 180 && $0.value.isFinite && abs($0.value) <= 1_000_000 }
+        }
+        guard format == "QuickTick recommendation profile", version == 1,
+              semanticVersion == "bge-micro-v2-3edf6d7-96-v1", (1...2).contains(preferences.version),
+              Set(preferences.sources.keys).isSubset(of: providers), Set(profiles.keys).isSubset(of: providers),
+              Set(semanticProfiles.keys).isSubset(of: providers), strings(exclusions, limit: 512) else {
+            throw APIError.server("This is not a supported QuickTick recommendation profile.")
+        }
+        for taste in preferences.sources.values {
+            guard strings(taste.into, limit: 40), strings(taste.notInto, limit: 40),
+                  taste.into.allSatisfy({ $0.count <= 80 }), taste.notInto.allSatisfy({ $0.count <= 80 }) else { throw APIError.invalidResponse }
+        }
+        for p in profiles.values {
+            guard numbers(p.terms, limit: 140), numbers(p.negativeThemes, limit: 512), p.related.count <= 140,
+                  p.related.allSatisfy({ $0.key.count <= 180 && numbers($0.value, limit: 140) }), p.termEvidence.count <= 140,
+                  p.termEvidence.allSatisfy({ item in
+                      item.key.count <= 180 && [item.value.positive, item.value.negative, item.value.search].allSatisfy { $0.isFinite && abs($0) <= 1_000_000 }
+                  }) else { throw APIError.invalidResponse }
+        }
+        for p in semanticProfiles.values {
+            guard [p.recent, p.longTerm, p.negative].allSatisfy({ vector in
+                (vector.isEmpty || vector.count == 384) && vector.allSatisfy { $0.isFinite && abs($0) <= 100 }
+            }), p.creators.count <= 48, p.creators.allSatisfy({ $0.key.count <= 180 && $0.value.isFinite && abs($0.value) <= 1 }),
+                  p.updated.timeIntervalSince1970.isFinite, p.updated <= Date.now.addingTimeInterval(86400) else { throw APIError.invalidResponse }
+        }
+        // Strip any history/counters a foreign JSON file tried to include.
+        var state = RecommendationState(); state.profiles = profiles
+        return Self(preferences: preferences, exclusions: exclusions, state: state, semanticProfiles: semanticProfiles)
+    }
+}
+
+actor RecommendationTransferReader {
+    static func decode(_ data: Data) throws -> RecommendationTransfer {
+        guard data.count <= 2 * 1024 * 1024 else { throw APIError.server("Recommendation profile exceeds the 2 MB limit.") }
+        return try JSONDecoder().decode(RecommendationTransfer.self, from: data).validated()
+    }
+    func read(_ url: URL) throws -> RecommendationTransfer {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        guard url.isFileURL, let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= 2 * 1024 * 1024 else { throw APIError.server("Select a QuickTick profile smaller than 2 MB.") }
+        return try Self.decode(Data(contentsOf: url))
+    }
+}
 
 enum RecommendationEvent: Sendable, Equatable {
     case impression

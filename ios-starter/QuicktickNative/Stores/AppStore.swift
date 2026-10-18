@@ -36,6 +36,8 @@ final class AppStore: ObservableObject {
     @Published var learnedInterests: [String] = []
     @Published var resetStatus: String?
     @Published var storageWarning: String?
+    @Published var pendingProfileImport: RecommendationTransfer?
+    @Published var profileTransferError: String?
     @Published var immersionFraming = false { didSet { persistLocal() } }
     @Published var muted = false { didSet { persistLocal() } }
     @Published private(set) var feedMediaOnly = false
@@ -238,7 +240,7 @@ final class AppStore: ObservableObject {
             }
             let personalized = requestedSort == "recommended" && parsed.included.isEmpty
             let banned = Set((exclusions + parsed.excluded).map { $0.lowercased() })
-            let context = provider.rawValue + "|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
+            let context = provider.rawValue + "|batch40|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
             candidateContext = personalized ? context : nil
             let previous = Set(posts.map(\.stableID))
             var requestedPage = 1
@@ -358,9 +360,10 @@ final class AppStore: ObservableObject {
         } catch {
             // A failed interest search must not remove a provider's working
             // public browse feed. Explicit user searches never broaden silently.
+            if let failure = error as? APIError, case .providerStatus(_, let status) = failure, (400..<500).contains(status) { throw error }
             guard (error as? APIError)?.retryAfter == nil, let context, acquisition?.focused == true, !Task.isCancelled else { throw error }
             let key = context + "|query:"
-            let broad = RecommendationEngine.CandidateRequest(context: key, query: ParsedQuery(included: [], excluded: exclusions + parsed.excluded), page: await recommendations.candidatePage(context: key), focused: false)
+            let broad = RecommendationEngine.CandidateRequest(context: key, query: ParsedQuery(included: [], excluded: acquisition?.query.excluded ?? (exclusions + parsed.excluded)), page: await recommendations.candidatePage(context: key), focused: false)
             let result = try await api.posts(provider: provider, query: broad.query, page: broad.page, sort: sort, immersive: mediaOnly)
             return (result, broad)
         }
@@ -453,6 +456,32 @@ final class AppStore: ObservableObject {
 
     func tasteChoice(for provider: Provider) -> TasteChoice {
         tasteSetup.sources[provider.rawValue] ?? TasteChoice()
+    }
+
+    func exportRecommendationProfile() async throws -> RecommendationTransfer {
+        try RecommendationTransfer(preferences: tasteSetup, exclusions: exclusions,
+            state: await recommendations.snapshot(), semanticProfiles: await recommendations.semantic.transferableProfiles()).validated()
+    }
+
+    func previewRecommendationImport(_ url: URL) async {
+        do { pendingProfileImport = try await RecommendationTransferReader().read(url) }
+        catch { profileTransferError = "Could not open recommendation profile: \(error.localizedDescription)" }
+    }
+
+    func importRecommendationProfile(_ document: RecommendationTransfer) async {
+        do {
+            let valid = try document.validated()
+            invalidateFeed()
+            var state = RecommendationState(); state.profiles = valid.profiles
+            await recommendations.load(state)
+            await recommendations.semantic.replaceProfiles(valid.semanticProfiles)
+            tasteSetup = valid.preferences; exclusions = valid.exclusions
+            local.snapshot.preferences.updatedAt = timestamp(); local.snapshot.exclusions.updatedAt = timestamp()
+            persistLocal(); await persistRecommendations()
+            pendingProfileImport = nil
+            // Local transfer does not enable website Sync or upload a profile.
+            await refresh(immersive: activeTab == 1)
+        } catch { profileTransferError = error.localizedDescription }
     }
 
     private func record(_ event: RecommendationEvent, post: Post) async {

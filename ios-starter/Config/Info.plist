@@ -10,6 +10,19 @@
 <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
 <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
 <key>UIDesignRequiresCompatibility</key><true/>
+<key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>app.quicktick.recommendation-profile</string>
+<key>UTTypeDescription</key><string>QuickTick recommendation profile</string>
+<key>UTTypeConformsTo</key><array><string>public.json</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>quicktickprofile</string></array></dict>
+</dict></array>
+<key>CFBundleDocumentTypes</key><array><dict>
+<key>CFBundleTypeName</key><string>QuickTick recommendation profile</string>
+<key>CFBundleTypeRole</key><string>Viewer</string>
+<key>LSHandlerRank</key><string>Owner</string>
+<key>LSItemContentTypes</key><array><string>app.quicktick.recommendation-profile</string></array>
+</dict></array>
+<key>LSSupportsOpeningDocumentsInPlace</key><true/>
 <key>LSRequiresIPhoneOS</key><true/>
 <key>QUICKTICK_API_BASE_URL</key><string>$(QUICKTICK_API_BASE_URL)</string>
 <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>

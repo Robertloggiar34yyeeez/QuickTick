@@ -55,18 +55,23 @@ actor RecommendationEngine {
     // requests rotate across strong interests; the fourth browses broadly.
     // Each query owns its cursor in the existing persisted recommendation state.
     func candidateRequest(context: String, provider: Provider, taste: TasteChoice, excluded: [String]) -> CandidateRequest {
-        let blocked = Set(excluded.map { $0.lowercased() })
-        let explicit = tasteTokens(source: provider.rawValue, values: taste.into)
-        let learned = positiveTermEntries(source: provider.rawValue, taste: taste, limit: 6).filter { $0.1 >= 3 }.map { $0.0 }
-        var included = Set<String>()
-        let interests = (explicit + learned).filter { !blocked.contains($0.lowercased()) && included.insert($0).inserted }.prefix(8).map { $0 }
+        let queryExclusions = Array(Set(excluded + tasteTokens(source: provider.rawValue, values: taste.notInto))).sorted()
+        let blocked = Set(queryExclusions.map { $0.lowercased() })
+        let explicit = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }.sorted()
+        // Keep learned acquisition separate: adding many explicit tags must not
+        // evict the established profile from candidate discovery.
+        let learned = positiveTermEntries(source: provider.rawValue, taste: TasteChoice(), limit: 8)
+            .filter { $0.1 >= 3 && !blocked.contains($0.0) && !explicit.contains($0.0) }.map { $0.0 }
         let roundKey = context + "|round"
         let round = max(0, (state.candidatePages[roundKey] ?? 1) - 1)
         advanceCandidatePage(context: roundKey, nextPage: (round + 1) % 12_000 + 1)
-        let focused = !interests.isEmpty && round % 4 != 3
-        let terms = focused ? [interests[(round / 4 * 3 + round % 4) % interests.count]] : []
+        let focused = (!explicit.isEmpty || !learned.isEmpty) && round % 4 != 3
+        let terms: [String]
+        if !focused { terms = [] }
+        else if !explicit.isEmpty && (learned.isEmpty || round % 4 == 0) { terms = [explicit[(round / 4 + (learned.isEmpty ? round % 4 : 0)) % explicit.count]] }
+        else { terms = [learned[(round / 4 * 2 + max(0, round % 4 - 1)) % learned.count]] }
         let key = context + "|query:" + terms.joined(separator: " ")
-        return CandidateRequest(context: key, query: ParsedQuery(included: terms, excluded: excluded), page: candidatePage(context: key), focused: focused)
+        return CandidateRequest(context: key, query: ParsedQuery(included: terms, excluded: queryExclusions), page: candidatePage(context: key), focused: focused)
     }
     func advanceCandidatePage(context: String, nextPage: Int) {
         if state.candidatePages.count >= 96, state.candidatePages[context] == nil {
@@ -293,6 +298,8 @@ actor RecommendationEngine {
         let themes = Dictionary(uniqueKeysWithValues:Set(candidates.map { $0.provider.lowercased() }).map { source in
             (source,positiveTermEntries(source:source,taste:taste,limit:3).map { $0.0 })
         })
+        // Tokenize once, rather than for every comparison in the diversity loop.
+        let termCache = Dictionary((candidates + recent).map { ($0.stableID, terms(for: $0)) }, uniquingKeysWith: { first, _ in first })
         var unique = Set<String>()
         var pool = candidates.filter { unique.insert($0.stableID).inserted && !isHardDisliked($0, taste: taste) }
             .enumerated()
@@ -304,22 +311,31 @@ actor RecommendationEngine {
                 return (post: entry.element, base: tags + semantic.total(weights) + seen - Double(entry.offset) * 0.002, tags: tags, seen: seen)
             }
         var chosen: [Post] = []
-        let target = min(limit ?? pool.count, pool.count)
+        var similarityCache: [String: [String: Double]] = [:]
+        // Bound look-ahead ranking as the endless feed grows. Hard filters still
+        // apply to every candidate; the remainder retains acquisition order.
+        let target = min(limit ?? 48, pool.count)
 
         while chosen.count < target, !pool.isEmpty {
             let context = Array((recent + chosen).suffix(8))
-            let contextTerms = Set(context.flatMap { terms(for: $0) })
-            let lastTerms = Set(context.last.map { terms(for: $0) } ?? [])
+            let contextTerms = Set(context.flatMap { termCache[$0.stableID] ?? [] })
+            let lastTerms = Set(context.last.flatMap { termCache[$0.stableID] } ?? [])
             var bestIndex = 0
             var bestScore = -Double.infinity
 
             for (index, entry) in pool.enumerated() {
-                let candidateTerms = terms(for: entry.post)
+                let candidateTerms = termCache[entry.post.stableID] ?? []
                 let overlap = candidateTerms.filter(contextTerms.contains).count
                 let immediate = candidateTerms.filter(lastTerms.contains).count
                 var diversity = min(weights.tagDiversityCap, Double(overlap) * weights.overlap + Double(immediate) * weights.immediate)
                 if let vector = vectors[entry.post.stableID] {
-                    let similar = context.compactMap { vectors[$0.stableID] }.map { SemanticRecommender.cosine(vector, $0) }.max() ?? 0
+                    let similar = context.compactMap { other -> Double? in
+                        guard let otherVector = vectors[other.stableID] else { return nil }
+                        if let cached = similarityCache[entry.post.stableID]?[other.stableID] { return cached }
+                        let value = SemanticRecommender.cosine(vector, otherVector)
+                        similarityCache[entry.post.stableID, default: [:]][other.stableID] = value
+                        return value
+                    }.max() ?? 0
                     diversity += max(0, similar - 0.70) * weights.semanticDiversity
                     if similar > 0.94 { diversity += weights.nearDuplicate }
                 }
@@ -336,7 +352,7 @@ actor RecommendationEngine {
             }
             chosen.append(pool.remove(at: bestIndex).post)
         }
-        return chosen
+        return limit == nil ? chosen + pool.map(\.post) : chosen
     }
 
     func gorseItemID(_ post: Post) -> String {

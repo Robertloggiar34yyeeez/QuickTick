@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
@@ -13,6 +14,9 @@ struct SettingsView: View {
     @State private var remember = true
     @State private var exclusions = ""
     @State private var onboarding = false
+    @State private var sharedProfile: RecommendationTransfer?
+    @State private var importingProfile = false
+    @State private var preparingProfile = false
     var body: some View {
         Form {
             if let storageWarning = store.storageWarning { Section("Storage needs attention") { Text(storageWarning).foregroundStyle(.orange) } }
@@ -61,6 +65,17 @@ struct SettingsView: View {
                 Button("Reset learned history", role: .destructive) { Task { await store.resetRecommendations() } }
                 if let resetStatus = store.resetStatus { Text(resetStatus).font(.caption) }
             }
+            Section("Move recommendations to another device") {
+                Button { preparingProfile = true; Task {
+                    defer { preparingProfile = false }
+                    do { sharedProfile = try await store.exportRecommendationProfile() }
+                    catch { store.profileTransferError = error.localizedDescription }
+                } } label: { Label(preparingProfile ? "Preparing profile…" : "Share / AirDrop profile", systemImage: "square.and.arrow.up") }
+                    .disabled(preparingProfile).accessibilityIdentifier("share-recommendation-profile")
+                Button("Import recommendation profile") { importingProfile = true }.accessibilityIdentifier("import-recommendation-profile")
+                Text("Transfers your chosen and learned interests, exclusions and semantic interests. No logins, Sync ID, downloaded files or individual viewing/search history. The file contains private interests; share it only with your chosen device.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Section("Persistent exclusions") {
                 TextField("Tags separated by spaces", text: $exclusions).textInputAutocapitalization(.never)
                 Button("Save exclusions") { store.setExclusions(exclusions.split(whereSeparator: \.isWhitespace).map(String.init)); Task { await store.refresh() } }
@@ -71,6 +86,25 @@ struct SettingsView: View {
             }
         }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Settings")
             .sheet(isPresented: $onboarding) { TasteOnboardingView() }
+            .sheet(item: $sharedProfile) { profile in
+                NavigationStack {
+                    VStack(spacing: 20) {
+                        Image(systemName: "airplayaudio").font(.largeTitle)
+                        Text("Your QuickTick interests").font(.title2.bold())
+                        Text("Choose AirDrop in the share sheet. Open the received file in QuickTick on your other iPhone or iPad, then confirm the import.").foregroundStyle(.secondary)
+                        ShareLink(item: profile, preview: SharePreview("QuickTick recommendation profile")) { Label("Choose device or save file", systemImage: "square.and.arrow.up") }
+                            .buttonStyle(.borderedProminent).accessibilityIdentifier("airdrop-profile-share-link")
+                    }.padding(24).navigationTitle("Share profile")
+                        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { sharedProfile = nil } } }
+                }.presentationDetents([.medium, .large])
+            }
+            .fileImporter(isPresented: $importingProfile, allowedContentTypes: [.quicktickProfile, .json]) { result in
+                switch result {
+                case .success(let url): Task { await store.previewRecommendationImport(url) }
+                case .failure(let error): store.profileTransferError = error.localizedDescription
+                }
+            }
+            .modifier(ProfileImportConfirmation())
             .task { await reloadAccessFields() }
             .onChange(of: store.isSyncing) { _, busy in if !busy { Task { await reloadAccessFields() } } }
     }
@@ -79,5 +113,21 @@ struct SettingsView: View {
         let credentials = await store.api.credentials
         user = credentials.rule34User; key = credentials.rule34Key; session = credentials.pornhubSession
         username = store.syncedPornhubUsername; remember = store.rememberedProviderAccess
+    }
+}
+
+struct ProfileImportConfirmation: ViewModifier {
+    @EnvironmentObject private var store: AppStore
+    var enabled = true
+    func body(content: Content) -> some View {
+        content.alert("Import recommendation profile?", isPresented: Binding(get: { enabled && store.pendingProfileImport != nil }, set: { shown in if enabled && !shown { store.pendingProfileImport = nil } })) {
+            if let profile = store.pendingProfileImport {
+                Button("Replace interests", role: .destructive) { Task { await store.importRecommendationProfile(profile) } }
+            }
+            Button("Cancel", role: .cancel) { store.pendingProfileImport = nil }
+        } message: { Text("Replaces chosen and learned interests and exclusions on this device. Favorites, downloads, logins and website Sync settings stay as they are.") }
+        .alert("Profile transfer", isPresented: Binding(get: { enabled && store.profileTransferError != nil }, set: { if enabled && !$0 { store.profileTransferError = nil } })) {
+            Button("OK", role: .cancel) { store.profileTransferError = nil }
+        } message: { Text(store.profileTransferError ?? "") }
     }
 }

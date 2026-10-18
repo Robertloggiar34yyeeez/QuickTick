@@ -41,6 +41,7 @@ struct RootView: View {
                 }
             }
         }.tint(.white).background(.black)
+            .modifier(ProfileImportConfirmation(enabled: !showSettings))
             .sheet(isPresented: $showSettings) {
                 NavigationStack { SettingsView().toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showSettings = false } } } }
             }

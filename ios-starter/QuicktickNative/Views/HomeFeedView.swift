@@ -12,6 +12,7 @@ struct HomeFeedView: View {
 
     var body: some View {
         GeometryReader { viewport in
+        let revision = store.feedRevision
         ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
@@ -78,17 +79,29 @@ struct HomeFeedView: View {
         }
         .coordinateSpace(name: "home-viewport")
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
+            guard store.feedRevision == revision else { return }
             visibleFrames = frames
             let bounds = CGRect(origin: .zero, size: viewport.size)
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
+            selectVisiblePlayback(viewport: viewport.size)
         }
-        .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
-            let candidate = visibleCandidate(viewport: viewport.size)
-            do { try await Task.sleep(for: .milliseconds(120)); try Task.checkCancellation() } catch { return }
-            guard store.activeTab == 0, store.isForeground else { return }
-            store.inlinePlaybackID = candidate
-            await warmNext(after: candidate)
+        .task(id: "\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
+            guard !Task.isCancelled, store.feedRevision == revision else { return }
+            selectVisiblePlayback(viewport: viewport.size)
         }
+        .task(id: "\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
+            guard !Task.isCancelled, store.activeTab == 0, store.isForeground, store.feedRevision == revision else { return }
+            await warmNext(after: store.inlinePlaybackID)
+        }
+        #if DEBUG
+        .overlay(alignment: .bottomTrailing) {
+            if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+                Text("active=\(store.inlinePlaybackID ?? "nil") candidate=\(visibleCandidate(viewport: viewport.size) ?? "nil") paused=\(store.pausedPlaybackID ?? "nil") foreground=\(store.isForeground) frames=\(visibleFrames.count) player=\(store.players.activeKey ?? "nil") owner=\(store.players.activeOwner ?? "nil")")
+                    .font(.system(size: 1)).opacity(0.01).allowsHitTesting(false)
+                    .accessibilityIdentifier("home-playback-debug")
+            }
+        }
+        #endif
         .background(AppTheme.canvas)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -119,6 +132,11 @@ struct HomeFeedView: View {
         }
     }
 
+    private func selectVisiblePlayback(viewport: CGSize) {
+        guard store.activeTab == 0, store.isForeground else { return }
+        let candidate = visibleCandidate(viewport: viewport)
+        if store.inlinePlaybackID != candidate { store.inlinePlaybackID = candidate }
+    }
     private func visibleCandidate(viewport: CGSize) -> String? {
         guard store.activeTab == 0, store.isForeground else { return nil }
         if let fullScreen = store.fullScreenPlaybackID { return fullScreen }

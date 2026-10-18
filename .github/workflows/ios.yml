@@ -62,6 +62,12 @@ jobs:
           xcrun simctl boot "$DEVICE" || true
           xcrun simctl bootstatus "$DEVICE" -b
           xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -resultBundlePath logs/QuicktickTests.xcresult test | tee logs/xcodebuild-test.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iphone-test-log
+          path: logs/xcodebuild-test.txt
+          retention-days: 14
       - name: Check native iPad layouts and playback
         if: ${{ !cancelled() && steps.xtool-package.outcome == 'success' }}
         shell: bash

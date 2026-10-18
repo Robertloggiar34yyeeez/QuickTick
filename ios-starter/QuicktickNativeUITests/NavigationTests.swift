@@ -112,8 +112,12 @@ final class NavigationTests: XCTestCase {
         expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
         waitForExpectations(timeout: 10)
         app.buttons["tab-Immersive"].tap(); app.buttons["tab-Home"].tap()
-        expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
-        waitForExpectations(timeout: 10)
+        let resumed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Playing"), object: playback)
+        let result = XCTWaiter.wait(for: [resumed], timeout: 10)
+        if result != .completed {
+            let details = XCTAttachment(string: app.debugDescription); details.name = "Home return playback state"; details.lifetime = .keepAlways; add(details)
+        }
+        XCTAssertEqual(result, .completed, "The visible Home video must resume after tab refresh")
         app.buttons["feed-recent"].tap()
         XCTAssertTrue(app.buttons["inline-play-home:video"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["inline-play-test:video"].exists)

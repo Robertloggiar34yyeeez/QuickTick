@@ -180,8 +180,8 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(VisiblePostSelector.select(frames: bothVisible, viewport: tablet, current: nil), "first")
         XCTAssertEqual(VisiblePostSelector.select(frames: bothVisible, viewport: tablet, current: "first"), "first")
     }
-    @MainActor func testRapidForegroundReturnResumesSameOwnerWithoutAViewTaskAndHonorsPause() {
-        let store = AppStore(); let url = URL(fileURLWithPath: "/tmp/resume.mp4")
+    @MainActor func testRapidForegroundReturnResumesSameOwnerWithoutAViewTaskAndHonorsPause() throws {
+        let store = AppStore(); let url = try XCTUnwrap(Bundle.main.url(forResource: "UITestClip", withExtension: "mp4"))
         store.inlinePlaybackID = "visible"
         let player = store.players.activate(key: "visible", url: url, muted: false, owner: "home")
         store.isForeground = false; XCTAssertNil(store.players.activeKey)

@@ -30,7 +30,7 @@ struct RecommendationTransfer: Codable, Transferable, Sendable, Identifiable {
             safe.recentSeen = []; safe.recentQueries = []; safe.stats = RecommendationStats()
             let retained = Set(safe.terms.keys)
             safe.related = safe.related.filter { retained.contains($0.key) }.mapValues { $0.filter { retained.contains($0.key) } }
-            safe.negativeThemes = Dictionary(safe.negativeThemes.sorted { $0.value > $1.value }.prefix(512), uniquingKeysWith: { first, _ in first })
+            safe.negativeThemes = Dictionary(safe.negativeThemes.sorted { $0.value > $1.value }.prefix(512).map { ($0.key, $0.value) }, uniquingKeysWith: { first, _ in first })
             return safe
         }
         self.semanticProfiles = semanticProfiles

@@ -84,6 +84,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 }
                 #endif
                 guard let url = URL(string: media.mediaUrl), url.scheme == "https" else { throw URLError(.badURL) }
+                if let host = url.host, let provider = post.providerKey { try await ProviderRequestGate.shared.wait(host: host, provider: provider) }
                 let hls = media.type == "hls" || url.pathExtension.lowercased() == "m3u8"
                 var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: post.tags.first ?? post.provider, tags: post.tags, thumbnailRemoteURL: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl, kind: hls ? .hlsPackage : .file, state: .queued, progress: 0, createdAt: .now)
                 let task: URLSessionTask
@@ -152,6 +153,17 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         guard let key = downloadTask.taskDescription else { return }
+        if let response = downloadTask.response as? HTTPURLResponse, response.statusCode == 429, let host = response.url?.host {
+            let deadline = NativeProviderAPI.retryDeadline(response)
+            Task { @MainActor in
+                await ProviderRequestGate.shared.block(host: host, until: deadline)
+                guard let record = self.records.first(where: { $0.key == key }) else { return }
+                self.tasks.removeValue(forKey: key)
+                let provider = record.offlinePost?.providerKey ?? Provider(rawValue: record.provider.lowercased()) ?? .rule34
+                self.update(key) { $0.state = .failed; $0.errorMessage = APIError.rateLimited(provider, deadline).localizedDescription }
+            }
+            return
+        }
         do {
             guard let response = downloadTask.response as? HTTPURLResponse, (200..<300).contains(response.statusCode), !(response.mimeType ?? "").contains("text"), !(response.mimeType ?? "").contains("json") else { throw APIError.invalidResponse }
             let dir = root.appendingPathComponent(Self.safeName(key))

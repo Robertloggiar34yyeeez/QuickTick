@@ -230,6 +230,7 @@ final class NavigationTests: XCTestCase {
         let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Frosted right rail and snapped timeline"; screenshot.lifetime = .keepAlways; add(screenshot)
         app.buttons["tab-Downloads"].tap()
         let size = app.staticTexts["download-size-test:next"]
+        for _ in 0..<4 { if size.exists { break }; app.swipeUp() }
         XCTAssertTrue(size.waitForExistence(timeout: 10))
         XCTAssertNotEqual(size.label, "Size unavailable")
     }

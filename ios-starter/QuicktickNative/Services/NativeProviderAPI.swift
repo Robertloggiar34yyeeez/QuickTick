@@ -1,5 +1,28 @@
 import Foundation
 
+// Shared by provider APIs and download preparation. A new screen or Retry tap
+// cannot bypass a host's advertised cooldown. Entries are bounded and transient.
+actor ProviderRequestGate {
+    static let shared = ProviderRequestGate()
+    private var deadlines: [String: Date] = [:]
+    private var slots: [String: Date] = [:]
+    func block(host: String, until: Date) {
+        deadlines = deadlines.filter { $0.value > .now }
+        if deadlines.count >= 64, deadlines[host] == nil { return }
+        deadlines[host] = max(deadlines[host] ?? .distantPast, until)
+    }
+    func wait(host: String, provider: Provider) async throws {
+        try Task.checkCancellation()
+        if let date = deadlines[host], date > .now { throw APIError.rateLimited(provider, date) }
+        slots = slots.filter { $0.value > .now }
+        let slot = max(.now, slots[host] ?? .distantPast)
+        if slots.count < 64 || slots[host] != nil { slots[host] = slot.addingTimeInterval(0.2) }
+        if slot > .now { try await Task.sleep(for: .seconds(slot.timeIntervalSinceNow)) }
+        try Task.checkCancellation()
+        if let date = deadlines[host], date > .now { throw APIError.rateLimited(provider, date) }
+    }
+}
+
 // Provider networking lives on the API actor, never on a scrolling view. No
 // requests in this service use the optional QuickTick Sync origin.
 enum NativeProviderAPI {
@@ -33,7 +56,7 @@ enum NativeProviderAPI {
     }
 
     static func data(session: URLSession, url: URL, provider: Provider, method: String = "GET", body: Data? = nil, headers: [String: String] = [:]) async throws -> Data {
-        guard url.scheme == "https", url.host?.lowercased() != quicktickHost else { throw APIError.invalidResponse }
+        guard url.scheme == "https", let host = url.host, host.lowercased() != quicktickHost else { throw APIError.invalidResponse }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
         request.httpMethod = method; request.httpBody = body
@@ -42,15 +65,39 @@ enum NativeProviderAPI {
         request.setValue(origin(provider).absoluteString + "/", forHTTPHeaderField: "Referer")
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
-        let (data, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else {
-            // Do not expose credential-bearing request URLs or upstream HTML.
-            throw APIError.providerStatus(provider, http.statusCode)
+        for attempt in 0..<3 {
+            try await ProviderRequestGate.shared.wait(host: host, provider: provider)
+            let (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
+            guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+            if http.statusCode == 429 {
+                let advertised = retryDeadline(http, attempt: attempt)
+                let deadline = attempt == 2 ? max(advertised, Date.now.addingTimeInterval(1)) : advertised
+                await ProviderRequestGate.shared.block(host: host, until: deadline)
+                // Short transient limits recover automatically. Long limits are
+                // surfaced immediately, rather than leaving a feed spinner stuck.
+                guard attempt < 2, deadline.timeIntervalSinceNow <= 3 else { throw APIError.rateLimited(provider, deadline) }
+                try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
+                continue
+            }
+            guard (200..<300).contains(http.statusCode) else { throw APIError.providerStatus(provider, http.statusCode) }
+            guard data.count <= 8 * 1024 * 1024 else { throw APIError.server("Provider response is too large.") }
+            return data
         }
-        guard data.count <= 8 * 1024 * 1024 else { throw APIError.server("Provider response is too large.") }
-        return data
+        throw APIError.invalidResponse
+    }
+
+    static func retryDeadline(_ response: HTTPURLResponse, now: Date = .now, attempt: Int = 0) -> Date {
+        if let raw = response.value(forHTTPHeaderField: "Retry-After")?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            if let seconds = Double(raw), seconds.isFinite, seconds >= 0 { return now.addingTimeInterval(seconds) }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            for format in ["EEE, dd MMM yyyy HH:mm:ss zzz", "EEEE, dd-MMM-yy HH:mm:ss zzz", "EEE MMM d HH:mm:ss yyyy"] {
+                formatter.dateFormat = format
+                if let date = formatter.date(from: raw) { return max(now, date) }
+            }
+        }
+        return now.addingTimeInterval(pow(2, Double(min(2, max(0, attempt)))))
     }
 
     static func object(_ data: Data) throws -> [String: Any] {
@@ -160,6 +207,7 @@ enum NativeProviderAPI {
                 guard object["gifs"] is [[String: Any]] else { throw APIError.invalidResponse }
                 result = object; break
             } catch is CancellationError { throw CancellationError() } catch {
+                if (error as? APIError)?.retryAfter != nil { throw error }
                 if let failure = error as? APIError, case .providerStatus(.redgifs, 401) = failure { throw error }
                 lastError = error
             }
@@ -187,6 +235,7 @@ enum NativeProviderAPI {
         do {
             result = try object(await data(session: session, url: url("https://search.htv-services.com/"), provider: .hanime, method: "POST", body: JSONSerialization.data(withJSONObject: body)))
         } catch {
+            if (error as? APIError)?.retryAfter != nil { throw error }
             guard query.included.isEmpty, !Task.isCancelled else { throw error }
             result = try object(await data(session: session, url: url("https://members.hanime.tv/rapi/v7/hentai_videos", [.init(name: "source", value: "randomize"), .init(name: "r", value: String(page))]), provider: .hanime))
         }

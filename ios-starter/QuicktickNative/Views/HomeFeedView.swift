@@ -64,9 +64,6 @@ struct HomeFeedView: View {
                 proxy.scrollTo(scrollAnchor, anchor: .top)
             }
         }
-        .onDisappear {
-            scrollAnchor = visibleFrames.min(by: { abs($0.value.minY) < abs($1.value.minY) })?.key
-        }
         .onChange(of: store.feedRevision) { _, _ in proxy.scrollTo("home-top", anchor: .top) }
         .overlay(alignment: .bottomLeading) {
             Group {

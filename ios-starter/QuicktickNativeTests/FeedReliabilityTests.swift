@@ -39,6 +39,17 @@ private final class CandidatePageProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 final class FeedReliabilityTests: XCTestCase {
+    @MainActor func testRecommendedContinuesPastPageRemovedByNegativePreferences() async {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
+        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
+        let store = AppStore(api: QuicktickAPIClient(baseURL: nil, session: session))
+        store.selectedProvider = .eporner; store.activeTab = 1
+        store.tasteSetup.sources[Provider.eporner.rawValue] = TasteChoice(done: true, into: [], notInto: ["filtered"])
+        await store.refresh(immersive: true)
+        XCTAssertEqual(store.posts.map(\.stableID), ["eporner:recommended:2"])
+        XCTAssertTrue(store.posts.allSatisfy(\.isImmersiveMedia))
+        XCTAssertFalse(store.posts.contains { $0.tags.contains("filtered") })
+    }
     @MainActor private func candidateStore() -> (AppStore, URLSession) {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [CandidatePageProtocol.self]
         let session = URLSession(configuration: config)

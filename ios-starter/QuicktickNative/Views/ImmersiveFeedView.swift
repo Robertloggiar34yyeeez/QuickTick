@@ -46,7 +46,24 @@ struct ImmersiveFeedView: View {
                     }
                 }.scrollTargetLayout().frame(width: geo.size.width)
                 if mediaPosts.isEmpty {
-                    ContentUnavailableView(store.isLoading ? "Loading clips" : "No videos or GIFs", systemImage: "play.rectangle", description: Text(store.lastError ?? "Choose another source or search to find clips."))
+                    ContentUnavailableView {
+                        Label(store.isLoading ? "Loading clips" : "No videos or GIFs", systemImage: "play.rectangle")
+                    } description: {
+                        Text(store.lastError ?? (offline ? "Download a video or GIF to watch it here." : "No new clips matched. Try another source or adjust your interests."))
+                    } actions: {
+                        if !offline {
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                let seconds = max(0, Int(ceil((store.feedRetryAfter ?? .distantPast).timeIntervalSince(context.date))))
+                                Button(seconds > 0 ? "Retry in \(seconds)s" : "Try again") {
+                                    Task { await store.refresh(immersive: true) }
+                                }.disabled(store.isLoading || seconds > 0)
+                            }
+                            Button("Adjust interests") { preferencesVisible = true }.disabled(store.isLoading)
+                            if !store.queryText.isEmpty {
+                                Button("Clear search") { store.queryText = ""; Task { await store.refresh(immersive: true) } }.disabled(store.isLoading)
+                            }
+                        }
+                    }
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
             }.scrollTargetBehavior(.paging)
@@ -242,7 +259,15 @@ private struct ImmersiveItemView: View {
                 }
             }
             .overlay(alignment: .top) {
-                if let error { Text(error).font(.caption).padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding() }
+                if let error {
+                    VStack(spacing: 8) {
+                        Text(error).font(.caption)
+                        Button("Retry media") {
+                            store.players.release(post.stableID); player = nil; ready = false; self.error = nil
+                            Task { await prepare() }
+                        }.frame(minHeight: 44)
+                    }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
+                }
                 if active, !offline, let message = store.lastError {
                     Button { Task { await store.loadMore(immersive: true) } } label: {
                         VStack { Text(message); Text("Load more").bold() }.font(.caption).padding(12)
@@ -284,6 +309,10 @@ private struct ImmersiveItemView: View {
         }
         .onReceive(clock) { _ in
             guard active, !scrubbing, let player else { return }
+            if player.currentItem?.status == .failed {
+                if error == nil { error = "This clip could not load. Retry or scroll to the next clip."; ready = false }
+                return
+            }
             let seconds = player.currentTime().seconds
             let length = player.currentItem?.duration.seconds ?? 0
             guard seconds.isFinite, length.isFinite, length > 0 else { return }

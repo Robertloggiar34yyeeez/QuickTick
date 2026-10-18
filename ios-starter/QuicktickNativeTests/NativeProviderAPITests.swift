@@ -39,7 +39,67 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
+private final class RateLimitProtocol: URLProtocol, @unchecked Sendable {
+    static let log = NativeRequestLog()
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.log.append(request)
+        let url = request.url!
+        let count = Self.log.snapshot().filter { $0.url == url }.count
+        let limit = url.path != "/recover" || count == 1
+        let delay = url.path == "/long" ? "60" : url.path == "/cancel" ? "2" : "0"
+        let response = HTTPURLResponse(url: url, statusCode: limit ? 429 : 200, httpVersion: nil, headerFields: ["Retry-After": delay])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("[]".utf8)); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 final class NativeProviderAPITests: XCTestCase {
+    private func rateSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [RateLimitProtocol.self]
+        return URLSession(configuration: config)
+    }
+    func test429ShortCooldownRecoversAndRetriesAreBounded() async throws {
+        let session = rateSession(); defer { session.invalidateAndCancel() }
+        let url = URL(string: "https://\(UUID().uuidString).invalid/recover")!
+        _ = try await NativeProviderAPI.data(session: session, url: url, provider: .eporner)
+        XCTAssertEqual(RateLimitProtocol.log.snapshot().filter { $0.url == url }.count, 2)
+        let limited = URL(string: "https://\(UUID().uuidString).invalid/always")!
+        do { _ = try await NativeProviderAPI.data(session: session, url: limited, provider: .eporner); XCTFail("Expected rate limit") }
+        catch { XCTAssertNotNil((error as? APIError)?.retryAfter) }
+        XCTAssertEqual(RateLimitProtocol.log.snapshot().filter { $0.url == limited }.count, 3)
+    }
+    func test429LongCooldownPreventsRepeatedNetworkRequests() async {
+        let session = rateSession(); defer { session.invalidateAndCancel() }
+        let url = URL(string: "https://\(UUID().uuidString).invalid/long")!
+        for _ in 0..<2 {
+            do { _ = try await NativeProviderAPI.data(session: session, url: url, provider: .eporner); XCTFail("Expected cooldown") }
+            catch { XCTAssertGreaterThan((error as? APIError)?.retryAfter?.timeIntervalSinceNow ?? 0, 55) }
+        }
+        XCTAssertEqual(RateLimitProtocol.log.snapshot().filter { $0.url == url }.count, 1)
+    }
+    func test429RetryWaitCancelsWithoutAnotherRequest() async {
+        let session = rateSession(); defer { session.invalidateAndCancel() }
+        let url = URL(string: "https://\(UUID().uuidString).invalid/cancel")!
+        let work = Task { try await NativeProviderAPI.data(session: session, url: url, provider: .eporner) }
+        for _ in 0..<100 {
+            if RateLimitProtocol.log.snapshot().contains(where: { $0.url == url }) { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        work.cancel()
+        do { _ = try await work.value; XCTFail("Expected cancellation") } catch { XCTAssertTrue(error is CancellationError || (error as? URLError)?.code == .cancelled) }
+        XCTAssertEqual(RateLimitProtocol.log.snapshot().filter { $0.url == url }.count, 1)
+    }
+    func testRetryAfterUnderstandsHTTPDateAndInvalidHeaderFallback() {
+        let now = Date(timeIntervalSince1970: 0)
+        let url = URL(string: "https://example.invalid")!
+        let dated = HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil, headerFields: ["Retry-After": "Thu, 01 Jan 1970 00:01:00 GMT"])!
+        XCTAssertEqual(NativeProviderAPI.retryDeadline(dated, now: now).timeIntervalSince(now), 60, accuracy: 0.1)
+        let invalid = HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil, headerFields: ["Retry-After": "NaN"])!
+        XCTAssertEqual(NativeProviderAPI.retryDeadline(invalid, now: now, attempt: 1).timeIntervalSince(now), 2)
+    }
     @MainActor func testReselectingFeedRefreshesRecommendedAndChangesGeneration() async {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let store = AppStore(api: api)

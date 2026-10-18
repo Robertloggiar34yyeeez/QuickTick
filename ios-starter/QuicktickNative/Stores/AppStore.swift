@@ -22,6 +22,12 @@ final class AppStore: ObservableObject {
     @Published var exclusions: [String] = []
     @Published var tasteSetup = TasteSetup()
     @Published var lastError: String?
+    @Published private(set) var providerCooldowns: [Provider: Date] = [:]
+    var feedRetryAfter: Date? { providerCooldowns[selectedProvider] }
+    private func recordFeedError(_ error: Error, provider: Provider) {
+        if let deadline = (error as? APIError)?.retryAfter { providerCooldowns[provider] = deadline }
+        lastError = error.localizedDescription
+    }
     @Published private(set) var syncID = ""
     @Published private(set) var cloudSyncEnabled = false
     @Published private(set) var recommendationMode = "On-device recommendations"
@@ -181,6 +187,11 @@ final class AppStore: ObservableObject {
     }
 
     func refresh(immersive: Bool = false, trainSearch: Bool = false) async {
+        if let deadline = feedRetryAfter, deadline > .now {
+            let mediaOnly = immersive || activeTab == 1
+            if feedMediaOnly != mediaOnly { invalidateFeed(); feedMediaOnly = mediaOnly }
+            lastError = APIError.rateLimited(selectedProvider, deadline).localizedDescription; return
+        }
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel()
         let flight = Task { await performRefresh(immersive: immersive, trainSearch: trainSearch) }
         refreshFlight = flight
@@ -224,6 +235,7 @@ final class AppStore: ObservableObject {
             guard generation == token, !Task.isCancelled else { return }
             encountered = []
             var filtered: [Post] = []
+            let taste = tasteChoice(for: provider)
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
             for _ in 0..<5 {
                 let response = try await fetchCandidates(provider: provider, parsed: parsed, context: personalized ? context : nil, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly)
@@ -239,15 +251,14 @@ final class AppStore: ObservableObject {
                 }
                 if personalized {
                     incoming = await recommendations.unseen(incoming.filter { !previous.contains($0.stableID) })
+                    incoming = await recommendations.rank(incoming, taste: taste, recent: posts)
                     guard generation == token, !Task.isCancelled else { return }
                     await recommendations.advanceCandidatePage(context: acquisition?.context ?? context, nextPage: (page.hasMore ?? !page.items.isEmpty) ? nextPage : 1)
                 }
                 filtered = incoming
                 if !filtered.isEmpty || !hasMore { break }
             }
-            let taste = tasteChoice(for: provider)
-
-            let immediate = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(filtered, taste: taste, recent: posts) : filtered
+            let immediate = filtered
             guard generation == token, !Task.isCancelled else { return }
             posts = immediate
             semanticTask?.cancel()
@@ -268,11 +279,12 @@ final class AppStore: ObservableObject {
             await persistRecommendations()
             if generation == token, !restoreFailed { lastError = nil }
         } catch {
-            if generation == token, !Task.isCancelled { lastError = error.localizedDescription }
+            if generation == token, !Task.isCancelled { recordFeedError(error, provider: provider) }
         }
     }
 
     func loadMore(immersive: Bool = false) async {
+        if let deadline = feedRetryAfter, deadline > .now { return }
         // The initial page belongs to bootstrap/refresh. Lazy footer appearance
         // must not race credential restoration or start a second page-one request.
         guard nextPage > 1, !isLoading, hasMore else { return }
@@ -323,7 +335,7 @@ final class AppStore: ObservableObject {
             }
             guard generation == token, !Task.isCancelled else { return }
             await persistRecommendations()
-        } catch { if token == generation, !Task.isCancelled { lastError = error.localizedDescription } }
+        } catch { if token == generation, !Task.isCancelled { recordFeedError(error, provider: provider) } }
     }
 
     private func fetchCandidates(provider: Provider, parsed: ParsedQuery, context: String?, page: Int, sort: String, mediaOnly: Bool) async throws -> (page: PostPage, request: RecommendationEngine.CandidateRequest?) {
@@ -336,7 +348,7 @@ final class AppStore: ObservableObject {
         } catch {
             // A failed interest search must not remove a provider's working
             // public browse feed. Explicit user searches never broaden silently.
-            guard let context, acquisition?.focused == true, !Task.isCancelled else { throw error }
+            guard (error as? APIError)?.retryAfter == nil, let context, acquisition?.focused == true, !Task.isCancelled else { throw error }
             let key = context + "|query:"
             let broad = RecommendationEngine.CandidateRequest(context: key, query: ParsedQuery(included: [], excluded: exclusions + parsed.excluded), page: await recommendations.candidatePage(context: key), focused: false)
             let result = try await api.posts(provider: provider, query: broad.query, page: broad.page, sort: sort, immersive: mediaOnly)

@@ -68,9 +68,11 @@ final class NavigationTests: XCTestCase {
         if keyboardIntroduction.waitForExistence(timeout: 2) { keyboardIntroduction.tap() }
         fields.firstMatch.tap()
         fields.firstMatch.typeText("engineering")
+        // iPadOS can present QuickPath only after the first keystroke. It
+        // temporarily exposes a stale field value through accessibility.
+        if keyboardIntroduction.waitForExistence(timeout: 2) { keyboardIntroduction.tap() }
         expectation(for: NSPredicate(format: "value == %@", "engineering"), evaluatedWith: fields.firstMatch)
         waitForExpectations(timeout: 10)
-        if keyboardIntroduction.exists { keyboardIntroduction.tap() }
         app.buttons["Search"].firstMatch.tap()
         XCTAssertTrue(fields.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(fields.count, 1)

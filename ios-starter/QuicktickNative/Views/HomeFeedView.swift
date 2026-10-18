@@ -69,7 +69,6 @@ struct HomeFeedView: View {
         .overlay(alignment: .bottomLeading) {
             Group {
                 Button {
-                    store.inlinePlaybackID = nil
                     withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo("home-top", anchor: .top) }
                 } label: {
                     Image(systemName: "chevron.up").font(.system(size: 18, weight: .bold)).frame(width: 48, height: 48)
@@ -85,7 +84,7 @@ struct HomeFeedView: View {
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
             selectVisiblePlayback(viewport: viewport.size)
         }
-        .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
+        .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)
         }

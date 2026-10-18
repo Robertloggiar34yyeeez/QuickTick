@@ -256,10 +256,18 @@ enum NativeProviderAPI {
 
     static func pornhub(session: URLSession, credentials: ProviderCredentials, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
         // Public webmaster API; no third-party relay or challenge bypass.
-        let result = try object(await data(session: session, url: url("https://www.pornhub.com/webmasters/search", [
+        let parameters: [URLQueryItem] = [
             .init(name: "search", value: query.included.joined(separator: " ")), .init(name: "page", value: String(page)),
             .init(name: "ordering", value: sort == "recent" ? "newest" : sort == "popular" ? "mostviewed" : "featured"),
-            .init(name: "thumbsize", value: "large_hd"), .init(name: "period", value: "monthly")]), provider: .pornhub, headers: cookieHeaders(credentials)))
+            .init(name: "thumbsize", value: "large_hd"), .init(name: "period", value: "monthly")]
+        let bytes: Data
+        do { bytes = try await data(session: session, url: url("https://www.pornhub.com/webmasters/search", parameters), provider: .pornhub, headers: cookieHeaders(credentials)) }
+        catch APIError.providerStatus(.pornhub, 404) {
+            // Same public API and host; some deployments require the canonical
+            // trailing slash. Never rotate domains or retry access/rate limits.
+            bytes = try await data(session: session, url: url("https://www.pornhub.com/webmasters/search/", parameters), provider: .pornhub, headers: cookieHeaders(credentials))
+        }
+        let result = try object(bytes)
         if result["videos"] == nil { throw APIError.server("Pornhub did not return a public feed. Check provider availability in your region.") }
         let raw = rows(result["videos"])
         let posts = raw.map { row -> Post in

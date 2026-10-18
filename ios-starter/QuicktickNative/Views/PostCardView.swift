@@ -64,6 +64,14 @@ struct PostCardView: View {
             .sheet(isPresented: $comments) { CommentsView(post: post) }
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl) }
+            .fullScreenCover(isPresented: Binding(
+                get: { store.fullScreenPlaybackID == post.stableID },
+                set: { if !$0 { store.fullScreenPlaybackID = nil } }
+            ), onDismiss: {
+                if store.isForeground, store.activeTab == playbackTab, store.pausedPlaybackID != post.stableID { player?.play() }
+            }) {
+                if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
+            }
             .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision)") {
                 guard !Task.isCancelled else { return }
                 guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground else { stopPlayback(); return }
@@ -72,7 +80,8 @@ struct PostCardView: View {
             .onDisappear {
                 // Home visibility owns the active ID. A delayed disappearance
                 // from the outgoing tab must not clear a reactivated Home post.
-                if playbackTab != 0 || store.activeTab != playbackTab || store.inlinePlaybackID != post.stableID { stopPlayback() }
+                if store.fullScreenPlaybackID != post.stableID,
+                   playbackTab != 0 || store.activeTab != playbackTab || store.inlinePlaybackID != post.stableID { stopPlayback() }
             }
             .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Just(AVPlayer.TimeControlStatus.paused).eraseToAnyPublisher()) { if player != nil { playing = $0 == .playing } }
             .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Just(AVPlayerItem.Status.unknown).eraseToAnyPublisher()) { status in
@@ -89,7 +98,7 @@ struct PostCardView: View {
 
     @ViewBuilder private var media: some View {
         Group {
-            if let player {
+            if let player, store.fullScreenPlaybackID != post.stableID {
                 ZStack {
                     PosterView(url: post.cardPreviewURL)
                     NativePlayerSurface(player: player, fill: false, ready: $ready)
@@ -103,6 +112,16 @@ struct PostCardView: View {
             } else { PosterView(url: post.cardPreviewURL) }
         }
         .frame(width: mediaSize.width, height: mediaSize.height)
+        .overlay(alignment: .topTrailing) {
+            if post.type.lowercased() == "video" {
+                Button { store.fullScreenPlaybackID = post.stableID } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
+                        .background(.ultraThinMaterial, in: Circle())
+                }.buttonStyle(.plain).padding(8).disabled(player == nil)
+                    .accessibilityLabel("Full screen video").accessibilityIdentifier("fullscreen-\(post.stableID)")
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             if post.isImmersiveMedia {
                 Button {
@@ -173,6 +192,47 @@ struct PostCardView: View {
         watchSeconds = 0
     }
     private func stopPlayback() { store.players.pause(post.stableID, owner: playbackOwner); player = nil; gifURL = nil; ready = false; playing = false }
+}
+
+private struct FullScreenVideoView: View {
+    @EnvironmentObject private var store: AppStore
+    let player: AVPlayer
+    let postID: String
+    let onClose: () -> Void
+    var body: some View {
+        FullScreenPlayerController(player: player).ignoresSafeArea()
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
+                    onClose()
+                } label: {
+                    Image(systemName: "xmark").font(.system(size: 20, weight: .bold))
+                        .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
+                }.buttonStyle(.plain).foregroundStyle(.white).padding(12).accessibilityLabel("Close full screen video")
+            }.background(.black)
+            .onReceive(player.publisher(for: \.timeControlStatus)) { status in
+                guard store.isForeground, store.fullScreenPlaybackID == postID else { return }
+                if status == .playing { store.pausedPlaybackID = nil }
+                else if status == .paused { store.pausedPlaybackID = postID }
+            }
+            .onChange(of: store.isForeground) { _, foreground in
+                if foreground, store.pausedPlaybackID != postID { player.play() }
+            }
+    }
+}
+
+private struct FullScreenPlayerController: UIViewControllerRepresentable {
+    let player: AVPlayer
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        controller.player = player; controller.showsPlaybackControls = true
+        controller.videoGravity = .resizeAspect
+        return controller
+    }
+    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+        if controller.player !== player { controller.player = player }
+    }
+    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: ()) { controller.player = nil }
 }
 
 private struct FullComicView: View {

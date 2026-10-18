@@ -103,6 +103,14 @@ final class NavigationTests: XCTestCase {
         expectation(for: NSPredicate(format: "value == %@", "Paused"), evaluatedWith: playback)
         waitForExpectations(timeout: 5)
         playback.tap()
+        expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
+        waitForExpectations(timeout: 10)
+        app.buttons["fullscreen-test:video"].tap()
+        let closeVideo = app.buttons["Close full screen video"]
+        XCTAssertTrue(closeVideo.waitForExistence(timeout: 15))
+        closeVideo.tap()
+        expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
+        waitForExpectations(timeout: 10)
         app.buttons["tab-Immersive"].tap(); app.buttons["tab-Home"].tap()
         expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
         waitForExpectations(timeout: 10)
@@ -213,7 +221,17 @@ final class NavigationTests: XCTestCase {
         waitForExpectations(timeout: 5)
         XCTAssertEqual(like.frame.midX, before.midX, accuracy: 1)
         XCTAssertEqual(like.frame.midY, before.midY, accuracy: 1)
+        like.tap()
+        XCTAssertEqual(like.value as? String, "Liked")
+        let download = app.buttons["immersive-Download"]
+        download.tap()
+        expectation(for: NSPredicate(format: "value == %@", "Saved"), evaluatedWith: download)
+        waitForExpectations(timeout: 15)
         let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Frosted right rail and snapped timeline"; screenshot.lifetime = .keepAlways; add(screenshot)
+        app.buttons["tab-Downloads"].tap()
+        let size = app.staticTexts["download-size-test:next"]
+        XCTAssertTrue(size.waitForExistence(timeout: 10))
+        XCTAssertNotEqual(size.label, "Size unavailable")
     }
 
     @MainActor func testTagsHiddenUntilRequestedAndActionsHaveRoom() {
@@ -237,6 +255,29 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.buttons["open-settings"].isHittable)
         let immersive = XCTAttachment(screenshot: app.screenshot()); immersive.name = "Immersive controls"; immersive.lifetime = .keepAlways; add(immersive)
         XCTAssertFalse(app.staticTexts["#still_tag"].exists)
+    }
+
+    @MainActor func testPersonalPreferencesAndTabRefresh() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        app.buttons["feed-recent"].tap()
+        app.buttons["tab-Home"].tap()
+        expectation(for: NSPredicate(format: "selected == YES"), evaluatedWith: app.buttons["feed-recommended"])
+        waitForExpectations(timeout: 10)
+        app.buttons["personalize-feed"].tap()
+        let input = app.textFields["positive-interest-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 10)); input.tap()
+        let intro = app.buttons["Continue"]
+        if intro.waitForExistence(timeout: 2) { intro.tap() }
+        input.typeText("engineering")
+        expectation(for: NSPredicate(format: "value == %@", "engineering"), evaluatedWith: input)
+        waitForExpectations(timeout: 10)
+        if intro.exists { intro.tap() }
+        app.buttons["Add interests"].tap()
+        XCTAssertTrue(app.staticTexts["engineering"].exists)
+        app.buttons["Done"].tap()
+        app.buttons["personalize-feed"].tap()
+        XCTAssertTrue(app.staticTexts["engineering"].waitForExistence(timeout: 10))
+        app.buttons["Done"].tap()
     }
 
     @MainActor func testSyncedLoginsFillSettingsEvenWhenRememberIsOff() {

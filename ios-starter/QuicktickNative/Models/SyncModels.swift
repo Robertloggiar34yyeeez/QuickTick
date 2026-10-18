@@ -27,6 +27,16 @@ struct TasteChoice: Codable, Equatable, Sendable {
     var done: Bool = false
     var into: [String] = []
     var notInto: [String] = []
+
+    static func normalized(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            let term = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
+            guard !term.isEmpty, term.count <= 80, seen.insert(term).inserted else { return nil }
+            return term
+        }.prefix(40).map { $0 }
+    }
 }
 
 struct TasteSetup: Codable, Equatable, Sendable {

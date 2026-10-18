@@ -19,6 +19,7 @@ struct ImmersiveFeedView: View {
     @State private var scrollTargetID: String?
     @State private var activeIndex = 0
     @State private var searchVisible = false
+    @State private var preferencesVisible = false
     @StateObject private var previews = ImmersivePreviewCache()
 
     private var mediaPosts: [Post] { posts.filter(\.isImmersiveMedia) }
@@ -33,6 +34,9 @@ struct ImmersiveFeedView: View {
                     ForEach(mediaPosts, id: \.stableID) { post in
                         ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: presentationActive, previews: previews)
                             .frame(width: geo.size.width, height: geo.size.height)
+                            .contentShape(Rectangle())
+                            .allowsHitTesting(activeID == post.stableID && presentationActive)
+                            .accessibilityHidden(activeID != post.stableID)
                             .background {
                                 GeometryReader { page in
                                     Color.clear.preference(key: ImmersiveVisibleFrames.self, value: [post.stableID: page.frame(in: .named("immersive-viewport"))])
@@ -70,7 +74,7 @@ struct ImmersiveFeedView: View {
                     if !offline && onClose == nil {
                         Menu { ForEach(Provider.allCases) { provider in
                             Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
-                        } } label: {
+                        }; Divider(); Button("Personalize recommendations") { preferencesVisible = true } } label: {
                             Text(store.selectedProvider.displayName).font(.caption.weight(.semibold))
                                 .padding(.horizontal, 12).frame(height: 44)
                                 .background(.black.opacity(0.55), in: Capsule())
@@ -92,10 +96,9 @@ struct ImmersiveFeedView: View {
             guard presentationActive else { return }
             if activeID == nil { activeID = mediaPosts.first?.stableID }
             scrollTargetID = activeID
-            if !offline && (posts.isEmpty || !store.feedMediaOnly) { await store.refresh(immersive: true) }
         }
         .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision)") { await prewarm() }
-        .onChange(of: store.feedRevision) { _, _ in activeIndex = 0; activeID = nil; scrollTargetID = nil }
+        .onChange(of: store.feedRevision) { _, _ in activeIndex = 0; activeID = mediaPosts.first?.stableID; scrollTargetID = activeID }
         .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
             if activeID == nil || !keys.contains(activeID ?? "") {
                 activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
@@ -105,6 +108,7 @@ struct ImmersiveFeedView: View {
         }
         .onChange(of: activeID) { _, key in if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index } }
         .onDisappear { if store.players.activeOwner == "immersive" { store.players.releaseAll() } }
+        .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
     }
     private func prewarm() async {
         guard presentationActive, store.isForeground, !Task.isCancelled else { return }
@@ -129,9 +133,9 @@ struct ImmersiveFeedView: View {
         await withTaskGroup(of: Void.self) { group in
             for i in previewRange {
                 let post = clips[i]
-                group.addTask { await previewCache.load(post) }
+                group.addTask(priority: .utility) { await previewCache.load(post) }
             }
-            group.addTask {
+            group.addTask(priority: .utility) {
                 // Nearest first; do not compete with the visible player.
                 for i in playerRange where i != index && clips[i].type.lowercased() == "video" {
                     let post = clips[i]
@@ -192,11 +196,13 @@ private struct ImmersiveItemView: View {
                     Image(uiImage: image).resizable().scaledToFill()
                         .frame(width: geo.size.width, height: geo.size.height).clipped().blur(radius: 24)
                         .overlay(Color.black.opacity(0.25))
+                        .allowsHitTesting(false)
                 }
                 if let player {
                     NativePlayerSurface(player: player, fill: geo.size.width <= 600 && store.immersionFraming, ready: $ready, accessibilityID: "immersive-video-surface")
                         .frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height)
                         .opacity(ready ? 1 : 0)
+                        .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "gif", active, let gifURL {
                     AnimatedGIFSurface(url: gifURL, playing: playing, onSize: { mediaSize = $0 }).frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height).allowsHitTesting(false)
@@ -241,6 +247,12 @@ private struct ImmersiveItemView: View {
                     Button { Task { await store.loadMore(immersive: true) } } label: {
                         VStack { Text(message); Text("Load more").bold() }.font(.caption).padding(12)
                     }.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
+                }
+            }
+            .overlay {
+                if active, !ready, gifURL == nil, error == nil {
+                    ProgressView("Loading media").tint(.white).font(.caption)
+                        .padding(12).background(.black.opacity(0.45), in: Capsule()).allowsHitTesting(false)
                 }
             }
             .clipped()
@@ -294,7 +306,7 @@ private struct ImmersiveItemView: View {
             if !offline {
                 railButton("Less", symbol: "minus.circle") { interacted = true; store.less(post) }
                 railButton("Comments", symbol: "bubble.right") { showComments = true }
-                railButton("Download", symbol: "arrow.down.to.line") { store.download(post) }
+                ImmersiveDownloadControl(manager: store.downloads, post: post, active: active && presentationActive)
             }
             railButton("Mute", symbol: store.muted ? "speaker.slash" : "speaker.wave.2") { store.muted.toggle() }
         }
@@ -364,10 +376,10 @@ private struct ImmersiveItemView: View {
             let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: "immersive")
             player = p; p.isMuted = store.muted
             // Start immediately. Duration metadata must never delay the first frame.
-            if let resume = store.resumePosition(post.stableID), resume > 0 {
-                p.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: { _ in })
-            } else if store.resumePosition(post.stableID) == nil, post.providerKey == .hanime {
-                p.seek(to: CMTime(seconds: 180, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: { _ in })
+            if let resume = store.resumePosition(post.stableID), resume > 0,
+               abs(p.currentTime().seconds - resume) > 2 {
+                let tolerance = CMTime(seconds: 0.25, preferredTimescale: 600)
+                p.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: tolerance, toleranceAfter: tolerance, completionHandler: { _ in })
             }
             if playing { p.play() }; error = nil
             if let asset = p.currentItem?.asset, let track = try? await asset.loadTracks(withMediaType: .video).first,
@@ -394,6 +406,43 @@ private struct ImmersiveItemView: View {
         watched = 0
         reportedWatch = 0
         exposureStarted = nil
+    }
+}
+
+private struct ImmersiveDownloadControl: View {
+    @ObservedObject var manager: DownloadManager
+    let post: Post
+    let active: Bool
+    @State private var showError = false
+    private var record: DownloadRecord? { manager.records.first { $0.key == post.stableID } }
+    private var status: String {
+        switch record?.state {
+        case .some(.complete): return "Saved"
+        case .some(.queued), .some(.downloading): return "Downloading"
+        case .some(.paused): return "Paused"
+        case .some(.failed): return "Failed"
+        default: return "Not downloaded"
+        }
+    }
+    var body: some View {
+        Button {
+            if let record, record.state == .paused { manager.resume(record) }
+            else if let record, record.state == .failed || record.state == .cancelled { manager.retry(record) }
+            else { manager.download(post) }
+        } label: {
+            Group {
+                if record?.state == .downloading || record?.state == .queued { ProgressView().tint(.white) }
+                else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 25, weight: .semibold)) }
+            }.foregroundStyle(.white).frame(width: 48, height: 48).contentShape(Circle())
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+        }.buttonStyle(.plain).accessibilityLabel("Download").accessibilityValue(status)
+            .accessibilityIdentifier(active ? "immersive-Download" : "inactive-Download-\(post.stableID)")
+            .alert("Download failed", isPresented: $showError) {
+                Button("Retry") { if let record { manager.retry(record) } }
+                Button("OK", role: .cancel) {}
+            } message: { Text(record?.errorMessage ?? "Please try again.") }
+            .onChange(of: record?.state) { _, state in if active, state == .failed { showError = true } }
     }
 }
 

@@ -26,6 +26,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var remoteURL: String?
     var errorMessage: String?
     var mediaType: String?
+    var formattedSize: String {
+        guard let fileSize, fileSize >= 0 else { return "Size unavailable" }
+        return ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
+    }
 
     var offlinePost: Post? {
         guard state == .complete, let path = localMediaPath, FileManager.default.fileExists(atPath: path) else { return nil }

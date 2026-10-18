@@ -37,6 +37,12 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 } else { records = try JSONDecoder().decode([DownloadRecord].self, from: data) }
             }
         } catch { metadataFailed = true; storageError = "Download metadata could not be read. The original file is preserved." }
+        Task { [weak self] in
+            guard let self else { return }
+            for record in records where record.state == .complete {
+                if let path = record.localMediaPath { await measureSize(record.key, at: URL(fileURLWithPath: path)) }
+            }
+        }
     }
     func restoreTasks() async {
         let files = await directSession.allTasks
@@ -51,6 +57,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         records = posts.map { post in
             var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: "Saved fixture", tags: post.tags, thumbnailRemoteURL: "", localMediaPath: URL(string: post.mediaUrl)?.path, kind: .file, state: .complete, progress: 1, createdAt: .now)
             record.mediaType = post.type == "image" ? nil : post.type
+            if let path = record.localMediaPath,
+               let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber { record.fileSize = size.int64Value }
             return record
         }
     }
@@ -62,6 +70,19 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             defer { preparing.remove(post.stableID) }
             do {
                 let media = try await resolver.resolve(post)
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--ui-testing"), let file = URL(string: media.mediaUrl), file.isFileURL {
+                    let dir = root.appendingPathComponent(Self.safeName(post.stableID))
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    let copy = dir.appendingPathComponent("media." + file.pathExtension)
+                    if FileManager.default.fileExists(atPath: copy.path) { try FileManager.default.removeItem(at: copy) }
+                    try FileManager.default.copyItem(at: file, to: copy)
+                    var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: "Saved fixture", tags: post.tags, thumbnailRemoteURL: "", localMediaPath: copy.path, kind: .file, state: .complete, progress: 1, createdAt: .now)
+                    record.mediaType = post.type; upsert(record)
+                    await measureSize(record.key, at: copy)
+                    return
+                }
+                #endif
                 guard let url = URL(string: media.mediaUrl), url.scheme == "https" else { throw URLError(.badURL) }
                 let hls = media.type == "hls" || url.pathExtension.lowercased() == "m3u8"
                 var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: post.tags.first ?? post.provider, tags: post.tags, thumbnailRemoteURL: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl, kind: hls ? .hlsPackage : .file, state: .queued, progress: 0, createdAt: .now)
@@ -112,6 +133,12 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         update(key) { $0.localMediaPath = location.path; $0.progress = 1; $0.state = .complete; $0.errorMessage = nil }
         tasks.removeValue(forKey: key)
         onCompleted?(Post(key: record.key, id: record.postID, provider: record.provider, tags: record.tags))
+        Task { await measureSize(key, at: location) }
+    }
+    private func measureSize(_ key: String, at url: URL) async {
+        guard let size = await DownloadSizeReader.shared.bytes(at: url),
+              records.contains(where: { $0.key == key && $0.state == .complete && $0.localMediaPath == url.path }) else { return }
+        update(key) { $0.fileSize = size }
     }
     private func cacheThumbnail(_ record: DownloadRecord) async {
         guard let url = NativeProviderAPI.mediaURL(record.thumbnailRemoteURL), let (data, response) = try? await URLSession.shared.data(from: url), (response as? HTTPURLResponse)?.statusCode == 200 else { return }
@@ -164,5 +191,19 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         guard let identifier = session.configuration.identifier else { return }
         Task { @MainActor in BackgroundDownloadEvents.complete(identifier) }
+    }
+}
+
+actor DownloadSizeReader {
+    static let shared = DownloadSizeReader()
+    func bytes(at url: URL) -> Int64? {
+        guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]) else { return nil }
+        if values.isDirectory != true { return values.fileSize.map { Int64($0) } }
+        guard let files = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) else { return nil }
+        var size: Int64 = 0
+        for case let file as URL in files {
+            if let value = try? file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]), value.isRegularFile == true { size += Int64(value.fileSize ?? 0) }
+        }
+        return size
     }
 }

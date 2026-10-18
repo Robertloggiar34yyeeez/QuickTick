@@ -48,7 +48,7 @@ jobs:
           key: xtool-d802c719-macos15-intel-xcode26.3-v1
       - uses: actions/upload-artifact@v4
         with:
-          name: QuickTick-0.6.25-unsigned-IPA
+          name: QuickTick-0.6.26-unsigned-IPA
           path: build/export/
           if-no-files-found: error
           retention-days: 14

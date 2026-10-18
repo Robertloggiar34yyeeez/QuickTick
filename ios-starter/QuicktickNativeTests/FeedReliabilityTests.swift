@@ -256,6 +256,13 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(a.count,384);XCTAssertGreaterThan(SemanticRecommender.cosine(a,b),SemanticRecommender.cosine(a,c)+0.1)
         await semantic.record(.like,post:interest)
         let scores = await semantic.scores([related,unrelated]);XCTAssertGreaterThan(scores["related"]!.recent,scores["unrelated"]!.recent)
+        let taste = TasteChoice(done: true, into: interest.tags, notInto: ["baking chocolate cake"])
+        await semantic.preparePreferences(taste)
+        let before = await semantic.cacheMisses
+        let explicit = await semantic.scores([related, unrelated], taste: taste)
+        XCTAssertGreaterThan(explicit["related"]!.preference, explicit["unrelated"]!.preference)
+        XCTAssertGreaterThan(explicit["unrelated"]!.avoidance, explicit["related"]!.avoidance)
+        let after = await semantic.cacheMisses; XCTAssertEqual(before, after)
         _ = try await semantic.embed(interest);let hits = await semantic.cacheHits;XCTAssertGreaterThanOrEqual(hits,2)
         let restored = SemanticRecommender(directory:folder,enabled:false)
         let persisted = try await restored.embed(interest);XCTAssertEqual(persisted,a)

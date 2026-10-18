@@ -8,6 +8,7 @@ final class PlayerPool: ObservableObject {
     private var warmObservers: [String: NSKeyValueObservation] = [:]
     private var order: [String] = []
     private var urls: [String: URL] = [:]
+    private var warming = Set<String>()
     private(set) var activeKey: String?
     private(set) var activeOwner: String?
     var capacity = 3
@@ -30,19 +31,20 @@ final class PlayerPool: ObservableObject {
         activeKey = nil; activeOwner = nil
         let p = player(for: key, url: url)
         warmObservers.removeValue(forKey: key)
+        warming.remove(key)
         p.cancelPendingPrerolls()
         activeKey = key; activeOwner = owner; p.isMuted = muted; p.play()
         return p
     }
-    func pauseAll() { players.values.forEach { $0.pause(); $0.cancelPendingPrerolls() }; activeKey = nil; activeOwner = nil }
+    func pauseAll() { players.values.forEach { $0.pause(); $0.cancelPendingPrerolls() }; warming.removeAll(); warmObservers.removeAll(); activeKey = nil; activeOwner = nil }
     func pause(_ key: String, owner: String? = nil) { guard owner == nil || activeOwner == owner else { return }; players[key]?.pause(); if activeKey == key { activeKey = nil; activeOwner = nil } }
     var count: Int { players.count }
     func prewarm(key: String, url: URL) {
         let p = player(for: key, url: url)
-        guard p.rate == 0 else { return }
+        guard p.rate == 0, activeKey != key, warming.insert(key).inserted else { return }
         // AVPlayerItem creation alone does not prime the decode pipeline.
         if p.currentItem?.status == .readyToPlay, activeKey != key { p.preroll(atRate: 1) { _ in }; return }
-        warmObservers[key] = p.currentItem?.observe(\.status, options: [.new]) { [weak self, weak p] item, _ in
+        warmObservers[key] = p.currentItem?.observe(\.status, options: [.initial, .new]) { [weak self, weak p] item, _ in
             guard item.status == .readyToPlay else { return }
             Task { @MainActor in
                 guard let self, let p, self.players[key] === p else { return }
@@ -51,8 +53,8 @@ final class PlayerPool: ObservableObject {
             }
         }
     }
-    func release(_ key: String) { if activeKey == key { activeKey = nil; activeOwner = nil }; urls.removeValue(forKey: key); warmObservers.removeValue(forKey: key); players.removeValue(forKey: key)?.pause(); order.removeAll { $0 == key } }
-    func releaseAll() { activeKey = nil; activeOwner = nil; urls.removeAll(); warmObservers.removeAll(); players.values.forEach { $0.pause() }; players.removeAll(); order.removeAll() }
+    func release(_ key: String) { if activeKey == key { activeKey = nil; activeOwner = nil }; warming.remove(key); urls.removeValue(forKey: key); warmObservers.removeValue(forKey: key); players.removeValue(forKey: key)?.pause(); order.removeAll { $0 == key } }
+    func releaseAll() { activeKey = nil; activeOwner = nil; warming.removeAll(); urls.removeAll(); warmObservers.removeAll(); players.values.forEach { $0.pause() }; players.removeAll(); order.removeAll() }
     func retain(_ keys: Set<String>) {
         for key in Array(players.keys) where !keys.contains(key) { release(key) }
     }

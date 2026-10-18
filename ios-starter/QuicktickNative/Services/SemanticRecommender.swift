@@ -48,15 +48,17 @@ struct SemanticInterest: Codable, Sendable {
     var updated = Date()
 }
 struct SemanticRankWeights: Sendable {
+    var preference = 12.0, avoidance = 18.0
     var recent = 10.0, longTerm = 6.0, negative = 12.0, creator = 2.0, freshness = 1.5
     var tag = 8.0, seen = 1000.0, semanticDiversity = 10.0, nearDuplicate = 8.0, creatorRepeat = 3.0, exploration = 2.0
     var tagDiversityCap = 8.0, overlap = 0.5, immediate = 1.0
     var immediateTwo = 9.0, immediateThree = 15.0, overlapFour = 11.0, overlapSix = 18.0
 }
 struct SemanticScore: Sendable {
+    var preference: Double = 0, avoidance: Double = 0
     var recent: Double = 0, longTerm: Double = 0, negative: Double = 0, creator: Double = 0, freshness: Double = 0
     var cacheHit = false
-    func total(_ w: SemanticRankWeights) -> Double { recent * w.recent + longTerm * w.longTerm - negative * w.negative + creator * w.creator + freshness * w.freshness }
+    func total(_ w: SemanticRankWeights) -> Double { recent * w.recent + longTerm * w.longTerm - negative * w.negative + creator * w.creator + freshness * w.freshness + preference * w.preference - avoidance * w.avoidance }
 }
 private struct SemanticDiskState: Codable {
     var version = "bge-micro-v2-3edf6d7-96-v1"
@@ -163,8 +165,19 @@ actor SemanticRecommender {
         }
         profile.updated = Date(); disk.profiles[post.provider.lowercased()] = profile; persist()
     }
-    func scores(_ posts: [Post]) -> [String: SemanticScore] {
+    private static func preferenceDocument(_ terms: [String]) -> Post {
+        var document = Post(key: "local-preferences", id: "local-preferences", provider: "local")
+        document.caption = TasteChoice.normalized(terms).joined(separator: ". ")
+        return document
+    }
+    func preparePreferences(_ taste: TasteChoice) {
+        if !taste.into.isEmpty { _ = try? embed(Self.preferenceDocument(taste.into)) }
+        if !taste.notInto.isEmpty { _ = try? embed(Self.preferenceDocument(taste.notInto)) }
+    }
+    func scores(_ posts: [Post], taste: TasteChoice = TasteChoice()) -> [String: SemanticScore] {
         restore(); var result: [String: SemanticScore] = [:]
+        let preferred = disk.embeddings[key(Self.preferenceDocument(taste.into))] ?? []
+        let avoided = disk.embeddings[key(Self.preferenceDocument(taste.notInto))] ?? []
         for post in posts {
             guard let vector = disk.embeddings[key(post)] else { continue }
             let profile = disk.profiles[post.provider.lowercased()] ?? SemanticInterest()
@@ -172,6 +185,8 @@ actor SemanticRecommender {
             let longDecay = exp(-max(0, Date().timeIntervalSince(profile.updated)) / (30 * 86400))
             let age = post.createdAt.map { max(0, Date().timeIntervalSince1970 - $0) }
             result[post.stableID] = SemanticScore(recent: max(0, Self.cosine(vector, profile.recent)) * recentDecay, longTerm: max(0, Self.cosine(vector, profile.longTerm)) * longDecay, negative: max(0, Self.cosine(vector, profile.negative)) * longDecay, creator: Double(profile.creators[post.creator ?? ""] ?? 0), freshness: age.map { exp(-$0 / (7 * 86400)) } ?? 0, cacheHit: true)
+            result[post.stableID]?.preference = max(0, Self.cosine(vector, preferred))
+            result[post.stableID]?.avoidance = max(0, Self.cosine(vector, avoided))
         }
         return result
     }

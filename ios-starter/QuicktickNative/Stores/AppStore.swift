@@ -10,9 +10,10 @@ final class AppStore: ObservableObject {
         }
     }
     @Published var posts: [Post] = []
-    @Published var activeTab = 0 { didSet { if oldValue != activeTab { protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
+    @Published var activeTab = 0 { didSet { if oldValue != activeTab { fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
     @Published var isForeground = true { didSet { if !isForeground { players.pauseAll() } } }
     @Published var pausedPlaybackID: String?
+    @Published var fullScreenPlaybackID: String?
     @Published var inlinePlaybackID: String? { didSet { if oldValue != inlinePlaybackID { pausedPlaybackID = nil; players.pauseAll() } } }
     @Published var queryText = "" { didSet { if oldValue != queryText { invalidateFeed() } } }
     @Published var feedSort = "recommended" { didSet { if oldValue != feedSort { invalidateFeed() } } }
@@ -172,6 +173,7 @@ final class AppStore: ObservableObject {
     }
 
     private func invalidateFeed() {
+        fullScreenPlaybackID = nil
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel(); semanticTask = nil
         generation = UUID(); feedRevision = generation; posts = []; encountered = []; nextPage = 1
         hasMore = true; candidateContext = nil; isLoading = false; lastError = nil; inlinePlaybackID = nil; players.releaseAll()
@@ -184,14 +186,23 @@ final class AppStore: ObservableObject {
         refreshFlight = flight
         await withTaskCancellationHandler { await flight.value } onCancel: { flight.cancel() }
     }
+    func selectFeedTab(_ tab: Int) async {
+        guard (0...3).contains(tab) else { return }
+        fullScreenPlaybackID = nil
+        activeTab = tab
+        guard tab < 2 else { return }
+        feedSort = "recommended"
+        queryText = ""
+        await refresh(immersive: tab == 1)
+    }
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
         let mediaOnly = immersive || activeTab == 1
         feedMediaOnly = mediaOnly
+        generation = UUID(); feedRevision = generation; inlinePlaybackID = nil; players.pauseAll()
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") { posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []; hasMore = false; return }
         #endif
-        generation = UUID(); feedRevision = generation; inlinePlaybackID = nil; players.pauseAll()
         let token = generation
         let requestedSort = feedSort
         let requestedQuery = queryText
@@ -243,7 +254,7 @@ final class AppStore: ObservableObject {
             if requestedSort == "recommended" {
                 semanticTask = Task(priority: .utility) { [weak self] in
                     guard let self else { return }
-                    await recommendations.prepareSemantic(filtered)
+                    await recommendations.prepareSemantic(filtered, taste: taste)
                     guard !Task.isCancelled, generation == token else { return }
                     await adaptRecommendationTail(token: token)
                 }
@@ -302,7 +313,7 @@ final class AppStore: ObservableObject {
                 let semanticCandidates = candidates
                 semanticTask = Task(priority:.utility) { [weak self] in
                     guard let self else { return }
-                    await recommendations.prepareSemantic(semanticCandidates)
+                    await recommendations.prepareSemantic(semanticCandidates, taste: tasteChoice(for: provider))
                     guard !Task.isCancelled, generation == token else { return }
                     await adaptRecommendationTail(token:token)
                 }
@@ -436,7 +447,9 @@ final class AppStore: ObservableObject {
     }
 
     func setTaste(into: [String], notInto: [String]) {
-        tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true, into: into, notInto: notInto)
+        let negative = TasteChoice.normalized(notInto)
+        let positive = TasteChoice.normalized(into).filter { !negative.contains($0) }
+        tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true, into: positive, notInto: negative)
         local.snapshot.preferences.updatedAt = timestamp()
         persistLocal(); queueSync(); Task { await refresh() }
     }

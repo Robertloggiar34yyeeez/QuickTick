@@ -21,7 +21,7 @@ struct HomeFeedView: View {
                 }.id("home-top").padding(.top, 16)
                 HStack(spacing: 8) {
                     ForEach([("Home", "recent"), ("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
-                        Button { store.feedSort = mode } label: {
+                        Button { store.feedSort = mode; Task { await store.refresh() } } label: {
                             Text(title).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
                                 .frame(maxWidth: .infinity, minHeight: AppTheme.controlHeight)
                                 .background(store.feedSort == mode ? AppTheme.surface : .clear, in: RoundedRectangle(cornerRadius: AppTheme.controlRadius))
@@ -31,6 +31,10 @@ struct HomeFeedView: View {
                     Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44,height: 44).background(AppTheme.gradient,in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Refresh feed")
                 }
                 searchBar.id("home-search")
+                Button { onboarding = true } label: {
+                    Label("What would you like to see?", systemImage: "sparkles")
+                        .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }.buttonStyle(.plain).accessibilityIdentifier("personalize-feed")
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
                 } else if store.posts.isEmpty && !store.isLoading {
@@ -63,6 +67,7 @@ struct HomeFeedView: View {
         .onDisappear {
             scrollAnchor = visibleFrames.min(by: { abs($0.value.minY) < abs($1.value.minY) })?.key
         }
+        .onChange(of: store.feedRevision) { _, _ in proxy.scrollTo("home-top", anchor: .top) }
         .overlay(alignment: .bottomLeading) {
             Group {
                 Button {
@@ -73,9 +78,6 @@ struct HomeFeedView: View {
                         .background(AppTheme.gradient, in: Circle()).shadow(color: .black.opacity(0.5), radius: 10)
                 }.buttonStyle(.plain).padding(16).accessibilityLabel("Scroll to top").accessibilityIdentifier("home-scroll-top")
             }
-        }
-        .task(id: store.activeTab) {
-            if store.activeTab == 0 && store.feedMediaOnly { await store.refresh() }
         }
         .coordinateSpace(name: "home-viewport")
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
@@ -113,7 +115,6 @@ struct HomeFeedView: View {
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $onboarding) { TasteOnboardingView() }
-        .onChange(of: store.feedSort) { _, _ in Task { await store.refresh() } }
         .onChange(of: store.posts) { _, posts in
             if !posts.isEmpty && !store.tasteChoice(for: store.selectedProvider).done { onboarding = true }
         }
@@ -123,6 +124,7 @@ struct HomeFeedView: View {
 
     private func visibleCandidate(viewport: CGSize) -> String? {
         guard store.activeTab == 0, store.isForeground else { return nil }
+        if let fullScreen = store.fullScreenPlaybackID { return fullScreen }
         let playable = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
         return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playable)
     }

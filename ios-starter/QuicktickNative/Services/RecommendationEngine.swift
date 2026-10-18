@@ -15,7 +15,11 @@ actor RecommendationEngine {
     private(set) var debugScores: [String: DebugScore] = [:]
     private(set) var rankLatencyMs = 0.0
     func releaseSemanticModel() async { await semantic.releaseModel() }
-    func prepareSemantic(_ posts: [Post]) async { await semantic.prepare(posts) }
+    func prepareSemantic(_ posts: [Post], taste: TasteChoice = TasteChoice()) async {
+        guard !Task.isCancelled else { return }
+        await semantic.preparePreferences(taste)
+        await semantic.prepare(posts)
+    }
 
 
     private let maxTerms = 140
@@ -52,7 +56,10 @@ actor RecommendationEngine {
     // Each query owns its cursor in the existing persisted recommendation state.
     func candidateRequest(context: String, provider: Provider, taste: TasteChoice, excluded: [String]) -> CandidateRequest {
         let blocked = Set(excluded.map { $0.lowercased() })
-        let interests = positiveTermEntries(source: provider.rawValue, taste: taste, limit: 6).filter { $0.1 >= 3 && !blocked.contains($0.0.lowercased()) }.prefix(3).map { $0.0 }
+        let explicit = tasteTokens(source: provider.rawValue, values: taste.into)
+        let learned = positiveTermEntries(source: provider.rawValue, taste: taste, limit: 6).filter { $0.1 >= 3 }.map { $0.0 }
+        var included = Set<String>()
+        let interests = (explicit + learned).filter { !blocked.contains($0.lowercased()) && included.insert($0).inserted }.prefix(8).map { $0 }
         let roundKey = context + "|round"
         let round = max(0, (state.candidatePages[roundKey] ?? 1) - 1)
         advanceCandidatePage(context: roundKey, nextPage: (round + 1) % 12_000 + 1)
@@ -279,7 +286,7 @@ actor RecommendationEngine {
 
     func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
         let start = Date(); defer { rankLatencyMs = Date().timeIntervalSince(start) * 1000 }
-        let semanticScores = await semantic.scores(candidates)
+        let semanticScores = await semantic.scores(candidates, taste: taste)
         let vectors = await semantic.diversityVectors(candidates + recent)
         let weights = semantic.weights
         debugScores = [:]

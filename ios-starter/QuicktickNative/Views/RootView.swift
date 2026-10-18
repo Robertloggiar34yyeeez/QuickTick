@@ -48,7 +48,10 @@ struct RootView: View {
 
     @ViewBuilder private func tabButtons(vertical: Bool) -> some View {
         ForEach(tabs.indices, id: \.self) { index in
-            Button { store.activeTab = index } label: {
+            Button {
+                if index < 2 { homeAnchor = nil; immersiveAnchor = nil }
+                Task { await store.selectFeedTab(index) }
+            } label: {
                 Image(systemName: tabs[index].1).font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(store.activeTab == index ? .white : .white.opacity(0.55))
                     .frame(width: vertical ? 48 : nil, height: 54)

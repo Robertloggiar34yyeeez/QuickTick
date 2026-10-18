@@ -28,10 +28,28 @@ struct TasteOnboardingView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var into = Set<String>()
     @State private var notInto = Set<String>()
+    @State private var positiveDraft = ""
+    @State private var negativeDraft = ""
     var body: some View {
         NavigationStack {
             List {
-                Text("Choose interests for \(store.selectedProvider.displayName). Not Into filters Recommended posts.")
+                Section("What would you like more of?") {
+                    Text("Add your own topics, tags or phrases. Separate multiple interests with commas.").font(.caption).foregroundStyle(.secondary)
+                    TextField("Topics or keywords", text: $positiveDraft)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("positive-interest-input")
+                    Button("Add interests") { addDraft(positive: true) }.disabled(positiveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    ForEach(into.sorted(), id: \.self) { term in
+                        HStack { Text(term); Spacer(); Button("Remove") { into.remove(term) } }
+                    }
+                }
+                Section("What would you rather avoid?") {
+                    TextField("Unwanted topics or keywords", text: $negativeDraft).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Button("Add exclusions") { addDraft(positive: false) }.disabled(negativeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    ForEach(notInto.sorted(), id: \.self) { term in
+                        HStack { Text(term); Spacer(); Button("Remove") { notInto.remove(term) } }
+                    }
+                }
+                Section("Which of these appeal to you?") {
                 ForEach(Array(Set(store.posts.flatMap { $0.tags.prefix(6) })).sorted().prefix(24), id: \.self) { tag in
                     HStack {
                         if let post = store.posts.first(where: { $0.tags.contains(tag) }) {
@@ -43,10 +61,20 @@ struct TasteOnboardingView: View {
                         Button(notInto.contains(tag) ? "✓ Not Into" : "Not Into") { into.remove(tag); if !notInto.insert(tag).inserted { notInto.remove(tag) } }
                     }.buttonStyle(.bordered)
                 }
+                }
             }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Your interests")
-                .toolbar { Button("Done") { store.setTaste(into: into.sorted(), notInto: notInto.sorted()); dismiss() } }
+                .toolbar { Button("Done") { addDraft(positive: true); addDraft(positive: false); store.setTaste(into: into.sorted(), notInto: notInto.sorted()); dismiss() } }
         }.interactiveDismissDisabled()
             .onAppear { let taste = store.tasteChoice(for: store.selectedProvider); into = Set(taste.into); notInto = Set(taste.notInto) }
+    }
+    private func addDraft(positive: Bool) {
+        let draft = positive ? positiveDraft : negativeDraft
+        let terms = TasteChoice.normalized(draft.components(separatedBy: CharacterSet(charactersIn: ",\n;")))
+        for term in terms {
+            if positive { notInto.remove(term); into.insert(term) }
+            else { into.remove(term); notInto.insert(term) }
+        }
+        if positive { positiveDraft = "" } else { negativeDraft = "" }
     }
 }
 

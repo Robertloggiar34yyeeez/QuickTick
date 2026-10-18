@@ -40,6 +40,47 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class NativeProviderAPITests: XCTestCase {
+    @MainActor func testReselectingFeedRefreshesRecommendedAndChangesGeneration() async {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let store = AppStore(api: api)
+        store.selectedProvider = .eporner
+        store.feedSort = "recent"; store.queryText = "old search"
+        await store.selectFeedTab(0)
+        let first = store.feedRevision
+        XCTAssertEqual(store.feedSort, "recommended"); XCTAssertEqual(store.queryText, "")
+        await store.selectFeedTab(0)
+        XCTAssertNotEqual(first, store.feedRevision)
+        await store.selectFeedTab(1)
+        XCTAssertEqual(store.activeTab, 1); XCTAssertTrue(store.feedMediaOnly)
+    }
+
+    func testExplicitPreferencesPersonalizeColdStartWithoutML() async {
+        let values = TasteChoice.normalized([" Engineering ", "engineering", "ground   effect", ""])
+        XCTAssertEqual(values, ["engineering", "ground effect"])
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let taste = TasteChoice(done: true, into: values, notInto: ["baking"])
+        let request = await engine.candidateRequest(context: "eporner|all|", provider: .eporner, taste: taste, excluded: [])
+        XCTAssertTrue(request.focused); XCTAssertEqual(request.query.included.first, "engineering")
+        let good = Post(key: "good", id: "good", provider: "Eporner", tags: ["engineering"])
+        let bad = Post(key: "bad", id: "bad", provider: "Eporner", tags: ["baking"])
+        let ranked = await engine.rank([bad, good], taste: taste, recent: [])
+        XCTAssertEqual(ranked.map(\.stableID), ["good"])
+    }
+
+    func testDownloadSizeMeasuresActualFilesAndHLSPackages() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let a = folder.appendingPathComponent("part-a"), b = folder.appendingPathComponent("part-b")
+        try Data(repeating: 1, count: 4096).write(to: a)
+        try Data(repeating: 2, count: 8192).write(to: b)
+        let fileSize = await DownloadSizeReader.shared.bytes(at: a)
+        let packageSize = await DownloadSizeReader.shared.bytes(at: folder)
+        XCTAssertEqual(fileSize, 4096); XCTAssertEqual(packageSize, 12288)
+        let missing = await DownloadSizeReader.shared.bytes(at: folder.appendingPathComponent("missing"))
+        XCTAssertNil(missing)
+    }
+
     private func client() -> (QuicktickAPIClient, URLSession) {
         NativeProviderProtocol.log.reset()
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [NativeProviderProtocol.self]

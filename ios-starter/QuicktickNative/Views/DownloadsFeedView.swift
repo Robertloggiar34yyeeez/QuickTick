@@ -23,6 +23,8 @@ private struct DownloadContent: View {
                         if let post = record.offlinePost {
                             PostCardView(post: post, available: CGSize(width: min(680, geometry.size.width - 32), height: geometry.size.height), playbackTab: 3, offline: true, onDelete: { manager.delete(record) })
                                 .frame(maxWidth: .infinity)
+                            Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("download-size-\(record.key)")
                         } else {
                         VStack(alignment: .leading) {
                             HStack {
@@ -31,6 +33,7 @@ private struct DownloadContent: View {
                                 }
                                 VStack(alignment: .leading) {
                                     Text(record.title); Text("\(record.provider) · \(record.state.rawValue)").font(.caption)
+                                    Text(record.formattedSize).font(.caption.monospacedDigit())
                                     ProgressView(value: record.progress)
                                     if let error = record.errorMessage { Text(error).foregroundStyle(.orange).font(.caption) }
                                 }

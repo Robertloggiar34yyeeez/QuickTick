@@ -85,7 +85,7 @@ struct HomeFeedView: View {
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
             selectVisiblePlayback(viewport: viewport.size)
         }
-        .task(id: "\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
+        .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)
         }

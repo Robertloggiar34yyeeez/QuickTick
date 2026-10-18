@@ -11,7 +11,18 @@ final class AppStore: ObservableObject {
     }
     @Published var posts: [Post] = []
     @Published var activeTab = 0 { didSet { if oldValue != activeTab { fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
-    @Published var isForeground = true { didSet { if !isForeground { players.pauseAll() } } }
+    @Published var isForeground = true { didSet {
+        guard oldValue != isForeground else { return }
+        if !isForeground { players.suspendActivePlayback() }
+        else {
+            // A rapid inactive→active transition can coalesce SwiftUI task IDs
+            // while the app is suspended. Resume the retained player directly,
+            // only if its existing feed and visible-post owners still agree.
+            let owner = [0: "home", 1: "immersive", 2: "favorites", 3: "downloads"][activeTab] ?? "home"
+            let allowed = activeTab == 1 ? Set(posts.map(\.stableID)) : Set(inlinePlaybackID.map { [$0] } ?? [])
+            players.resumeSuspendedPlayback(allowed: allowed, owner: owner, muted: muted, pausedKey: pausedPlaybackID)
+        }
+    } }
     @Published var pausedPlaybackID: String?
     @Published var fullScreenPlaybackID: String?
     @Published var inlinePlaybackID: String? { didSet { if oldValue != inlinePlaybackID { pausedPlaybackID = nil; players.pauseAll() } } }

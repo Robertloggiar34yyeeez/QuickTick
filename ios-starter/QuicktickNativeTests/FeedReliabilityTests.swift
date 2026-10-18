@@ -180,6 +180,22 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(VisiblePostSelector.select(frames: bothVisible, viewport: tablet, current: nil), "first")
         XCTAssertEqual(VisiblePostSelector.select(frames: bothVisible, viewport: tablet, current: "first"), "first")
     }
+    @MainActor func testRapidForegroundReturnResumesSameOwnerWithoutAViewTaskAndHonorsPause() {
+        let store = AppStore(); let url = URL(fileURLWithPath: "/tmp/resume.mp4")
+        store.inlinePlaybackID = "visible"
+        let player = store.players.activate(key: "visible", url: url, muted: false, owner: "home")
+        store.isForeground = false; XCTAssertNil(store.players.activeKey)
+        store.isForeground = true
+        XCTAssertEqual(store.players.activeKey, "visible")
+        XCTAssertEqual(store.players.activeOwner, "home")
+        XCTAssertTrue(store.players.player(for: "visible", url: url) === player)
+        store.pausedPlaybackID = "visible"
+        store.isForeground = false; store.isForeground = true
+        XCTAssertNil(store.players.activeKey)
+        _ = store.players.activate(key: "visible", url: url, muted: false)
+        store.isForeground = false; store.activeTab = 1; store.isForeground = true
+        XCTAssertNil(store.players.activeKey)
+    }
     @MainActor func testPlayerPoolChangesURLForSameIdentityAndPausesOnTabAndBackground() {
         let store = AppStore();let pool = store.players
         let a = URL(fileURLWithPath: "/tmp/a.mp4"), b = URL(fileURLWithPath: "/tmp/b.mp4")

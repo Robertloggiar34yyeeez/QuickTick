@@ -9,6 +9,7 @@ final class PlayerPool: ObservableObject {
     private var order: [String] = []
     private var urls: [String: URL] = [:]
     private var warming = Set<String>()
+    private var suspendedPlayback: (key: String, owner: String)?
     private(set) var activeKey: String?
     private(set) var activeOwner: String?
     var capacity = 3
@@ -25,6 +26,7 @@ final class PlayerPool: ObservableObject {
     }
 
     func activate(key: String, url: URL, muted: Bool, owner: String = "home") -> AVPlayer {
+        suspendedPlayback = nil
         // Feed transitions must preserve the next clips' pending prerolls.
         // pauseAll is reserved for tab/background transitions.
         for (otherKey, other) in players where otherKey != key && other.rate != 0 { other.pause() }
@@ -36,7 +38,21 @@ final class PlayerPool: ObservableObject {
         activeKey = key; activeOwner = owner; p.isMuted = muted; p.play()
         return p
     }
-    func pauseAll() { players.values.forEach { $0.pause(); $0.cancelPendingPrerolls() }; warming.removeAll(); warmObservers.removeAll(); activeKey = nil; activeOwner = nil }
+    func pauseAll() { suspendedPlayback = nil; players.values.forEach { $0.pause(); $0.cancelPendingPrerolls() }; warming.removeAll(); warmObservers.removeAll(); activeKey = nil; activeOwner = nil }
+    func suspendActivePlayback() {
+        let saved: (key: String, owner: String)?
+        if let key = activeKey, let owner = activeOwner, let player = players[key],
+           player.rate > 0 || player.timeControlStatus == .waitingToPlayAtSpecifiedRate { saved = (key, owner) }
+        else { saved = nil }
+        pauseAll()
+        suspendedPlayback = saved
+    }
+    func resumeSuspendedPlayback(allowed: Set<String>, owner: String, muted: Bool, pausedKey: String?) {
+        let saved = suspendedPlayback; suspendedPlayback = nil
+        guard let saved, saved.owner == owner, allowed.contains(saved.key), saved.key != pausedKey,
+              let player = players[saved.key], player.currentItem?.status != .failed, let url = urls[saved.key] else { return }
+        _ = activate(key: saved.key, url: url, muted: muted, owner: owner)
+    }
     func pause(_ key: String, owner: String? = nil) { guard owner == nil || activeOwner == owner else { return }; players[key]?.pause(); if activeKey == key { activeKey = nil; activeOwner = nil } }
     var count: Int { players.count }
     func prewarm(key: String, url: URL) {
@@ -53,8 +69,8 @@ final class PlayerPool: ObservableObject {
             }
         }
     }
-    func release(_ key: String) { if activeKey == key { activeKey = nil; activeOwner = nil }; warming.remove(key); urls.removeValue(forKey: key); warmObservers.removeValue(forKey: key); players.removeValue(forKey: key)?.pause(); order.removeAll { $0 == key } }
-    func releaseAll() { activeKey = nil; activeOwner = nil; warming.removeAll(); urls.removeAll(); warmObservers.removeAll(); players.values.forEach { $0.pause() }; players.removeAll(); order.removeAll() }
+    func release(_ key: String) { if suspendedPlayback?.key == key { suspendedPlayback = nil }; if activeKey == key { activeKey = nil; activeOwner = nil }; warming.remove(key); urls.removeValue(forKey: key); warmObservers.removeValue(forKey: key); players.removeValue(forKey: key)?.pause(); order.removeAll { $0 == key } }
+    func releaseAll() { suspendedPlayback = nil; activeKey = nil; activeOwner = nil; warming.removeAll(); urls.removeAll(); warmObservers.removeAll(); players.values.forEach { $0.pause() }; players.removeAll(); order.removeAll() }
     func retain(_ keys: Set<String>) {
         for key in Array(players.keys) where !keys.contains(key) { release(key) }
     }

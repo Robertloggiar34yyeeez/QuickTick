@@ -260,8 +260,10 @@ final class AppStore: ObservableObject {
             var filtered: [Post] = []
             let taste = tasteChoice(for: provider)
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
+            var broaden = false
             for _ in 0..<5 {
-                let response = try await fetchCandidates(provider: provider, parsed: parsed, context: personalized ? context : nil, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly)
+                guard generation == token, !Task.isCancelled else { return }
+                let response = try await fetchCandidates(provider: provider, parsed: parsed, context: personalized ? context : nil, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly, forceBroad: broaden)
                 let acquisition = response.request
                 let page = response.page
                 requestedPage = acquisition?.page ?? requestedPage
@@ -279,6 +281,10 @@ final class AppStore: ObservableObject {
                     await recommendations.advanceCandidatePage(context: acquisition?.context ?? context, nextPage: (page.hasMore ?? !page.items.isEmpty) ? nextPage : 1)
                 }
                 filtered = incoming
+                if incoming.isEmpty, let acquisition, acquisition.focused {
+                    broaden = true
+                    if page.hasMore == false { await recommendations.markCandidateDrained(context: acquisition.context) }
+                }
                 if !filtered.isEmpty || !hasMore { break }
             }
             let immediate = filtered
@@ -326,8 +332,10 @@ final class AppStore: ObservableObject {
             lastError = nil
             // Skip sparse, duplicate and fully filtered pages without waiting for
             // a last-card onAppear that will never fire again.
+            var broaden = false
             for attempt in 0..<5 {
-            let response = try await fetchCandidates(provider: provider, parsed: parsed, context: candidateContext, page: nextPage, sort: feedSort, mediaOnly: feedMediaOnly)
+            guard generation == token, !Task.isCancelled else { return }
+            let response = try await fetchCandidates(provider: provider, parsed: parsed, context: candidateContext, page: nextPage, sort: feedSort, mediaOnly: feedMediaOnly, forceBroad: broaden)
             let acquisition = response.request
             let requestedPage = acquisition?.page ?? nextPage
             let page = response.page
@@ -342,6 +350,11 @@ final class AppStore: ObservableObject {
             }
             let ranked = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(candidates, taste: tasteChoice(for: provider), recent: posts) : candidates
             guard generation == token, !Task.isCancelled else { return }
+            if ranked.isEmpty, let acquisition, acquisition.focused {
+                broaden = true
+                if page.hasMore == false { await recommendations.markCandidateDrained(context: acquisition.context) }
+                guard generation == token, !Task.isCancelled else { return }
+            }
             posts.append(contentsOf: ranked)
             if feedSort == "recommended" {
                 semanticTask?.cancel()
@@ -361,9 +374,9 @@ final class AppStore: ObservableObject {
         } catch { if token == generation, !Task.isCancelled { recordFeedError(error, provider: provider) } }
     }
 
-    private func fetchCandidates(provider: Provider, parsed: ParsedQuery, context: String?, page: Int, sort: String, mediaOnly: Bool) async throws -> (page: PostPage, request: RecommendationEngine.CandidateRequest?) {
+    private func fetchCandidates(provider: Provider, parsed: ParsedQuery, context: String?, page: Int, sort: String, mediaOnly: Bool, forceBroad: Bool = false) async throws -> (page: PostPage, request: RecommendationEngine.CandidateRequest?) {
         let acquisition: RecommendationEngine.CandidateRequest?
-        if let context { acquisition = await recommendations.candidateRequest(context: context, provider: provider, taste: tasteChoice(for: provider), excluded: exclusions + parsed.excluded) }
+        if let context { acquisition = await recommendations.candidateRequest(context: context, provider: provider, taste: tasteChoice(for: provider), excluded: exclusions + parsed.excluded, forceBroad: forceBroad) }
         else { acquisition = nil }
         do {
             let result = try await api.posts(provider: provider, query: acquisition?.query ?? parsed, page: acquisition?.page ?? page, sort: sort, immersive: mediaOnly)

@@ -14,6 +14,13 @@ actor RecommendationEngine {
     }
     private(set) var debugScores: [String: DebugScore] = [:]
     private(set) var rankLatencyMs = 0.0
+    private var drainedCandidateQueries: [String: Date] = [:]
+    func markCandidateDrained(context: String) {
+        drainedCandidateQueries = drainedCandidateQueries.filter { $0.value > .now }
+        if drainedCandidateQueries.count < 96 || drainedCandidateQueries[context] != nil {
+            drainedCandidateQueries[context] = Date.now.addingTimeInterval(60)
+        }
+    }
     func releaseSemanticModel() async { await semantic.releaseModel() }
     func prepareSemantic(_ posts: [Post], taste: TasteChoice = TasteChoice()) async {
         guard !Task.isCancelled else { return }
@@ -32,6 +39,7 @@ actor RecommendationEngine {
     ]
 
     func load(_ value: RecommendationState) {
+        drainedCandidateQueries.removeAll()
         state = value
         if state.version < 3 { state.version = 3 }
         for key in state.profiles.keys { state.profiles[key] = normalized(state.profiles[key] ?? RecommendationProfile()) }
@@ -54,7 +62,7 @@ actor RecommendationEngine {
     // Acquisition, not only reranking, follows engagement. Three of four
     // requests rotate across strong interests; the fourth browses broadly.
     // Each query owns its cursor in the existing persisted recommendation state.
-    func candidateRequest(context: String, provider: Provider, taste: TasteChoice, excluded: [String]) -> CandidateRequest {
+    func candidateRequest(context: String, provider: Provider, taste: TasteChoice, excluded: [String], forceBroad: Bool = false) -> CandidateRequest {
         let queryExclusions = Array(Set(excluded + tasteTokens(source: provider.rawValue, values: taste.notInto))).sorted()
         let blocked = Set(queryExclusions.map { $0.lowercased() })
         let explicit = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }.sorted()
@@ -65,11 +73,14 @@ actor RecommendationEngine {
         let roundKey = context + "|round"
         let round = max(0, (state.candidatePages[roundKey] ?? 1) - 1)
         advanceCandidatePage(context: roundKey, nextPage: (round + 1) % 12_000 + 1)
-        let focused = (!explicit.isEmpty || !learned.isEmpty) && round % 4 != 3
-        let terms: [String]
+        var focused = !forceBroad && (!explicit.isEmpty || !learned.isEmpty) && round % 4 != 3
+        var terms: [String]
         if !focused { terms = [] }
         else if !explicit.isEmpty && (learned.isEmpty || round % 4 == 0) { terms = [explicit[(round / 4 + (learned.isEmpty ? round % 4 : 0)) % explicit.count]] }
         else { terms = [learned[(round / 4 * 2 + max(0, round % 4 - 1)) % learned.count]] }
+        if focused, let deadline = drainedCandidateQueries[context + "|query:" + terms.joined(separator: " ")], deadline > .now {
+            focused = false; terms = []
+        }
         let key = context + "|query:" + terms.joined(separator: " ")
         return CandidateRequest(context: key, query: ParsedQuery(included: terms, excluded: queryExclusions), page: candidatePage(context: key), focused: focused)
     }
@@ -84,6 +95,7 @@ actor RecommendationEngine {
     }
 
     func reset(provider: Provider? = nil) async {
+        drainedCandidateQueries.removeAll()
         await semantic.reset()
         if let provider {
             state.profiles[provider.rawValue] = RecommendationProfile()

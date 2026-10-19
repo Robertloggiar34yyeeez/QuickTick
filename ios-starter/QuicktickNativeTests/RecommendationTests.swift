@@ -2,6 +2,20 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
+    func testDrainedInterestFallsBackToAdvancingBroadCursorWithoutResettingProfile() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        var state = RecommendationState(); var profile = RecommendationProfile(); profile.terms = ["engineering": 20]
+        state.profiles["rule34"] = profile; await engine.load(state)
+        let taste = TasteChoice(done: true, into: ["engineering"], notInto: ["blocked"])
+        let focused = await engine.candidateRequest(context: "recovery", provider: .rule34, taste: taste, excluded: [])
+        await engine.markCandidateDrained(context: focused.context)
+        let broad = await engine.candidateRequest(context: "recovery", provider: .rule34, taste: taste, excluded: [], forceBroad: true)
+        XCTAssertFalse(broad.focused); XCTAssertTrue(broad.query.included.isEmpty); XCTAssertEqual(broad.query.excluded, ["blocked"])
+        await engine.advanceCandidatePage(context: broad.context, nextPage: 7)
+        let continued = await engine.candidateRequest(context: "recovery", provider: .rule34, taste: taste, excluded: [])
+        XCTAssertFalse(continued.focused); XCTAssertEqual(continued.page, 7)
+        let saved = await engine.snapshot(); XCTAssertEqual(saved.profiles["rule34"], profile)
+    }
     @MainActor func testImportCannotRaceInitialProfileRestoration() async {
         let store = AppStore()
         store.exclusions = ["existing"]

@@ -145,13 +145,27 @@ struct HomeFeedView: View {
     private func warmNext(after key: String?) async {
         guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }
         let next = Array(store.posts.dropFirst(index + 1).prefix(2))
-        store.players.retain(Set([key] + next.map(\.stableID)))
-        for post in next {
-            guard !Task.isCancelled, store.inlinePlaybackID == key, store.activeTab == 0 else { return }
-            if post.type.lowercased() == "video", let media = try? await store.resolver.resolve(post), let url = media.mediaUrlURL {
-                guard !Task.isCancelled, store.inlinePlaybackID == key else { return }; store.players.prewarm(key: post.stableID, url: url)
+        let nextVideo = store.posts.dropFirst(index + 1).prefix(4).first { $0.type.lowercased() == "video" }
+        store.players.retain(Set([key] + [nextVideo?.stableID].compactMap { $0 }))
+        let feedStore = store
+        let resolver = store.resolver
+        // A slow thumbnail must never hold up video preparation.
+        await withTaskGroup(of: Void.self) { group in
+            if let post = nextVideo {
+                group.addTask {
+                    guard let media = try? await resolver.resolve(post), let url = media.mediaUrlURL else { return }
+                    await MainActor.run {
+                        guard !Task.isCancelled, feedStore.inlinePlaybackID == key, feedStore.activeTab == 0, feedStore.isForeground else { return }
+                        feedStore.players.prewarm(key: post.stableID, url: url)
+                    }
+                }
             }
-            _ = try? await MediaImagePipeline.shared.image(raw: post.cardPreviewURL, pixels: 1024)
+            for post in next {
+                group.addTask(priority: .utility) {
+                    guard !Task.isCancelled else { return }
+                    _ = try? await MediaImagePipeline.shared.image(raw: post.cardPreviewURL, pixels: 1024)
+                }
+            }
         }
     }
 

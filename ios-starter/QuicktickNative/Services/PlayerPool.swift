@@ -20,7 +20,8 @@ final class PlayerPool: ObservableObject {
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 3
         let player = AVPlayer(playerItem: item)
-        player.automaticallyWaitsToMinimizeStalling = false
+        // Start explicitly below, but let AVFoundation resume after a network stall.
+        player.automaticallyWaitsToMinimizeStalling = true
         players[key] = player; urls[key] = url; touch(key); trim()
         return player
     }
@@ -35,7 +36,10 @@ final class PlayerPool: ObservableObject {
         warmObservers.removeValue(forKey: key)
         warming.remove(key)
         p.cancelPendingPrerolls()
-        activeKey = key; activeOwner = owner; p.isMuted = muted; p.play()
+        p.automaticallyWaitsToMinimizeStalling = true
+        p.currentItem?.preferredForwardBufferDuration = 6
+        activeKey = key; activeOwner = owner; p.isMuted = muted
+        p.playImmediately(atRate: 1)
         return p
     }
     func pauseAll() { suspendedPlayback = nil; players.values.forEach { $0.pause(); $0.cancelPendingPrerolls() }; warming.removeAll(); warmObservers.removeAll(); activeKey = nil; activeOwner = nil }
@@ -58,14 +62,26 @@ final class PlayerPool: ObservableObject {
     func prewarm(key: String, url: URL) {
         let p = player(for: key, url: url)
         guard p.rate == 0, activeKey != key, warming.insert(key).inserted else { return }
-        // AVPlayerItem creation alone does not prime the decode pipeline.
-        if p.currentItem?.status == .readyToPlay, activeKey != key { p.preroll(atRate: 1) { _ in }; return }
-        warmObservers[key] = p.currentItem?.observe(\.status, options: [.initial, .new]) { [weak self, weak p] item, _ in
-            guard item.status == .readyToPlay else { return }
+        p.isMuted = true
+        p.currentItem?.preferredForwardBufferDuration = 2
+        // Preroll requires the PLAYER to be ready; item readiness can arrive first.
+        // Always cross to the main actor before consuming readiness/ownership.
+        warmObservers[key] = p.observe(\.status, options: [.initial, .new]) { [weak self, weak p] _, _ in
             Task { @MainActor in
-                guard let self, let p, self.players[key] === p else { return }
+                guard let self, let p, self.players[key] === p,
+                      self.warming.contains(key), self.activeKey != key else { return }
+                guard p.status != .unknown else { return }
                 self.warmObservers.removeValue(forKey: key)
-                if p.rate == 0, self.activeKey != key { p.preroll(atRate: 1) { _ in } }
+                guard p.status == .readyToPlay, p.rate == 0 else { self.warming.remove(key); return }
+                // Preroll is unsupported with automatic waiting enabled. It does
+                // not play or advance the offscreen clip.
+                p.automaticallyWaitsToMinimizeStalling = false
+                p.preroll(atRate: 1) { [weak self, weak p] success in
+                    Task { @MainActor in
+                        guard let self, let p, self.players[key] === p, self.activeKey != key else { return }
+                        if !success { self.warming.remove(key) }
+                    }
+                }
             }
         }
     }

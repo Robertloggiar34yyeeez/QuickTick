@@ -45,7 +45,7 @@ final class ImmersiveMediaTests: XCTestCase {
         let pool = PlayerPool()
         let url = URL(fileURLWithPath: "/tmp/clip.mp4")
         let first = pool.player(for: "first", url: url)
-        XCTAssertFalse(first.automaticallyWaitsToMinimizeStalling)
+        XCTAssertTrue(first.automaticallyWaitsToMinimizeStalling)
         XCTAssertEqual(first.currentItem?.preferredForwardBufferDuration, 3)
         XCTAssertTrue(pool.player(for: "first", url: url) === first)
         for index in 0..<pool.capacity { _ = pool.player(for: "clip\(index)", url: url) }

@@ -135,9 +135,9 @@ struct ImmersiveFeedView: View {
             if clips.isEmpty && !offline && !store.isLoading && store.hasMore { await store.loadMore(immersive: true) }
             return
         }
-        // Three slots: current + next two. Four concurrent neighbours previously
-        // evicted the immediate next clip before the user scrolled to it.
-        let playerRange = index...min(clips.count - 1, index + 2)
+        // Prioritize the immediate next clip instead of two competing downloads.
+        // Retain the previous player for a quick reverse swipe.
+        let playerRange = max(0, index - 1)...min(clips.count - 1, index + 1)
         let previewRange = max(0, index - 1)...min(clips.count - 1, index + 2)
         store.players.retain(Set(playerRange.map { clips[$0].stableID }))
         previews.retain(Set(previewRange.map { clips[$0].stableID }))
@@ -154,7 +154,7 @@ struct ImmersiveFeedView: View {
             }
             group.addTask(priority: .utility) {
                 // Nearest first; do not compete with the visible player.
-                for i in playerRange where i != index && clips[i].type.lowercased() == "video" {
+                for i in playerRange where i > index && clips[i].type.lowercased() == "video" {
                     let post = clips[i]
                     let url: URL?
                     if offlineMode { url = URL(string: post.mediaUrl) }
@@ -411,7 +411,7 @@ private struct ImmersiveItemView: View {
                 let tolerance = CMTime(seconds: 0.25, preferredTimescale: 600)
                 p.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: tolerance, toleranceAfter: tolerance, completionHandler: { _ in })
             }
-            if playing { p.play() }; error = nil
+            if !playing { p.pause() }; error = nil
             if let asset = p.currentItem?.asset, let track = try? await asset.loadTracks(withMediaType: .video).first,
                let size = try? await track.load(.naturalSize), let transform = try? await track.load(.preferredTransform) {
                 let actual = size.applying(transform)

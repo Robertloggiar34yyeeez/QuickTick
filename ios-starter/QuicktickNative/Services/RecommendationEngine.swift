@@ -312,6 +312,23 @@ actor RecommendationEngine {
         return score
     }
 
+    /// Cheap metadata ranking before publication: no ML, images, or network access.
+    /// An untouched profile retains the provider's original order.
+    func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post]) -> [Post] {
+        guard let first = candidates.first else { return [] }
+        let p = profile(for: first.provider.lowercased())
+        let hasSignal = !taste.into.isEmpty || !taste.notInto.isEmpty
+            || !p.terms.isEmpty || !p.negativeThemes.isEmpty || !p.termEvidence.isEmpty
+        guard hasSignal else { return candidates }
+        var scored: [(post: Post, value: Double, offset: Int)] = []
+        for (offset, post) in candidates.enumerated() {
+            guard !isHardDisliked(post, taste: taste) else { continue }
+            scored.append((post: post, value: score(post, taste: taste, recent: recent), offset: offset))
+        }
+        scored.sort { $0.value == $1.value ? $0.offset < $1.offset : $0.value > $1.value }
+        return scored.map(\.post)
+    }
+
     func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], visualScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
         let start = Date(); defer { rankLatencyMs = Date().timeIntervalSince(start) * 1000 }
         let semanticScores = await semantic.scores(candidates, taste: taste)

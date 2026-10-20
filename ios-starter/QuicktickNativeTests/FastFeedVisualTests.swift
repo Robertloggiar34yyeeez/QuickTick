@@ -191,6 +191,20 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertFalse(store.players.isPreparing("next"))
         store.players.releaseAll()
     }
+    @MainActor func testRecommendationTasteAffectsInitialAndPaginatedPosts() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FastFeedProtocol.self]
+        let credentials = ProviderCredentials(rule34User: "fixture-user", rule34Key: "fixture-key")
+        let store = AppStore(api: QuicktickAPIClient(session: URLSession(configuration: config), credentials: credentials))
+        let liked = Post(key: "rule34:liked", id: "liked", provider: "rule34", tags: ["sitting"])
+        await store.recommendations.record(.like, post: liked)
+        await store.refresh()
+        XCTAssertEqual(store.posts.map(\.id), ["2", "1"])
+        await store.loadMore()
+        XCTAssertEqual(store.posts.map(\.id), ["2", "1", "4", "3"])
+        store.selectedProvider = .eporner
+    }
+
     @MainActor func testFeedPublishesProviderOrderWithoutAIAndPaginationAdvances() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FastFeedProtocol.self]
         let credentials = ProviderCredentials(rule34User: "fixture-user", rule34Key: "fixture-key")

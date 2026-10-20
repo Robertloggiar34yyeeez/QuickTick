@@ -324,8 +324,10 @@ final class AppStore: ObservableObject {
                         && banned.isDisjoint(with: Set(post.tags.map { $0.lowercased() }))
                 }
                 incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
-                filtered = incoming
-                if incoming.isEmpty, let acquisition, acquisition.focused {
+                filtered = personalized
+                    ? await recommendations.rankFast(incoming, taste: tasteChoice(for: provider), recent: [])
+                    : incoming
+                if filtered.isEmpty, let acquisition, acquisition.focused {
                     broaden = true
                     if page.hasMore == false { Task { await recommendations.markCandidateDrained(context: acquisition.context) } }
                 }
@@ -380,7 +382,9 @@ final class AppStore: ObservableObject {
             var candidates = page.items.filter { encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia) && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
             candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
                 recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
-            let ranked = candidates
+            let ranked = candidateContext != nil
+                ? await recommendations.rankFast(candidates, taste: tasteChoice(for: provider), recent: Array(posts.suffix(10)))
+                : candidates
             guard generation == token, !Task.isCancelled else { return }
             if ranked.isEmpty, let acquisition, acquisition.focused {
                 broaden = true
@@ -400,6 +404,11 @@ final class AppStore: ObservableObject {
     private func fetchCandidates(provider: Provider, parsed: ParsedQuery, context: String?, page: Int, sort: String, mediaOnly: Bool, forceBroad: Bool = false) async throws -> (page: PostPage, request: RecommendationEngine.CandidateRequest?) {
         var acquisition = context == nil || forceBroad ? nil : plannedAcquisition
         plannedAcquisition = nil
+        // Source-of-candidates needs interests immediately, not only after idle.
+        if let context, acquisition == nil, !forceBroad {
+            acquisition = await recommendations.candidateRequest(context: context, provider: provider,
+                taste: tasteChoice(for: provider), excluded: exclusions + parsed.excluded)
+        }
         if let context {
             let key = acquisition?.context ?? context + "|query:"
             acquisition = RecommendationEngine.CandidateRequest(context: key, query: acquisition?.query ?? parsed,

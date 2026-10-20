@@ -42,6 +42,20 @@ final class RecommendationTests: XCTestCase {
         let after = await engine.snapshot()
         XCTAssertEqual(after.profiles, before.profiles)
     }
+    func testFastRankUsesLearnedPreferencesAndPreservesColdStartOrder() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let neutral = Post(key: "rule34:n", id: "n", provider: "rule34", tags: ["standing"])
+        let preferred = Post(key: "rule34:p", id: "p", provider: "rule34", tags: ["sitting"])
+        let cold = await engine.rankFast([neutral, preferred], taste: TasteChoice(), recent: [])
+        XCTAssertEqual(cold, [neutral, preferred])
+        await engine.record(.like, post: preferred)
+        let learned = await engine.rankFast([neutral, preferred], taste: TasteChoice(), recent: [])
+        XCTAssertEqual(learned, [preferred, neutral])
+        let explicit = await engine.rankFast([neutral, preferred],
+            taste: TasteChoice(done: true, into: ["sitting"], notInto: ["standing"]), recent: [])
+        XCTAssertEqual(explicit, [preferred])
+    }
+
     func testBoundedLookAheadKeepsAllUniqueAllowedPostsAndPreferencesFirst() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let posts: [Post] = (0..<240).map { index -> Post in

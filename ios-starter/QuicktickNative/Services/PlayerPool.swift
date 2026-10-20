@@ -9,10 +9,18 @@ final class PlayerPool: ObservableObject {
     private var order: [String] = []
     private var urls: [String: URL] = [:]
     private var warming = Set<String>()
+    private var warmAttempts: [String: UUID] = [:]
+    private var prerollStarted = Set<String>()
     private var suspendedPlayback: (key: String, owner: String)?
     private(set) var activeKey: String?
     private(set) var activeOwner: String?
     var capacity = 3
+    func isPreparing(_ key: String) -> Bool { warming.contains(key) }
+    func transitionVisiblePost() {
+        suspendedPlayback = nil
+        if let activeKey { players[activeKey]?.pause() }
+        activeKey = nil; activeOwner = nil
+    }
 
     func player(for key: String, url: URL) -> AVPlayer {
         if let existing = players[key], urls[key] == url { touch(key); return existing }
@@ -34,6 +42,7 @@ final class PlayerPool: ObservableObject {
         activeKey = nil; activeOwner = nil
         let p = player(for: key, url: url)
         warmObservers.removeValue(forKey: key)
+        warmAttempts.removeValue(forKey: key); prerollStarted.remove(key)
         warming.remove(key)
         p.cancelPendingPrerolls()
         p.automaticallyWaitsToMinimizeStalling = true
@@ -42,7 +51,7 @@ final class PlayerPool: ObservableObject {
         p.playImmediately(atRate: 1)
         return p
     }
-    func pauseAll() { suspendedPlayback = nil; players.values.forEach { $0.pause(); $0.cancelPendingPrerolls() }; warming.removeAll(); warmObservers.removeAll(); activeKey = nil; activeOwner = nil }
+    func pauseAll() { suspendedPlayback = nil; warmAttempts.removeAll(); prerollStarted.removeAll(); players.values.forEach { $0.pause(); $0.cancelPendingPrerolls() }; warming.removeAll(); warmObservers.removeAll(); activeKey = nil; activeOwner = nil }
     func suspendActivePlayback() {
         let saved: (key: String, owner: String)?
         if let key = activeKey, let owner = activeOwner, let player = players[key],
@@ -62,6 +71,7 @@ final class PlayerPool: ObservableObject {
     func prewarm(key: String, url: URL) {
         let p = player(for: key, url: url)
         guard p.rate == 0, activeKey != key, warming.insert(key).inserted else { return }
+        let attempt = UUID(); warmAttempts[key] = attempt
         p.isMuted = true
         p.currentItem?.preferredForwardBufferDuration = 2
         // Preroll requires the PLAYER to be ready; item readiness can arrive first.
@@ -69,26 +79,30 @@ final class PlayerPool: ObservableObject {
         warmObservers[key] = p.observe(\.status, options: [.initial, .new]) { [weak self, weak p] _, _ in
             Task { @MainActor in
                 guard let self, let p, self.players[key] === p,
-                      self.warming.contains(key), self.activeKey != key else { return }
+                      self.warming.contains(key), self.warmAttempts[key] == attempt, self.activeKey != key,
+                      !self.prerollStarted.contains(key) else { return }
                 guard p.status != .unknown else { return }
                 self.warmObservers.removeValue(forKey: key)
                 guard p.status == .readyToPlay, p.rate == 0 else { self.warming.remove(key); return }
+                self.prerollStarted.insert(key)
                 // Preroll is unsupported with automatic waiting enabled. It does
                 // not play or advance the offscreen clip.
                 p.automaticallyWaitsToMinimizeStalling = false
                 p.preroll(atRate: 1) { [weak self, weak p] success in
                     Task { @MainActor in
-                        guard let self, let p, self.players[key] === p, self.activeKey != key else { return }
-                        if !success { self.warming.remove(key) }
+                        guard let self, let p, self.players[key] === p, self.warmAttempts[key] == attempt, self.activeKey != key else { return }
+                        if !success { self.warming.remove(key); self.prerollStarted.remove(key) }
                     }
                 }
             }
         }
     }
-    func release(_ key: String) { if suspendedPlayback?.key == key { suspendedPlayback = nil }; if activeKey == key { activeKey = nil; activeOwner = nil }; warming.remove(key); urls.removeValue(forKey: key); warmObservers.removeValue(forKey: key); players.removeValue(forKey: key)?.pause(); order.removeAll { $0 == key } }
-    func releaseAll() { suspendedPlayback = nil; activeKey = nil; activeOwner = nil; warming.removeAll(); urls.removeAll(); warmObservers.removeAll(); players.values.forEach { $0.pause() }; players.removeAll(); order.removeAll() }
+    func release(_ key: String) { warmAttempts.removeValue(forKey: key); prerollStarted.remove(key); players[key]?.cancelPendingPrerolls(); if suspendedPlayback?.key == key { suspendedPlayback = nil }; if activeKey == key { activeKey = nil; activeOwner = nil }; warming.remove(key); urls.removeValue(forKey: key); warmObservers.removeValue(forKey: key); players.removeValue(forKey: key)?.pause(); order.removeAll { $0 == key } }
+    func releaseAll() { pauseAll(); urls.removeAll(); players.removeAll(); order.removeAll() }
     func retain(_ keys: Set<String>) {
-        for key in Array(players.keys) where !keys.contains(key) { release(key) }
+        for key in Array(players.keys) where !keys.contains(key) {
+            warmAttempts.removeValue(forKey: key); prerollStarted.remove(key); players[key]?.cancelPendingPrerolls(); release(key)
+        }
     }
 
     private func touch(_ key: String) { order.removeAll { $0 == key }; order.append(key) }

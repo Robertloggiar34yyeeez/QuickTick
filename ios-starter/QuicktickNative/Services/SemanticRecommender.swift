@@ -108,6 +108,7 @@ actor SemanticRecommender {
         } catch { unavailable = true; throw error }
     }
     func embed(_ post: Post) throws -> [Float] {
+        try Task.checkCancellation()
         restore(); let key = key(post)
         if let vector = disk.embeddings[key] { cacheHits += 1; return vector }
         guard !Self.text(for: post).trimmingCharacters(in: CharacterSet(charactersIn: ". ")).isEmpty else { return [] }
@@ -151,7 +152,9 @@ actor SemanticRecommender {
         case let .watched(seconds, completion): weight = completion >= 0.8 ? 2 : (seconds >= 8 ? 0.6 : (completion > 0 && completion < 0.15 ? -0.3 : 0))
         case .impression: weight = 0
         }
-        guard weight != 0, let vector = try? embed(post), !vector.isEmpty else { return }
+        // Engagement may arrive during playback: consume cached embeddings only.
+        // Model loading and inference belong exclusively to deferred preparation.
+        guard weight != 0, let vector = disk.embeddings[key(post)], !vector.isEmpty else { return }
         var profile = disk.profiles[post.provider.lowercased()] ?? SemanticInterest()
         let decay = Float(pow(0.5, Date().timeIntervalSince(profile.updated) / (30 * 86400)))
         profile.recent = profile.recent.map { $0 * decay }; profile.longTerm = profile.longTerm.map { $0 * decay }; profile.negative = profile.negative.map { $0 * decay }

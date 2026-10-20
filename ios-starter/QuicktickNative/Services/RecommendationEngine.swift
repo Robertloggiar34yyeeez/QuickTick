@@ -173,9 +173,18 @@ actor RecommendationEngine {
     }
 
     func record(_ event: RecommendationEvent, post: Post) async {
-        await semantic.record(event, post: post)
+        var evidencePost = post
+        if [.less, .unlike, .quickSkip].contains(event), let features = VisualFeatures.metadata(post), !features.subjects.isEmpty {
+            // Ambiguous negative feedback describes this presentation first.
+            evidencePost.tags.removeAll { tag in
+                let normalized = tag.lowercased().replacingOccurrences(of: "-", with: "_")
+                return normalized.hasPrefix("character:") || normalized.hasPrefix("performer:") || features.subjects.contains(where: { normalized.contains($0) })
+            }
+            evidencePost.caption = nil; evidencePost.category = nil
+        }
+        await semantic.record(event, post: evidencePost)
         let source = post.provider.lowercased()
-        let signalTerms = terms(for: post)
+        let signalTerms = terms(for: evidencePost)
         var profile = profile(for: source)
         let negativeShare = 1 / sqrt(Double(max(1, min(signalTerms.count, 12))))
         var delta = 0.0
@@ -219,7 +228,7 @@ actor RecommendationEngine {
         }
 
         if delta != 0 { applyTermDelta(&profile, terms: signalTerms, delta: delta) }
-        if negativeThemeDelta != 0 { adjustNegativeThemes(&profile, post: post, delta: negativeThemeDelta) }
+        if negativeThemeDelta != 0 { adjustNegativeThemes(&profile, post: evidencePost, delta: negativeThemeDelta) }
         state.profiles[source] = normalized(profile)
     }
 
@@ -301,7 +310,7 @@ actor RecommendationEngine {
         return score
     }
 
-    func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
+    func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], visualScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
         let start = Date(); defer { rankLatencyMs = Date().timeIntervalSince(start) * 1000 }
         let semanticScores = await semantic.scores(candidates, taste: taste)
         let vectors = await semantic.diversityVectors(candidates + recent)
@@ -320,7 +329,8 @@ actor RecommendationEngine {
                 let seen = profile(for: entry.element.provider.lowercased()).recentSeen.contains(entry.element.stableID) ? -weights.seen : 0
                 let tags = tanh((raw - (seen == 0 ? 0 : -1000)) / 35) * weights.tag
                 let semantic = semanticScores[entry.element.stableID] ?? SemanticScore()
-                return (post: entry.element, base: tags + semantic.total(weights) + seen - Double(entry.offset) * 0.002, tags: tags, seen: seen)
+                let visual = max(-4, min(4, visualScores[entry.element.stableID] ?? 0))
+                return (post: entry.element, base: tags + semantic.total(weights) + visual + seen - Double(entry.offset) * 0.002, tags: tags, seen: seen)
             }
         var chosen: [Post] = []
         var similarityCache: [String: [String: Double]] = [:]

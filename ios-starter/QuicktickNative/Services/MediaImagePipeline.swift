@@ -97,5 +97,16 @@ actor MediaImagePipeline {
     }
     private func touch(_ key: String) { order.removeAll { $0 == key }; order.append(key) }
     func clearDecoded() { images.removeAll(); order.removeAll(); bytes = 0 }
+    /// Analysis may reuse decoded previews only. It cannot trigger network traffic.
+    func cachedAnalysisImage(raw: String) -> DecodedMediaImage? {
+        guard let key = order.reversed().first(where: { $0.hasPrefix(raw + ":") }), let value = images[key] else { return nil }
+        let scale = min(1, 384 / Double(max(value.image.width, value.image.height)))
+        let w = max(1, Int(Double(value.image.width) * scale)), h = max(1, Int(Double(value.image.height) * scale))
+        guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.draw(value.image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let image = context.makeImage() else { return nil }
+        return DecodedMediaImage(image: image, nativeSize: value.nativeSize, comic: value.comic)
+    }
     var decodedBytes: Int { bytes }
 }

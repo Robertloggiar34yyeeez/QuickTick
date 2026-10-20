@@ -80,6 +80,10 @@ struct SettingsView: View {
                 TextField("Tags separated by spaces", text: $exclusions).textInputAutocapitalization(.never)
                 Button("Save exclusions") { store.setExclusions(exclusions.split(whereSeparator: \.isWhitespace).map(String.init)); Task { await store.refresh() } }
             }
+            Section("Optional visual intelligence") {
+                Toggle("Analyze cached favorite previews while idle", isOn: $store.visualAnalysisEnabled)
+                Text("Separate anime and real-life preferences. Uses cached previews only; pauses during playback, feed loading, Low Power Mode and thermal pressure.").font(.footnote).foregroundStyle(.secondary)
+            }
             Section("Playback") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
                 Toggle("Mute", isOn: $store.muted)

@@ -1,7 +1,7 @@
 name: Native iOS build and IPA
 on:
   push:
-  pull_request:
+    branches-ignore: ['ipa-uploaded/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -48,10 +48,22 @@ jobs:
           key: xtool-d802c719-macos15-intel-xcode26.3-v1
       - uses: actions/upload-artifact@v4
         with:
-          name: QuickTick-0.6.26-unsigned-IPA
+          name: QuickTick-0.7.5-unsigned-IPA
           path: build/export/
           if-no-files-found: error
           retention-days: 14
+      - name: Wait for private Drive IPA upload before testing
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Publishing this lightweight marker ref confirms connector upload/readback.
+          # It does not change the tested source commit or expose private Drive data.
+          for attempt in $(seq 1 120); do
+            if git ls-remote --exit-code origin "refs/heads/ipa-uploaded/v075-$GITHUB_SHA" >/dev/null 2>&1; then exit 0; fi
+            sleep 10
+          done
+          echo 'IPA upload marker missing; device tests have not been started.'
+          exit 1
       - name: Build and test native iOS app
         shell: bash
         run: |
@@ -69,7 +81,7 @@ jobs:
           path: logs/xcodebuild-test.txt
           retention-days: 14
       - name: Check native iPad layouts and playback
-        if: ${{ !cancelled() && steps.xtool-package.outcome == 'success' }}
+        if: ${{ success() && steps.xtool-package.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail

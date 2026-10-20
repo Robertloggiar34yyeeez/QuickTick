@@ -1,0 +1,26 @@
+# QuickTick v0.7.5 (build 19)
+
+Provider responses publish immediately after local exclusions. Refresh and pagination do not await recommendation ranking, candidate planning, model initialization or inference. A background candidate plan can personalize the next request; a missing plan uses the existing broad API. Existing provider cursors, credentials, favorites and recommendation storage remain supported. Downloads restoration and optional Sync start after the first feed request.
+
+Home visible-post transitions preserve next-player preroll; tab/feed invalidation still cancels it. Per-attempt tokens reject stale KVO/preroll callbacks. Preparation remains bounded to one upcoming video with the existing three-player pool. No full-video download or new media transport is introduced. Cards prefer provider sample images when supplied and retain the original URL for full-image viewing.
+
+Local exclusion snapshots reject liked/recent content and canonical media/page URL duplicates across provider IDs. Optional cached-thumbnail difference hashes suppress near duplicates. Home geometry records image and video impressions consistently; lazy cell creation alone does not count as an impression. A bounded recent window deduplicates repeated callbacks.
+
+Two independent persistent visual profiles (anime and realLife) learn metadata attributes, explicit subject identities and subject–attribute interactions. Ambiguous provider/tag combinations abstain. Exposure-adjusted evidence, conservative negative updates, and up to eight vector clusters are supported. Historical favorites process four at a time in idle slices with an idempotent ledger. A disliked presentation preserves identity affinity until evidence spans four different presentations. Similar-looking real people never become a shared identity. The existing tag engine also removes explicit identities from ambiguous negative presentation evidence.
+
+Optional Vision analysis is OFF by default. It uses only already-decoded cached favorite previews, downsized to 384 pixels, with one serial analyzer and conservative scene-label allowlisting. It performs no provider requests, remote frame extraction, cloud inference or runtime model downloads. Low Power Mode, thermal pressure, playback and feed loading suppress scheduled analysis. Engagement consumes cached BGE vectors without loading a model. BGE preparation remains deferred and cancellable.
+
+## Model evaluation and deliberate limits
+
+- MobileCLIP2-S0 is a candidate shared encoder, not bundled in this revision. Apple's official export guidance requires reparameterization and specific preprocessing. No target-device conversion parity, memory or playback-contention measurements are available here, so enabling a new encoder would be unjustified. https://github.com/apple-aiml-research/ml-mobileclip
+- WD ViT Tagger v3 is deferred. Its ONNX/PyTorch distribution requires conversion, label validation and device memory/accuracy evaluation before an optional anime-only release. https://huggingface.co/SmilingWolf/wd-vit-tagger-v3
+- Apple Vision scene classification is implemented; no face identity recognition is used. Generic Vision labels are not claimed to identify outfits, characters or user intent.
+- Attribute extraction currently recognizes a conservative metadata vocabulary and explicit identity tags (plus Chun-Li aliases). It is not an exhaustive character/outfit/activity detector. Vector clustering infrastructure has no new visual encoder producing embeddings yet. Video favorites use cached posters; uncached images and representative video frames are deferred to avoid network/decode contention. No full historical pixel-analysis claim is made.
+- Cached visual hashes can filter only already-analyzed items. New uncached cross-provider mirrors without shared URLs cannot yet be identified before rendering. Recent canonical URL aliases are session-local; persisted provider IDs retain recent exclusion across launches.
+- No physical iPhone/iPad is connected to this Windows workspace. Cold/warm provider latency, swipe-to-frame, frame rate, peak device memory and inference overhead have not been measured. DEBUG feed/layer logs and deterministic regression fixtures are provided; passing fixture timings are not real-network/device benchmarks.
+
+## Validation and delivery
+
+Swift syntax and deterministic Xcode project checks pass locally. Regression coverage includes URL/hash duplicates, favorites/recent exclusions, image/video impressions, profile separation, historical idempotence/persistence, exposure baselines, subject–attribute negatives, Chun-Li identity preservation, resource gates, missing-model fallback, actual AppStore/player transitions and provider-order pagination. Existing 240-item test expression is split to fix the previous build's Swift type-check timeout.
+
+CI archives and packages an unsigned IPA using the existing verified user xtool source. Tests wait for an `ipa-uploaded/v075-<source SHA>` marker ref, created only after private Drive upload/readback. Once device tests complete successfully, replace that revision's Drive IPA with the verified artifact. Earlier release names and artifacts are preserved. See the PR and final delivery report for actual CI outcomes; this source note does not assert tests passed.

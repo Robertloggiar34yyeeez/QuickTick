@@ -1,6 +1,14 @@
 import Foundation
 import SwiftUI
 
+struct VisualRefreshProgress: Equatable, Sendable {
+    var completed: Int
+    var total: Int
+    var status: String
+    var running: Bool
+    var fraction: Double { total == 0 ? (running ? 0 : 1) : Double(completed) / Double(total) }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published var selectedProvider: Provider = .rule34 {
@@ -17,7 +25,7 @@ final class AppStore: ObservableObject {
     @Published var activeTab = 0 { didSet { if oldValue != activeTab { idleTask?.cancel(); fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
     @Published var isForeground = true { didSet {
         guard oldValue != isForeground else { return }
-        if !isForeground { idleTask?.cancel(); players.suspendActivePlayback() }
+        if !isForeground { idleTask?.cancel(); cancelManualVisualRefresh(); players.suspendActivePlayback() }
         else {
             // A rapid inactive→active transition can coalesce SwiftUI task IDs
             // while the app is suspended. Resume the retained player directly,
@@ -75,6 +83,10 @@ final class AppStore: ObservableObject {
     }
     let visual = VisualAnalysisService()
     @Published private(set) var visualScanStatus: String?
+    @Published private(set) var manualVisualProgress: VisualRefreshProgress?
+    var isManualVisualScanRunning: Bool { manualVisualProgress?.running == true }
+    private var manualVisualTask: Task<Void, Never>?
+    private var manualVisualID = UUID()
     private var feedExclusions = FeedExclusions()
     private var visualScores: [String: Double] = [:]
     private var idleTask: Task<Void, Never>?
@@ -280,7 +292,7 @@ final class AppStore: ObservableObject {
         do {
             let parsed = QueryParser.parse(requestedQuery)
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let search = queryText
+                let search = SearchFilters.split(queryText).tags
                 Task(priority: .utility) { await recommendations.recordSearch(provider: provider, query: search) }
             }
             let personalized = requestedSort == "recommended" && parsed.included.isEmpty
@@ -306,9 +318,7 @@ final class AppStore: ObservableObject {
                     encountered.insert(post.stableID).inserted && (!mediaOnly || post.isImmersiveMedia)
                         && banned.isDisjoint(with: Set(post.tags.map { $0.lowercased() }))
                 }
-                if personalized {
-                    incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: true, favoriteIDs: favoriteExclusionIDs)
-                }
+                incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
                 filtered = incoming
                 if incoming.isEmpty, let acquisition, acquisition.focused {
                     broaden = true
@@ -443,6 +453,10 @@ final class AppStore: ObservableObject {
         feedExclusions.viewed(post)
         Task(priority: .utility) { await record(.impression, post: post) }
     }
+
+    func notePreviewFingerprint(_ post: Post, hash: UInt64?) {
+        if let hash { feedExclusions.registerFingerprint(post.stableID, hash: hash) }
+    }
     func recordQuickSkip(_ post: Post) { Task { await record(.quickSkip, post: post) } }
     func recordReplay(_ post: Post) { Task { await record(.replay, post: post) } }
     func recordComplete(_ post: Post) { Task { await record(.complete, post: post) } }
@@ -467,15 +481,18 @@ final class AppStore: ObservableObject {
         // Geometry remains owned by Home; this set only protects ranking.
         let protected = protectedHomePostIDs.union(active.map { [$0] } ?? [])
         let prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
-        let tail = Array(source.dropFirst(prefixCount))
+        let originalTail = Array(source.dropFirst(prefixCount))
+        let tail = feedExclusions.filter(originalTail, favorites: Array(favorites.values), existing: Array(source.prefix(prefixCount)),
+            recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
         let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: Array(source.prefix(prefixCount)), visualScores: visualScores)
         guard !Task.isCancelled, Date().timeIntervalSince(lastFeedMotion) >= 1.5,
               generation == token, activeTab == 0, feedSort == "recommended", posts.map(\.stableID) == source.map(\.stableID), inlinePlaybackID == active,
               protectedHomePostIDs.isSubset(of: Set(source.prefix(prefixCount).map(\.stableID))) else { return }
-        if ranked != tail { posts = Array(source.prefix(prefixCount)) + ranked }
+        if ranked != originalTail { posts = Array(source.prefix(prefixCount)) + ranked }
     }
 
     func resetRecommendations() async {
+        cancelManualVisualRefresh()
         idleTask?.cancel(); feedExclusions.restore([]); visualScores = [:]; candidateCursors = [:]; historyOffset = 0
         await visual.reset()
         await recommendations.reset()
@@ -571,6 +588,7 @@ final class AppStore: ObservableObject {
     }
     private func scheduleIdleIntelligence() {
         idleTask?.cancel()
+        guard !isManualVisualScanRunning else { return }
         idleTask = Task(priority: .background) { [weak self] in
             do { try await Task.sleep(for: .seconds(3)) } catch { return }
             guard let self else { return }
@@ -584,7 +602,8 @@ final class AppStore: ObservableObject {
                 plannedAcquisition = request
                 visualDiscoveryRound += 1
                 let terms = await visual.discoveryTerms(provider: selectedProvider)
-                if visualDiscoveryRound % 3 == 1, tasteChoice(for: selectedProvider).into.isEmpty, let term = terms.first {
+                if visualDiscoveryRound % 3 == 1, tasteChoice(for: selectedProvider).into.isEmpty, !terms.isEmpty {
+                    let term = terms[((visualDiscoveryRound - 1) / 3) % terms.count]
                     let key = context + "|query:" + term
                     plannedAcquisition = RecommendationEngine.CandidateRequest(context: key,
                         query: ParsedQuery(included: [term], excluded: request.query.excluded), page: candidateCursors[key] ?? 1, focused: true)
@@ -635,6 +654,63 @@ final class AppStore: ObservableObject {
             guard !Task.isCancelled, generation == token else { return }
             await persistRecommendations()
             await adaptRecommendationTail(token: token)
+        }
+    }
+
+    /// Explicit user action, independent of the automatic idle-learning toggle.
+    /// Existing scans are reused; like ledgers are never reset or counted twice.
+    func startManualVisualRefresh() {
+        guard !isManualVisualScanRunning else { return }
+        idleTask?.cancel()
+        let id = UUID(); manualVisualID = id
+        manualVisualProgress = VisualRefreshProgress(completed: 0, total: favorites.count, status: "Preparing visual update…", running: true)
+        players.pauseAll()
+        manualVisualTask = Task(priority: .background) { [weak self] in
+            guard let self else { return }
+            defer { if manualVisualID == id { manualVisualTask = nil } }
+            let history = await visual.historicalQueue(Array(favorites.values))
+            var checked = 0
+            var lastProgress = Date.distantPast
+            for post in history {
+                guard !Task.isCancelled, manualVisualID == id else { return }
+                while !VisualAnalysisService.resourcesAllowAnalysis(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
+                    thermal: ProcessInfo.processInfo.thermalState.rawValue,
+                    playback: players.activeKey != nil || !isForeground, loading: isLoading) {
+                    let paused = VisualRefreshProgress(completed: checked, total: history.count,
+                        status: "Paused for playback, loading or power conditions", running: true)
+                    if manualVisualProgress != paused { manualVisualProgress = paused }
+                    do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                    guard !Task.isCancelled, manualVisualID == id else { return }
+                }
+                await visual.analyzeFavorite(post, useVision: true)
+                guard !Task.isCancelled, manualVisualID == id else { return }
+                checked += 1
+                if Date().timeIntervalSince(lastProgress) >= 0.2 || checked == history.count {
+                    manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
+                        status: "Checking favorites · \(checked)/\(history.count)", running: true)
+                    lastProgress = .now
+                }
+                await Task.yield()
+            }
+            guard !Task.isCancelled, manualVisualID == id else { return }
+            let fingerprints = await visual.fingerprints()
+            let scores = await visual.scores(posts)
+            guard !Task.isCancelled, manualVisualID == id else { return }
+            feedExclusions.setFingerprints(fingerprints); visualScores = scores
+            await adaptRecommendationTail(token: feedRevision)
+            guard !Task.isCancelled, manualVisualID == id else { return }
+            manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
+                status: history.isEmpty ? "No favorites to update yet" : "Visual taste updated · \(checked) favorites checked", running: false)
+            visualScanStatus = nil
+            scheduleIdleIntelligence()
+        }
+    }
+    func cancelManualVisualRefresh() {
+        guard isManualVisualScanRunning else { return }
+        manualVisualID = UUID(); manualVisualTask?.cancel(); manualVisualTask = nil
+        if var progress = manualVisualProgress {
+            progress.running = false; progress.status = "Update stopped · \(progress.completed)/\(progress.total) checked"
+            manualVisualProgress = progress
         }
     }
 

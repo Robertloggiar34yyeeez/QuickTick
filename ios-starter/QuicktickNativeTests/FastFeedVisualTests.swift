@@ -17,6 +17,62 @@ private final class FastFeedProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class FastFeedVisualTests: XCTestCase {
+    func testCompactSearchFiltersRoundTripAndStayProviderScoped() {
+        let state = SearchFilters.split("long_hair -jacket sort:random rating:general score:>=25")
+        XCTAssertEqual(state.tags, "long_hair -jacket")
+        XCTAssertEqual(state.filters.order, .random); XCTAssertEqual(state.filters.minimumScore, 25)
+        let query = state.filters.query(tags: state.tags + " long_hair", provider: .rule34)
+        XCTAssertEqual(query, "sort:random long_hair -jacket rating:general score:>=25")
+        XCTAssertEqual(state.filters.query(tags: state.tags, provider: .eporner), "long_hair -jacket")
+        XCTAssertEqual(SearchFilters.split(query).filters, state.filters)
+    }
+    func testSignedCDNVariantsAssetHashesAndProviderIDAliasesAreDeduplicated() {
+        let hash = "1234567890abcdef1234567890abcdef"
+        let a = post("7", media: "https://one.test/\(hash).jpg?X-Amz-Signature=old")
+        let mirror = post("8", provider: "eporner", media: "https://two.test/sample_\(hash).jpg?sig=new")
+        let alias = post("0007", media: "https://other.test/unrelated.jpg")
+        let unique = post("9", media: "https://one.test/different.jpg")
+        let filter = FeedExclusions()
+        XCTAssertEqual(filter.filter([a, mirror, alias, unique], favorites: [], recommended: true), [a, unique])
+        let signed = post("a", media: "https://cdn.test/stream.mp4?asset=1&Policy=old&Key-Pair-Id=a")
+        let resigned = post("b", media: "https://cdn.test/stream.mp4?asset=1&Policy=new&Key-Pair-Id=b")
+        let different = post("c", media: "https://cdn.test/stream.mp4?asset=2&Policy=new")
+        XCTAssertEqual(filter.filter([signed, resigned, different], favorites: [], recommended: false), [signed, different])
+    }
+    @MainActor func testCachedVisualDuplicatesAreRemovedOnlyFromTheUnseenTail() async {
+        let store = AppStore()
+        let head = post("visible", media: "https://one.test/a.jpg")
+        let duplicate = post("copy", media: "https://two.test/b.jpg")
+        let unique = post("unique", media: "https://two.test/c.jpg")
+        store.posts = [head, duplicate, unique]; store.inlinePlaybackID = head.stableID
+        store.protectVisibleHomePosts([head.stableID])
+        store.notePreviewFingerprint(head, hash: 0x12345678)
+        store.notePreviewFingerprint(duplicate, hash: 0x12345679)
+        store.notePreviewFingerprint(unique, hash: 0xfefefefefefefefe)
+        await store.adaptRecommendationTail(token: store.feedRevision)
+        XCTAssertEqual(store.posts, [head, unique])
+        store.selectedProvider = .eporner
+    }
+    @MainActor func testManualVisualRefreshProgressReusesLikeLedgerAndCanBeCancelled() async {
+        let store = AppStore(), suffix = UUID().uuidString
+        let a = post("manual-a-" + suffix, tags: ["long_hair"])
+        let b = post("manual-b-" + suffix, tags: ["qipao"])
+        store.favorites = [a.stableID: a, b.stableID: b]
+        store.startManualVisualRefresh()
+        for _ in 0..<100 where store.isManualVisualScanRunning { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(store.isManualVisualScanRunning)
+        XCTAssertEqual(store.manualVisualProgress?.completed, 2)
+        XCTAssertEqual(store.manualVisualProgress?.fraction, 1)
+        let first = await store.visual.snapshot()
+        store.startManualVisualRefresh()
+        for _ in 0..<100 where store.isManualVisualScanRunning { try? await Task.sleep(for: .milliseconds(10)) }
+        let second = await store.visual.snapshot()
+        XCTAssertEqual(first.liked, second.liked)
+        store.startManualVisualRefresh(); store.cancelManualVisualRefresh()
+        XCTAssertFalse(store.isManualVisualScanRunning)
+        XCTAssertEqual(store.manualVisualProgress?.completed, 0)
+        store.selectedProvider = .eporner
+    }
     private func post(_ id: String, provider: String = "rule34", tags: [String] = [], media: String = "") -> Post {
         Post(key: provider + ":" + id, id: id, provider: provider, tags: tags, mediaUrl: media, type: "image")
     }

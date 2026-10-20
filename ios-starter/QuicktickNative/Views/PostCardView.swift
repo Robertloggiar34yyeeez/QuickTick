@@ -73,9 +73,9 @@ struct PostCardView: View {
             }) {
                 if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning)") {
                 guard !Task.isCancelled else { return }
-                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground else { stopPlayback(); return }
+                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isManualVisualScanRunning else { stopPlayback(); return }
                 await preparePlayback()
             }
             .onDisappear {
@@ -101,7 +101,7 @@ struct PostCardView: View {
         Group {
             if let player, store.fullScreenPlaybackID != post.stableID {
                 ZStack {
-                    PosterView(url: post.cardPreviewURL)
+                    PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
                     NativePlayerSurface(player: player, fill: false, ready: $ready)
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready ? 1 : 0)
@@ -109,8 +109,11 @@ struct PostCardView: View {
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true, onSize: { nativeSize = $0; mediaAspect = $0.width / max(1,$0.height) })
             } else if post.type.lowercased() == "image" {
-                CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl, pixels: Int(mediaSize.width * 3), comic: true, fill: true) { decoded in nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height) }
-            } else { PosterView(url: post.cardPreviewURL) }
+                CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl, pixels: Int(mediaSize.width * 3), comic: true, fill: true) { decoded in
+                    nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height)
+                    store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
+                }
+            } else { PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
         }
         .frame(width: mediaSize.width, height: mediaSize.height)
         // Clipping changes pixels, not hit testing. A scaled image can otherwise

@@ -25,7 +25,7 @@ catalog='QuicktickNative/Assets.xcassets'
 if (ROOT/catalog).exists():
     ref=add('file:'+catalog,'PBXFileReference',lastKnownFileType='folder.assetcatalog',path=catalog,sourceTree='SOURCE_ROOT')
     refs.append(ref); resource_ids[catalog]=add('build:'+catalog,'PBXBuildFile',fileRef=ref)
-for name in ['BGEMicro.mlmodelc','bge-vocab.txt','bge-license.txt','WDTaggerV3.mlmodelc','wd-v3-labels.json','wd-v3-model-card.md']:
+for name in ['BGEMicro.mlmodelc','bge-vocab.txt','bge-license.txt','WDTaggerV3.mlmodelc','wd-v3-labels.json','wd-v3-model-card.md','visual-tag-taxonomy.json','visual-tag-attribution.txt']:
     rel='QuicktickNative/SemanticAssets/'+name
     ref=add('file:'+rel,'PBXFileReference',lastKnownFileType='folder' if name.endswith('.mlmodelc') else 'text',path=rel,sourceTree='SOURCE_ROOT')
     refs.append(ref);resource_ids[rel]=add('build:'+rel,'PBXBuildFile',fileRef=ref)

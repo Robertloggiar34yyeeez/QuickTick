@@ -3,6 +3,51 @@ import CoreGraphics
 @testable import QuicktickNative
 
 final class VisualTasteTests: XCTestCase {
+    func testArtistsCharactersAndAttributesLearnIndependently() throws {
+        let taxonomy = VisualTagTaxonomy(version: "fixture", artists: ["credited_artist"], characters: ["new_character"])
+        var post = Post(key: "art", id: "1", provider: "rule34", mediaUrl: "", type: "image")
+        post.tags = ["credited_artist", "new_character", "long_hair"]
+        let features = try XCTUnwrap(VisualFeatures.metadata(post, taxonomy: taxonomy))
+        XCTAssertEqual(features.artists, ["credited_artist"])
+        XCTAssertEqual(features.subjects, ["new_character"])
+        var profile = VisualProfile()
+        profile.record(.like, features: features)
+        profile.record(.less, features: VisualFeatures(domain: .anime, attributes: ["clothing:jacket": 1],
+            subjects: ["new_character"], artists: ["credited_artist"]))
+        XCTAssertEqual(profile.subjects["new_character"]?.negative, 0)
+        XCTAssertEqual(profile.artists["credited_artist"]?.negative, 0)
+        XCTAssertNotNil(profile.interactions["artist:credited_artist|appearance:long_hair"])
+        XCTAssertGreaterThan(profile.score(VisualFeatures(domain: .anime, attributes: ["appearance:long_hair": 1], subjects: ["unseen"])),
+            profile.score(VisualFeatures(domain: .anime, attributes: ["clothing:jacket": 1], subjects: ["unseen"])))
+        let restored = try JSONDecoder().decode(VisualProfile.self, from: JSONEncoder().encode(profile))
+        XCTAssertEqual(restored, profile)
+        let realPost = Post(key: "real", id: "2", provider: "redgifs", tags: post.tags, mediaUrl: "", type: "image")
+        let real = try XCTUnwrap(VisualFeatures.metadata(realPost, taxonomy: taxonomy))
+        XCTAssertTrue(real.subjects.isEmpty); XCTAssertTrue((real.artists ?? []).isEmpty)
+    }
+    func testBundledArtistTaxonomyAndLegacyProfileMigration() throws {
+        let url = try XCTUnwrap(Bundle.main.url(forResource: "visual-tag-taxonomy", withExtension: "json"))
+        let taxonomy = try JSONDecoder().decode(VisualTagTaxonomy.self, from: Data(contentsOf: url))
+        XCTAssertTrue(taxonomy.artists.contains("palcomix")); XCTAssertTrue(taxonomy.characters.contains("chun-li"))
+        XCTAssertFalse(taxonomy.artists.contains("unknown_artist"))
+        let old = try JSONDecoder().decode(VisualProfile.self, from: Data("{}".utf8))
+        XCTAssertTrue(old.artists.isEmpty)
+    }
+    func testHistoricalFavoriteGainsArtistWithoutPixelsOrDuplicateLikes() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = VisualAnalysisService(directory: directory)
+        let post = Post(key: "history", id: "1", provider: "rule34", tags: ["palcomix", "chun-li", "long_hair"], type: "image")
+        await service.record(.like, post: post)
+        await service.analyzeFavorite(post, useVision: false)
+        await service.analyzeFavorite(post, useVision: false)
+        let state = await service.snapshot()
+        XCTAssertEqual(state.profiles["anime"]?.artists["palcomix"]?.positive, 0.5)
+        XCTAssertEqual(state.profiles["anime"]?.subjects["chun_li"]?.positive, 0.7)
+        XCTAssertNil(state.profiles["realLife"])
+        let restored = await VisualAnalysisService(directory: directory).snapshot()
+        XCTAssertEqual(restored.profiles, state.profiles)
+    }
     private func image(red: CGFloat, green: CGFloat, blue: CGFloat) -> DecodedMediaImage {
         let context = CGContext(data: nil, width: 128, height: 128, bitsPerComponent: 8, bytesPerRow: 512,
             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!

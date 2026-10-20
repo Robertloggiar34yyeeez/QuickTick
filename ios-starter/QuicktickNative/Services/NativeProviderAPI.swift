@@ -144,7 +144,7 @@ enum NativeProviderAPI {
         let limit = id == nil ? 40 : 1
         var tags = query.included + query.excluded.map { "-" + $0 }
         if immersive { tags.append("( video ~ animated_gif )") }
-        if sort == "popular" { tags.append("sort:score") }
+        if sort == "popular", !tags.contains(where: { $0.lowercased().hasPrefix("sort:") }) { tags.append("sort:score") }
         let items = [URLQueryItem(name: "page", value: "dapi"), .init(name: "s", value: "post"), .init(name: "q", value: "index"),
                      .init(name: "pid", value: String(max(0, page - 1))), .init(name: "limit", value: String(limit)),
                      .init(name: "tags", value: tags.joined(separator: " ")), .init(name: "json", value: "1"),

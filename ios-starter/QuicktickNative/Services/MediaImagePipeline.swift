@@ -6,6 +6,7 @@ struct DecodedMediaImage: @unchecked Sendable {
     let image: CGImage
     let nativeSize: CGSize
     let comic: Bool
+    var perceptualHash: UInt64? = nil
     var cost: Int { image.bytesPerRow * image.height }
 }
 
@@ -55,7 +56,8 @@ actor MediaImagePipeline {
             cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: bucket, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
         }
         guard let cg else { throw URLError(.cannotDecodeContentData) }
-        let decoded = DecodedMediaImage(image: cg, nativeSize: CGSize(width: w, height: h), comic: comic)
+        let decoded = DecodedMediaImage(image: cg, nativeSize: CGSize(width: w, height: h), comic: comic,
+            perceptualHash: VisualAnalysisService.fingerprint(cg))
         if images[key] == nil { images[key] = decoded; bytes += decoded.cost; touch(key) }
         while bytes > 32 * 1024 * 1024, let oldest = order.first { order.removeFirst(); if let old = images.removeValue(forKey: oldest) { bytes -= old.cost } }
         return decoded

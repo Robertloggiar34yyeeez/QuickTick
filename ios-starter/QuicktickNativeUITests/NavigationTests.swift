@@ -1,6 +1,42 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testCompactVisualSearchFiltersAndExcludedTags() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        app.buttons["search-filters"].tap()
+        let input = app.textFields["search-filter-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap(); input.typeText("long_hair jacket")
+        app.buttons["Exclude jacket"].tap()
+        XCTAssertTrue(app.buttons["Include jacket"].exists)
+        app.buttons["search-sort-filter"].tap(); app.buttons["Random"].tap()
+        let apply = app.buttons["apply-search-filters"]
+        for _ in 0..<4 { if apply.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(apply.isHittable); apply.tap()
+        XCTAssertTrue(app.textFields["feed-search-input"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textFields["feed-search-input"].value as? String, "long_hair -jacket")
+    }
+    @MainActor func testManualVisualRefreshShowsProgressAndLoopsDownloadedGIF() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-download-images", "--ui-testing-download-gif"]
+        app.launch()
+        app.buttons["tab-Immersive"].tap()
+        let like = app.buttons["immersive-Like"]
+        XCTAssertTrue(like.waitForExistence(timeout: 10))
+        if like.value as? String != "Liked" { like.tap() }
+        app.buttons["open-settings"].tap()
+        let refresh = app.buttons["force-visual-refresh"]
+        for _ in 0..<12 { if refresh.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(refresh.isHittable); refresh.tap()
+        let progress = app.descendants(matching: .any).matching(identifier: "manual-visual-progress").firstMatch
+        XCTAssertTrue(progress.waitForExistence(timeout: 10))
+        let gif = app.descendants(matching: .any).matching(identifier: "visual-refresh-gif").firstMatch
+        for _ in 0..<3 { if gif.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(gif.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "value == %@", "Looping"), evaluatedWith: gif)
+        waitForExpectations(timeout: 15)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Manual visual refresh progress and local GIF loop"; capture.lifetime = .keepAlways; add(capture)
+    }
     @MainActor func testHomeDislikeCannotOpenTheLowerImage() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         // A tall image directly below this video extends beyond its clipped

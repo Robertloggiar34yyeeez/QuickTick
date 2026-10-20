@@ -14,17 +14,39 @@ struct FeedExclusions: Sendable {
         recent.removeAll { keys.contains($0) }; recent.append(contentsOf: keys.sorted())
         recent = Array(recent.suffix(2048)); recentSet = Set(recent)
     }
-    mutating func setFingerprints(_ values: [String: UInt64]) { fingerprints = values }
+    mutating func registerFingerprint(_ id: String, hash: UInt64) {
+        fingerprints[id] = hash
+        if fingerprints.count > 2048, let key = fingerprints.keys.first { fingerprints.removeValue(forKey: key) }
+    }
+    mutating func setFingerprints(_ values: [String: UInt64]) {
+        for (id, hash) in values { registerFingerprint(id, hash: hash) }
+    }
     static func identifiers(_ post: Post) -> Set<String> {
-        var result: Set<String> = [post.stableID, "id:\(post.provider.lowercased()):\(post.id)"]
-        // Compare complete canonical URLs, never a filename or an ID across hosts.
+        let provider = post.providerKey?.rawValue ?? post.provider.lowercased()
+        let rawID = post.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedID = provider == "redgifs" ? rawID.lowercased() : (UInt64(rawID).map(String.init) ?? rawID)
+        var result: Set<String> = [post.stableID]
+        if !normalizedID.isEmpty { result.insert("id:\(provider):\(normalizedID)") }
+        let signingKeys: Set<String> = ["token", "expires", "signature", "sig", "auth", "auth_key", "auth_token", "access_token", "secure", "policy", "key-pair-id", "x-amz-algorithm", "x-amz-credential", "x-amz-date", "x-amz-expires", "x-amz-signature", "x-amz-security-token", "x-amz-signedheaders"]
+        // Keep content query parameters. Remove only recognized transport signatures.
         for raw in [post.mediaUrl, post.pageUrl] where !raw.isEmpty {
             guard var url = URLComponents(string: raw), url.host != nil else { continue }
             url.scheme = "https"; url.host = url.host?.lowercased(); url.fragment = nil
-            url.queryItems = url.queryItems?.filter { !["token", "expires", "signature"].contains($0.name.lowercased()) }
+            if url.host?.hasPrefix("www.") == true { url.host = String(url.host!.dropFirst(4)) }
+            if url.path.count > 1, url.path.hasSuffix("/") { url.path.removeLast() }
+            url.queryItems = url.queryItems?.filter { !signingKeys.contains($0.name.lowercased()) }
                 .sorted { $0.name < $1.name }
             if url.queryItems?.isEmpty == true { url.query = nil }
             if let canonical = url.string { result.insert("url:" + canonical) }
+            if let media = URL(string: raw), ["jpg", "jpeg", "png", "webp", "gif", "avif", "mp4", "webm", "mov"].contains(media.pathExtension.lowercased()) {
+                let stem = media.deletingPathExtension().lastPathComponent.lowercased()
+                let hash = stem.hasPrefix("sample_") ? String(stem.dropFirst(7)) : stem
+                // Cryptographic asset filenames survive provider/CDN changes.
+                // Ordinary filenames are never treated as cross-host identities.
+                if [32, 64].contains(hash.count), hash.allSatisfy({ "0123456789abcdef".contains($0) }) {
+                    result.insert("asset-hash:" + hash)
+                }
+            }
         }
         return result
     }

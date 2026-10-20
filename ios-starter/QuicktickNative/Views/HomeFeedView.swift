@@ -15,11 +15,14 @@ struct HomeFeedView: View {
         let revision = store.feedRevision
         ScrollViewReader { proxy in
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Home").font(.system(.title, design: .rounded).weight(.bold)).accessibilityIdentifier("home-title")
-                    Text(store.feedSort == "recommended" ? "Selected for your interests" : "Browse your sources").font(.subheadline).foregroundStyle(.white.opacity(0.5))
-                }.id("home-top").padding(.top, 16).padding(.horizontal, 16)
+            LazyVStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Home").font(.system(.title2, design: .rounded).weight(.bold)).accessibilityIdentifier("home-title")
+                    Spacer()
+                    Button { onboarding = true } label: {
+                        Label("Personalize", systemImage: "sparkles").font(.caption.weight(.semibold)).frame(minHeight: 44)
+                    }.buttonStyle(.plain).accessibilityIdentifier("personalize-feed")
+                }.id("home-top").padding(.top, 4).padding(.horizontal, 16)
                 HStack(spacing: 8) {
                     ForEach([("Home", "recent"), ("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
                         Button { store.feedSort = mode; Task { await store.refresh() } } label: {
@@ -35,10 +38,6 @@ struct HomeFeedView: View {
                 Text(store.visualScanStatus ?? "")
                     .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 20, alignment: .leading)
                     .accessibilityIdentifier("visual-scan-progress")
-                Button { onboarding = true } label: {
-                    Label("What would you like to see?", systemImage: "sparkles")
-                        .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                }.buttonStyle(.plain).padding(.horizontal, 16).accessibilityIdentifier("personalize-feed")
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
                 } else if store.posts.isEmpty && !store.isLoading {
@@ -97,7 +96,7 @@ struct HomeFeedView: View {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)
         }
-        .task(id: "\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
+        .task(id: "\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning)") {
             guard !Task.isCancelled, store.activeTab == 0, store.isForeground, store.feedRevision == revision else { return }
             await warmNext(after: store.inlinePlaybackID)
         }
@@ -141,17 +140,18 @@ struct HomeFeedView: View {
     }
 
     private func selectVisiblePlayback(viewport: CGSize) {
-        guard store.activeTab == 0, store.isForeground else { return }
+        guard store.activeTab == 0, store.isForeground, !store.isManualVisualScanRunning else { return }
         let candidate = visibleCandidate(viewport: viewport)
         if store.inlinePlaybackID != candidate { store.inlinePlaybackID = candidate }
     }
     private func visibleCandidate(viewport: CGSize) -> String? {
-        guard store.activeTab == 0, store.isForeground else { return nil }
+        guard store.activeTab == 0, store.isForeground, !store.isManualVisualScanRunning else { return nil }
         if let fullScreen = store.fullScreenPlaybackID { return fullScreen }
         let playable = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
         return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playable)
     }
     private func warmNext(after key: String?) async {
+        guard !store.isManualVisualScanRunning else { return }
         guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }
         let next = Array(store.posts.dropFirst(index + 1).prefix(2))
         let nextVideo = store.posts.dropFirst(index + 1).prefix(4).first { $0.type.lowercased() == "video" }
@@ -164,7 +164,7 @@ struct HomeFeedView: View {
                 group.addTask {
                     guard let media = try? await resolver.resolve(post), let url = media.mediaUrlURL else { return }
                     await MainActor.run {
-                        guard !Task.isCancelled, feedStore.inlinePlaybackID == key, feedStore.activeTab == 0, feedStore.isForeground else { return }
+                        guard !Task.isCancelled, !feedStore.isManualVisualScanRunning, feedStore.inlinePlaybackID == key, feedStore.activeTab == 0, feedStore.isForeground else { return }
                         feedStore.players.prewarm(key: post.stableID, url: url)
                     }
                 }

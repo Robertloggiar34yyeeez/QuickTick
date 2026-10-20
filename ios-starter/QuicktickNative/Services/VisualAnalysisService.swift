@@ -76,7 +76,7 @@ actor VisualAnalysisService {
         restore()
         if favorite { record(.like, post: post) }
         let content = [post.mediaUrl, post.previewUrl, post.thumbUrl, post.tags.sorted().joined(separator: " ")].joined(separator: "|")
-        let revision = "appearance-wd-v3|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
+        let revision = "appearance-wd-v3-fp16|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
         guard useVision, resourcesAllowAnalysis(), state.analysisVersions?[post.stableID] != revision,
               let metadata = VisualFeatures.metadata(post) else { return }
         let before = state.features[post.stableID] ?? metadata
@@ -108,7 +108,7 @@ actor VisualAnalysisService {
         if before.domain == .anime, let tagged = await animeTagger.analyze(image, domain: .anime) {
             enriched.attributes.merge(tagged.attributes, uniquingKeysWith: max)
             if enriched.subjects.isEmpty { enriched.subjects = tagged.subjects }
-            enriched.version += "+wd-vit-v3-7f6b584-int8"
+            enriched.version += "+wd-vit-v3-7f6b584-fp16"
         }
         guard resourcesAllowAnalysis() else { return }
         if before.domain == .realLife {

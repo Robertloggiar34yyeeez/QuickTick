@@ -81,8 +81,29 @@ struct TasteOnboardingView: View {
 
 struct FavoritesView: View {
     @EnvironmentObject private var store: AppStore
+    @State private var immersive = false
+    @State private var activeID: String?
+    private var saved: [Post] { store.favorites.values.sorted { $0.stableID < $1.stableID } }
     var body: some View {
-        ScrollView { LazyVStack { ForEach(store.favorites.values.sorted { $0.stableID < $1.stableID }, id: \.stableID) { PostCardView(post: $0, playbackTab: 2) } }.padding() }
-            .scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Favorites")
+        Group {
+            if immersive {
+                ImmersiveFeedView(posts: saved, offline: false, activePostID: $activeID,
+                                  onClose: { immersive = false }, collectionTab: 2)
+            } else {
+                GeometryReader { geometry in
+                    ScrollView {
+                        LazyVStack(spacing: 18) {
+                            ForEach(saved, id: \.stableID) { post in
+                                PostCardView(post: post, available: CGSize(width: min(680, geometry.size.width), height: geometry.size.height), playbackTab: 2)
+                            }
+                        }.frame(maxWidth: .infinity).padding(.bottom, 18)
+                    }
+                }
+            }
+        }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Favorites")
+            .toolbar {
+                Button(immersive ? "Feed" : "Immersive") { immersive.toggle() }
+                    .disabled(saved.isEmpty).accessibilityIdentifier("favorites-immersive")
+            }
     }
 }

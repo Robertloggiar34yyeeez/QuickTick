@@ -8,7 +8,7 @@ final class ImmersiveMediaTests: XCTestCase {
         let output = MediaSizing.immersive(aspect: 16 / 9, available: available)
         XCTAssertEqual(output.width, 1280)
         XCTAssertEqual(output.height, 720)
-        XCTAssertEqual(MediaSizing.size(native: CGSize(width: 320, height: 180), aspect: 16 / 9, available: available).width, 320)
+        XCTAssertEqual(MediaSizing.size(native: CGSize(width: 320, height: 180), aspect: 16 / 9, available: available).width, 680)
     }
     func testImmersiveAspectFitAcrossRotationAndSplitWindows() {
         for available in [CGSize(width: 1280, height: 900), CGSize(width: 900, height: 1280), CGSize(width: 600, height: 800)] {

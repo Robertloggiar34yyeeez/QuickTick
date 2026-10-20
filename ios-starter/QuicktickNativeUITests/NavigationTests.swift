@@ -1,6 +1,31 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testFavoritesImmersiveAndDownloadExport() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]
+        app.launch()
+        app.buttons["tab-Immersive"].tap()
+        let like = app.buttons["immersive-Like"]
+        XCTAssertTrue(like.waitForExistence(timeout: 10))
+        if like.value as? String != "Liked" { like.tap() }
+        app.buttons["tab-Favorites"].tap()
+        let immersive = app.buttons["favorites-immersive"]
+        XCTAssertTrue(immersive.waitForExistence(timeout: 10))
+        immersive.tap()
+        XCTAssertTrue(app.otherElements["immersive-media-test:video"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Back"].exists)
+        app.buttons["Back"].tap()
+        app.buttons["tab-Downloads"].tap()
+        let export = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "export-download-")).firstMatch
+        for _ in 0..<6 {
+            if export.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(export.isHittable)
+        export.tap()
+        XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 10) || app.buttons["Save to Files"].exists || app.otherElements["ActivityListView"].exists)
+    }
     @MainActor func testRecommendationProfileCanBePreparedForNativeSharing() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         app.buttons["open-settings"].tap()
@@ -125,7 +150,11 @@ final class NavigationTests: XCTestCase {
         expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
         waitForExpectations(timeout: 10)
         app.buttons["tab-Immersive"].tap(); app.buttons["tab-Home"].tap()
-        let resumed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Playing"), object: playback)
+        // Tab refresh recreates the Home host. Resolve its current button on
+        // every poll instead of holding an accessibility snapshot from before it.
+        let resumed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.buttons["inline-play-test:video"].value as? String == "Playing"
+        }, object: nil)
         let result = XCTWaiter.wait(for: [resumed], timeout: 10)
         if result != .completed {
             let details = XCTAttachment(string: app.debugDescription); details.name = "Home return playback state"; details.lifetime = .keepAlways; add(details)
@@ -155,9 +184,9 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(frame.waitForExistence(timeout: 15))
         expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: frame)
         waitForExpectations(timeout: 15)
-        XCTAssertLessThanOrEqual(frame.frame.width,321)
+        XCTAssertEqual(media.frame.width, min(680, app.frame.width), accuracy: 2)
         XCTAssertGreaterThan(frame.frame.height, 0)
-        XCTAssertEqual(frame.frame.width / frame.frame.height,320.0 / 180,accuracy:0.05)
+        XCTAssertLessThanOrEqual(frame.frame.width, media.frame.width + 1)
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
             XCUIDevice.shared.orientation = orientation
             app.buttons["home-scroll-top"].tap()
@@ -188,14 +217,16 @@ final class NavigationTests: XCTestCase {
             XCTAssertTrue(frame.waitForExistence(timeout:10))
             expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
             waitForExpectations(timeout: 10)
-            XCTAssertLessThanOrEqual(frame.frame.width,321)
+            XCTAssertLessThanOrEqual(frame.frame.width, 681)
             XCTAssertGreaterThan(frame.frame.height, 0)
-            XCTAssertEqual(frame.frame.width / frame.frame.height, 320.0 / 180, accuracy: 0.05)
+            XCTAssertLessThanOrEqual(frame.frame.height, viewport.height)
             let capture = XCTAttachment(string: "orientation=\(orientation.rawValue) viewport=\(viewport) media=\(media.frame) player=\(frame.frame)")
             capture.name = "Adaptive native media geometry";capture.lifetime = .keepAlways;add(capture)
         }
         XCUIDevice.shared.press(.home);app.activate()
-        expectation(for:NSPredicate(format:"value == %@","Playing"),evaluatedWith:playback)
+        expectation(for: NSPredicate { _, _ in
+            app.buttons["inline-play-test:video"].value as? String == "Playing"
+        }, evaluatedWith: app)
         waitForExpectations(timeout:15)
         XCUIDevice.shared.orientation = .portrait
     }

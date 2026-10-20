@@ -65,7 +65,7 @@ actor RecommendationEngine {
     func candidateRequest(context: String, provider: Provider, taste: TasteChoice, excluded: [String], forceBroad: Bool = false) -> CandidateRequest {
         let queryExclusions = Array(Set(excluded + tasteTokens(source: provider.rawValue, values: taste.notInto))).sorted()
         let blocked = Set(queryExclusions.map { $0.lowercased() })
-        let explicit = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }.sorted()
+        let explicit = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }
         // Keep learned acquisition separate: adding many explicit tags must not
         // evict the established profile from candidate discovery.
         let learned = positiveTermEntries(source: provider.rawValue, taste: TasteChoice(), limit: 8)
@@ -402,7 +402,9 @@ actor RecommendationEngine {
 
     private func tasteTokens(source: String, values: [String]) -> [String] {
         if source == Provider.rule34.rawValue {
-            return Array(Set(values.map { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: " ", with: "_") }.filter { !$0.isEmpty }))
+            var used = Set<String>()
+            return values.map { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: " ", with: "_") }
+                .filter { !$0.isEmpty && used.insert($0).inserted }
         }
         var out: [String] = []
         for value in values {

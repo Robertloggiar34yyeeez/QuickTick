@@ -19,7 +19,7 @@ struct HomeFeedView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Home").font(.system(.title, design: .rounded).weight(.bold)).accessibilityIdentifier("home-title")
                     Text(store.feedSort == "recommended" ? "Selected for your interests" : "Browse your sources").font(.subheadline).foregroundStyle(.white.opacity(0.5))
-                }.id("home-top").padding(.top, 16)
+                }.id("home-top").padding(.top, 16).padding(.horizontal, 16)
                 HStack(spacing: 8) {
                     ForEach([("Home", "recent"), ("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
                         Button { store.feedSort = mode; Task { await store.refresh() } } label: {
@@ -31,21 +31,21 @@ struct HomeFeedView: View {
                     }
                     Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44,height: 44).background(AppTheme.gradient,in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Refresh feed")
                 }
-                searchBar.id("home-search")
+                searchBar.id("home-search").padding(.horizontal, 16)
                 Text(store.visualScanStatus ?? "")
                     .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 20, alignment: .leading)
                     .accessibilityIdentifier("visual-scan-progress")
                 Button { onboarding = true } label: {
                     Label("What would you like to see?", systemImage: "sparkles")
                         .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                }.buttonStyle(.plain).accessibilityIdentifier("personalize-feed")
+                }.buttonStyle(.plain).padding(.horizontal, 16).accessibilityIdentifier("personalize-feed")
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
                 } else if store.posts.isEmpty && !store.isLoading {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))
                 }
                 ForEach(store.posts, id: \.stableID) { post in
-                    PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width - 32), height: viewport.size.height))
+                    PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width), height: viewport.size.height))
                         .frame(maxWidth: .infinity)
                         .id(post.stableID)
                         .onAppear {
@@ -58,7 +58,7 @@ struct HomeFeedView: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .onAppear { if store.activeTab == 0 && !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
                 }
-            }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
+            }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.bottom, 18)
         }
         // A regular feed must keep free scroll offsets through rotation and
         // keyboard changes. Restore its anchor only when this host mounts;

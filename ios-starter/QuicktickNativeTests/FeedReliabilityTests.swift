@@ -213,9 +213,9 @@ final class FeedReliabilityTests: XCTestCase {
         for available in [CGSize(width: 358,height: 750),CGSize(width: 810,height: 1080),CGSize(width: 1180,height: 720),CGSize(width: 480,height: 1024)] {
             for native in [CGSize(width: 240,height: 426),CGSize(width: 1920,height: 1080),CGSize(width: 3000,height: 5000),CGSize(width: 320,height: 320)] {
                 let output = MediaSizing.size(native: native,aspect: native.width/native.height,available: available)
-                XCTAssertLessThanOrEqual(output.width, min(native.width,available.width,680))
+                XCTAssertEqual(output.width, min(available.width,680))
                 XCTAssertLessThanOrEqual(output.height,min(620,available.height*0.72)+1)
-                XCTAssertEqual(output.width/output.height,native.width/native.height,accuracy: 0.001)
+                XCTAssertEqual(output.height, min(output.width / (native.width/native.height), min(available.width > 600 ? 620 : 560, available.height*0.72)), accuracy: 0.001)
             }
         }
     }

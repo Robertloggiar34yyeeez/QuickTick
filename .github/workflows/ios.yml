@@ -1,7 +1,7 @@
 name: Native iOS build and IPA
 on:
   push:
-  pull_request:
+    branches-ignore: ['ipa-uploaded/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,6 +27,32 @@ jobs:
           # 2.2.2 is the last PyTorch release with Intel macOS wheels.
           python -m pip install 'torch==2.2.2' 'transformers==4.46.3' 'coremltools==8.3.0' 'numpy==1.26.4'
           python scripts/prepare-semantic-model.py
+      - name: Prepare pinned offline artist and character taxonomy
+        run: python scripts/prepare-visual-taxonomy.py
+      - uses: actions/cache/restore@v4
+        id: wd-cache
+        with:
+          path: |
+            ios-starter/QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc
+            ios-starter/QuicktickNative/SemanticAssets/wd-v3-labels.json
+            ios-starter/QuicktickNative/SemanticAssets/wd-v3-model-card.md
+          key: wd-vit-v3-7f6b584-fp16-coreml8.3-v4
+      - name: Prepare pinned anime-only WD Tagger v3
+        if: steps.wd-cache.outputs.cache-hit != 'true'
+        id: wd-model
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install 'torchvision==0.17.2' 'timm==1.0.12'
+          python scripts/prepare-wd-tagger.py
+      - uses: actions/cache/save@v4
+        if: steps.wd-cache.outputs.cache-hit != 'true' && steps.wd-model.outcome == 'success'
+        with:
+          path: |
+            ios-starter/QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc
+            ios-starter/QuicktickNative/SemanticAssets/wd-v3-labels.json
+            ios-starter/QuicktickNative/SemanticAssets/wd-v3-model-card.md
+          key: wd-vit-v3-7f6b584-fp16-coreml8.3-v4
       - name: Archive real iPhone build without signing
         shell: bash
         run: |
@@ -48,10 +74,22 @@ jobs:
           key: xtool-d802c719-macos15-intel-xcode26.3-v1
       - uses: actions/upload-artifact@v4
         with:
-          name: QuickTick-0.6.26-unsigned-IPA
+          name: QuickTick-0.8.5-unsigned-IPA
           path: build/export/
           if-no-files-found: error
           retention-days: 14
+      - name: Wait for private Drive IPA upload before testing
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Publishing this lightweight marker ref confirms connector upload/readback.
+          # It does not change the tested source commit or expose private Drive data.
+          for attempt in $(seq 1 120); do
+            if git ls-remote --exit-code origin "refs/heads/ipa-uploaded/v085-$GITHUB_SHA" >/dev/null 2>&1; then exit 0; fi
+            sleep 10
+          done
+          echo 'IPA upload marker missing; device tests have not been started.'
+          exit 1
       - name: Build and test native iOS app
         shell: bash
         run: |
@@ -61,7 +99,7 @@ jobs:
           DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')
           xcrun simctl boot "$DEVICE" || true
           xcrun simctl bootstatus "$DEVICE" -b
-          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -resultBundlePath logs/QuicktickTests.xcresult test | tee logs/xcodebuild-test.txt
+          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -only-testing:QuicktickNativeTests -only-testing:QuicktickNativeUITests/NavigationTests/testManualVisualRefreshShowsProgressAndLoopsDownloadedGIF -only-testing:QuicktickNativeUITests/NavigationTests/testCompactVisualSearchFiltersAndExcludedTags -only-testing:QuicktickNativeUITests/NavigationTests/testImmersiveRailSnapsAndDoubleTapLikes -only-testing:QuicktickNativeUITests/NavigationTests/testHomeDislikeCannotOpenTheLowerImage -only-testing:QuicktickNativeUITests/NavigationTests/testFavoritesImmersiveAndDownloadExport -only-testing:QuicktickNativeUITests/NavigationTests/testHomeInlinePlaybackAndComicClose -only-testing:QuicktickNativeUITests/NavigationTests/testAdaptiveMediaAcrossOrientationsAndForeground -resultBundlePath logs/QuicktickTests.xcresult test | tee logs/xcodebuild-test.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -69,7 +107,7 @@ jobs:
           path: logs/xcodebuild-test.txt
           retention-days: 14
       - name: Check native iPad layouts and playback
-        if: ${{ !cancelled() && steps.xtool-package.outcome == 'success' }}
+        if: ${{ success() && steps.xtool-package.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail

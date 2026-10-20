@@ -30,7 +30,7 @@ private final class CandidatePageProtocol: URLProtocol, @unchecked Sendable {
         let page = (Int(query.first { $0.name == "pid" }?.value ?? "0") ?? 0) + 1
         let mode = query.first { $0.name == "tags" }?.value?.contains("video") == true ? "video" : "feed"
         let video = mode != "video" || page >= 3
-        let json: [[String: Any]] = [["id": "\(mode):\(page)", "tags": "engineering", "file_url": "https://cdn.example.invalid/fixture.\(video ? "mp4" : "jpg")"]]
+        let json: [[String: Any]] = [["id": "\(mode):\(page)", "tags": "engineering", "file_url": "https://cdn.example.invalid/fixture-\(mode)-\(page).\(video ? "mp4" : "jpg")"]]
         // A full raw page signals more pages even when local clip filtering removes it.
         let data = try! JSONSerialization.data(withJSONObject: Array(repeating: json[0], count: mode == "video" ? 100 : 80))
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
@@ -59,14 +59,14 @@ final class FeedReliabilityTests: XCTestCase {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
         await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:1"])
         await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:2"])
-        let saved = await store.recommendations.snapshot()
+        let saved = await store.recommendationState()
         let (restored, anotherSession) = candidateStore(); defer { anotherSession.invalidateAndCancel() }
-        await restored.recommendations.load(saved)
+        await restored.restoreRecommendationState(saved)
         await restored.refresh(); XCTAssertEqual(restored.posts.map(\.stableID), ["rule34:feed:3"])
     }
     @MainActor func testConsumedCandidatePageIsSkippedInsteadOfReinserted() async {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
-        await store.recommendations.record(.impression, post: Post(key: "rule34:feed:1", id: "1", provider: "Rule34"))
+        store.recordImpression(Post(key: "rule34:feed:1", id: "1", provider: "Rule34"))
         await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:2"])
     }
     @MainActor func testImmersiveRequestsVideoCandidatesAndSkipsSparsePages() async {
@@ -92,10 +92,11 @@ final class FeedReliabilityTests: XCTestCase {
         try Data([1, 2, 3]).write(to: image); defer { try? FileManager.default.removeItem(at: image) }
         var record = DownloadRecord(key: "saved", provider: "Rule34", postID: "1", title: "Saved image", tags: [], thumbnailRemoteURL: "", localMediaPath: image.path, kind: .file, state: .complete, progress: 1, createdAt: .now)
         XCTAssertEqual(record.offlinePost?.type, "image")
+        XCTAssertEqual(record.exportURL, image)
         XCTAssertEqual(record.offlinePost?.cardPreviewURL, image.absoluteString)
         let remote = Post(key: "image", id: "1", provider: "Rule34", mediaUrl: "https://cdn.example.invalid/original.jpg", previewUrl: "https://cdn.example.invalid/tiny.jpg", type: "image")
         XCTAssertEqual(remote.cardPreviewURL, remote.mediaUrl, "Home must downsample the original instead of enlarging a thumbnail")
-        record.state = .failed; XCTAssertNil(record.offlinePost)
+        record.state = .failed; XCTAssertNil(record.offlinePost); XCTAssertNil(record.exportURL)
     }
     @MainActor func testRecommendationAdaptationWaitsForVisibleHomeAnchor() async {
         let store = AppStore(); store.selectedProvider = .eporner
@@ -213,9 +214,9 @@ final class FeedReliabilityTests: XCTestCase {
         for available in [CGSize(width: 358,height: 750),CGSize(width: 810,height: 1080),CGSize(width: 1180,height: 720),CGSize(width: 480,height: 1024)] {
             for native in [CGSize(width: 240,height: 426),CGSize(width: 1920,height: 1080),CGSize(width: 3000,height: 5000),CGSize(width: 320,height: 320)] {
                 let output = MediaSizing.size(native: native,aspect: native.width/native.height,available: available)
-                XCTAssertLessThanOrEqual(output.width, min(native.width,available.width,680))
+                XCTAssertEqual(output.width, min(available.width,680))
                 XCTAssertLessThanOrEqual(output.height,min(620,available.height*0.72)+1)
-                XCTAssertEqual(output.width/output.height,native.width/native.height,accuracy: 0.001)
+                XCTAssertEqual(output.height, min(output.width / (native.width/native.height), min(available.width > 600 ? 620 : 560, available.height*0.72)), accuracy: 0.001)
             }
         }
     }

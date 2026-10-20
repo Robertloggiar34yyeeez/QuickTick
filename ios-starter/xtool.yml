@@ -7,6 +7,11 @@ resources:
   - QuicktickNative/SemanticAssets/BGEMicro.mlmodelc
   - QuicktickNative/SemanticAssets/bge-vocab.txt
   - QuicktickNative/SemanticAssets/bge-license.txt
+  - QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc
+  - QuicktickNative/SemanticAssets/wd-v3-labels.json
+  - QuicktickNative/SemanticAssets/wd-v3-model-card.md
+  - QuicktickNative/SemanticAssets/visual-tag-taxonomy.json
+  - QuicktickNative/SemanticAssets/visual-tag-attribution.txt
   - ../build/QuicktickNative.xcarchive/Products/Applications/QuicktickNative.app/Assets.car
   - ../build/QuicktickNative.xcarchive/Products/Applications/QuicktickNative.app/AppIcon60x60@2x.png
   - ../build/QuicktickNative.xcarchive/Products/Applications/QuicktickNative.app/AppIcon76x76@2x~ipad.png

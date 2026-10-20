@@ -1,0 +1,19 @@
+# QuickTick v0.8.5 — Visual taste, compact search and scrolling fixes (build 21)
+
+Fixes a reported Home bug where tapping Dislike could open the image in the next card. SwiftUI clipping hides overflowing image pixels but does not constrain their hit targets. Media rendering now ignores touches; a separate, frame-bounded image tap overlay opens full view, while action buttons retain independent hit targets. The fix applies to Home, Favorites and Downloads cards without changing media loading, playback, saved data or recommendation signals.
+
+Adds a coordinate-tap UI regression with a video above a tall image: Dislike must remove the upper post and must not open the lower image. Existing visual taste and playback regression coverage remains. See v0.8 notes for WD Tagger v3, Vision and model limitations. Previous v0.7.5/v0.8 names and artifacts remain intact.
+
+Settings now provides Update visual taste now, progress and cancellation. It incrementally checks all favorites, reuses valid analyses without duplicating likes, and updates cached recommendation scores. A local downloaded GIF loops beside progress at 160 pixels/24 sampled frames; no video is fetched or decoded for decoration. If no eligible GIF is downloaded, the panel explains how to add one. Manual scanning pauses playback, yields to loading/thermal/Low Power conditions, and stops when Settings closes or the app backgrounds. Missing previews do not claim completed pixel analysis.
+
+Immersive paging removes full-screen blur and offscreen action rails. Playback ticks update a small, separate timeline rather than rebuilding the entire page ten times per second. Preview resolution is bounded to 512 pixels and page selection avoids unchanged state writes. Physical-device frame pacing still requires measurement.
+
+Offscreen image rows release their decoded state, leaving retention to the bounded shared cache instead of accumulating every visited thumbnail in lazy row state. Returning rows reload through the existing cache and cancellation path. This is a resource-lifetime fix; no measured peak-memory reduction is claimed.
+
+Duplicate filtering additionally normalizes recognized signed URLs, provider-ID aliases and cryptographic asset filenames across CDNs. Cheap difference hashes are captured during existing thumbnail decoding, independent of visual models. Newly discovered duplicates are removed from the unseen Home tail after scrolling settles, preserving visible cards and playback.
+
+The v0.8.5 IPA must be uploaded privately before this revision's simulator tests, then replaced in place after validation passes. Runtime and physical-device performance are not inferred from syntax or archive checks.
+
+Compact search adds removable/excluded tag chips, Rule34 sort (score/created/random), rating and minimum-score menus, and cached visual tag suggestions. Home controls occupy less vertical space. Provider-specific filters do not become semantic preference signals or leak into other providers.
+
+Artist, character and attribute evidence remains independent. A pinned, licensed offline taxonomy (986,775 bytes, 20,000 artists/40,000 characters) recognizes nonambiguous provider tags without per-post network requests; attribution is bundled. Historical cached favorites gain identity/artist metadata even when pixels are unavailable. Contextual artist/subject attribute interactions support unfamiliar-character discovery, and discovery queries rotate across learned attributes and explicit identities. Unknown/ambiguous artist credits and uploaders never become inferred artist identities. Snapshot coverage is incomplete; WD Tagger v3 supplies anime visual attributes/characters, not artist identification. Legacy profiles decode with empty artist evidence.

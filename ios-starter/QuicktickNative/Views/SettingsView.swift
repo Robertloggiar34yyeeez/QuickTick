@@ -80,6 +80,11 @@ struct SettingsView: View {
                 TextField("Tags separated by spaces", text: $exclusions).textInputAutocapitalization(.never)
                 Button("Save exclusions") { store.setExclusions(exclusions.split(whereSeparator: \.isWhitespace).map(String.init)); Task { await store.refresh() } }
             }
+            Section("Optional visual intelligence") {
+                Toggle("Learn visual taste while idle", isOn: $store.visualAnalysisEnabled)
+                Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
+                ManualVisualRefreshPanel(manager: store.downloads)
+            }
             Section("Playback") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
                 Toggle("Mute", isOn: $store.muted)
@@ -106,6 +111,7 @@ struct SettingsView: View {
             }
             .modifier(ProfileImportConfirmation())
             .task { await reloadAccessFields() }
+            .onDisappear { store.cancelManualVisualRefresh() }
             .onChange(of: store.isSyncing) { _, busy in if !busy { Task { await reloadAccessFields() } } }
     }
     private func reloadAccessFields() async {
@@ -113,6 +119,52 @@ struct SettingsView: View {
         let credentials = await store.api.credentials
         user = credentials.rule34User; key = credentials.rule34Key; session = credentials.pornhubSession
         username = store.syncedPornhubUsername; remember = store.rememberedProviderAccess
+    }
+}
+
+private struct ManualVisualRefreshPanel: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject var manager: DownloadManager
+    @State private var previewURL: URL?
+    @State private var previewReady = false
+    var body: some View {
+        Group {
+            Button { store.startManualVisualRefresh() } label: {
+                Label("Update visual taste now", systemImage: "sparkles")
+            }.disabled(store.isManualVisualScanRunning).accessibilityIdentifier("force-visual-refresh")
+            Text("Checks every favorite, reuses valid scans and updates recommendations. Playback pauses during this manual update. Unavailable previews can be retried later.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let progress = store.manualVisualProgress {
+                ProgressView(value: progress.fraction) {
+                    Text(progress.status).accessibilityIdentifier("manual-visual-status")
+                }.accessibilityIdentifier("manual-visual-progress")
+                    .accessibilityValue("\(progress.completed) of \(progress.total) favorites checked")
+                if let previewURL {
+                    AnimatedGIFSurface(url: previewURL,
+                        playing: store.isForeground && !reduceMotion && !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState.rawValue < 2,
+                        pixels: 160, frameLimit: 24) { _ in previewReady = true }
+                        .frame(maxWidth: .infinity).frame(height: 160).clipped().allowsHitTesting(false)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityValue(previewReady ? "Looping" : "Loading")
+                        .accessibilityLabel("Looping downloaded GIF").accessibilityIdentifier("visual-refresh-gif")
+                } else {
+                    Label("Download a GIF to show a looping preview here", systemImage: "photo")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if progress.running {
+                    Button("Stop update", role: .cancel) { store.cancelManualVisualRefresh() }
+                        .accessibilityIdentifier("cancel-visual-refresh")
+                }
+            }
+        }.task(id: manager.records.count) {
+            // Local downloads only; never fetch or decode a video for decoration.
+            let record = manager.records.first { record in
+                record.state == .complete && (record.mediaType?.lowercased() == "gif" || URL(fileURLWithPath: record.localMediaPath ?? "").pathExtension.lowercased() == "gif")
+                    && (record.fileSize ?? 0) <= 8 * 1024 * 1024
+            }
+            previewReady = false; previewURL = record?.exportURL
+        }
     }
 }
 

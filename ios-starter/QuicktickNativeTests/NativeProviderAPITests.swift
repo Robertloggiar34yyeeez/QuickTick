@@ -15,7 +15,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.log.append(request)
-        let url = request.url!, host = url.host ?? "", path = url.path
+        let url = request.url!, host = url.host ?? "", path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? url.path
         let payload: String
         if path == "/v2/auth/temporary" { payload = #"{"token":"synthetic-provider-token"}"# }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
@@ -74,7 +74,7 @@ final class NativeProviderAPITests: XCTestCase {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let page = try await api.posts(provider: .pornhub, query: QueryParser.parse("route-fixture"), page: 1)
         XCTAssertEqual(page.items.count, 1)
-        XCTAssertEqual(NativeProviderProtocol.log.snapshot().map { $0.url!.path }, ["/webmasters/search", "/webmasters/search/"])
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().map { URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)!.path }, ["/webmasters/search", "/webmasters/search/"])
     }
     func testPornhubUsesCanonicalPageAndSurvivesRemovedMP4Definition() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }

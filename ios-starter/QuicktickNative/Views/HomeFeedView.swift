@@ -15,11 +15,14 @@ struct HomeFeedView: View {
         let revision = store.feedRevision
         ScrollViewReader { proxy in
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Home").font(.system(.title, design: .rounded).weight(.bold)).accessibilityIdentifier("home-title")
-                    Text(store.feedSort == "recommended" ? "Selected for your interests" : "Browse your sources").font(.subheadline).foregroundStyle(.white.opacity(0.5))
-                }.id("home-top").padding(.top, 16)
+            LazyVStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Home").font(.system(.title2, design: .rounded).weight(.bold)).accessibilityIdentifier("home-title")
+                    Spacer()
+                    Button { onboarding = true } label: {
+                        Label("Personalize", systemImage: "sparkles").font(.caption.weight(.semibold)).frame(minHeight: 44)
+                    }.buttonStyle(.plain).accessibilityIdentifier("personalize-feed")
+                }.id("home-top").padding(.top, 4).padding(.horizontal, 16)
                 HStack(spacing: 8) {
                     ForEach([("Home", "recent"), ("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
                         Button { store.feedSort = mode; Task { await store.refresh() } } label: {
@@ -31,18 +34,17 @@ struct HomeFeedView: View {
                     }
                     Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44,height: 44).background(AppTheme.gradient,in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Refresh feed")
                 }
-                searchBar.id("home-search")
-                Button { onboarding = true } label: {
-                    Label("What would you like to see?", systemImage: "sparkles")
-                        .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                }.buttonStyle(.plain).accessibilityIdentifier("personalize-feed")
+                searchBar.id("home-search").padding(.horizontal, 16)
+                Text(store.visualScanStatus ?? "")
+                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 20, alignment: .leading)
+                    .accessibilityIdentifier("visual-scan-progress")
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
                 } else if store.posts.isEmpty && !store.isLoading {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))
                 }
                 ForEach(store.posts, id: \.stableID) { post in
-                    PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width - 32), height: viewport.size.height))
+                    PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width), height: viewport.size.height))
                         .frame(maxWidth: .infinity)
                         .id(post.stableID)
                         .onAppear {
@@ -55,7 +57,7 @@ struct HomeFeedView: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .onAppear { if store.activeTab == 0 && !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
                 }
-            }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
+            }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.bottom, 18)
         }
         // A regular feed must keep free scroll offsets through rotation and
         // keyboard changes. Restore its anchor only when this host mounts;
@@ -79,16 +81,22 @@ struct HomeFeedView: View {
         .coordinateSpace(name: "home-viewport")
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
             guard store.feedRevision == revision else { return }
+            if frames != visibleFrames { store.noteFeedMotion() }
             visibleFrames = frames
             let bounds = CGRect(origin: .zero, size: viewport.size)
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
+            if store.activeTab == 0, store.isForeground, store.fullScreenPlaybackID == nil {
+                for (id, frame) in frames where frame.intersection(bounds).height >= min(frame.height * 0.5, bounds.height * 0.5) {
+                    if let post = store.postForID(id) { store.recordImpression(post) }
+                }
+            }
             selectVisiblePlayback(viewport: viewport.size)
         }
         .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)
         }
-        .task(id: "\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
+        .task(id: "\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning)") {
             guard !Task.isCancelled, store.activeTab == 0, store.isForeground, store.feedRevision == revision else { return }
             await warmNext(after: store.inlinePlaybackID)
         }
@@ -132,17 +140,18 @@ struct HomeFeedView: View {
     }
 
     private func selectVisiblePlayback(viewport: CGSize) {
-        guard store.activeTab == 0, store.isForeground else { return }
+        guard store.activeTab == 0, store.isForeground, !store.isManualVisualScanRunning else { return }
         let candidate = visibleCandidate(viewport: viewport)
         if store.inlinePlaybackID != candidate { store.inlinePlaybackID = candidate }
     }
     private func visibleCandidate(viewport: CGSize) -> String? {
-        guard store.activeTab == 0, store.isForeground else { return nil }
+        guard store.activeTab == 0, store.isForeground, !store.isManualVisualScanRunning else { return nil }
         if let fullScreen = store.fullScreenPlaybackID { return fullScreen }
         let playable = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
         return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playable)
     }
     private func warmNext(after key: String?) async {
+        guard !store.isManualVisualScanRunning else { return }
         guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }
         let next = Array(store.posts.dropFirst(index + 1).prefix(2))
         let nextVideo = store.posts.dropFirst(index + 1).prefix(4).first { $0.type.lowercased() == "video" }
@@ -155,7 +164,7 @@ struct HomeFeedView: View {
                 group.addTask {
                     guard let media = try? await resolver.resolve(post), let url = media.mediaUrlURL else { return }
                     await MainActor.run {
-                        guard !Task.isCancelled, feedStore.inlinePlaybackID == key, feedStore.activeTab == 0, feedStore.isForeground else { return }
+                        guard !Task.isCancelled, !feedStore.isManualVisualScanRunning, feedStore.inlinePlaybackID == key, feedStore.activeTab == 0, feedStore.isForeground else { return }
                         feedStore.players.prewarm(key: post.stableID, url: url)
                     }
                 }

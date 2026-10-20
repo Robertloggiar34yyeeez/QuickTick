@@ -55,6 +55,26 @@ final class VisualTasteTests: XCTestCase {
         post.thumbUrl = "https://cdn.test/small.jpg"
         XCTAssertEqual(VisualPreviewLoader.thumbnailURL(post)?.lastPathComponent, "small.jpg")
     }
+    func testWDV3SeparatesCharactersAttributesAndRatings() {
+        let labels = [WDAnimeTagger.Label(name: "chun-li_(street_fighter)", category: 4),
+            WDAnimeTagger.Label(name: "long_hair", category: 0), WDAnimeTagger.Label(name: "qipao", category: 0),
+            WDAnimeTagger.Label(name: "rating", category: 9), WDAnimeTagger.Label(name: "uncertain_character", category: 4)]
+        let result = WDAnimeTagger.signals(labels: labels, probabilities: [0.96, 0.9, 0.85, 0.99, 0.4])
+        XCTAssertEqual(result.subjects, ["chun_li"])
+        XCTAssertNotNil(result.attributes["appearance:long_hair"]); XCTAssertNotNil(result.attributes["clothing:qipao"])
+        XCTAssertFalse(result.attributes.keys.contains { $0.contains("rating") })
+    }
+    func testBundledWDV3RunsOnlyForAnimeAndReleasesModel() async throws {
+        let tagger = WDAnimeTagger(), sample = image(red: 0.7, green: 0.4, blue: 0.2)
+        let real = await tagger.analyze(sample, domain: .realLife)
+        XCTAssertNil(real)
+        let before = await tagger.loadCount; XCTAssertEqual(before, 0)
+        let anime = await tagger.analyze(sample, domain: .anime)
+        XCTAssertNotNil(anime, "Pinned WD Tagger v3 must be bundled and runnable")
+        let loads = await tagger.loadCount; XCTAssertEqual(loads, 1)
+        let ms = await tagger.inferenceMs
+        print("QUICKTICK_METRIC wd_v3_fixture_inference_ms=\(ms)")
+    }
     @MainActor func testScrollingPreventsTailRankingAndPreservesOrder() async {
         let store = AppStore()
         let a = Post(key: "a", id: "1", provider: "rule34", tags: ["other"])

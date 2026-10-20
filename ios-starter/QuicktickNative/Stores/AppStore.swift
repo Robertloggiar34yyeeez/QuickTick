@@ -25,6 +25,7 @@ final class AppStore: ObservableObject {
             let owner = [0: "home", 1: "immersive", 2: "favorites", 3: "downloads"][activeTab] ?? "home"
             let allowed = activeTab == 1 ? Set(posts.map(\.stableID)) : Set(inlinePlaybackID.map { [$0] } ?? [])
             players.resumeSuspendedPlayback(allowed: allowed, owner: owner, muted: muted, pausedKey: pausedPlaybackID)
+            if bootstrapped { visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil; scheduleIdleIntelligence() }
         }
     } }
     @Published var pausedPlaybackID: String?
@@ -70,6 +71,7 @@ final class AppStore: ObservableObject {
         didSet { UserDefaults.standard.set(visualAnalysisEnabled, forKey: "quicktick-visual-analysis-v1"); scheduleIdleIntelligence() }
     }
     let visual = VisualAnalysisService()
+    @Published private(set) var visualScanStatus: String?
     private var feedExclusions = FeedExclusions()
     private var visualScores: [String: Double] = [:]
     private var idleTask: Task<Void, Never>?
@@ -106,7 +108,10 @@ final class AppStore: ObservableObject {
     init(api: QuicktickAPIClient = QuicktickAPIClient(), localStorage: LocalStateStore = LocalStateStore()) {
         self.localStorage = localStorage
         self.api = api
-        players.onPlaybackStart = { [weak self] in self?.idleTask?.cancel() }
+        players.onPlaybackStart = { [weak self] in
+            self?.idleTask?.cancel()
+            if self?.visualScanStatus != nil, self?.visualScanStatus != "Visual update paused for playback" { self?.visualScanStatus = "Visual update paused for playback" }
+        }
     }
 
     func bootstrap() async {
@@ -155,6 +160,7 @@ final class AppStore: ObservableObject {
         await api.setCredentials(credentials)
         downloads.onCompleted = { [weak self] post in Task { await self?.record(.download, post: post) } }
         bootstrapped = true
+        visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil
         await refresh()
         Task(priority: .utility) { await downloads.restoreTasks(); await syncWhenActive() }
     }
@@ -214,7 +220,7 @@ final class AppStore: ObservableObject {
     func handleMemoryPressure() {
         semanticTask?.cancel(); idleTask?.cancel()
         players.retain(Set(players.activeKey.map { [$0] } ?? []))
-        Task { await MediaImagePipeline.shared.clearDecoded(); await recommendations.releaseSemanticModel() }
+        Task { await MediaImagePipeline.shared.clearDecoded(); await recommendations.releaseSemanticModel(); await visual.releaseModels() }
     }
 
     private func invalidateFeed() {
@@ -548,6 +554,7 @@ final class AppStore: ObservableObject {
     func noteFeedMotion() {
         lastFeedMotion = .now
         idleTask?.cancel()
+        if visualScanStatus != nil, visualScanStatus != "Visual update paused while scrolling" { visualScanStatus = "Visual update paused while scrolling" }
         guard motionTask == nil else { return }
         motionTask = Task(priority: .background) { [weak self] in
             while !Task.isCancelled {
@@ -565,6 +572,7 @@ final class AppStore: ObservableObject {
             do { try await Task.sleep(for: .seconds(3)) } catch { return }
             guard let self else { return }
             let token = generation
+            defer { if generation == token, !Task.isCancelled { visualScanStatus = nil } }
             guard Date().timeIntervalSince(lastFeedMotion) >= 1.5 else { return }
             if let context = candidateContext {
                 let request = await recommendations.candidateRequest(context: context, provider: selectedProvider,
@@ -591,6 +599,7 @@ final class AppStore: ObservableObject {
                     thermal: ProcessInfo.processInfo.thermalState.rawValue,
                     playback: players.activeKey != nil || inlinePlaybackID != nil || activeTab == 1 || fullScreenPlaybackID != nil || !isForeground, loading: isLoading)
                 if idle {
+                    if visualAnalysisEnabled { visualScanStatus = "Checking visual taste · \(offset)/\(history.count) favorites" }
                     if !scannedCachedFeed {
                         for post in posts.prefix(4) {
                             guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }

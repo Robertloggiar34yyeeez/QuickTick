@@ -1,4 +1,4 @@
-# QuickTick v0.8 — visual taste and scroll isolation (build 20)
+# QuickTick v0.8 â€” visual taste and scroll isolation (build 20)
 
 Continues v0.7.5 after user feedback that speed was nearly ideal but scrolling stuttered. v0.7.5 artifacts and release names remain intact.
 
@@ -9,7 +9,11 @@ Continues v0.7.5 after user feedback that speed was nearly ideal but scrolling s
 - Historical favorites use cached previews first. While idle, uncached favorites may fetch one still thumbnail at a time on an inexpensive, unconstrained network, at least three seconds apart, capped at 512 KiB and decoded to 384 pixels. Originals and video streams are never fetched for analysis. Playback, scrolling, pagination, Low Power Mode or thermal pressure cancel/defer analysis. Cached descriptors are bounded to 512; accumulated profiles and analysis ledgers persist.
 - Visual taste is enabled unless explicitly disabled in Settings. Its inference remains optional and deferred; metadata/BGE fallback always works. Each historical item remains queued incrementally; uncached/provider-unavailable previews cannot be analyzed until available.
 
-MobileCLIP2-S0 and WD Tagger remain evaluated/deferred as documented in v0.7.5. This revision uses the built-in Vision encoder to deliver visual similarity now without adding conversion/dependency or download costs. It does not claim exhaustive character, hairstyle, outfit, activity or multi-frame action recognition. Generic image similarity is never a person's identity. https://developer.apple.com/documentation/vision/vnfeatureprintobservation
+WD ViT Tagger v3 is now included for anime only, pinned to SmilingWolf revision 7f6b584d0bd3f55c4531f14ba3d4761b2bccdc0f. CI converts the original weights to Core ML with int8 weights, validates synthetic numerical parity, and bundles the compiled model and labels. Swift uses white letterboxing, 448px BGR normalization, conservative general/character confidence thresholds, and separate attribute/identity signals. The model loads only during idle anime analysis and is released after inference. Slow inference introduces a cooldown. Real-life inputs never load WD. Model/source: https://huggingface.co/SmilingWolf/wd-vit-tagger-v3
+
+Every app launch and foreground return queues a visual taste refresh. A fixed-height feed status line reports progress/pauses without blocking first posts or shifting card layout. Existing descriptors are reused; new/changed analysis revisions process historical favorites incrementally.
+
+MobileCLIP2-S0 remains deferred pending conversion/device evaluation; built-in Vision supplies actual visual embeddings now. Exhaustive character, hairstyle, outfit, activity and multi-frame action accuracy is not claimed. Generic image similarity is never a real person's identity. https://developer.apple.com/documentation/vision/vnfeatureprintobservation
 
 Added regressions for real pixel attributes, visual positive/negative/exposure clusters, v0.7.5 profile migration, protected identities, thumbnail-only selection, scroll ranking suppression, and actual Vision encoder output/timing. Existing duplicate, persistence, fallback and playback coverage remains. Local syntax/project checks pass. See CI/final delivery evidence for actual device-test outcomes. No physical-device FPS, memory or time-to-first-frame measurements are claimed.
 

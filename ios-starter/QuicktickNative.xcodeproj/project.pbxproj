@@ -329,6 +329,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "18B638CEFC354F26447C14C5";
 		};
+		"13794F0D382C0189DE2F508A" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/WDAnimeTagger.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"28D46C280CFD47768D4BD6F3" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "13794F0D382C0189DE2F508A";
+		};
 		"60E93205A75B91DE3BE3FF87" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -749,6 +759,36 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "6ACDDB1AF990D87B9F6CACBC";
 		};
+		"BBBA1F3996E9E83178DA88C4" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "folder";
+			"path" = "QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"ACAFFB2DE419F43078F064BB" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "BBBA1F3996E9E83178DA88C4";
+		};
+		"4D953A1E78FF56A02F90AE9B" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = "QuicktickNative/SemanticAssets/wd-v3-labels.json";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"7D3BDB62694E4CFEF9F887D5" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "4D953A1E78FF56A02F90AE9B";
+		};
+		"B2F29707A326427D4C623EFA" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = "QuicktickNative/SemanticAssets/wd-v3-model-card.md";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"7562BB43ED7190E1AA1EB623" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "B2F29707A326427D4C623EFA";
+		};
 		"60460E000A21BDF8094BEA85" = {
 			"isa" = "PBXFileReference";
 			"explicitFileType" = "wrapper.application";
@@ -790,6 +830,7 @@
 				"E4C45F22C51B7C28FCF2BCD2",
 				"26064FE82E26D229EAB6F8FD",
 				"F14C6A43112B24F26460B552",
+				"28D46C280CFD47768D4BD6F3",
 				"A3DBBA346C911D403CEE722E",
 				"040D543530D7BD3246239709",
 				"C6F2F0D622C7420C6DDC1F8D",
@@ -816,6 +857,9 @@
 				"9E60231250AFB54880FB7BF6",
 				"FAC6CAA41D3E049244AD5EA3",
 				"E3C75BB0DE43FDF6F944EF6A",
+				"ACAFFB2DE419F43078F064BB",
+				"7D3BDB62694E4CFEF9F887D5",
+				"7562BB43ED7190E1AA1EB623",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -1174,6 +1218,7 @@
 				"D822C7777F40BFDA72C1B2CD",
 				"F8BDB3B414F6C5B7B93F13D5",
 				"18B638CEFC354F26447C14C5",
+				"13794F0D382C0189DE2F508A",
 				"60E93205A75B91DE3BE3FF87",
 				"7F7610B70DF2D38F9C5E70C8",
 				"7D831797AC7A7A23AD7F0698",
@@ -1216,6 +1261,9 @@
 				"A1C8F094F9709BD7577142CF",
 				"B1220A4F4E09CAA24A04E2EE",
 				"6ACDDB1AF990D87B9F6CACBC",
+				"BBBA1F3996E9E83178DA88C4",
+				"4D953A1E78FF56A02F90AE9B",
+				"B2F29707A326427D4C623EFA",
 				"0A3E27B8CA818264D75C8D81",
 			);
 			"sourceTree" = "<group>";

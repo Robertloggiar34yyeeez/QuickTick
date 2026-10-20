@@ -18,6 +18,8 @@ actor VisualAnalysisService {
     private var writeBlocked = false
     private var diskTask: Task<Void, Never>?
     private var lastPreviewAttempt = Date.distantPast
+    private let animeTagger = WDAnimeTagger()
+    func releaseModels() async { await animeTagger.release() }
     private let directory: URL
     init(directory: URL? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("QuicktickVisual-v1", isDirectory: true)
@@ -72,7 +74,7 @@ actor VisualAnalysisService {
         guard resourcesAllowAnalysis() else { return }
         restore()
         if favorite { record(.like, post: post) }
-        guard useVision, resourcesAllowAnalysis(), state.analysisVersions?[post.stableID] != "appearance-v2",
+        guard useVision, resourcesAllowAnalysis(), state.analysisVersions?[post.stableID] != "appearance-wd-v3",
               let before = state.features[post.stableID] ?? VisualFeatures.metadata(post) else { return }
         var preview = await MediaImagePipeline.shared.cachedAnalysisImage(raw: post.cardPreviewURL)
         if preview == nil, favorite, resourcesAllowAnalysis() {
@@ -91,6 +93,12 @@ actor VisualAnalysisService {
         enriched.attributes.merge(VisualAppearanceEncoder.attributes(image.image), uniquingKeysWith: max)
         if let encoded = try? await VisualAppearanceEncoder.embedding(image) {
             enriched.embedding = encoded.vector; enriched.version = encoded.version
+        }
+        guard resourcesAllowAnalysis() else { return }
+        if before.domain == .anime, let tagged = await animeTagger.analyze(image, domain: .anime) {
+            enriched.attributes.merge(tagged.attributes, uniquingKeysWith: max)
+            if enriched.subjects.isEmpty { enriched.subjects = tagged.subjects }
+            enriched.version += "+wd-vit-v3-7f6b584-int8"
         }
         guard resourcesAllowAnalysis() else { return }
         if before.domain == .realLife {
@@ -120,7 +128,7 @@ actor VisualAnalysisService {
         state.profiles[before.domain.rawValue] = profile
         state.features[post.stableID] = enriched
         if state.analysisVersions == nil { state.analysisVersions = [:] }
-        state.analysisVersions?[post.stableID] = "appearance-v2"
+        state.analysisVersions?[post.stableID] = "appearance-wd-v3"
         trimFeatures()
         persist()
     }

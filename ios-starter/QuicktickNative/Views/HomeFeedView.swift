@@ -32,6 +32,9 @@ struct HomeFeedView: View {
                     Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44,height: 44).background(AppTheme.gradient,in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Refresh feed")
                 }
                 searchBar.id("home-search")
+                Text(store.visualScanStatus ?? "")
+                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 20, alignment: .leading)
+                    .accessibilityIdentifier("visual-scan-progress")
                 Button { onboarding = true } label: {
                     Label("What would you like to see?", systemImage: "sparkles")
                         .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

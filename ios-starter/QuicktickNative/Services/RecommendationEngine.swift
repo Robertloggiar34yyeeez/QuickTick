@@ -325,7 +325,8 @@ actor RecommendationEngine {
 
     func score(_ post: Post, taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:]) -> Double {
         let source = post.provider.lowercased()
-        let p = contextualRanking ? (state.scopedProfiles[TasteConcepts.profileKey(post)] ?? RecommendationProfile()) : profile(for: source)
+        let scopedKey = contextualRanking ? TasteConcepts.profileKey(post) : source
+        let p = contextualRanking ? (state.scopedProfiles[scopedKey] ?? RecommendationProfile()) : profile(for: source)
         let postTerms = terms(for: post)
         let into = Set(tasteTokens(source: source, values: taste.into))
         let notInto = Set(tasteTokens(source: source, values: taste.notInto))
@@ -367,7 +368,7 @@ actor RecommendationEngine {
         score -= Double(negativeHits) * 24
         let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
         score -= min(6, Double(postTerms.filter(recentTerms.contains).count) * 0.42)
-        if contextualRanking, let features = VisualFeatures.metadata(post, taxonomy: taxonomy), let context = state.contextualProfiles[TasteConcepts.profileKey(post)] {
+        if contextualRanking, let context = state.contextualProfiles[scopedKey], let features = VisualFeatures.metadata(post, taxonomy: taxonomy) {
             score += context.score(features) * 4
         }
         return score

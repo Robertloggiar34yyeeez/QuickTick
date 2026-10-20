@@ -100,7 +100,6 @@ final class AppStore: ObservableObject {
     private var idleTask: Task<Void, Never>?
     private var plannedAcquisition: RecommendationEngine.CandidateRequest?
     private var candidateCursors: [String: Int] = [:]
-    private var historyOffset = 0
     private var lastFeedMotion = Date.distantPast
     private var motionTask: Task<Void, Never>?
     private var visualDiscoveryRound = 0
@@ -526,7 +525,7 @@ final class AppStore: ObservableObject {
     func resetRecommendations() async {
         cancelManualVisualRefresh()
         stopActiveLearning()
-        idleTask?.cancel(); feedExclusions.restore([]); visualScores = [:]; candidateCursors = [:]; historyOffset = 0
+        idleTask?.cancel(); feedExclusions.restore([]); visualScores = [:]; candidateCursors = [:]
         await visual.reset()
         await recommendations.reset()
         await persistRecommendations()
@@ -707,7 +706,7 @@ final class AppStore: ObservableObject {
             guard !Task.isCancelled, generation == token else { return }
             await adaptRecommendationTail(token: token)
             let history = await visual.historicalQueue(Array(favorites.values))
-            var offset = historyOffset < history.count ? historyOffset : 0
+            var offset = 0
             var scannedCachedFeed = false
             repeat {
                 guard !Task.isCancelled, generation == token else { return }
@@ -728,7 +727,6 @@ final class AppStore: ObservableObject {
                         await visual.record(.like, post: post, queueAnalysis: false)
                         if visualAnalysisEnabled, !(await visual.enqueue(post, priority: 1)) { break }
                         offset += 1
-                        historyOffset = offset
                     }
                 }
                 do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
@@ -769,7 +767,7 @@ final class AppStore: ObservableObject {
         guard !isManualVisualScanRunning else { return }
         idleTask?.cancel(); stopActiveLearning()
         let id = UUID(); manualVisualID = id
-        manualVisualProgress = VisualRefreshProgress(completed: 0, total: favorites.count, status: "Preparing visual update…", running: true)
+        manualVisualProgress = VisualRefreshProgress(completed: 0, total: 0, status: "Checking for new posts…", running: true)
         players.pauseAll()
         manualVisualTask = Task(priority: .background) { [weak self] in
             guard let self else { return }
@@ -778,6 +776,8 @@ final class AppStore: ObservableObject {
             await recommendations.releaseSemanticModel()
             await visual.waitForWorker()
             let history = await visual.historicalQueue(Array(favorites.values))
+            guard !Task.isCancelled, manualVisualID == id else { return }
+            manualVisualProgress = VisualRefreshProgress(completed: 0, total: history.count, status: "Scanning new posts…", running: true)
             var checked = 0
             var lastProgress = Date.distantPast
             for post in history {
@@ -809,7 +809,7 @@ final class AppStore: ObservableObject {
             await adaptRecommendationTail(token: feedRevision)
             guard !Task.isCancelled, manualVisualID == id else { return }
             manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
-                status: history.isEmpty ? "No favorites to update yet" : "Visual taste updated · \(checked) favorites checked", running: false)
+                status: history.isEmpty ? "No new posts to scan · visual taste is up to date" : "Visual taste updated · \(checked) new posts analyzed", running: false)
             visualScanStatus = nil
             scheduleIdleIntelligence()
         }

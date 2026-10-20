@@ -122,7 +122,16 @@ struct ContextTasteProfile: Codable, Sendable, Equatable {
     func score(_ features: VisualFeatures) -> Double {
         let values = TasteConcepts.dimensions(features)
         let singles = values.reduce(0.0) { $0 + (dimensions[$1.key]?.affinity ?? 0) * $1.value * (TasteConcepts.identity($1.key) ? 0.5 : 0.15) }
-        let pairs = TasteConcepts.pairs(values).reduce(0.0) { $0 + (relationships[$1.0]?.affinity ?? 0) * $1.1 * 3 }
+        let pairs = TasteConcepts.pairs(values).reduce(0.0) { total, pair in
+            // Motion and style:3d repeat medium evidence. A known franchise
+            // also repeats its character identity; neither should drown out an
+            // independently preferred artist, outfit or presentation.
+            var weight = 3.0
+            if pair.0.contains("|motion:") { weight = 0.15 }
+            if ["|style:2d", "|style:3d", "|style:animation", "|style:animated", "|style:3d_animation"].contains(where: pair.0.hasSuffix) { weight = 0.3 }
+            if !features.subjects.isEmpty && pair.0.contains("franchise:") { weight *= 0.25 }
+            return total + (relationships[pair.0]?.affinity ?? 0) * pair.1 * weight
+        }
         return 8 * tanh((singles + pairs) / 8)
     }
     func discoveryQueries() -> [[String]] {

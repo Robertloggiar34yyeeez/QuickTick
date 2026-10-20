@@ -1,7 +1,45 @@
 import XCTest
+import CoreGraphics
+import ImageIO
 @testable import QuicktickNative
 
 final class IntelligentRecommendationTests: XCTestCase {
+    func testIncrementalScanSkipsCurrentPostsAcrossRestartAndCombinesStats() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("preview.png")
+        let context = try XCTUnwrap(CGContext(data: nil, width: 128, height: 128, bitsPerComponent: 8, bytesPerRow: 512,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 128, height: 128))
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        var old = post("old", ["photo", "qipao"], provider: "redgifs")
+        old.mediaUrl = url.absoluteString; old.thumbUrl = url.absoluteString
+        _ = try await MediaImagePipeline.shared.image(raw: url.absoluteString, pixels: 128)
+        let visual = VisualAnalysisService(directory: directory.appendingPathComponent("state"))
+        await visual.analyzeFavorite(old, useVision: true)
+        let first = await visual.snapshot()
+        XCTAssertNotNil(first.analysisVersions?[old.stableID])
+        let new = post("new", ["photo", "jacket"], provider: "redgifs")
+        await visual.record(.like, post: new, queueAnalysis: false)
+        let queue = await visual.historicalQueue([old, new]); XCTAssertEqual(queue, [new])
+        await visual.analyzeFavorite(old, useVision: true)
+        let runs = await visual.inferenceRuns; XCTAssertEqual(runs, 1)
+        let combined = await visual.snapshot()
+        XCTAssertEqual(combined.profiles["redgifs|realLife"]?.attributes["clothing:qipao"], first.profiles["redgifs|realLife"]?.attributes["clothing:qipao"])
+        XCTAssertGreaterThan(combined.profiles["redgifs|realLife"]?.attributes["clothing:jacket"]?.positive ?? 0, 0)
+        let restored = VisualAnalysisService(directory: directory.appendingPathComponent("state"))
+        let afterRestart = await restored.historicalQueue([old, new]); XCTAssertEqual(afterRestart, [new])
+        var changed = old; changed.tags.append("portrait")
+        let invalidated = await restored.historicalQueue([changed]); XCTAssertEqual(invalidated, [changed])
+    }
+    func testExpiringSignaturesDoNotInvalidateContentButAssetParametersDo() {
+        let original = FeedExclusions.canonicalMediaURL("https://cdn.test/image.jpg?asset=1&token=old")
+        XCTAssertEqual(original, FeedExclusions.canonicalMediaURL("https://cdn.test/image.jpg?token=new&asset=1"))
+        XCTAssertNotEqual(original, FeedExclusions.canonicalMediaURL("https://cdn.test/image.jpg?asset=2&token=new"))
+    }
     private func post(_ id: String, _ tags: [String], provider: String = "rule34") -> Post {
         Post(key: provider + ":" + id, id: id, provider: provider, tags: tags, type: "image")
     }

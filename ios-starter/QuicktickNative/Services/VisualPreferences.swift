@@ -35,6 +35,17 @@ struct VisualFeatures: Codable, Sendable, Equatable {
     var fingerprint: UInt64?
     var pixelsAnalyzed = false
     var version = "metadata-vision-v1"
+    private static let vocabulary: [String: Set<String>] = [
+            "appearance": ["long_hair", "short_hair", "blonde_hair", "black_hair", "blue_eyes", "ponytail", "braid"],
+            "clothing": ["dress", "uniform", "qipao", "jacket", "hat", "glasses", "boots"],
+            "pose": ["sitting", "standing", "lying", "running", "dancing", "portrait"],
+            "expression": ["smile", "smiling", "angry", "serious", "closed_eyes"],
+            "setting": ["outdoors", "indoors", "beach", "bedroom", "forest", "city"],
+            "color": ["red", "blue", "green", "black", "white", "pink", "monochrome"],
+            "style": ["watercolor", "sketch", "pixel_art", "realistic", "soft_lighting", "backlighting", "close_up",
+                "2d", "3d", "2d_art", "3d_art", "3dcg", "3d_animation", "animation", "animated",
+                "furry", "anthro", "anthropomorphic"]
+        ]
     static func metadata(_ post: Post, taxonomy: VisualTagTaxonomy? = nil) -> Self? {
         guard let domain = VisualDomain.classify(post) else { return nil }
         var result = Self(domain: domain)
@@ -46,17 +57,6 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             result.creators = [(post.providerKey?.rawValue ?? post.provider.lowercased()) + ":" + creator.lowercased()]
         }
         result.attributes["motion:" + (post.isImmersiveMedia ? "moving" : "still")] = 1
-        let vocabulary: [String: Set<String>] = [
-            "appearance": ["long_hair", "short_hair", "blonde_hair", "black_hair", "blue_eyes", "ponytail", "braid"],
-            "clothing": ["dress", "uniform", "qipao", "jacket", "hat", "glasses", "boots"],
-            "pose": ["sitting", "standing", "lying", "running", "dancing", "portrait"],
-            "expression": ["smile", "smiling", "angry", "serious", "closed_eyes"],
-            "setting": ["outdoors", "indoors", "beach", "bedroom", "forest", "city"],
-            "color": ["red", "blue", "green", "black", "white", "pink", "monochrome"],
-            "style": ["watercolor", "sketch", "pixel_art", "realistic", "soft_lighting", "backlighting", "close_up",
-                "2d", "3d", "2d_art", "3d_art", "3dcg", "3d_animation", "animation", "animated",
-                "furry", "anthro", "anthropomorphic"]
-        ]
         for raw in post.tags.prefix(128) {
             let tag = raw.lowercased().replacingOccurrences(of: " ", with: "_")
             for (axis, known) in vocabulary where known.contains(tag) { result.attributes[axis + ":" + tag] = 0.9 }

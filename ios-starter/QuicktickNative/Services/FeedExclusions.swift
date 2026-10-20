@@ -57,23 +57,26 @@ struct FeedExclusions: Sendable {
     mutating func setFingerprints(_ values: [String: UInt64]) {
         for (id, hash) in values { registerFingerprint(id, hash: hash) }
     }
-    static func identifiers(_ post: Post) -> Set<String> {
-        let provider = post.providerKey?.rawValue ?? post.provider.lowercased()
-        let rawID = post.id.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedID = provider == "redgifs" ? rawID.lowercased() : (UInt64(rawID).map(String.init) ?? rawID)
-        var result: Set<String> = [post.stableID]
-        if !normalizedID.isEmpty { result.insert("id:\(provider):\(normalizedID)") }
-        let signingKeys: Set<String> = ["token", "expires", "signature", "sig", "auth", "auth_key", "auth_token", "access_token", "secure", "policy", "key-pair-id", "x-amz-algorithm", "x-amz-credential", "x-amz-date", "x-amz-expires", "x-amz-signature", "x-amz-security-token", "x-amz-signedheaders"]
-        // Keep content query parameters. Remove only recognized transport signatures.
-        for raw in [post.mediaUrl, post.pageUrl] where !raw.isEmpty {
-            guard var url = URLComponents(string: raw), url.host != nil else { continue }
+    private static let signingKeys: Set<String> = ["token", "expires", "signature", "sig", "auth", "auth_key", "auth_token", "access_token", "secure", "policy", "key-pair-id", "x-amz-algorithm", "x-amz-credential", "x-amz-date", "x-amz-expires", "x-amz-signature", "x-amz-security-token", "x-amz-signedheaders"]
+    static func canonicalMediaURL(_ raw: String) -> String? {
+        guard var url = URLComponents(string: raw), url.host != nil else { return nil }
             url.scheme = "https"; url.host = url.host?.lowercased(); url.fragment = nil
             if url.host?.hasPrefix("www.") == true { url.host = String(url.host!.dropFirst(4)) }
             if url.path.count > 1, url.path.hasSuffix("/") { url.path.removeLast() }
             url.queryItems = url.queryItems?.filter { !signingKeys.contains($0.name.lowercased()) }
                 .sorted { $0.name < $1.name }
             if url.queryItems?.isEmpty == true { url.query = nil }
-            if let canonical = url.string { result.insert("url:" + canonical) }
+        return url.string
+    }
+    static func identifiers(_ post: Post) -> Set<String> {
+        let provider = post.providerKey?.rawValue ?? post.provider.lowercased()
+        let rawID = post.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedID = provider == "redgifs" ? rawID.lowercased() : (UInt64(rawID).map(String.init) ?? rawID)
+        var result: Set<String> = [post.stableID]
+        if !normalizedID.isEmpty { result.insert("id:\(provider):\(normalizedID)") }
+        // Keep content query parameters. Remove only recognized transport signatures.
+        for raw in [post.mediaUrl, post.pageUrl] where !raw.isEmpty {
+            if let canonical = canonicalMediaURL(raw) { result.insert("url:" + canonical) }
             if let media = URL(string: raw), ["jpg", "jpeg", "png", "webp", "gif", "avif", "mp4", "webm", "mov"].contains(media.pathExtension.lowercased()) {
                 let stem = media.deletingPathExtension().lastPathComponent.lowercased()
                 let hash = stem.hasPrefix("sample_") ? String(stem.dropFirst(7)) : stem

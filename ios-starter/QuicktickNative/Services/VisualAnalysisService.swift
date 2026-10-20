@@ -163,7 +163,8 @@ actor VisualAnalysisService {
         persist(); return before != state.features[work.post.stableID]
     }
     private func revision(_ post: Post) -> String {
-        let content = [post.mediaUrl, post.previewUrl, post.thumbUrl, post.tags.sorted().joined(separator: " ")].joined(separator: "|")
+        let sources = [post.mediaUrl, post.previewUrl, post.thumbUrl].map { FeedExclusions.canonicalMediaURL($0) ?? $0 }
+        let content = (sources + [post.tags.sorted().joined(separator: " "), post.category ?? "", post.type, post.creator ?? ""]).joined(separator: "|")
         return TasteConcepts.version + "|appearance-wd-v3-fp16|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.
@@ -176,7 +177,10 @@ actor VisualAnalysisService {
     func analyzeDisliked(_ post: Post, useVision: Bool) async {
         await analyze(post, favorite: false, useVision: useVision, disliked: true)
     }
-    func historicalQueue(_ posts: [Post]) -> [Post] { posts.sorted { $0.stableID < $1.stableID } }
+    func historicalQueue(_ posts: [Post]) -> [Post] {
+        restore(); loadTaxonomy()
+        return posts.filter { state.analysisVersions?[$0.stableID] != revision($0) }.sorted { $0.stableID < $1.stableID }
+    }
     private func analyze(_ post: Post, favorite: Bool, useVision: Bool, disliked: Bool = false, lightweight: Bool = false) async {
         guard !analyzing, resourcesAllowAnalysis() else { return }
         analyzing = true; defer { analyzing = false }
@@ -271,7 +275,7 @@ actor VisualAnalysisService {
     }
     func scores(_ posts: [Post]) -> [String: Double] {
         restore()
-        return Dictionary(posts.compactMap { post -> (String, Double)? in
+        return Dictionary(posts.prefix(128).compactMap { post -> (String, Double)? in
             guard let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy),
                   let p = state.profiles[profileKey(post)] else { return nil }
             let cached = state.features[post.stableID]

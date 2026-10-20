@@ -149,18 +149,23 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(ranked.count, 1)
     }
 
-    func testRecurringNegativeCommonDenominatorBecomesHardFilter() async {
+    func testRecurringNegativeCommonDenominatorIsSoftUnlessExplicitlyBlocked() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)))
         let a = Post(key: "r:1", id: "1", provider: "rule34", tags: ["scat", "blue_hair", "outdoors"], mediaUrl: "https://example.invalid/1.mp4", type: "video")
         let b = Post(key: "r:2", id: "2", provider: "rule34", tags: ["scat", "red_hair", "indoors"], mediaUrl: "https://example.invalid/2.mp4", type: "video")
         let c = Post(key: "r:3", id: "3", provider: "rule34", tags: ["scat", "cosplay"], mediaUrl: "https://example.invalid/3.mp4", type: "video")
 
+        let before = await engine.score(c, taste: TasteChoice(), recent: [])
         for _ in 0..<3 {
             await engine.record(.less, post: a)
             await engine.record(.less, post: b)
         }
         let ranked = await engine.rank([c], taste: TasteChoice(), recent: [])
-        XCTAssertTrue(ranked.isEmpty)
+        XCTAssertEqual(ranked, [c])
+        let after = await engine.score(c, taste: TasteChoice(), recent: [])
+        XCTAssertLessThan(after, before)
+        let explicit = await engine.rank([c], taste: TasteChoice(done: true, into: [], notInto: ["scat"]), recent: [])
+        XCTAssertTrue(explicit.isEmpty)
     }
 
     func testCollaborativeHintCannotOverrideHardNotInto() async {

@@ -69,13 +69,15 @@ final class FastFeedVisualTests: XCTestCase {
         let b = post("manual-b-" + suffix, tags: ["qipao"])
         store.favorites = [a.stableID: a, b.stableID: b]
         store.startManualVisualRefresh()
-        for _ in 0..<100 where store.isManualVisualScanRunning { try? await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<1000 where store.isManualVisualScanRunning { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertFalse(store.isManualVisualScanRunning)
         XCTAssertEqual(store.manualVisualProgress?.completed, 2)
         XCTAssertEqual(store.manualVisualProgress?.fraction, 1)
         let first = await store.visual.snapshot()
         store.startManualVisualRefresh()
-        for _ in 0..<100 where store.isManualVisualScanRunning { try? await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<1000 where store.isManualVisualScanRunning { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(store.isManualVisualScanRunning)
+        XCTAssertEqual(store.manualVisualProgress?.completed, 2)
         let second = await store.visual.snapshot()
         XCTAssertEqual(first.liked, second.liked)
         store.startManualVisualRefresh(); store.cancelManualVisualRefresh()

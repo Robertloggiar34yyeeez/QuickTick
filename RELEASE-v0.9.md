@@ -1,5 +1,10 @@
 # QuickTick v0.9 / build 22
 
+Scans select only items without a current content/model analysis revision. Cached
+work survives restarts and transport signature changes; new evidence updates the
+existing combined profiles. Manual progress counts pending items, and unchanged
+favorites do not repeat inference. Analysis revision markers are bounded at 8192.
+
 Continues e382489 on feature/v0.9-recommendation-relevance. No main changes.
 
 Implemented provider + medium scoped metadata, semantic and visual learning,

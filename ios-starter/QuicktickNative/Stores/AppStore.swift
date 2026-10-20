@@ -624,7 +624,7 @@ final class AppStore: ObservableObject {
         activeLearningID = UUID(); activeLearningTask?.cancel(); activeLearningTask = nil
     }
     private func startActiveLearning() {
-        guard bootstrapped, activeLearningTask == nil, isForeground, !isManualVisualScanRunning else { return }
+        guard bootstrapped, activeLearningTask == nil, isForeground, !isManualVisualScanRunning, semanticPreparationID == nil else { return }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") && !ProcessInfo.processInfo.arguments.contains("--ui-testing-active-learning") { return }
         #endif
@@ -678,6 +678,7 @@ final class AppStore: ObservableObject {
             }
         }
     }
+    private var semanticPreparationID: UUID?
     private func scheduleIdleIntelligence() {
         startActiveLearning()
         idleTask?.cancel()
@@ -744,7 +745,18 @@ final class AppStore: ObservableObject {
                 plannedAcquisition = request
             }
             guard players.activeKey == nil, isForeground, !isLoading else { return }
+            let battery = UIDevice.current.batteryLevel
+            guard battery < 0 || battery >= 0.15 else { return }
+            let preparation = UUID(); semanticPreparationID = preparation
+            stopActiveLearning()
+            defer {
+                if semanticPreparationID == preparation { semanticPreparationID = nil; startActiveLearning() }
+            }
+            await visual.waitForWorker()
+            guard !Task.isCancelled, generation == token, !isManualVisualScanRunning else { return }
+            await visual.releaseModels()
             await recommendations.prepareSemantic(Array(posts.prefix(8)), taste: tasteChoice(for: selectedProvider))
+            await recommendations.releaseSemanticModel()
             guard !Task.isCancelled, generation == token else { return }
             await persistRecommendations()
             await adaptRecommendationTail(token: token)
@@ -762,6 +774,8 @@ final class AppStore: ObservableObject {
         manualVisualTask = Task(priority: .background) { [weak self] in
             guard let self else { return }
             defer { if manualVisualID == id { manualVisualTask = nil } }
+            // Drain a cancelled text prediction before starting a visual pass.
+            await recommendations.releaseSemanticModel()
             await visual.waitForWorker()
             let history = await visual.historicalQueue(Array(favorites.values))
             var checked = 0

@@ -287,6 +287,9 @@ actor VisualAnalysisService {
             let removable = state.features.keys.sorted()
             for key in removable.prefix(state.features.count - 512) { state.features.removeValue(forKey: key) }
         }
+        if let versions = state.analysisVersions, versions.count > 8192 {
+            state.analysisVersions = Dictionary(uniqueKeysWithValues: versions.sorted { $0.key < $1.key }.suffix(8192).map { ($0.key, $0.value) })
+        }
     }
     func discoveryTerms(provider: Provider) -> [String] {
         restore()

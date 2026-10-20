@@ -72,7 +72,7 @@ jobs:
           key: xtool-d802c719-macos15-intel-xcode26.3-v1
       - uses: actions/upload-artifact@v4
         with:
-          name: QuickTick-0.8-unsigned-IPA
+          name: QuickTick-0.8.5-unsigned-IPA
           path: build/export/
           if-no-files-found: error
           retention-days: 14
@@ -83,7 +83,7 @@ jobs:
           # Publishing this lightweight marker ref confirms connector upload/readback.
           # It does not change the tested source commit or expose private Drive data.
           for attempt in $(seq 1 120); do
-            if git ls-remote --exit-code origin "refs/heads/ipa-uploaded/v08-$GITHUB_SHA" >/dev/null 2>&1; then exit 0; fi
+            if git ls-remote --exit-code origin "refs/heads/ipa-uploaded/v085-$GITHUB_SHA" >/dev/null 2>&1; then exit 0; fi
             sleep 10
           done
           echo 'IPA upload marker missing; device tests have not been started.'
@@ -97,7 +97,7 @@ jobs:
           DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')
           xcrun simctl boot "$DEVICE" || true
           xcrun simctl bootstatus "$DEVICE" -b
-          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -only-testing:QuicktickNativeTests -only-testing:QuicktickNativeUITests/NavigationTests/testFavoritesImmersiveAndDownloadExport -only-testing:QuicktickNativeUITests/NavigationTests/testHomeInlinePlaybackAndComicClose -only-testing:QuicktickNativeUITests/NavigationTests/testAdaptiveMediaAcrossOrientationsAndForeground -resultBundlePath logs/QuicktickTests.xcresult test | tee logs/xcodebuild-test.txt
+          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -only-testing:QuicktickNativeTests -only-testing:QuicktickNativeUITests/NavigationTests/testHomeDislikeCannotOpenTheLowerImage -only-testing:QuicktickNativeUITests/NavigationTests/testFavoritesImmersiveAndDownloadExport -only-testing:QuicktickNativeUITests/NavigationTests/testHomeInlinePlaybackAndComicClose -only-testing:QuicktickNativeUITests/NavigationTests/testAdaptiveMediaAcrossOrientationsAndForeground -resultBundlePath logs/QuicktickTests.xcresult test | tee logs/xcodebuild-test.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

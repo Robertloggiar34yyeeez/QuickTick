@@ -1,6 +1,22 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testHomeDislikeCannotOpenTheLowerImage() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        // A tall image directly below this video extends beyond its clipped
+        // drawing bounds. Tap the actual coordinate, as a finger would.
+        let dislike = app.buttons["dislike-test:video"]
+        XCTAssertTrue(dislike.waitForExistence(timeout: 10))
+        XCTAssertTrue(dislike.isHittable)
+        dislike.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dislike)
+        waitForExpectations(timeout: 5)
+        XCTAssertFalse(app.buttons["Close full image"].exists)
+        XCTAssertTrue(app.buttons["dislike-test:image"].exists)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Home dislike removes upper post without opening lower image"
+        capture.lifetime = .keepAlways; add(capture)
+    }
     @MainActor func testFavoritesImmersiveAndDownloadExport() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]

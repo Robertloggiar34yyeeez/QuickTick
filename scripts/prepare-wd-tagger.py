@@ -33,19 +33,21 @@ model=ct.convert(traced,inputs=[ct.TensorType(name='image',shape=(1,3,448,448),d
 # Preserve the patch projection and final tag classifier: their errors directly
 # alter color evidence and confidence thresholds. Compress transformer weights.
 protected={op.name:None for op in model._mil_program.functions['main'].operations
-    if op.op_type=='conv' or (op.op_type=='linear' and op.weight.shape[0]==10861)}
+    if op.op_type=='conv' or (op.op_type=='linear' and not
+        (op.weight.shape[0]==4*op.weight.shape[1] or op.weight.shape[1]==4*op.weight.shape[0]))}
 compressed=linear_quantize_weights(model,OptimizationConfig(global_config=OpLinearQuantizerConfig(
     mode='linear_symmetric',dtype='int8',granularity='per_channel',weight_threshold=512),op_name_configs=protected))
 compressed.author='SmilingWolf / QuickTick Core ML conversion'; compressed.license='Apache-2.0'
 compressed.short_description='WD ViT Tagger v3; pinned weights; BGR normalized to [-1,1], white square letterbox, 448px.'
 package=BUILD/'WDTaggerV3.mlpackage'; compressed.save(str(package))
 compressed=ct.models.MLModel(str(package),compute_units=ct.ComputeUnit.CPU_ONLY)
-report={'repo':REPO,'revision':REV,'precision':'int8 transformer weights; float16 patch/classifier and compute','protectedOperations':list(protected),'input':'BGR NCHW [-1,1], white letterbox, 448x448','fixtures':[]}
+report={'repo':REPO,'revision':REV,'precision':'int8 MLP weights; float16 attention/patch/classifier and compute','protectedOperations':list(protected),'input':'BGR NCHW [-1,1], white letterbox, 448x448','fixtures':[]}
 for fixture,reference in fixtures:
     start=time.perf_counter(); result=compressed.predict({'image':fixture})['probabilities'].reshape(-1)
     error=float(np.max(np.abs(reference-result)))
     top=set(np.argsort(reference)[-64:]); overlap=len(top.intersection(np.argsort(result)[-64:]))/64
-    print(json.dumps({'maxAbsoluteError':error,'top64Overlap':overlap}),flush=True)
+    uncompressed=model.predict({'image':fixture})['probabilities'].reshape(-1)
+    print(json.dumps({'maxAbsoluteError':error,'top64Overlap':overlap,'uncompressedFloat16Error':float(np.max(np.abs(reference-uncompressed)))}),flush=True)
     assert np.isfinite(result).all() and error<0.06 and overlap>=0.85,(error,overlap)
     report['fixtures'].append({'maxAbsoluteError':error,'top64Overlap':overlap,'macCPUInferenceMs':(time.perf_counter()-start)*1000})
 subprocess.run(['xcrun','coremlcompiler','compile',str(package),str(OUT)],check=True)

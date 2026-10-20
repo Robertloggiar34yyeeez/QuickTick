@@ -34,7 +34,7 @@ jobs:
             ios-starter/QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-labels.json
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-model-card.md
-          key: wd-vit-v3-7f6b584-mixed-int8-coreml8.3-v2
+          key: wd-vit-v3-7f6b584-mlp-int8-coreml8.3-v3
       - name: Prepare pinned anime-only WD Tagger v3
         if: steps.wd-cache.outputs.cache-hit != 'true'
         id: wd-model
@@ -50,7 +50,7 @@ jobs:
             ios-starter/QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-labels.json
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-model-card.md
-          key: wd-vit-v3-7f6b584-mixed-int8-coreml8.3-v2
+          key: wd-vit-v3-7f6b584-mlp-int8-coreml8.3-v3
       - name: Archive real iPhone build without signing
         shell: bash
         run: |

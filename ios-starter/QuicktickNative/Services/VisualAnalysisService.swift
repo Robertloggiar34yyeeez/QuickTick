@@ -1,6 +1,7 @@
 import Foundation
 import Vision
 import CoreGraphics
+import CryptoKit
 
 /// Serial, idle-only analysis. No provider, resolver, video download or model download access.
 actor VisualAnalysisService {
@@ -74,8 +75,12 @@ actor VisualAnalysisService {
         guard resourcesAllowAnalysis() else { return }
         restore()
         if favorite { record(.like, post: post) }
-        guard useVision, resourcesAllowAnalysis(), state.analysisVersions?[post.stableID] != "appearance-wd-v3",
-              let before = state.features[post.stableID] ?? VisualFeatures.metadata(post) else { return }
+        let content = [post.mediaUrl, post.previewUrl, post.thumbUrl, post.tags.sorted().joined(separator: " ")].joined(separator: "|")
+        let revision = "appearance-wd-v3|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
+        guard useVision, resourcesAllowAnalysis(), state.analysisVersions?[post.stableID] != revision,
+              let metadata = VisualFeatures.metadata(post) else { return }
+        let before = state.features[post.stableID] ?? metadata
+        guard before.domain == metadata.domain else { return }
         var preview = await MediaImagePipeline.shared.cachedAnalysisImage(raw: post.cardPreviewURL)
         if preview == nil, favorite, resourcesAllowAnalysis() {
             let delay = 3 - Date().timeIntervalSince(lastPreviewAttempt)
@@ -86,7 +91,7 @@ actor VisualAnalysisService {
         }
         guard let image = preview else { return }
         guard resourcesAllowAnalysis() else { return }
-        var enriched = before
+        var enriched = metadata
         enriched.pixelsAnalyzed = true
         enriched.version = "cached-appearance-v2"
         enriched.fingerprint = Self.fingerprint(image.image)
@@ -133,7 +138,7 @@ actor VisualAnalysisService {
         state.profiles[before.domain.rawValue] = profile
         state.features[post.stableID] = enriched
         if state.analysisVersions == nil { state.analysisVersions = [:] }
-        state.analysisVersions?[post.stableID] = "appearance-wd-v3"
+        state.analysisVersions?[post.stableID] = revision
         trimFeatures()
         persist()
     }

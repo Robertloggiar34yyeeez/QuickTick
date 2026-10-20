@@ -37,14 +37,14 @@ final class VisualTasteTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let service = VisualAnalysisService(directory: directory)
-        let post = Post(key: "history", id: "1", provider: "rule34", tags: ["palcomix", "chun-li", "long_hair"], type: "image")
+        let post = Post(key: "history", id: "1", provider: "rule34", tags: ["2d", "palcomix", "chun-li", "long_hair"], type: "image")
         await service.record(.like, post: post)
         await service.analyzeFavorite(post, useVision: false)
         await service.analyzeFavorite(post, useVision: false)
         let state = await service.snapshot()
-        XCTAssertEqual(state.profiles["anime"]?.artists["palcomix"]?.positive, 0.5)
-        XCTAssertEqual(state.profiles["anime"]?.subjects["chun_li"]?.positive, 0.7)
-        XCTAssertNil(state.profiles["realLife"])
+        XCTAssertEqual(state.profiles["rule34|anime"]?.artists["palcomix"]?.positive, 0.5)
+        XCTAssertEqual(state.profiles["rule34|anime"]?.subjects["chun_li"]?.positive, 0.7)
+        XCTAssertNil(state.profiles["redgifs|realLife"])
         let restored = await VisualAnalysisService(directory: directory).snapshot()
         XCTAssertEqual(restored.profiles, state.profiles)
     }

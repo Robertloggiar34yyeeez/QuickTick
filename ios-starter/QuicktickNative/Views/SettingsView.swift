@@ -81,7 +81,7 @@ struct SettingsView: View {
                 Button("Save exclusions") { store.setExclusions(exclusions.split(whereSeparator: \.isWhitespace).map(String.init)); Task { await store.refresh() } }
             }
             Section("Optional visual intelligence") {
-                Toggle("Learn visual taste while idle", isOn: $store.visualAnalysisEnabled)
+                Toggle("Learn visual taste while browsing", isOn: $store.visualAnalysisEnabled)
                 Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
                 ManualVisualRefreshPanel(manager: store.downloads)
             }
@@ -139,7 +139,7 @@ private struct ManualVisualRefreshPanel: View {
                 ProgressView(value: progress.fraction) {
                     Text(progress.status).accessibilityIdentifier("manual-visual-status")
                 }.accessibilityIdentifier("manual-visual-progress")
-                    .accessibilityValue("\(progress.completed) of \(progress.total) favorites checked")
+                    .accessibilityValue("\(progress.completed) of \(progress.total) new posts analyzed")
                 if let previewURL {
                     AnimatedGIFSurface(url: previewURL,
                         playing: store.isForeground && !reduceMotion && !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState.rawValue < 2,

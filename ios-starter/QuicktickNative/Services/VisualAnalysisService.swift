@@ -3,7 +3,21 @@ import Vision
 import CoreGraphics
 import CryptoKit
 
-/// Serial, idle-only analysis. No provider, resolver, video download or model download access.
+struct FeedbackEnvelope: Codable, Sendable {
+    var id: String = UUID().uuidString
+    var post: Post
+    var event: RecommendationEvent
+    var query: String? = nil
+}
+struct PendingVisualWork: Codable, Sendable {
+    var post: Post
+    var priority: Int
+    var retryAfter = Date.distantPast
+    var attempts = 0
+    var created = Date()
+}
+
+/// One bounded worker; metadata feedback is independent of model execution.
 actor VisualAnalysisService {
     struct State: Codable, Sendable {
         var version = 1
@@ -13,6 +27,10 @@ actor VisualAnalysisService {
         var seen: Set<String> = []
         var disliked: Set<String> = []
         var analysisVersions: [String: String]? = nil
+        var pending: [PendingVisualWork]? = nil
+        var outbox: [FeedbackEnvelope]? = nil
+        var schema: Int? = 2
+        var archivedProfiles: [String: VisualProfile]? = nil
     }
     private var state = State()
     private var restored = false
@@ -22,6 +40,12 @@ actor VisualAnalysisService {
     private let animeTagger = WDAnimeTagger()
     private var taxonomy: VisualTagTaxonomy?
     private var taxonomyAttempted = false
+    private var analyzing = false
+    private var lightVersions: [String: String] = [:]
+    private(set) var inferenceRuns = 0
+    private(set) var cacheHits = 0
+    func metadataTaxonomy() -> VisualTagTaxonomy? { loadTaxonomy(); return taxonomy }
+    private func profileKey(_ post: Post) -> String { TasteConcepts.profileKey(post) }
     private func loadTaxonomy() {
         guard !taxonomyAttempted else { return }; taxonomyAttempted = true
         guard let url = Bundle.main.url(forResource: "visual-tag-taxonomy", withExtension: "json"),
@@ -43,6 +67,13 @@ actor VisualAnalysisService {
             let saved = try JSONDecoder().decode(State.self, from: data)
             guard saved.version == 1 else { writeBlocked = true; return }
             state = saved
+            if state.schema == nil {
+                // Old provider-derived anime/real weights cannot safely seed a
+                // content-derived medium. Preserve them and rebuild from favorites.
+                state.archivedProfiles = state.profiles; state.profiles = [:]
+                state.liked = []; state.seen = []; state.disliked = []
+                state.analysisVersions = [:]; state.schema = 2
+            }
         } catch { writeBlocked = true } // Preserve unreadable private user data.
     }
     func snapshot() -> State { restore(); flush(); return state }
@@ -54,10 +85,11 @@ actor VisualAnalysisService {
         Self.resourcesAllowAnalysis(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
             thermal: ProcessInfo.processInfo.thermalState.rawValue, playback: false, loading: false) && !Task.isCancelled
     }
-    func record(_ event: RecommendationEvent, post: Post) {
+    func record(_ event: RecommendationEvent, post: Post, queueAnalysis: Bool = true) {
         restore()
-        guard !Task.isCancelled, let features = state.features[post.stableID] ?? VisualFeatures.metadata(post, taxonomy: taxonomy),
-              features.domain == VisualDomain.classify(post) else { return }
+        guard !Task.isCancelled, let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy) else { return }
+        let cached = state.features[post.stableID]
+        let features = cached?.domain == metadata.domain ? cached! : metadata
         switch event {
         case .like: guard state.liked.insert(post.stableID).inserted else { return }
         case .unlike: guard state.liked.remove(post.stableID) != nil else { return }
@@ -65,11 +97,75 @@ actor VisualAnalysisService {
             guard state.seen.insert(post.stableID).inserted else { return }
             if state.seen.count > 4096 { state.seen = [post.stableID] }
         case .less: guard state.disliked.insert(post.stableID).inserted else { return }
-        default: return
+        default:
+            if queueAnalysis { _ = enqueue(post, priority: event == .download ? 3 : 1) }
+            return
         }
         state.features[post.stableID] = features
-        state.profiles[features.domain.rawValue, default: VisualProfile()].record(event, features: features)
+        state.profiles[profileKey(post), default: VisualProfile()].record(event, features: features)
+        if queueAnalysis, event != .unlike { _ = enqueue(post, priority: event == .less ? 5 : (event == .like ? 4 : 1)) }
         trimFeatures(); persist()
+    }
+    func stage(_ envelope: FeedbackEnvelope, queueAnalysis: Bool) {
+        restore()
+        if state.outbox?.contains(where: { $0.id == envelope.id }) == true { return }
+        if state.outbox == nil { state.outbox = [] }
+        // Prefer durable explicit feedback over high-frequency watch ticks.
+        if state.outbox!.count >= 128 {
+            if let index = state.outbox!.firstIndex(where: { ![.like, .less, .unlike].contains($0.event) }) { state.outbox!.remove(at: index) }
+            else { state.outbox!.removeFirst() }
+        }
+        state.outbox!.append(envelope)
+        record(envelope.event, post: envelope.post, queueAnalysis: queueAnalysis)
+        flush()
+    }
+    func pendingFeedback() -> [FeedbackEnvelope] { restore(); return state.outbox ?? [] }
+    func acknowledge(_ id: String) { state.outbox?.removeAll { $0.id == id }; persist() }
+    func pendingCount() -> Int { restore(); return state.pending?.count ?? 0 }
+    @discardableResult func enqueue(_ post: Post, priority: Int) -> Bool {
+        restore()
+        if state.analysisVersions?[post.stableID] == revision(post) { return true }
+        if state.pending == nil { state.pending = [] }
+        if let index = state.pending!.firstIndex(where: { $0.post.stableID == post.stableID }) {
+            state.pending![index].priority = max(priority, state.pending![index].priority)
+            state.pending![index].post = post
+            if priority >= 4 { state.pending![index].retryAfter = .distantPast }
+        } else {
+            if state.pending!.count >= 64 {
+                guard priority > 1, let index = state.pending!.indices.min(by: { state.pending![$0].priority < state.pending![$1].priority }), state.pending![index].priority <= priority else { return false }
+                state.pending!.remove(at: index)
+            }
+            state.pending!.append(PendingVisualWork(post: post, priority: priority))
+        }
+        persist(); return true
+    }
+    func waitForWorker() async {
+        while analyzing && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(25)) }
+    }
+    /// Lightweight cache-only attributes can run during browsing. Heavy models
+    /// and bounded thumbnail requests require an uncontended resource window.
+    func processNext(heavy: Bool) async -> Bool {
+        restore()
+        guard !analyzing, resourcesAllowAnalysis(), let work = state.pending?.filter({ $0.retryAfter <= .now })
+            .sorted(by: { a, b in a.priority == b.priority ? (a.priority >= 4 ? a.created > b.created : a.created < b.created) : a.priority > b.priority }).first else { return false }
+        let started = Date()
+        defer { FeedPerformance.emit(heavy ? "visual_heavy_slice" : "visual_cached_slice", started: started, count: 1) }
+        let before = state.features[work.post.stableID]
+        await analyze(work.post, favorite: state.liked.contains(work.post.stableID), useVision: heavy,
+            disliked: state.disliked.contains(work.post.stableID), lightweight: !heavy)
+        guard !Task.isCancelled else { return false }
+        let complete = state.analysisVersions?[work.post.stableID] == revision(work.post)
+        if complete { state.pending?.removeAll { $0.post.stableID == work.post.stableID } }
+        else if let index = state.pending?.firstIndex(where: { $0.post.stableID == work.post.stableID }) {
+            state.pending![index].attempts += 1
+            state.pending![index].retryAfter = .now.addingTimeInterval(heavy ? 30 : 3)
+        }
+        persist(); return before != state.features[work.post.stableID]
+    }
+    private func revision(_ post: Post) -> String {
+        let sources = [post.mediaUrl, post.previewUrl, post.thumbUrl].map { FeedExclusions.canonicalMediaURL($0) ?? $0 }
+        let content = (sources + [post.tags.sorted().joined(separator: " "), post.category ?? "", post.type, post.creator ?? ""]).joined(separator: "|")
+        return TasteConcepts.version + "|appearance-wd-v3-fp16|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.
     func analyzeFavorite(_ post: Post, useVision: Bool) async {
@@ -78,9 +174,16 @@ actor VisualAnalysisService {
     func analyzeCachedPost(_ post: Post, useVision: Bool) async {
         await analyze(post, favorite: false, useVision: useVision)
     }
-    func historicalQueue(_ posts: [Post]) -> [Post] { posts.sorted { $0.stableID < $1.stableID } }
-    private func analyze(_ post: Post, favorite: Bool, useVision: Bool) async {
-        guard resourcesAllowAnalysis() else { return }
+    func analyzeDisliked(_ post: Post, useVision: Bool) async {
+        await analyze(post, favorite: false, useVision: useVision, disliked: true)
+    }
+    func historicalQueue(_ posts: [Post]) -> [Post] {
+        restore(); loadTaxonomy()
+        return posts.filter { state.analysisVersions?[$0.stableID] != revision($0) }.sorted { $0.stableID < $1.stableID }
+    }
+    private func analyze(_ post: Post, favorite: Bool, useVision: Bool, disliked: Bool = false, lightweight: Bool = false) async {
+        guard !analyzing, resourcesAllowAnalysis() else { return }
+        analyzing = true; defer { analyzing = false }
         restore()
         loadTaxonomy() // Only reached by deferred analysis, never feed publication.
         guard let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy) else { return }
@@ -90,20 +193,20 @@ actor VisualAnalysisService {
             updated.artists = Array(Set((old.artists ?? []) + (metadata.artists ?? []))).sorted()
             if updated != old {
                 if state.liked.contains(post.stableID) {
-                    state.profiles[old.domain.rawValue, default: VisualProfile()].record(.unlike, features: old)
-                    state.profiles[old.domain.rawValue, default: VisualProfile()].record(.like, features: updated)
+                    state.profiles[profileKey(post), default: VisualProfile()].record(.unlike, features: old)
+                    state.profiles[profileKey(post), default: VisualProfile()].record(.like, features: updated)
                 }
                 state.features[post.stableID] = updated; persist()
             }
         }
         if favorite { record(.like, post: post) }
-        let content = [post.mediaUrl, post.previewUrl, post.thumbUrl, post.tags.sorted().joined(separator: " ")].joined(separator: "|")
-        let revision = "appearance-wd-v3-fp16|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
-        guard useVision, resourcesAllowAnalysis(), state.analysisVersions?[post.stableID] != revision else { return }
-        let before = state.features[post.stableID] ?? metadata
-        guard before.domain == metadata.domain else { return }
+        let revision = revision(post)
+        if state.analysisVersions?[post.stableID] == revision { cacheHits += 1; return }
+        guard (useVision || lightweight), resourcesAllowAnalysis() else { return }
+        if lightweight, lightVersions[post.stableID] == revision { return }
+        let before = state.features[post.stableID]?.domain == metadata.domain ? state.features[post.stableID]! : metadata
         var preview = await MediaImagePipeline.shared.cachedAnalysisImage(raw: post.cardPreviewURL)
-        if preview == nil, favorite, resourcesAllowAnalysis(), VisualPreviewLoader.thumbnailURL(post) != nil {
+        if preview == nil, !lightweight, (favorite || disliked), resourcesAllowAnalysis(), VisualPreviewLoader.thumbnailURL(post) != nil {
             let delay = 3 - Date().timeIntervalSince(lastPreviewAttempt)
             if delay > 0 { do { try await Task.sleep(for: .seconds(delay)) } catch { return } }
             guard resourcesAllowAnalysis() else { return }
@@ -113,61 +216,70 @@ actor VisualAnalysisService {
         guard let image = preview else { return }
         guard resourcesAllowAnalysis() else { return }
         var enriched = metadata
+        let taggerCoolingDown = !lightweight && before.domain == .anime ? await animeTagger.cooldownDelay() > 0 : false
         enriched.pixelsAnalyzed = true
         enriched.version = "cached-appearance-v2"
         enriched.fingerprint = Self.fingerprint(image.image)
         enriched.attributes.merge(VisualAppearanceEncoder.attributes(image.image), uniquingKeysWith: max)
-        if let encoded = try? await VisualAppearanceEncoder.embedding(image) {
+        if !before.embedding.isEmpty, lightVersions[post.stableID] == revision {
+            enriched.embedding = before.embedding; enriched.attributes.merge(before.attributes, uniquingKeysWith: max)
+            enriched.version = before.version
+        } else if !lightweight, let encoded = try? await VisualAppearanceEncoder.embedding(image) {
             enriched.embedding = encoded.vector; enriched.version = encoded.version
         }
         guard resourcesAllowAnalysis() else { return }
-        if before.domain == .anime {
-            let delay = await animeTagger.cooldownDelay()
-            if delay > 0 { do { try await Task.sleep(for: .seconds(delay)) } catch { return } }
-            guard resourcesAllowAnalysis() else { return }
-        }
-        if before.domain == .anime, let tagged = await animeTagger.analyze(image, domain: .anime) {
+        if !lightweight, !taggerCoolingDown, before.domain == .anime, let tagged = await animeTagger.analyze(image, domain: .anime) {
             enriched.attributes.merge(tagged.attributes, uniquingKeysWith: max)
             if enriched.subjects.isEmpty { enriched.subjects = tagged.subjects }
+            for subject in tagged.subjects where enriched.conceptEvidence?["character:" + subject] == nil {
+                if enriched.conceptEvidence == nil { enriched.conceptEvidence = [:] }
+                enriched.conceptEvidence?["character:" + subject] = ConceptEvidence(confidence: 0.9, origin: "wd-v3-high-confidence")
+            }
             enriched.version += "+wd-vit-v3-7f6b584-fp16"
-        }
-        guard resourcesAllowAnalysis() else { return }
-        if before.domain == .realLife {
-            // Vision labels describe presentation. Faces are never identity evidence.
-            let request = VNClassifyImageRequest()
-            request.preferBackgroundProcessing = true
-            request.usesCPUOnly = true
-            let handler = VNImageRequestHandler(cgImage: image.image, options: [:])
-            if (try? handler.perform([request])) != nil {
-                let allowed: Set<String> = ["beach", "forest", "outdoor", "indoor", "portrait", "night", "sunset"]
-                for label in (request.results ?? []).prefix(12) where label.confidence >= 0.8 && allowed.contains(label.identifier) {
-                    enriched.attributes["setting:" + label.identifier] = Double(label.confidence) * 0.7
-                }
+            let mapped = TasteConcepts.resolve(tagged.subjects)
+            enriched.franchises = Array(Set((enriched.franchises ?? []) + mapped.franchises)).sorted()
+            for franchise in mapped.franchises {
+                enriched.conceptEvidence?["franchise:" + franchise] = ConceptEvidence(confidence: 0.85, origin: "wd-v3+reviewed_mapping")
             }
         }
         guard resourcesAllowAnalysis() else { return }
+        if !lightweight, before.domain == .realLife {
+            // Vision labels describe presentation. Faces are never identity evidence.
+            enriched.attributes.merge(await VisualAppearanceEncoder.sceneAttributes(image), uniquingKeysWith: max)
+        }
+        guard resourcesAllowAnalysis() else { return }
         // Reconcile a like rather than counting it again when cached pixels become available.
-        var profile = state.profiles[before.domain.rawValue] ?? VisualProfile()
+        var profile = state.profiles[profileKey(post)] ?? VisualProfile()
         if state.liked.contains(post.stableID) {
             profile.record(.unlike, features: before); profile.record(.like, features: enriched)
         } else {
             var added = enriched
             added.attributes = enriched.attributes.filter { before.attributes[$0.key] == nil }; added.subjects = []; added.artists = []
             if state.seen.contains(post.stableID) { profile.record(.impression, features: added) }
-            if state.disliked.contains(post.stableID) { profile.record(.less, features: added) }
+            if state.disliked.contains(post.stableID) {
+                // Metadata was already penalized; only new attributes and the
+                // feature print are learned now. Keep identities for context.
+                added.subjects = before.subjects
+                added.artists = before.artists
+                profile.record(.less, features: added, identityEvidence: false)
+            }
         }
-        state.profiles[before.domain.rawValue] = profile
+        state.profiles[profileKey(post)] = profile
         state.features[post.stableID] = enriched
         if state.analysisVersions == nil { state.analysisVersions = [:] }
-        state.analysisVersions?[post.stableID] = revision
+        if !lightweight, !taggerCoolingDown { state.analysisVersions?[post.stableID] = revision; inferenceRuns += 1 }
+        lightVersions[post.stableID] = revision
+        if lightVersions.count > 512 { lightVersions.removeValue(forKey: lightVersions.keys.sorted()[0]) }
         trimFeatures()
         persist()
     }
     func scores(_ posts: [Post]) -> [String: Double] {
         restore()
-        return Dictionary(posts.compactMap { post -> (String, Double)? in
-            guard let f = state.features[post.stableID] ?? VisualFeatures.metadata(post, taxonomy: taxonomy),
-                  f.domain == VisualDomain.classify(post), let p = state.profiles[f.domain.rawValue] else { return nil }
+        return Dictionary(posts.prefix(128).compactMap { post -> (String, Double)? in
+            guard let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy),
+                  let p = state.profiles[profileKey(post)] else { return nil }
+            let cached = state.features[post.stableID]
+            let f = cached?.domain == metadata.domain ? cached! : metadata
             return (post.stableID, p.score(f))
         }, uniquingKeysWith: { first, _ in first })
     }
@@ -179,26 +291,33 @@ actor VisualAnalysisService {
             let removable = state.features.keys.sorted()
             for key in removable.prefix(state.features.count - 512) { state.features.removeValue(forKey: key) }
         }
+        if let versions = state.analysisVersions, versions.count > 8192 {
+            state.analysisVersions = Dictionary(uniqueKeysWithValues: versions.sorted { $0.key < $1.key }.suffix(8192).map { ($0.key, $0.value) })
+        }
     }
     func discoveryTerms(provider: Provider) -> [String] {
         restore()
-        let domain: VisualDomain = provider == .rule34 ? .anime : .realLife
-        guard provider != .hanime, let profile = state.profiles[domain.rawValue] else { return [] }
-        let attributes = profile.attributes.filter { entry in
-            entry.value.positive >= 1.4 && entry.value.affinity > 0.08 &&
-                ["appearance:", "clothing:", "setting:", "style:"].contains(where: entry.key.hasPrefix)
-        }.sorted { $0.value.affinity > $1.value.affinity }.prefix(6).map { entry in
-            let raw = String(entry.key.split(separator: ":").last ?? "")
-            return provider == .rule34 ? raw : raw.replacingOccurrences(of: "_", with: " ")
-        }.filter { !$0.contains("composition") && !$0.contains("lighting") && !$0.contains("contrast") }
-        guard provider == .rule34 else { return attributes }
-        let identities = [profile.subjects, profile.artists].flatMap { evidence in
-            evidence.filter { $0.value.positive >= 1.4 && $0.value.affinity > 0.08 }
-                .sorted { $0.value.affinity > $1.value.affinity }.prefix(2).map(\.key)
-        }.map { $0 == "chun_li" ? "chun-li" : $0 }
-        // Keep attribute discovery prominent so unfamiliar characters can surface.
-        return Array(attributes.prefix(4)) + identities
+        let profiles = state.profiles.filter { $0.key.hasPrefix(provider.rawValue + "|") }.map(\.value)
+        return Array(Set(profiles.flatMap { profile in
+            profile.attributes.filter { $0.value.positive >= 1.4 && $0.value.affinity > 0.08 }
+                .sorted { $0.value.affinity > $1.value.affinity }.prefix(6)
+                .map { String($0.key.split(separator: ":").last ?? "") }
+        })).sorted().prefix(8).map { $0 }
     }
+    func discoveryQueries(provider: Provider) -> [[String]] {
+        restore()
+        guard provider == .rule34 else { return [] }
+        return state.profiles.keys.sorted().filter { $0.hasPrefix(provider.rawValue + "|") }.flatMap { key -> [[String]] in
+            guard let profile = state.profiles[key], let medium = key.split(separator: "|").last,
+                  let tag = ["anime": "2d", "threeD": "3d", "realLife": "photo"][String(medium)] else { return [] }
+            let identities = [profile.artists, profile.subjects, profile.franchises].flatMap { values in
+                values.filter { $0.value.positive >= 1.4 && $0.value.affinity > 0.08 }
+                    .sorted { $0.value.affinity > $1.value.affinity }.prefix(2).map(\.key)
+            }
+            return identities.prefix(4).map { [$0 == "chun_li" ? "chun-li" : $0, tag] }
+        }.prefix(12).map { $0 }
+    }
+
     private func persist() {
         diskTask?.cancel()
         diskTask = Task(priority: .background) { [weak self] in

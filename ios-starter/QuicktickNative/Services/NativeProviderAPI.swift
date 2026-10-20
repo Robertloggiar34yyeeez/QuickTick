@@ -26,7 +26,7 @@ actor ProviderRequestGate {
 // Provider networking lives on the API actor, never on a scrolling view. No
 // requests in this service use the optional QuickTick Sync origin.
 enum NativeProviderAPI {
-    static let userAgent = "QuickTickNative/0.8.5"
+    static let userAgent = "QuickTickNative/0.9"
     static let quicktickHost = "quick-tick-webb.vercel.app"
 
     static func origin(_ provider: Provider) -> URL {
@@ -129,11 +129,10 @@ enum NativeProviderAPI {
         }
     }
     static func page(_ rows: [Post], hasMore: Bool, query: ParsedQuery, immersive: Bool) -> PostPage {
-        let banned = Set(query.excluded.map { $0.lowercased() })
         var seen = Set<String>()
         return PostPage(items: rows.filter {
             !$0.id.isEmpty && seen.insert($0.stableID).inserted && (!immersive || $0.isImmersiveMedia)
-                && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() }))
+                && !RecommendationTagRules.rejects($0, exclusions: query.excluded)
         }, hasMore: hasMore)
     }
 

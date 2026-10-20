@@ -140,18 +140,18 @@ struct HomeFeedView: View {
     }
 
     private func selectVisiblePlayback(viewport: CGSize) {
-        guard store.activeTab == 0, store.isForeground, !store.isManualVisualScanRunning else { return }
+        guard !immersive, store.activeTab == 0, store.isForeground, !store.isManualVisualScanRunning else { return }
         let candidate = visibleCandidate(viewport: viewport)
         if store.inlinePlaybackID != candidate { store.inlinePlaybackID = candidate }
     }
     private func visibleCandidate(viewport: CGSize) -> String? {
-        guard store.activeTab == 0, store.isForeground, !store.isManualVisualScanRunning else { return nil }
+        guard !immersive, store.activeTab == 0, store.isForeground, !store.isManualVisualScanRunning else { return nil }
         if let fullScreen = store.fullScreenPlaybackID { return fullScreen }
         let playable = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
         return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playable)
     }
     private func warmNext(after key: String?) async {
-        guard !store.isManualVisualScanRunning else { return }
+        guard !immersive, store.activeTab == 0, store.isForeground, !store.isManualVisualScanRunning, !Task.isCancelled else { return }
         guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }
         let next = Array(store.posts.dropFirst(index + 1).prefix(2))
         let nextVideo = store.posts.dropFirst(index + 1).prefix(4).first { $0.type.lowercased() == "video" }

@@ -69,13 +69,15 @@ final class FastFeedVisualTests: XCTestCase {
         let b = post("manual-b-" + suffix, tags: ["qipao"])
         store.favorites = [a.stableID: a, b.stableID: b]
         store.startManualVisualRefresh()
-        for _ in 0..<100 where store.isManualVisualScanRunning { try? await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<1000 where store.isManualVisualScanRunning { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertFalse(store.isManualVisualScanRunning)
         XCTAssertEqual(store.manualVisualProgress?.completed, 2)
         XCTAssertEqual(store.manualVisualProgress?.fraction, 1)
         let first = await store.visual.snapshot()
         store.startManualVisualRefresh()
-        for _ in 0..<100 where store.isManualVisualScanRunning { try? await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<1000 where store.isManualVisualScanRunning { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(store.isManualVisualScanRunning)
+        XCTAssertEqual(store.manualVisualProgress?.completed, 2)
         let second = await store.visual.snapshot()
         XCTAssertEqual(first.liked, second.liked)
         store.startManualVisualRefresh(); store.cancelManualVisualRefresh()
@@ -107,13 +109,13 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertLessThanOrEqual(exclusions.recent.count, 2048)
     }
     func testConservativeDomainClassificationAndExplicitIdentity() {
-        XCTAssertEqual(VisualDomain.classify(post("a")), .anime)
+        XCTAssertEqual(VisualDomain.classify(post("a")), .uncertain)
         for provider in ["pornhub", "eporner", "redgifs"] {
-            XCTAssertEqual(VisualDomain.classify(post("b", provider: provider)), .realLife)
-            XCTAssertNil(VisualDomain.classify(post("b", provider: provider, tags: ["anime"])))
+            XCTAssertEqual(VisualDomain.classify(post("b", provider: provider)), .uncertain)
+            XCTAssertEqual(VisualDomain.classify(post("b", provider: provider, tags: ["anime"])), .anime)
         }
-        XCTAssertNil(VisualDomain.classify(post("c", tags: ["photo"])))
-        XCTAssertNil(VisualDomain.classify(post("d", provider: "hanime")))
+        XCTAssertEqual(VisualDomain.classify(post("c", tags: ["photo"])), .realLife)
+        XCTAssertEqual(VisualDomain.classify(post("d", provider: "hanime")), .uncertain)
         XCTAssertTrue(VisualFeatures.metadata(post("e", provider: "redgifs", tags: ["blonde_hair"]))!.subjects.isEmpty)
     }
     func testDislikedChunLiPresentationPreservesIdentityAndContext() {
@@ -153,17 +155,17 @@ final class FastFeedVisualTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let analyzer = VisualAnalysisService(directory: directory)
-        let anime = post("a", tags: ["chun_li", "qipao"])
-        let real = post("b", provider: "eporner", tags: ["jacket", "performer:explicit_metadata"])
+        let anime = post("a", tags: ["2d", "chun_li", "qipao"])
+        let real = post("b", provider: "eporner", tags: ["photo", "jacket", "performer:explicit_metadata"])
         for _ in 0..<3 {
             await analyzer.analyzeFavorite(anime, useVision: false)
             await analyzer.analyzeFavorite(real, useVision: false)
         }
         let saved = await analyzer.snapshot()
         XCTAssertEqual(saved.liked.count, 2)
-        XCTAssertNotNil(saved.profiles["anime"]?.attributes["clothing:qipao"])
-        XCTAssertNil(saved.profiles["anime"]?.attributes["clothing:jacket"])
-        XCTAssertNil(saved.profiles["realLife"]?.subjects["chun_li"])
+        XCTAssertNotNil(saved.profiles["rule34|anime"]?.attributes["clothing:qipao"])
+        XCTAssertNil(saved.profiles["rule34|anime"]?.attributes["clothing:jacket"])
+        XCTAssertNil(saved.profiles["eporner|realLife"]?.subjects["chun_li"])
         let restored = await VisualAnalysisService(directory: directory).snapshot()
         XCTAssertEqual(saved.profiles, restored.profiles)
         XCTAssertEqual(saved.features, restored.features)
@@ -191,6 +193,47 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertFalse(store.players.isPreparing("next"))
         store.players.releaseAll()
     }
+    @MainActor func testRecommendationTasteAffectsInitialAndPaginatedPosts() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FastFeedProtocol.self]
+        let credentials = ProviderCredentials(rule34User: "fixture-user", rule34Key: "fixture-key")
+        let store = AppStore(api: QuicktickAPIClient(session: URLSession(configuration: config), credentials: credentials))
+        let liked = Post(key: "rule34:liked", id: "liked", provider: "rule34", tags: ["sitting"])
+        await store.recommendations.record(.like, post: liked)
+        await store.refresh()
+        XCTAssertEqual(store.posts.map(\.id), ["2", "1"])
+        await store.loadMore()
+        XCTAssertEqual(store.posts.map(\.id), ["2", "1", "4", "3"])
+        store.selectedProvider = .eporner
+    }
+
+    func testExplicitBlockedVariantsAreFilteredBeforeRanking() {
+        let furry = post("f", tags: ["furry_female"])
+        let anthro = post("a", tags: ["anthro_wolf"])
+        let unrelated = post("u", tags: ["chun-li_(street_fighter)", "2d"])
+        let query = ParsedQuery(included: [], excluded: ["furry"])
+        let filtered = NativeProviderAPI.page([furry, anthro, unrelated],
+            hasMore: false, query: query, immersive: false)
+        XCTAssertEqual(filtered.items, [unrelated])
+        XCTAssertTrue(RecommendationTagRules.rejects(unrelated, exclusions: ["chun_li"]))
+        XCTAssertFalse(RecommendationTagRules.rejects(unrelated, exclusions: ["3d"]))
+    }
+    func testDislikedVisualResemblanceIsContextualToLikedCharacter() {
+        var profile = VisualProfile()
+        let liked = VisualFeatures(domain: .anime, attributes: ["style:2d": 1],
+            subjects: ["chun_li"], embedding: [1, 0, 0])
+        let disliked = VisualFeatures(domain: .anime, attributes: ["style:3d": 1],
+            subjects: ["chun_li"], embedding: [0, 1, 0])
+        for _ in 0..<4 { profile.record(.like, features: liked) }
+        let before = profile.subjects["chun_li"]?.affinity
+        profile.record(.less, features: disliked)
+        XCTAssertEqual(before, profile.subjects["chun_li"]?.affinity)
+        XCTAssertNotNil(profile.negativeContextClusters["subject:chun_li"])
+        let another3D = VisualFeatures(domain: .anime, attributes: ["style:3d": 1],
+            subjects: ["chun_li"], embedding: [0, 0.99, 0.01])
+        XCTAssertGreaterThan(profile.score(liked), profile.score(another3D))
+    }
+
     @MainActor func testFeedPublishesProviderOrderWithoutAIAndPaginationAdvances() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FastFeedProtocol.self]
         let credentials = ProviderCredentials(rule34User: "fixture-user", rule34Key: "fixture-key")

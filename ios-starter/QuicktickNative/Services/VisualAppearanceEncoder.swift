@@ -8,7 +8,7 @@ enum VisualAppearanceEncoder {
         let request: VNRequest
         init(_ request: VNRequest) { self.request = request }
     }
-    static func embedding(_ image: DecodedMediaImage) async throws -> (vector: [Float], version: String) {
+    @concurrent static func embedding(_ image: DecodedMediaImage) async throws -> (vector: [Float], version: String) {
         try Task.checkCancellation()
         let request = VNGenerateImageFeaturePrintRequest()
         request.preferBackgroundProcessing = true
@@ -28,6 +28,19 @@ enum VisualAppearanceEncoder {
         let norm = sqrt(vector.reduce(Float(0)) { $0 + $1 * $1 })
         guard norm > 0 else { throw CocoaError(.coderInvalidValue) }
         return (vector.map { $0 / norm }, "vision-featureprint-r\(request.revision)-v2")
+    }
+    @concurrent static func sceneAttributes(_ image: DecodedMediaImage) async -> [String: Double] {
+        let request = VNClassifyImageRequest()
+        request.preferBackgroundProcessing = true; request.usesCPUOnly = true
+        let cancellation = Cancellation(request)
+        return await withTaskCancellationHandler {
+            guard !Task.isCancelled else { return [:] }
+            try? VNImageRequestHandler(cgImage: image.image, options: [:]).perform([request])
+            guard !Task.isCancelled else { return [:] }
+            let allowed: Set<String> = ["beach", "forest", "outdoor", "indoor", "portrait", "night", "sunset"]
+            return Dictionary((request.results ?? []).prefix(12).filter { $0.confidence >= 0.8 && allowed.contains($0.identifier) }
+                .map { ("setting:" + $0.identifier, Double($0.confidence) * 0.7) }, uniquingKeysWith: max)
+        } onCancel: { cancellation.request.cancel() }
     }
     static func attributes(_ image: CGImage) -> [String: Double] {
         var pixels = [UInt8](repeating: 0, count: 32 * 32 * 4)

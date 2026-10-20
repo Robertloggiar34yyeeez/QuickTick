@@ -1,6 +1,24 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testActiveLearningKeepsPlaybackAndDislikeResponsive() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-active-learning", "--measure-performance"]
+        let start = Date(); app.launch()
+        let video = app.buttons["inline-play-test:video"]
+        XCTAssertTrue(video.waitForExistence(timeout: 10))
+        print("QUICKTICK_METRIC simulator_fixture_launch_to_first_post_ms=\(Date().timeIntervalSince(start) * 1000)")
+        expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: video)
+        waitForExpectations(timeout: 15)
+        for _ in 0..<3 { app.swipeUp(); app.swipeDown() }
+        app.buttons["tab-Home"].tap()
+        let dislike = app.buttons["dislike-test:video"]
+        XCTAssertTrue(dislike.waitForExistence(timeout: 10)); dislike.tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dislike)
+        waitForExpectations(timeout: 5)
+        XCTAssertFalse(app.buttons["Close full image"].exists)
+        XCTAssertTrue(app.buttons["dislike-test:image"].exists)
+    }
     @MainActor func testCompactVisualSearchFiltersAndExcludedTags() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         app.buttons["search-filters"].tap()
@@ -309,6 +327,9 @@ final class NavigationTests: XCTestCase {
         let surface = app.otherElements["immersive-video-surface"].firstMatch
         expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: surface)
         waitForExpectations(timeout: 10)
+        let initialProgress = progress.value as? String ?? ""
+        expectation(for: NSPredicate { _, _ in (progress.value as? String ?? "") != initialProgress }, evaluatedWith: progress)
+        waitForExpectations(timeout: 8)
         center.tap() // Pause before verifying an exact seek, independent of elapsed time.
         progress.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)).tap()
         let percentage = Int((progress.value as? String ?? "").split(separator: " ").first ?? "") ?? -1
@@ -320,6 +341,11 @@ final class NavigationTests: XCTestCase {
         app.swipeUp()
         expectation(for: NSPredicate(format: "value == %@", "Not liked"), evaluatedWith: like)
         waitForExpectations(timeout: 5)
+        expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: surface)
+        waitForExpectations(timeout: 10)
+        let nextProgress = progress.value as? String ?? ""
+        expectation(for: NSPredicate { _, _ in (progress.value as? String ?? "") != nextProgress }, evaluatedWith: progress)
+        waitForExpectations(timeout: 8)
         XCTAssertEqual(like.frame.midX, before.midX, accuracy: 1)
         XCTAssertEqual(like.frame.midY, before.midY, accuracy: 1)
         like.tap()

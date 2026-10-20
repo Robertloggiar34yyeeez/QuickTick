@@ -30,7 +30,7 @@ struct PostCardView: View {
         VStack(spacing: 0) {
             media.frame(width: mediaSize.width, height: mediaSize.height).clipped()
                 .background {
-                    if playbackTab == 0 {
+                    if playbackTab == 0 || playbackTab == 2 {
                         GeometryReader { geometry in
                             Color.clear.preference(key: HomeVisibleFrames.self, value: [post.stableID: geometry.frame(in: .named("home-viewport"))])
                         }

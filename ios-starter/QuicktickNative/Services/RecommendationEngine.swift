@@ -204,6 +204,8 @@ actor RecommendationEngine {
             recordEvidence(&profile, terms: signalTerms, positive: 0, negative: 0.8 * negativeShare, search: 0)
         case .less:
             profile.stats.less += 1; delta = -10; negativeThemeDelta = 6
+            profile.recentSeen.removeAll { $0 == post.stableID }; profile.recentSeen.append(post.stableID)
+            profile.recentSeen = Array(profile.recentSeen.suffix(maxSeen))
             recordEvidence(&profile, terms: signalTerms, positive: 0, negative: 1.35 * negativeShare, search: 0)
         case .download:
             profile.stats.downloads += 1; delta = 16; negativeThemeDelta = -6

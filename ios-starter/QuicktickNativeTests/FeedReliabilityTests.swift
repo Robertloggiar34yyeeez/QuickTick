@@ -30,7 +30,7 @@ private final class CandidatePageProtocol: URLProtocol, @unchecked Sendable {
         let page = (Int(query.first { $0.name == "pid" }?.value ?? "0") ?? 0) + 1
         let mode = query.first { $0.name == "tags" }?.value?.contains("video") == true ? "video" : "feed"
         let video = mode != "video" || page >= 3
-        let json: [[String: Any]] = [["id": "\(mode):\(page)", "tags": "engineering", "file_url": "https://cdn.example.invalid/fixture.\(video ? "mp4" : "jpg")"]]
+        let json: [[String: Any]] = [["id": "\(mode):\(page)", "tags": "engineering", "file_url": "https://cdn.example.invalid/fixture-\(mode)-\(page).\(video ? "mp4" : "jpg")"]]
         // A full raw page signals more pages even when local clip filtering removes it.
         let data = try! JSONSerialization.data(withJSONObject: Array(repeating: json[0], count: mode == "video" ? 100 : 80))
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
@@ -59,14 +59,14 @@ final class FeedReliabilityTests: XCTestCase {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
         await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:1"])
         await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:2"])
-        let saved = await store.recommendations.snapshot()
+        let saved = await store.recommendationState()
         let (restored, anotherSession) = candidateStore(); defer { anotherSession.invalidateAndCancel() }
-        await restored.recommendations.load(saved)
+        await restored.restoreRecommendationState(saved)
         await restored.refresh(); XCTAssertEqual(restored.posts.map(\.stableID), ["rule34:feed:3"])
     }
     @MainActor func testConsumedCandidatePageIsSkippedInsteadOfReinserted() async {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
-        await store.recommendations.record(.impression, post: Post(key: "rule34:feed:1", id: "1", provider: "Rule34"))
+        store.recordImpression(Post(key: "rule34:feed:1", id: "1", provider: "Rule34"))
         await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:2"])
     }
     @MainActor func testImmersiveRequestsVideoCandidatesAndSkipsSparsePages() async {

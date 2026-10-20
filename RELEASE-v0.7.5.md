@@ -2,7 +2,7 @@
 
 Provider responses publish immediately after local exclusions. Refresh and pagination do not await recommendation ranking, candidate planning, model initialization or inference. A background candidate plan can personalize the next request; a missing plan uses the existing broad API. Existing provider cursors, credentials, favorites and recommendation storage remain supported. Downloads restoration and optional Sync start after the first feed request.
 
-Home visible-post transitions preserve next-player preroll; tab/feed invalidation still cancels it. Per-attempt tokens reject stale KVO/preroll callbacks. Preparation remains bounded to one upcoming video with the existing three-player pool. No full-video download or new media transport is introduced. Cards prefer provider sample images when supplied and retain the original URL for full-image viewing.
+Home visible-post transitions preserve next-player preroll; tab/feed invalidation still cancels it. Per-attempt tokens reject stale KVO/preroll callbacks. Preparation remains bounded to one upcoming video with the existing three-player pool. No full-video download or new media transport is introduced. Cards retain original-image downsampling and full-image quality.
 
 Local exclusion snapshots reject liked/recent content and canonical media/page URL duplicates across provider IDs. Optional cached-thumbnail difference hashes suppress near duplicates. Home geometry records image and video impressions consistently; lazy cell creation alone does not count as an impression. A bounded recent window deduplicates repeated callbacks.
 

@@ -137,9 +137,7 @@ final class AppStore: ObservableObject {
             catch { lastError = "Keychain: \(error.localizedDescription)" }
         }
         if let local = await recommendationPersistence.load() {
-            await recommendations.load(local)
-            feedExclusions.restore(local.profiles.values.flatMap(\.recentSeen))
-            candidateCursors = local.candidatePages
+            await restoreRecommendationState(local)
         }
         let recommendationWarning = await recommendationPersistence.lastError
         if let recommendationWarning { storageWarning = recommendationWarning }
@@ -420,7 +418,7 @@ final class AppStore: ObservableObject {
         persistLocal(); queueSync()
     }
 
-    func less(_ post: Post) { posts.removeAll { $0.stableID == post.stableID }; Task(priority: .utility) { await record(.less, post: post) } }
+    func less(_ post: Post) { feedExclusions.viewed(post); posts.removeAll { $0.stableID == post.stableID }; Task(priority: .utility) { await record(.less, post: post) } }
 
     func download(_ post: Post) {
         downloads.download(post)
@@ -599,8 +597,18 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func restoreRecommendationState(_ state: RecommendationState) async {
+        await recommendations.load(state)
+        feedExclusions.restore(state.profiles.values.flatMap(\.recentSeen))
+        candidateCursors = state.candidatePages
+    }
+    func recommendationState() async -> RecommendationState {
+        var state = await recommendations.snapshot()
+        state.candidatePages = candidateCursors
+        return state
+    }
     private func persistRecommendations() async {
-        await recommendationPersistence.save(await recommendations.snapshot())
+        await recommendationPersistence.save(await recommendationState())
         let provider = selectedProvider; let token = generation
         let interests = await recommendations.positiveTerms(provider: provider, taste: tasteChoice(for: provider))
         if generation == token, selectedProvider == provider { learnedInterests = interests }

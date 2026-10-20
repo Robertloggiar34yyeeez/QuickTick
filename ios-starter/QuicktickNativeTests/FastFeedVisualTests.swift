@@ -71,6 +71,18 @@ final class FastFeedVisualTests: XCTestCase {
         common.record(.like, features: features); selective.record(.like, features: features)
         XCTAssertLessThan(common.score(features), selective.score(features))
     }
+    func testExistingTagEngineKeepsLikedSubjectAfterPresentationDislike() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let liked = post("good", tags: ["chun_li", "qipao", "watercolor"])
+        let bad = post("bad", tags: ["chun_li", "jacket", "sketch"])
+        await engine.record(.like, post: liked)
+        await engine.record(.less, post: bad)
+        let state = await engine.snapshot()
+        XCTAssertGreaterThan(state.profiles["rule34"]?.terms["chun_li"] ?? 0, 0)
+        let suppressed = await engine.isHardDisliked(liked, taste: TasteChoice())
+        XCTAssertFalse(suppressed)
+        XCTAssertTrue(state.profiles["rule34"]?.recentSeen.contains(bad.stableID) == true)
+    }
     func testHistoricalFavoritesPersistIdempotentlyAndNeverMixProfiles() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

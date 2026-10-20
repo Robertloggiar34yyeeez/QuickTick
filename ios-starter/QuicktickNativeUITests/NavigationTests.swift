@@ -327,6 +327,9 @@ final class NavigationTests: XCTestCase {
         let surface = app.otherElements["immersive-video-surface"].firstMatch
         expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: surface)
         waitForExpectations(timeout: 10)
+        let initialProgress = progress.value as? String ?? ""
+        expectation(for: NSPredicate { _, _ in (progress.value as? String ?? "") != initialProgress }, evaluatedWith: progress)
+        waitForExpectations(timeout: 8)
         center.tap() // Pause before verifying an exact seek, independent of elapsed time.
         progress.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)).tap()
         let percentage = Int((progress.value as? String ?? "").split(separator: " ").first ?? "") ?? -1
@@ -338,6 +341,11 @@ final class NavigationTests: XCTestCase {
         app.swipeUp()
         expectation(for: NSPredicate(format: "value == %@", "Not liked"), evaluatedWith: like)
         waitForExpectations(timeout: 5)
+        expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: surface)
+        waitForExpectations(timeout: 10)
+        let nextProgress = progress.value as? String ?? ""
+        expectation(for: NSPredicate { _, _ in (progress.value as? String ?? "") != nextProgress }, evaluatedWith: progress)
+        waitForExpectations(timeout: 8)
         XCTAssertEqual(like.frame.midX, before.midX, accuracy: 1)
         XCTAssertEqual(like.frame.midY, before.midY, accuracy: 1)
         like.tap()

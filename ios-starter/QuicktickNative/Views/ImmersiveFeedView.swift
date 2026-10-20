@@ -73,7 +73,7 @@ struct ImmersiveFeedView: View {
                 .coordinateSpace(name: "immersive-viewport")
                 .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
                     guard presentationActive, store.isForeground else { return }
-                    let key = VisiblePostSelector.select(frames: frames, viewport: CGRect(origin: .zero, size: geo.size), current: activeID)
+                    let key = VisiblePostSelector.immersive(frames: frames, viewport: CGRect(origin: .zero, size: geo.size), current: activeID, keys: Set(mediaPosts.map(\.stableID)))
                     if key != activeID { activeID = key }
                 }
                 .scrollIndicators(.hidden)
@@ -126,7 +126,7 @@ struct ImmersiveFeedView: View {
                 if keys.isEmpty { activeIndex = 0 }
             }
         }
-        .onChange(of: activeID) { _, key in if collectionTab == 2 { store.inlinePlaybackID = key }; if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index } }
+        .onChange(of: activeID) { _, key in if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index } }
         .onDisappear { if store.players.activeOwner == playbackOwner { store.players.releaseAll() } }
         .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
     }
@@ -312,6 +312,9 @@ private struct ImmersiveItemView: View {
             await prepare()
             guard !Task.isCancelled else { return }
             if !offline { store.recordImpression(post) }
+            var restoredResume = false
+            var stalledSeconds = 0
+            var lastTime = -1.0
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if let player {
@@ -321,9 +324,22 @@ private struct ImmersiveItemView: View {
                     }
                     let seconds = player.currentTime().seconds
                     let length = player.currentItem?.duration.seconds ?? 0
+                    // Read already available item metadata; remote track loading
+                    // must never suspend playback health/error monitoring.
+                    if let size = player.currentItem?.presentationSize, size.width > 0, size.height > 0, mediaSize != size { mediaSize = size }
+                    if !restoredResume, player.currentItem?.status == .readyToPlay, length.isFinite, length > 0 {
+                        restoredResume = true
+                        if let resume = PlaybackPosition.resume(store.resumePosition(post.stableID), duration: length), abs(seconds - resume) > 2 {
+                            player.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: CMTime(seconds: 0.25, preferredTimescale: 600), toleranceAfter: CMTime(seconds: 0.25, preferredTimescale: 600))
+                        }
+                    }
                     if seconds.isFinite, length.isFinite, length > 0 {
                         duration = length; progress = min(1, max(0, seconds / length))
                     }
+                    if playing && !scrubbing && (!seconds.isFinite || abs(seconds - lastTime) < 0.05) { stalledSeconds += 1 }
+                    else { stalledSeconds = 0; if player.timeControlStatus == .playing { error = nil } }
+                    lastTime = seconds
+                    if stalledSeconds >= 20 { error = "Playback is not advancing. Retry media or swipe to another clip." }
                 }
                 if player?.timeControlStatus == .playing || (gifURL != nil && playing) {
                     watched += 1
@@ -339,7 +355,17 @@ private struct ImmersiveItemView: View {
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
             guard active, presentationActive, store.isForeground, let item = notification.object as? AVPlayerItem, item === player?.currentItem else { return }
             if !offline { store.recordComplete(post); store.recordReplay(post) }
-            player?.seek(to: .zero); if playing { player?.play() }
+            guard let player else { return }
+            let shouldPlay = playing
+            let pool = store.players
+            let key = post.stableID
+            let owner = playbackOwner
+            player.seek(to: .zero) { finished in
+                Task { @MainActor in
+                    guard finished, shouldPlay, pool.activeKey == key, pool.activeOwner == owner else { return }
+                    player.play()
+                }
+            }
         }
     }
 
@@ -377,7 +403,7 @@ private struct ImmersiveItemView: View {
                 guard let local = URL(string: post.mediaUrl), local.isFileURL, FileManager.default.fileExists(atPath: local.path) else { throw APIError.server("Offline file is missing.") }
                 url = local
             } else {
-                let resolved = try await store.resolver.resolve(post)
+                let resolved = try await store.resolver.resolve(post, refresh: mediaRetry > 0)
                 guard let remote = URL(string: resolved.mediaUrl) else { throw URLError(.badURL) }
                 url = remote
             }
@@ -385,18 +411,7 @@ private struct ImmersiveItemView: View {
             if post.type.lowercased() == "gif" { gifURL = url; return }
             let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner)
             player = p; p.isMuted = store.muted
-            // Start immediately. Duration metadata must never delay the first frame.
-            if let resume = store.resumePosition(post.stableID), resume > 0,
-               abs(p.currentTime().seconds - resume) > 2 {
-                let tolerance = CMTime(seconds: 0.25, preferredTimescale: 600)
-                p.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: tolerance, toleranceAfter: tolerance, completionHandler: { _ in })
-            }
             if !playing { p.pause() }; error = nil
-            if let asset = p.currentItem?.asset, let track = try? await asset.loadTracks(withMediaType: .video).first,
-               let size = try? await track.load(.naturalSize), let transform = try? await track.load(.preferredTransform) {
-                let actual = size.applying(transform)
-                if !Task.isCancelled, active, abs(actual.height) > 0 { mediaSize = CGSize(width: abs(actual.width), height: abs(actual.height)) }
-            }
         } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
     private func fittedSize(_ available: CGSize) -> CGSize {

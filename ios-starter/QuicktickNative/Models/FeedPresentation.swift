@@ -2,6 +2,12 @@ import Foundation
 import CoreGraphics
 
 struct VisiblePostSelector {
+    static func immersive(frames: [String: CGRect], viewport: CGRect, current: String?, keys: Set<String>) -> String? {
+        // Between full pages neither crosses the normal visibility threshold.
+        // Keep ownership through that gap and transient empty layout preferences.
+        select(frames: frames, viewport: viewport, current: current, eligible: keys)
+            ?? current.flatMap { keys.contains($0) ? $0 : nil }
+    }
     static func select(frames: [String: CGRect], viewport: CGRect, current: String?, eligible: Set<String>? = nil) -> String? {
         guard viewport.height > 0 else { return nil }
         let candidates = frames.compactMap { key, rect -> (String, CGFloat, CGFloat)? in
@@ -21,6 +27,14 @@ struct VisiblePostSelector {
            frame.intersection(viewport).height / min(frame.height, viewport.height) >= 0.65,
            abs(frame.midY - viewport.midY) <= (candidates.first?.1 ?? .infinity) + viewport.height * 0.25 { return current }
         return candidates.first?.0
+    }
+}
+
+enum PlaybackPosition {
+    static func resume(_ seconds: Double?, duration: Double) -> Double? {
+        guard let seconds, seconds.isFinite, seconds > 0, duration.isFinite,
+              duration > 1, seconds < duration - 0.5 else { return nil }
+        return seconds
     }
 }
 

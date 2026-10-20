@@ -14,8 +14,21 @@ actor MediaResolver {
     init(api: QuicktickAPIClient) { self.api = api }
 
     private func identity(_ post: Post) -> String { "\(post.stableID)|\(post.mediaUrl)|\(post.type)" }
-    func resolve(_ post: Post) async throws -> ResolvedMedia {
+    func resolve(_ post: Post, refresh: Bool = false) async throws -> ResolvedMedia {
         let key = identity(post)
+        if refresh {
+            // Do not coalesce a user retry with an old signed URL resolution.
+            var fresh = post
+            fresh.mediaUrl = ""
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ui-testing"), URL(string: post.mediaUrl)?.isFileURL == true { fresh = post }
+            #endif
+            cache.removeValue(forKey: identity(fresh))
+            let value = try await fetch(fresh)
+            try Task.checkCancellation()
+            cache[key] = (value, .now)
+            return value
+        }
         if let (media,date) = cache[key], Date().timeIntervalSince(date) < 180 { return media }
         let task: Task<ResolvedMedia,Error>
         if let shared = inFlight[key] { task = shared }

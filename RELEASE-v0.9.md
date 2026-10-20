@@ -1,4 +1,4 @@
-# QuickTick v0.9 / build 22
+# QuickTick v0.9 / build 23
 
 Scans select only items without a current content/model analysis revision. Cached
 work survives restarts and transport signature changes; new evidence updates the
@@ -47,3 +47,6 @@ Display-link scheduling is not measured GPU presentation FPS. Simulator launch
 figures and RSS cannot establish physical-device battery impact or 60/120 Hz
 smoothness. Device cold/warm baseline and personalized user evaluation remain
 required before asserting improvement or absence of observable regressions.
+
+## Immersive playback candidate (build 23)
+Normal AVPlayer buffered startup replaces unbuffered playImmediately. Paging gaps retain the active clip; late inline selection cannot pause an immersive owner. Playback monitoring no longer awaits remote track metadata. Resume offsets are validated against the current duration. Manual retry refreshes signed provider URLs; failed pooled players are recreated. Added real fixture playback advancement, reverse activation, paging, resume and ownership regressions, plus advancing-time UI assertions. Native and device validation remain pending; this candidate must pass the private Drive upload gate before native tests.

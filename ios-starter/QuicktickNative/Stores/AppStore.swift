@@ -32,7 +32,7 @@ final class AppStore: ObservableObject {
         guard oldValue != isForeground else { return }
         if !isForeground { idleTask?.cancel(); stopActiveLearning(); cancelManualVisualRefresh(); players.suspendActivePlayback() }
         else {
-            // A rapid inactive→active transition can coalesce SwiftUI task IDs
+            // A rapid inactiveâ†’active transition can coalesce SwiftUI task IDs
             // while the app is suspended. Resume the retained player directly,
             // only if its existing feed and visible-post owners still agree.
             let savedOwner = players.suspendedOwner ?? players.activeOwner
@@ -41,13 +41,15 @@ final class AppStore: ObservableObject {
             let owner = [0: "home", 1: "immersive", 2: favoriteOwner, 3: downloadOwner][activeTab] ?? "home"
             let allowed = activeTab == 1 ? Set(posts.map(\.stableID)) : Set(inlinePlaybackID.map { [$0] } ?? [])
             players.resumeSuspendedPlayback(allowed: allowed, owner: owner, muted: muted, pausedKey: pausedPlaybackID)
-            if bootstrapped { visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil; scheduleIdleIntelligence() }
+            if bootstrapped { visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendationsâ€¦" : nil; scheduleIdleIntelligence() }
         }
     } }
     @Published var pausedPlaybackID: String?
     @Published var fullScreenPlaybackID: String?
     @Published var inlinePlaybackID: String? { didSet { if oldValue != inlinePlaybackID {
-        idleTask?.cancel(); pausedPlaybackID = nil; players.transitionVisiblePost()
+        idleTask?.cancel(); pausedPlaybackID = nil
+        // A late Home/Favorites layout callback must not pause an immersive owner.
+        if players.activeOwner != "immersive", players.activeOwner != "favorites-immersive" { players.transitionVisiblePost() }
         if inlinePlaybackID == nil { scheduleIdleIntelligence() }
     } } }
     @Published var queryText = "" { didSet { if oldValue != queryText { invalidateFeed() } } }
@@ -184,7 +186,7 @@ final class AppStore: ObservableObject {
         await api.setCredentials(credentials)
         downloads.onCompleted = { [weak self] post in Task { await self?.record(.download, post: post) } }
         bootstrapped = true
-        visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil
+        visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendationsâ€¦" : nil
         await refresh()
         FeedFrameMonitor.shared.startIfRequested()
         Task(priority: .utility) { await downloads.restoreTasks(); await syncWhenActive() }
@@ -210,7 +212,7 @@ final class AppStore: ObservableObject {
         let canonical = try QuicktickSyncCrypto.parse(value).full
         if let flight = syncFlight { _ = try? await flight.value }
         guard !isSyncing else { throw APIError.server("Sync is already running. Please wait.") }
-        isSyncing = true; syncFailed = false; syncStatus = "Checking cloud profileÃ¢â‚¬Â¦"
+        isSyncing = true; syncFailed = false; syncStatus = "Checking cloud profileÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦"
         defer { isSyncing = false }
         do {
             // Verify the server response and decrypt before replacing a working identity.
@@ -221,7 +223,7 @@ final class AppStore: ObservableObject {
             syncID = canonical
             syncTask?.cancel()
             if let remote { try await applySyncSnapshot(remote) }
-            syncStatus = "Saving merged profileÃ¢â‚¬Â¦"
+            syncStatus = "Saving merged profileÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦"
             let revision = syncRevision
             try await sync.push(syncID: canonical, snapshot: currentSnapshot())
             syncStatus = remote == nil ? "Cloud profile created. Use this same ID on your other devices." : "Cloud profile merged and synced."
@@ -714,7 +716,7 @@ final class AppStore: ObservableObject {
                     thermal: ProcessInfo.processInfo.thermalState.rawValue,
                     playback: players.activeKey != nil || inlinePlaybackID != nil || activeTab == 1 || fullScreenPlaybackID != nil || !isForeground, loading: isLoading)
                 if idle {
-                    if visualAnalysisEnabled { visualScanStatus = "Checking visual taste · \(offset)/\(history.count) favorites" }
+                    if visualAnalysisEnabled { visualScanStatus = "Checking visual taste Â· \(offset)/\(history.count) favorites" }
                     if !scannedCachedFeed {
                         for post in posts.prefix(4) {
                             guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
@@ -767,7 +769,7 @@ final class AppStore: ObservableObject {
         guard !isManualVisualScanRunning else { return }
         idleTask?.cancel(); stopActiveLearning()
         let id = UUID(); manualVisualID = id
-        manualVisualProgress = VisualRefreshProgress(completed: 0, total: 0, status: "Checking for new posts…", running: true)
+        manualVisualProgress = VisualRefreshProgress(completed: 0, total: 0, status: "Checking for new postsâ€¦", running: true)
         players.pauseAll()
         manualVisualTask = Task(priority: .background) { [weak self] in
             guard let self else { return }
@@ -777,7 +779,7 @@ final class AppStore: ObservableObject {
             await visual.waitForWorker()
             let history = await visual.historicalQueue(Array(favorites.values))
             guard !Task.isCancelled, manualVisualID == id else { return }
-            manualVisualProgress = VisualRefreshProgress(completed: 0, total: history.count, status: "Scanning new posts…", running: true)
+            manualVisualProgress = VisualRefreshProgress(completed: 0, total: history.count, status: "Scanning new postsâ€¦", running: true)
             var checked = 0
             var lastProgress = Date.distantPast
             for post in history {
@@ -796,7 +798,7 @@ final class AppStore: ObservableObject {
                 checked += 1
                 if Date().timeIntervalSince(lastProgress) >= 0.2 || checked == history.count {
                     manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
-                        status: "Checking favorites · \(checked)/\(history.count)", running: true)
+                        status: "Checking favorites Â· \(checked)/\(history.count)", running: true)
                     lastProgress = .now
                 }
                 await Task.yield()
@@ -809,7 +811,7 @@ final class AppStore: ObservableObject {
             await adaptRecommendationTail(token: feedRevision)
             guard !Task.isCancelled, manualVisualID == id else { return }
             manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
-                status: history.isEmpty ? "No new posts to scan · visual taste is up to date" : "Visual taste updated · \(checked) new posts analyzed", running: false)
+                status: history.isEmpty ? "No new posts to scan Â· visual taste is up to date" : "Visual taste updated Â· \(checked) new posts analyzed", running: false)
             visualScanStatus = nil
             scheduleIdleIntelligence()
         }
@@ -818,7 +820,7 @@ final class AppStore: ObservableObject {
         guard isManualVisualScanRunning else { return }
         manualVisualID = UUID(); manualVisualTask?.cancel(); manualVisualTask = nil
         if var progress = manualVisualProgress {
-            progress.running = false; progress.status = "Update stopped · \(progress.completed)/\(progress.total) checked"
+            progress.running = false; progress.status = "Update stopped Â· \(progress.completed)/\(progress.total) checked"
             manualVisualProgress = progress
         }
     }
@@ -883,7 +885,7 @@ final class AppStore: ObservableObject {
         guard !isSyncing else { throw APIError.server("Sync is already running. Please wait.") }
         let identity = syncID
         _ = try QuicktickSyncCrypto.parse(identity)
-        isSyncing = true; syncFailed = false; syncStatus = "SyncingÃ¢â‚¬Â¦"
+        isSyncing = true; syncFailed = false; syncStatus = "SyncingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦"
         let flight = Task { @MainActor in
             let (remote, _) = try await self.sync.pull(syncID: identity)
             try Task.checkCancellation()

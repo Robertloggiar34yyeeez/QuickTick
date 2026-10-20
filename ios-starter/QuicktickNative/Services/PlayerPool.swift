@@ -25,7 +25,8 @@ final class PlayerPool: ObservableObject {
     }
 
     func player(for key: String, url: URL) -> AVPlayer {
-        if let existing = players[key], urls[key] == url { touch(key); return existing }
+        if let existing = players[key], urls[key] == url,
+           existing.status != .failed, existing.currentItem?.status != .failed { touch(key); return existing }
         release(key)
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 3
@@ -51,7 +52,9 @@ final class PlayerPool: ObservableObject {
         p.automaticallyWaitsToMinimizeStalling = true
         p.currentItem?.preferredForwardBufferDuration = 6
         activeKey = key; activeOwner = owner; p.isMuted = muted
-        p.playImmediately(atRate: 1)
+        // An unbuffered remote item must enter normal waiting-to-play state.
+        // playImmediately treats an empty buffer as a stall without notifying us.
+        p.play()
         return p
     }
     func pauseAll() { suspendedPlayback = nil; warmAttempts.removeAll(); prerollStarted.removeAll(); players.values.forEach { $0.pause(); $0.cancelPendingPrerolls() }; warming.removeAll(); warmObservers.removeAll(); activeKey = nil; activeOwner = nil }

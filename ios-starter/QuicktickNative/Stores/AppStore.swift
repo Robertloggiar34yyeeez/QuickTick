@@ -9,11 +9,15 @@ final class AppStore: ObservableObject {
             invalidateFeed()
         }
     }
-    @Published var posts: [Post] = []
-    @Published var activeTab = 0 { didSet { if oldValue != activeTab { fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
+    @Published var posts: [Post] = [] {
+        didSet { postsByID = Dictionary(posts.map { ($0.stableID, $0) }, uniquingKeysWith: { first, _ in first }) }
+    }
+    private var postsByID: [String: Post] = [:]
+    func postForID(_ id: String) -> Post? { postsByID[id] }
+    @Published var activeTab = 0 { didSet { if oldValue != activeTab { idleTask?.cancel(); fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
     @Published var isForeground = true { didSet {
         guard oldValue != isForeground else { return }
-        if !isForeground { players.suspendActivePlayback() }
+        if !isForeground { idleTask?.cancel(); players.suspendActivePlayback() }
         else {
             // A rapid inactive→active transition can coalesce SwiftUI task IDs
             // while the app is suspended. Resume the retained player directly,
@@ -32,7 +36,10 @@ final class AppStore: ObservableObject {
     @Published var queryText = "" { didSet { if oldValue != queryText { invalidateFeed() } } }
     @Published var feedSort = "recommended" { didSet { if oldValue != feedSort { invalidateFeed() } } }
     @Published private(set) var feedRevision = UUID()
-    @Published var favorites: [String: Post] = [:]
+    @Published var favorites: [String: Post] = [:] {
+        didSet { favoriteExclusionIDs = Set(favorites.values.flatMap { FeedExclusions.identifiers($0) }) }
+    }
+    private var favoriteExclusionIDs: Set<String> = []
     @Published var exclusions: [String] = []
     @Published var tasteSetup = TasteSetup()
     @Published var lastError: String?
@@ -224,7 +231,7 @@ final class AppStore: ObservableObject {
             // Preference edits still apply locally while the provider is cooling
             // down. No network retry or model inference is needed for this rank.
             if feedSort == "recommended", QueryParser.parse(queryText).included.isEmpty {
-                posts = feedExclusions.filter(posts, favorites: Array(favorites.values), recommended: true)
+                posts = feedExclusions.filter(posts, favorites: Array(favorites.values), recommended: true, favoriteIDs: favoriteExclusionIDs)
             }
             lastError = APIError.rateLimited(selectedProvider, deadline).localizedDescription; return
         }
@@ -289,7 +296,7 @@ final class AppStore: ObservableObject {
                         && banned.isDisjoint(with: Set(post.tags.map { $0.lowercased() }))
                 }
                 if personalized {
-                    incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: true)
+                    incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: true, favoriteIDs: favoriteExclusionIDs)
                 }
                 filtered = incoming
                 if incoming.isEmpty, let acquisition, acquisition.focused {
@@ -345,7 +352,7 @@ final class AppStore: ObservableObject {
             let banned = Set((exclusions + parsed.excluded + (candidateContext != nil ? tasteChoice(for: provider).notInto : [])).map { $0.lowercased() })
             var candidates = page.items.filter { encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia) && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
             candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
-                recommended: candidateContext != nil)
+                recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
             let ranked = candidates
             guard generation == token, !Task.isCancelled else { return }
             if ranked.isEmpty, let acquisition, acquisition.focused {
@@ -408,19 +415,19 @@ final class AppStore: ObservableObject {
             favorites[post.stableID] = post
             event = .like
         }
-        Task { await record(event, post: post) }
+        Task(priority: .utility) { await record(event, post: post) }
         local.snapshot.favoriteMeta[post.stableID] = FavoriteMeta(liked: favorites[post.stableID] != nil, updatedAt: timestamp())
         persistLocal(); queueSync()
     }
 
-    func less(_ post: Post) { posts.removeAll { $0.stableID == post.stableID }; Task { await record(.less, post: post) } }
+    func less(_ post: Post) { posts.removeAll { $0.stableID == post.stableID }; Task(priority: .utility) { await record(.less, post: post) } }
 
     func download(_ post: Post) {
         downloads.download(post)
     }
 
     func recordImpression(_ post: Post) {
-        guard !feedExclusions.recent.contains(post.stableID) else { return }
+        guard !feedExclusions.hasViewed(post.stableID) else { return }
         feedExclusions.viewed(post)
         Task(priority: .utility) { await record(.impression, post: post) }
     }
@@ -550,12 +557,20 @@ final class AppStore: ObservableObject {
             await adaptRecommendationTail(token: token)
             let history = Array(favorites.values).sorted { $0.stableID < $1.stableID }
             var offset = historyOffset < history.count ? historyOffset : 0
+            var scannedCachedFeed = false
             repeat {
                 guard !Task.isCancelled, generation == token else { return }
                 let idle = VisualAnalysisService.resourcesAllowAnalysis(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
                     thermal: ProcessInfo.processInfo.thermalState.rawValue,
                     playback: players.activeKey != nil || fullScreenPlaybackID != nil || !isForeground, loading: isLoading)
                 if idle {
+                    if !scannedCachedFeed {
+                        for post in posts.prefix(4) {
+                            guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
+                            await visual.analyzeCachedPost(post, useVision: visualAnalysisEnabled)
+                        }
+                        scannedCachedFeed = true
+                    }
                     for post in history.dropFirst(offset).prefix(4) {
                         guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
                         await visual.analyzeFavorite(post, useVision: visualAnalysisEnabled)

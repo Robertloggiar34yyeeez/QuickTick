@@ -4,6 +4,7 @@ import Foundation
 struct FeedExclusions: Sendable {
     private(set) var recent: [String] = []
     private var recentSet: Set<String> = []
+    func hasViewed(_ id: String) -> Bool { recentSet.contains(id) }
     private(set) var fingerprints: [String: UInt64] = [:]
     mutating func restore(_ ids: [String]) {
         recent = Array(ids.suffix(2048)); recentSet = Set(recent)
@@ -28,9 +29,9 @@ struct FeedExclusions: Sendable {
         return result
     }
     static func nearDuplicate(_ a: UInt64, _ b: UInt64) -> Bool { (a ^ b).nonzeroBitCount <= 3 }
-    func filter(_ candidates: [Post], favorites: [Post], existing: [Post] = [], recommended: Bool) -> [Post] {
+    func filter(_ candidates: [Post], favorites: [Post], existing: [Post] = [], recommended: Bool, favoriteIDs: Set<String>? = nil) -> [Post] {
         var used = Set(existing.flatMap { Self.identifiers($0) })
-        let liked = Set(favorites.flatMap { Self.identifiers($0) })
+        let liked = favoriteIDs ?? Set(favorites.flatMap { Self.identifiers($0) })
         let excludedHashes = (recommended ? favorites.map(\.stableID) + recent : []) + existing.map(\.stableID)
         var hashes = excludedHashes.compactMap { fingerprints[$0] }
         return candidates.filter { post in

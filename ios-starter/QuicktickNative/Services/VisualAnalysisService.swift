@@ -15,6 +15,7 @@ actor VisualAnalysisService {
     private var state = State()
     private var restored = false
     private var writeBlocked = false
+    private var diskTask: Task<Void, Never>?
     private let directory: URL
     init(directory: URL? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("QuicktickVisual-v1", isDirectory: true)
@@ -31,8 +32,8 @@ actor VisualAnalysisService {
             state = saved
         } catch { writeBlocked = true } // Preserve unreadable private user data.
     }
-    func snapshot() -> State { restore(); return state }
-    func reset() { state = State(); restored = true; writeBlocked = false; persist() }
+    func snapshot() -> State { restore(); flush(); return state }
+    func reset() { diskTask?.cancel(); state = State(); restored = true; writeBlocked = false; flush() }
     static func resourcesAllowAnalysis(lowPower: Bool, thermal: Int, playback: Bool, loading: Bool) -> Bool {
         !lowPower && thermal < ProcessInfo.ThermalState.serious.rawValue && !playback && !loading
     }
@@ -59,13 +60,20 @@ actor VisualAnalysisService {
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.
     func analyzeFavorite(_ post: Post, useVision: Bool) async {
+        await analyze(post, favorite: true, useVision: useVision)
+    }
+    func analyzeCachedPost(_ post: Post, useVision: Bool) async {
+        await analyze(post, favorite: false, useVision: useVision)
+    }
+    private func analyze(_ post: Post, favorite: Bool, useVision: Bool) async {
         guard resourcesAllowAnalysis() else { return }
         restore()
-        record(.like, post: post)
-        guard useVision, resourcesAllowAnalysis(), let before = state.features[post.stableID] ?? VisualFeatures.metadata(post), before.fingerprint == nil,
+        if favorite { record(.like, post: post) }
+        guard useVision, resourcesAllowAnalysis(), let before = state.features[post.stableID] ?? VisualFeatures.metadata(post), !before.pixelsAnalyzed,
               let image = await MediaImagePipeline.shared.cachedAnalysisImage(raw: post.cardPreviewURL) else { return }
         guard resourcesAllowAnalysis() else { return }
         var enriched = before
+        enriched.pixelsAnalyzed = true
         enriched.fingerprint = Self.fingerprint(image.image)
         if before.domain == .realLife {
             // Vision labels describe presentation. Faces are never identity evidence.
@@ -82,9 +90,17 @@ actor VisualAnalysisService {
         guard resourcesAllowAnalysis() else { return }
         // Reconcile a like rather than counting it again when cached pixels become available.
         var profile = state.profiles[before.domain.rawValue] ?? VisualProfile()
-        profile.record(.unlike, features: before); profile.record(.like, features: enriched)
+        if state.liked.contains(post.stableID) {
+            profile.record(.unlike, features: before); profile.record(.like, features: enriched)
+        } else {
+            var added = enriched
+            added.attributes = enriched.attributes.filter { before.attributes[$0.key] == nil }; added.subjects = []
+            if state.seen.contains(post.stableID) { profile.record(.impression, features: added) }
+            if state.disliked.contains(post.stableID) { profile.record(.less, features: added) }
+        }
         state.profiles[before.domain.rawValue] = profile
         state.features[post.stableID] = enriched
+        trimFeatures()
         persist()
     }
     func scores(_ posts: [Post]) -> [String: Double] {
@@ -105,6 +121,13 @@ actor VisualAnalysisService {
         }
     }
     private func persist() {
+        diskTask?.cancel()
+        diskTask = Task(priority: .background) { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(750)) } catch { return }
+            await self?.flush()
+        }
+    }
+    private func flush() {
         guard !writeBlocked else { return }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

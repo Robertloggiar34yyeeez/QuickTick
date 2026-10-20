@@ -27,6 +27,7 @@ struct VisualFeatures: Codable, Sendable, Equatable {
     var subjects: [String] = []
     var embedding: [Float] = []
     var fingerprint: UInt64?
+    var pixelsAnalyzed = false
     var version = "metadata-vision-v1"
     static func metadata(_ post: Post) -> Self? {
         guard let domain = VisualDomain.classify(post) else { return nil }
@@ -81,18 +82,29 @@ struct VisualProfile: Codable, Sendable, Equatable {
         for subject in features.subjects {
             if negative > 0, !features.attributes.isEmpty {
                 let signature = features.attributes.keys.sorted().joined(separator: ",")
-                negativePresentations[subject, default: []].insert(signature)
+                if (negativePresentations[subject]?.count ?? 0) < 8 { negativePresentations[subject, default: []].insert(signature) }
             }
             // A single disliked presentation cannot undo positive identity evidence.
             let variedNegatives = (negativePresentations[subject]?.count ?? 0) >= 4
             update(&subjects[subject, default: VisualEvidence()], confidence: 0.7, penalize: variedNegatives)
         }
-        if positive > 0, !features.embedding.isEmpty {
+        if positive > 0, !features.embedding.isEmpty, features.embedding.count <= 1024, features.embedding.allSatisfy(\.isFinite) {
             if let i = clusters.indices.max(by: { SemanticRecommender.cosine(clusters[$0], features.embedding) < SemanticRecommender.cosine(clusters[$1], features.embedding) }),
                SemanticRecommender.cosine(clusters[i], features.embedding) > 0.75 {
                 clusters[i] = SemanticRecommender.blend(clusters[i], features.embedding, alpha: 0.15)
             } else if clusters.count < 8 { clusters.append(features.embedding) }
         }
+        func bounded(_ values: [String: VisualEvidence], count: Int) -> [String: VisualEvidence] {
+            guard values.count > count else { return values }
+            let retained = values.sorted { a, b in
+                let left = a.value.positive + a.value.negative, right = b.value.positive + b.value.negative
+                return left == right ? a.key < b.key : left > right
+            }.prefix(count)
+            return Dictionary(uniqueKeysWithValues: retained.map { ($0.key, $0.value) })
+        }
+        attributes = bounded(attributes, count: 512); subjects = bounded(subjects, count: 512)
+        interactions = bounded(interactions, count: 4096)
+        negativePresentations = negativePresentations.filter { subjects[$0.key] != nil }
     }
     func score(_ features: VisualFeatures) -> Double {
         let attributesScore = features.attributes.reduce(0.0) { $0 + (attributes[$1.key]?.affinity ?? 0) * $1.value }

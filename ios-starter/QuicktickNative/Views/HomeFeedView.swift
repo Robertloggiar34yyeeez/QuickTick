@@ -82,9 +82,11 @@ struct HomeFeedView: View {
             visibleFrames = frames
             let bounds = CGRect(origin: .zero, size: viewport.size)
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
-            for post in store.posts where (frames[post.stableID].map { frame in
-                frame.intersection(bounds).height >= min(frame.height * 0.5, bounds.height * 0.5)
-            } ?? false) { store.recordImpression(post) }
+            if store.activeTab == 0, store.isForeground, store.fullScreenPlaybackID == nil {
+                for (id, frame) in frames where frame.intersection(bounds).height >= min(frame.height * 0.5, bounds.height * 0.5) {
+                    if let post = store.postForID(id) { store.recordImpression(post) }
+                }
+            }
             selectVisiblePlayback(viewport: viewport.size)
         }
         .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {

@@ -78,8 +78,11 @@ actor VisualAnalysisService {
     func analyzeCachedPost(_ post: Post, useVision: Bool) async {
         await analyze(post, favorite: false, useVision: useVision)
     }
+    func analyzeDisliked(_ post: Post, useVision: Bool) async {
+        await analyze(post, favorite: false, useVision: useVision, disliked: true)
+    }
     func historicalQueue(_ posts: [Post]) -> [Post] { posts.sorted { $0.stableID < $1.stableID } }
-    private func analyze(_ post: Post, favorite: Bool, useVision: Bool) async {
+    private func analyze(_ post: Post, favorite: Bool, useVision: Bool, disliked: Bool = false) async {
         guard resourcesAllowAnalysis() else { return }
         restore()
         loadTaxonomy() // Only reached by deferred analysis, never feed publication.
@@ -103,7 +106,7 @@ actor VisualAnalysisService {
         let before = state.features[post.stableID] ?? metadata
         guard before.domain == metadata.domain else { return }
         var preview = await MediaImagePipeline.shared.cachedAnalysisImage(raw: post.cardPreviewURL)
-        if preview == nil, favorite, resourcesAllowAnalysis(), VisualPreviewLoader.thumbnailURL(post) != nil {
+        if preview == nil, (favorite || disliked), resourcesAllowAnalysis(), VisualPreviewLoader.thumbnailURL(post) != nil {
             let delay = 3 - Date().timeIntervalSince(lastPreviewAttempt)
             if delay > 0 { do { try await Task.sleep(for: .seconds(delay)) } catch { return } }
             guard resourcesAllowAnalysis() else { return }
@@ -154,7 +157,13 @@ actor VisualAnalysisService {
             var added = enriched
             added.attributes = enriched.attributes.filter { before.attributes[$0.key] == nil }; added.subjects = []; added.artists = []
             if state.seen.contains(post.stableID) { profile.record(.impression, features: added) }
-            if state.disliked.contains(post.stableID) { profile.record(.less, features: added) }
+            if state.disliked.contains(post.stableID) {
+                // Metadata was already penalized; only new attributes and the
+                // feature print are learned now. Keep identities for context.
+                added.subjects = before.subjects
+                added.artists = before.artists
+                profile.record(.less, features: added)
+            }
         }
         state.profiles[before.domain.rawValue] = profile
         state.features[post.stableID] = enriched

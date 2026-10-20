@@ -93,6 +93,7 @@ final class AppStore: ObservableObject {
     private var manualVisualID = UUID()
     private var feedExclusions = FeedExclusions()
     private var visualScores: [String: Double] = [:]
+    private var pendingVisualDislikes: [Post] = []
     private var idleTask: Task<Void, Never>?
     private var plannedAcquisition: RecommendationEngine.CandidateRequest?
     private var candidateCursors: [String: Int] = [:]
@@ -321,7 +322,7 @@ final class AppStore: ObservableObject {
                 nextPage = requestedPage; hasMore = (page.hasMore ?? !page.items.isEmpty) || acquisition?.focused == true
                 var incoming = page.items.filter { post in
                     encountered.insert(post.stableID).inserted && (!mediaOnly || post.isImmersiveMedia)
-                        && banned.isDisjoint(with: Set(post.tags.map { $0.lowercased() }))
+                        && !RecommendationTagRules.rejects(post, exclusions: Array(banned))
                 }
                 incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
                 filtered = personalized
@@ -379,7 +380,10 @@ final class AppStore: ObservableObject {
             guard generation == token, !Task.isCancelled else { return }
             nextPage = requestedPage + 1; hasMore = (page.hasMore ?? !page.items.isEmpty) || acquisition?.focused == true
             let banned = Set((exclusions + parsed.excluded + (candidateContext != nil ? tasteChoice(for: provider).notInto : [])).map { $0.lowercased() })
-            var candidates = page.items.filter { encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia) && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
+            var candidates = page.items.filter {
+                encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia)
+                    && !RecommendationTagRules.rejects($0, exclusions: Array(banned))
+            }
             candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
                 recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
             let ranked = candidateContext != nil
@@ -456,7 +460,17 @@ final class AppStore: ObservableObject {
         persistLocal(); queueSync()
     }
 
-    func less(_ post: Post) { feedExclusions.viewed(post); posts.removeAll { $0.stableID == post.stableID }; Task(priority: .utility) { await record(.less, post: post) } }
+    func less(_ post: Post) {
+        // Immediate removal and feedback: no pixel inference on the feed path.
+        feedExclusions.viewed(post)
+        posts.removeAll { $0.stableID == post.stableID }
+        if visualAnalysisEnabled {
+            pendingVisualDislikes.removeAll { $0.stableID == post.stableID }
+            pendingVisualDislikes.append(post)
+            pendingVisualDislikes = Array(pendingVisualDislikes.suffix(16))
+        }
+        Task(priority: .utility) { await record(.less, post: post) }
+    }
 
     func download(_ post: Post) {
         downloads.download(post)
@@ -507,6 +521,7 @@ final class AppStore: ObservableObject {
 
     func resetRecommendations() async {
         cancelManualVisualRefresh()
+        pendingVisualDislikes = []
         idleTask?.cancel(); feedExclusions.restore([]); visualScores = [:]; candidateCursors = [:]; historyOffset = 0
         await visual.reset()
         await recommendations.reset()
@@ -635,6 +650,15 @@ final class AppStore: ObservableObject {
                     thermal: ProcessInfo.processInfo.thermalState.rawValue,
                     playback: players.activeKey != nil || inlinePlaybackID != nil || activeTab == 1 || fullScreenPlaybackID != nil || !isForeground, loading: isLoading)
                 if idle {
+                    if visualAnalysisEnabled {
+                        // Preview learning follows Dislike without holding playback.
+                        for post in Array(pendingVisualDislikes.prefix(2)) {
+                            guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
+                            await visual.analyzeDisliked(post, useVision: true)
+                            guard !Task.isCancelled else { return }
+                            pendingVisualDislikes.removeAll { $0.stableID == post.stableID }
+                        }
+                    }
                     if visualAnalysisEnabled { visualScanStatus = "Checking visual taste · \(offset)/\(history.count) favorites" }
                     if !scannedCachedFeed {
                         for post in posts.prefix(4) {
@@ -651,7 +675,7 @@ final class AppStore: ObservableObject {
                     }
                 }
                 do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
-            } while offset < history.count
+            } while offset < history.count || (visualAnalysisEnabled && !pendingVisualDislikes.isEmpty)
             guard !Task.isCancelled, generation == token else { return }
             feedExclusions.setFingerprints(await visual.fingerprints())
             visualScores = await visual.scores(posts)

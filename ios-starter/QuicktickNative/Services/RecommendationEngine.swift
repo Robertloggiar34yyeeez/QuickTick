@@ -78,6 +78,18 @@ actor RecommendationEngine {
         if !focused { terms = [] }
         else if !explicit.isEmpty && (learned.isEmpty || round % 4 == 0) { terms = [explicit[(round / 4 + (learned.isEmpty ? round % 4 : 0)) % explicit.count]] }
         else { terms = [learned[(round / 4 * 2 + max(0, round % 4 - 1)) % learned.count]] }
+        // Prefer co-liked character/artist + medium instead of isolated generic 3D.
+        if focused, provider == .rule34, let anchor = terms.first {
+            let styles: Set<String> = ["2d", "3d", "2d_art", "3d_art", "3dcg",
+                "3d_animation", "animation", "animated", "watercolor", "sketch", "pixel_art"]
+            let related = profile(for: provider.rawValue).related
+            if let partner = (explicit + learned).first(where: { term in
+                let complements = term != anchor && styles.contains(anchor) != styles.contains(term)
+                let chosen = explicit.contains(anchor) && explicit.contains(term)
+                let likedTogether = (related[anchor]?[term] ?? related[term]?[anchor] ?? 0) >= 0.6
+                return complements && (chosen || likedTogether)
+            }) { terms.append(partner) }
+        }
         if focused, let deadline = drainedCandidateQueries[context + "|query:" + terms.joined(separator: " ")], deadline > .now {
             focused = false; terms = []
         }
@@ -108,7 +120,12 @@ actor RecommendationEngine {
         let source = post.provider.lowercased()
         let raw = (post.tags + [post.caption, post.category].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         if source == Provider.rule34.rawValue {
-            return Array(Set(raw.map { $0.lowercased() })).sorted().prefix(36).map { $0 }
+            let values = raw.flatMap { value in
+                let tag = value.lowercased()
+                let canonical = RecommendationTagRules.canonical(tag)
+                return canonical == tag ? [tag] : [tag, canonical]
+            }
+            return Array(Set(values)).sorted().prefix(48).map { $0 }
         }
         var out: [String] = []
         for value in raw.prefix(24) {
@@ -260,8 +277,7 @@ actor RecommendationEngine {
         let source = post.provider.lowercased()
         let profile = profile(for: source)
         let postTerms = terms(for: post)
-        let blockedTaste = Set(tasteTokens(source: source, values: taste.notInto))
-        if postTerms.contains(where: blockedTaste.contains) { return true }
+        if RecommendationTagRules.rejects(post, exclusions: taste.notInto) { return true }
 
         for term in postTerms {
             let evidence = profile.termEvidence[term] ?? RecommendationTermEvidence()
@@ -285,6 +301,7 @@ actor RecommendationEngine {
         let postTerms = terms(for: post)
         let into = Set(tasteTokens(source: source, values: taste.into))
         let notInto = Set(tasteTokens(source: source, values: taste.notInto))
+        if RecommendationTagRules.rejects(post, exclusions: taste.notInto) { return -1_000 }
         var score = log1p(max(0, post.score)) * 0.07
         let collaborative = max(0, min(1, collaborativeScores[gorseItemID(post)] ?? 0))
         score += collaborative * 18
@@ -303,6 +320,18 @@ actor RecommendationEngine {
             }
         }
 
+        // Identity+style co-occurrence beats an isolated generic style tag.
+        let styles: Set<String> = ["2d", "3d", "2d_art", "3d_art", "3dcg",
+            "3d_animation", "animation", "animated", "watercolor", "sketch", "pixel_art"]
+        let matched = Set(postTerms)
+        for anchor in positiveTermEntries(source: source, taste: taste, limit: 8).map(\.0) where matched.contains(anchor) {
+            if let edges = p.related[anchor] {
+                let strength = edges.filter {
+                    matched.contains($0.key) && styles.contains(anchor) != styles.contains($0.key)
+                }.map(\.value).max() ?? 0
+                score += min(7.5, strength * 2)
+            }
+        }
         if p.recentSeen.contains(post.stableID) { score -= 1_000 }
         score -= negativeThemePenalty(profile: p, post: post)
         let negativeHits = postTerms.filter { effectiveTermScore(source: source, term: $0, taste: taste) < -0.5 }.count
@@ -420,7 +449,7 @@ actor RecommendationEngine {
     private func tasteTokens(source: String, values: [String]) -> [String] {
         if source == Provider.rule34.rawValue {
             var used = Set<String>()
-            return values.map { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: " ", with: "_") }
+            return values.map { RecommendationTagRules.canonical($0) }
                 .filter { !$0.isEmpty && used.insert($0).inserted }
         }
         var out: [String] = []

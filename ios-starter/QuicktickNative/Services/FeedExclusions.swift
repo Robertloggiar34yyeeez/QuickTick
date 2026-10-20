@@ -1,5 +1,33 @@
 import Foundation
 
+/// Match exclusions locally without fuzzy-blocking unrelated provider content.
+enum RecommendationTagRules {
+    static func canonical(_ raw: String) -> String {
+        let tag = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        switch tag {
+        case "chun_li_(street_fighter)", "chun_li_(street_fighter_series)": return "chun_li"
+        case "2d_art", "2d_artwork", "2d_(artwork)": return "2d"
+        case "3d_art", "3d_artwork", "3d_(artwork)", "3dcg": return "3d"
+        default: return tag
+        }
+    }
+    static func rejects(_ post: Post, exclusions: [String]) -> Bool {
+        guard !exclusions.isEmpty else { return false }
+        let blocked = Set(exclusions.map(canonical))
+        return post.tags.contains { raw in
+            let tag = canonical(raw)
+            if blocked.contains(tag) { return true }
+            if blocked.contains("furry"),
+               tag.hasPrefix("furry_") || tag == "anthro" || tag.hasPrefix("anthro_")
+                || tag == "anthropomorphic" || tag.hasPrefix("anthropomorphic_") { return true }
+            if blocked.contains("anthro"), tag.hasPrefix("anthro_") { return true }
+            return false
+        }
+    }
+}
+
 /// Value snapshot owned by AppStore: filtering never queues behind a model actor.
 struct FeedExclusions: Sendable {
     private(set) var recent: [String] = []

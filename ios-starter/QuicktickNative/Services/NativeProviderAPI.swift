@@ -129,11 +129,10 @@ enum NativeProviderAPI {
         }
     }
     static func page(_ rows: [Post], hasMore: Bool, query: ParsedQuery, immersive: Bool) -> PostPage {
-        let banned = Set(query.excluded.map { $0.lowercased() })
         var seen = Set<String>()
         return PostPage(items: rows.filter {
             !$0.id.isEmpty && seen.insert($0.stableID).inserted && (!immersive || $0.isImmersiveMedia)
-                && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() }))
+                && !RecommendationTagRules.rejects($0, exclusions: query.excluded)
         }, hasMore: hasMore)
     }
 

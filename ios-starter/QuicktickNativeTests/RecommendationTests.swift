@@ -56,6 +56,17 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(explicit, [preferred])
     }
 
+    func testPairedInterestQueriesAndFurryExclusion() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let taste = TasteChoice(done: true, into: ["chun_li", "2d"], notInto: ["furry"])
+        let request = await engine.candidateRequest(context: "rule34|art", provider: .rule34,
+            taste: taste, excluded: [])
+        XCTAssertEqual(Set(request.query.included), Set(["chun_li", "2d"]))
+        let unwanted = Post(key: "rule34:f", id: "f", provider: "rule34", tags: ["furry_male", "3d_animation"])
+        let blocked = await engine.isHardDisliked(unwanted, taste: taste)
+        XCTAssertTrue(blocked)
+    }
+
     func testBoundedLookAheadKeepsAllUniqueAllowedPostsAndPreferencesFirst() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let posts: [Post] = (0..<240).map { index -> Post in

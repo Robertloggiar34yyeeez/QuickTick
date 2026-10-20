@@ -205,6 +205,33 @@ final class FastFeedVisualTests: XCTestCase {
         store.selectedProvider = .eporner
     }
 
+    func testExplicitBlockedVariantsAreFilteredBeforeRanking() {
+        let furry = post("f", tags: ["furry_female"])
+        let anthro = post("a", tags: ["anthro_wolf"])
+        let unrelated = post("u", tags: ["chun-li_(street_fighter)", "2d"])
+        let query = ParsedQuery(included: [], excluded: ["furry"])
+        let filtered = NativeProviderAPI.page([furry, anthro, unrelated],
+            hasMore: false, query: query, immersive: false)
+        XCTAssertEqual(filtered.items, [unrelated])
+        XCTAssertTrue(RecommendationTagRules.rejects(unrelated, exclusions: ["chun_li"]))
+        XCTAssertFalse(RecommendationTagRules.rejects(unrelated, exclusions: ["3d"]))
+    }
+    func testDislikedVisualResemblanceIsContextualToLikedCharacter() {
+        var profile = VisualProfile()
+        let liked = VisualFeatures(domain: .anime, attributes: ["style:2d": 1],
+            subjects: ["chun_li"], embedding: [1, 0, 0])
+        let disliked = VisualFeatures(domain: .anime, attributes: ["style:3d": 1],
+            subjects: ["chun_li"], embedding: [0, 1, 0])
+        for _ in 0..<4 { profile.record(.like, features: liked) }
+        let before = profile.subjects["chun_li"]?.affinity
+        profile.record(.less, features: disliked)
+        XCTAssertEqual(before, profile.subjects["chun_li"]?.affinity)
+        XCTAssertNotNil(profile.negativeContextClusters["subject:chun_li"])
+        let another3D = VisualFeatures(domain: .anime, attributes: ["style:3d": 1],
+            subjects: ["chun_li"], embedding: [0, 0.99, 0.01])
+        XCTAssertGreaterThan(profile.score(liked), profile.score(another3D))
+    }
+
     @MainActor func testFeedPublishesProviderOrderWithoutAIAndPaginationAdvances() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FastFeedProtocol.self]
         let credentials = ProviderCredentials(rule34User: "fixture-user", rule34Key: "fixture-key")

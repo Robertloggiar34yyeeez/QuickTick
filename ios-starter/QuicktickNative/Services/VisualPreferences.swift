@@ -40,11 +40,20 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             "expression": ["smile", "smiling", "angry", "serious", "closed_eyes"],
             "setting": ["outdoors", "indoors", "beach", "bedroom", "forest", "city"],
             "color": ["red", "blue", "green", "black", "white", "pink", "monochrome"],
-            "style": ["watercolor", "sketch", "pixel_art", "realistic", "soft_lighting", "backlighting", "close_up"]
+            "style": ["watercolor", "sketch", "pixel_art", "realistic", "soft_lighting", "backlighting", "close_up",
+                "2d", "3d", "2d_art", "3d_art", "3dcg", "3d_animation", "animation", "animated",
+                "furry", "anthro", "anthropomorphic"]
         ]
         for raw in post.tags.prefix(128) {
             let tag = raw.lowercased().replacingOccurrences(of: " ", with: "_")
             for (axis, known) in vocabulary where known.contains(tag) { result.attributes[axis + ":" + tag] = 0.9 }
+            let canonical = RecommendationTagRules.canonical(tag)
+            if canonical != tag, vocabulary["style"]?.contains(canonical) == true {
+                result.attributes["style:" + canonical] = 0.9
+            }
+            if canonical.hasPrefix("furry_") || canonical.hasPrefix("anthro_") {
+                result.attributes["style:" + (canonical.hasPrefix("furry_") ? "furry" : "anthro")] = 0.85
+            }
             // Identity is explicit provider metadata only, never inferred from a face.
             if tag.hasPrefix("character:") && domain == .anime { result.subjects.append(String(tag.dropFirst(10))) }
             if tag.hasPrefix("performer:") && domain == .realLife { result.subjects.append(String(tag.dropFirst(10))) }
@@ -75,9 +84,10 @@ struct VisualProfile: Codable, Sendable, Equatable {
     var negativePresentations: [String: Set<String>] = [:]
     var clusters: [[Float]] = []
     var negativeClusters: [[Float]] = []
+    var negativeContextClusters: [String: [[Float]]] = [:]
     var exposureClusters: [[Float]] = []
     init() {}
-    enum CodingKeys: String, CodingKey { case attributes, subjects, artists, interactions, negativePresentations, clusters, negativeClusters, exposureClusters }
+    enum CodingKeys: String, CodingKey { case attributes, subjects, artists, interactions, negativePresentations, clusters, negativeClusters, negativeContextClusters, exposureClusters }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         attributes = try c.decodeIfPresent([String: VisualEvidence].self, forKey: .attributes) ?? [:]
@@ -87,6 +97,7 @@ struct VisualProfile: Codable, Sendable, Equatable {
         negativePresentations = try c.decodeIfPresent([String: Set<String>].self, forKey: .negativePresentations) ?? [:]
         clusters = try c.decodeIfPresent([[Float]].self, forKey: .clusters) ?? []
         negativeClusters = try c.decodeIfPresent([[Float]].self, forKey: .negativeClusters) ?? []
+        negativeContextClusters = try c.decodeIfPresent([String: [[Float]]].self, forKey: .negativeContextClusters) ?? [:]
         exposureClusters = try c.decodeIfPresent([[Float]].self, forKey: .exposureClusters) ?? []
     }
     mutating func record(_ event: RecommendationEvent, features: VisualFeatures) {
@@ -138,8 +149,23 @@ struct VisualProfile: Codable, Sendable, Equatable {
             }
             if positive > 0 { learn(&clusters) }
             if exposure > 0 { learn(&exposureClusters) }
-            let knownLikedIdentity = features.subjects.contains { (subjects[$0]?.positive ?? 0) > 0 }
-            if negative > 0, !knownLikedIdentity { learn(&negativeClusters) }
+            if negative > 0 {
+                let likedSubjects = features.subjects.filter { (subjects[$0]?.positive ?? 0) > 0 }.map { "subject:" + $0 }
+                let likedArtists = (features.artists ?? []).filter { (artists[$0]?.positive ?? 0) > 0 }.map { "artist:" + $0 }
+                let keys = likedSubjects + likedArtists
+                if keys.isEmpty { learn(&negativeClusters) }
+                else {
+                    for key in keys.prefix(4) {
+                        var values = negativeContextClusters[key] ?? []
+                        learn(&values)
+                        negativeContextClusters[key] = values
+                    }
+                    if negativeContextClusters.count > 64 {
+                        let keep = Set(negativeContextClusters.keys.sorted().prefix(64))
+                        negativeContextClusters = negativeContextClusters.filter { keep.contains($0.key) }
+                    }
+                }
+            }
         }
         func bounded(_ values: [String: VisualEvidence], count: Int) -> [String: VisualEvidence] {
             guard values.count > count else { return values }
@@ -167,7 +193,12 @@ struct VisualProfile: Codable, Sendable, Equatable {
         let similarity = clusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
         let baseline = exposureClusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
         let avoidance = negativeClusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
-        let visual = similarity * 3 + max(-0.5, similarity - baseline) * 2 - max(0, avoidance - 0.85) * 5
+        let keys = features.subjects.map { "subject:" + $0 } + (features.artists ?? []).map { "artist:" + $0 }
+        let contextual = keys.flatMap { negativeContextClusters[$0] ?? [] }
+            .map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
+        // Similarity lowers rank but is never a hard blacklist.
+        let visual = similarity * 3 + max(-0.5, similarity - baseline) * 2
+            - max(0, avoidance - 0.78) * 14 - max(0, contextual - 0.84) * 17
         // Keep a bounded contribution without flattening different outfits or
         // presentations into the same saturated score for a liked subject.
         return 4 * tanh((attributesScore + identity + context + artistAffinity + artistContext + visual) / 4)

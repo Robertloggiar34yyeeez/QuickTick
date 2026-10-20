@@ -27,7 +27,7 @@ struct ImmersiveFeedView: View {
     private var presentationActive: Bool {
         collectionTab.map { store.activeTab == $0 } ?? (offline ? store.activeTab == 3 : (onClose != nil ? store.activeTab == 0 : store.activeTab == 1))
     }
-    private var playbackOwner: String { collectionTab == 2 ? "favorites" : "immersive" }
+    private var playbackOwner: String { collectionTab == 2 ? "favorites-immersive" : "immersive" }
 
     var body: some View {
         GeometryReader { geo in

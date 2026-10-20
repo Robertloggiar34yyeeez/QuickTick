@@ -22,7 +22,8 @@ final class AppStore: ObservableObject {
             // A rapid inactive→active transition can coalesce SwiftUI task IDs
             // while the app is suspended. Resume the retained player directly,
             // only if its existing feed and visible-post owners still agree.
-            let owner = [0: "home", 1: "immersive", 2: "favorites", 3: "downloads"][activeTab] ?? "home"
+            let favoriteOwner = players.activeOwner == "favorites-immersive" ? "favorites-immersive" : "favorites"
+            let owner = [0: "home", 1: "immersive", 2: favoriteOwner, 3: "downloads"][activeTab] ?? "home"
             let allowed = activeTab == 1 ? Set(posts.map(\.stableID)) : Set(inlinePlaybackID.map { [$0] } ?? [])
             players.resumeSuspendedPlayback(allowed: allowed, owner: owner, muted: muted, pausedKey: pausedPlaybackID)
             if bootstrapped { visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil; scheduleIdleIntelligence() }

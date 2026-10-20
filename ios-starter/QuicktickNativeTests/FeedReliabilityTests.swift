@@ -92,10 +92,11 @@ final class FeedReliabilityTests: XCTestCase {
         try Data([1, 2, 3]).write(to: image); defer { try? FileManager.default.removeItem(at: image) }
         var record = DownloadRecord(key: "saved", provider: "Rule34", postID: "1", title: "Saved image", tags: [], thumbnailRemoteURL: "", localMediaPath: image.path, kind: .file, state: .complete, progress: 1, createdAt: .now)
         XCTAssertEqual(record.offlinePost?.type, "image")
+        XCTAssertEqual(record.exportURL, image)
         XCTAssertEqual(record.offlinePost?.cardPreviewURL, image.absoluteString)
         let remote = Post(key: "image", id: "1", provider: "Rule34", mediaUrl: "https://cdn.example.invalid/original.jpg", previewUrl: "https://cdn.example.invalid/tiny.jpg", type: "image")
         XCTAssertEqual(remote.cardPreviewURL, remote.mediaUrl, "Home must downsample the original instead of enlarging a thumbnail")
-        record.state = .failed; XCTAssertNil(record.offlinePost)
+        record.state = .failed; XCTAssertNil(record.offlinePost); XCTAssertNil(record.exportURL)
     }
     @MainActor func testRecommendationAdaptationWaitsForVisibleHomeAnchor() async {
         let store = AppStore(); store.selectedProvider = .eporner

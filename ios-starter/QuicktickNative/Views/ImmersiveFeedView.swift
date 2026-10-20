@@ -242,7 +242,7 @@ private struct ImmersiveItemView: View {
                             if store.favorites[post.stableID] == nil { store.toggleFavorite(post) }
                             withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { likePulse = true }
                         case .second:
-                            playing.toggle(); playing ? player?.play() : player?.pause()
+                            if post.isImmersiveMedia { playing.toggle(); playing ? player?.play() : player?.pause() }
                         }
                     })
                 if likePulse {
@@ -346,7 +346,9 @@ private struct ImmersiveItemView: View {
                 railButton("Comments", symbol: "bubble.right") { showComments = true }
                 ImmersiveDownloadControl(manager: store.downloads, post: post, active: active && presentationActive)
             }
-            railButton("Mute", symbol: store.muted ? "speaker.slash" : "speaker.wave.2") { store.muted.toggle() }
+            if post.isImmersiveMedia {
+                railButton("Mute", symbol: store.muted ? "speaker.slash" : "speaker.wave.2") { store.muted.toggle() }
+            }
         }
     }
     private func railButton(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
@@ -494,13 +496,14 @@ struct CachedMediaImage: View {
     var preview = ""
     var pixels = 1024
     var comic = false
+    var fill = false
     var onDecoded: ((DecodedMediaImage) -> Void)?
     @State private var decoded: DecodedMediaImage?
     @State private var previewDecoded: DecodedMediaImage?
     @State private var failed = false
     var body: some View {
         Group {
-            if let image = decoded ?? previewDecoded { Image(uiImage: UIImage(cgImage: image.image)).resizable().scaledToFit() }
+            if let image = decoded ?? previewDecoded { Image(uiImage: UIImage(cgImage: image.image)).resizable().aspectRatio(contentMode: fill ? .fill : .fit) }
             else { Color(white: 0.035).overlay { Image(systemName: failed ? "photo.badge.exclamationmark" : "photo").foregroundStyle(.white.opacity(0.25)) } }
         }.task(id: "\(url):\(pixels):\(comic)") {
             decoded = nil; failed = false

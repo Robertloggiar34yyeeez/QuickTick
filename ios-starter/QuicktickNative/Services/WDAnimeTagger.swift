@@ -12,6 +12,7 @@ actor WDAnimeTagger {
     private var cooldown = Date.distantPast
     private(set) var inferenceMs = 0.0
     private(set) var loadCount = 0
+    var retainsModel: Bool { model != nil }
     func cooldownDelay() -> Double { max(0, cooldown.timeIntervalSinceNow) }
     func release() { model = nil; labels = [] }
     static func axis(_ tag: String) -> String {
@@ -39,6 +40,7 @@ actor WDAnimeTagger {
     func analyze(_ image: DecodedMediaImage, domain: VisualDomain) -> Result? {
         guard domain == .anime, !unavailable, cooldown < .now, !Task.isCancelled,
               !ProcessInfo.processInfo.isLowPowerModeEnabled, ProcessInfo.processInfo.thermalState.rawValue < 2 else { return nil }
+        defer { release() }
         do {
             if model == nil {
                 guard let url = Bundle.main.url(forResource: "WDTaggerV3", withExtension: "mlmodelc"),

@@ -72,6 +72,7 @@ final class VisualTasteTests: XCTestCase {
         let anime = await tagger.analyze(sample, domain: .anime)
         XCTAssertNotNil(anime, "Pinned WD Tagger v3 must be bundled and runnable")
         let loads = await tagger.loadCount; XCTAssertEqual(loads, 1)
+        let retained = await tagger.retainsModel; XCTAssertFalse(retained)
         let ms = await tagger.inferenceMs
         print("QUICKTICK_METRIC wd_v3_fixture_inference_ms=\(ms)")
     }

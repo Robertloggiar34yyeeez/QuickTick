@@ -31,10 +31,13 @@ actor RecommendationPersistence {
         }
     }
 
-    func save(_ state: RecommendationState) {
-        guard !blockedWrite else { return }
-        guard let data = try? JSONEncoder().encode(state) else { return }
-        try? data.write(to: url, options: .atomic)
+    @discardableResult func save(_ state: RecommendationState) -> Bool {
+        guard !blockedWrite else { return false }
+        do {
+            let data = try JSONEncoder().encode(state)
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch { return false }
     }
 
     func clear() {

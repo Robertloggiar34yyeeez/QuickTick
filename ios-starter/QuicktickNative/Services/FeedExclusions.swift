@@ -10,8 +10,16 @@ enum RecommendationTagRules {
         case "chun_li_(street_fighter)", "chun_li_(street_fighter_series)": return "chun_li"
         case "2d_art", "2d_artwork", "2d_(artwork)": return "2d"
         case "3d_art", "3d_artwork", "3d_(artwork)", "3dcg": return "3d"
-        default: return tag
+        case "anthro", "anthropomorphic": return "furry"
+        default:
+            for prefix in ["anthro_", "anthropomorphic_"] where tag.hasPrefix(prefix) { return "furry_" + tag.dropFirst(prefix.count) }
+            return TasteConcepts.canonical(tag)
         }
+    }
+    static func queryExclusions(_ values: [String]) -> [String] {
+        var tokens = Set(values.map(canonical))
+        if tokens.contains("furry") { tokens.formUnion(["anthro", "anthropomorphic"]) }
+        return tokens.sorted()
     }
     static func rejects(_ post: Post, exclusions: [String]) -> Bool {
         guard !exclusions.isEmpty else { return false }

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 struct VisualRefreshProgress: Equatable, Sendable {
     var completed: Int
@@ -29,7 +30,7 @@ final class AppStore: ObservableObject {
     @Published var activeTab = 0 { didSet { if oldValue != activeTab { idleTask?.cancel(); fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
     @Published var isForeground = true { didSet {
         guard oldValue != isForeground else { return }
-        if !isForeground { idleTask?.cancel(); cancelManualVisualRefresh(); players.suspendActivePlayback() }
+        if !isForeground { idleTask?.cancel(); stopActiveLearning(); cancelManualVisualRefresh(); players.suspendActivePlayback() }
         else {
             // A rapid inactive→active transition can coalesce SwiftUI task IDs
             // while the app is suspended. Resume the retained player directly,
@@ -93,7 +94,9 @@ final class AppStore: ObservableObject {
     private var manualVisualID = UUID()
     private var feedExclusions = FeedExclusions()
     private var visualScores: [String: Double] = [:]
-    private var pendingVisualDislikes: [Post] = []
+    private var activeLearningTask: Task<Void, Never>?
+    private var activeLearningID = UUID()
+    private var memoryCooldown = Date.distantPast
     private var idleTask: Task<Void, Never>?
     private var plannedAcquisition: RecommendationEngine.CandidateRequest?
     private var candidateCursors: [String: Int] = [:]
@@ -130,6 +133,7 @@ final class AppStore: ObservableObject {
         self.api = api
         players.onPlaybackStart = { [weak self] in
             self?.idleTask?.cancel()
+            self?.stopActiveLearning(); self?.startActiveLearning()
             if self?.visualScanStatus != nil, self?.visualScanStatus != "Visual update paused for playback" { self?.visualScanStatus = "Visual update paused for playback" }
         }
     }
@@ -143,6 +147,7 @@ final class AppStore: ObservableObject {
             posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []
             if ProcessInfo.processInfo.arguments.contains("--ui-testing-download-images") { downloads.useUITestDownloads(posts) }
             hasMore = false; bootstrapped = true
+            FeedFrameMonitor.shared.startIfRequested()
             return
         }
         #endif
@@ -182,6 +187,7 @@ final class AppStore: ObservableObject {
         bootstrapped = true
         visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil
         await refresh()
+        FeedFrameMonitor.shared.startIfRequested()
         Task(priority: .utility) { await downloads.restoreTasks(); await syncWhenActive() }
     }
 
@@ -238,6 +244,7 @@ final class AppStore: ObservableObject {
     }
 
     func handleMemoryPressure() {
+        memoryCooldown = .now.addingTimeInterval(30); stopActiveLearning()
         cancelManualVisualRefresh()
         semanticTask?.cancel(); idleTask?.cancel()
         players.retain(Set(players.activeKey.map { [$0] } ?? []))
@@ -299,10 +306,10 @@ final class AppStore: ObservableObject {
             let parsed = QueryParser.parse(requestedQuery)
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let search = SearchFilters.split(queryText).tags
-                Task(priority: .utility) { await recommendations.recordSearch(provider: provider, query: search) }
+                Task(priority: .utility) { await recordSearch(provider: provider, query: search) }
             }
             let personalized = requestedSort == "recommended" && parsed.included.isEmpty
-            let banned = Set((exclusions + parsed.excluded + (personalized ? tasteChoice(for: provider).notInto : [])).map { $0.lowercased() })
+            let banned = Set((exclusions + parsed.excluded + tasteChoice(for: provider).notInto).map(RecommendationTagRules.canonical))
             let context = provider.rawValue + "|batch40|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
             candidateContext = personalized ? context : nil
             var requestedPage = 1
@@ -379,7 +386,7 @@ final class AppStore: ObservableObject {
             let page = response.page
             guard generation == token, !Task.isCancelled else { return }
             nextPage = requestedPage + 1; hasMore = (page.hasMore ?? !page.items.isEmpty) || acquisition?.focused == true
-            let banned = Set((exclusions + parsed.excluded + (candidateContext != nil ? tasteChoice(for: provider).notInto : [])).map { $0.lowercased() })
+            let banned = Set((exclusions + parsed.excluded + tasteChoice(for: provider).notInto).map(RecommendationTagRules.canonical))
             var candidates = page.items.filter {
                 encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia)
                     && !RecommendationTagRules.rejects($0, exclusions: Array(banned))
@@ -419,8 +426,10 @@ final class AppStore: ObservableObject {
                 page: candidateCursors[key] ?? acquisition?.page ?? page, focused: acquisition?.focused ?? false)
         }
         let requestGeneration = generation
+        var query = acquisition?.query ?? parsed
+        query.excluded = RecommendationTagRules.queryExclusions(query.excluded + exclusions + tasteChoice(for: provider).notInto)
         do {
-            let result = try await api.posts(provider: provider, query: acquisition?.query ?? parsed, page: acquisition?.page ?? page, sort: sort, immersive: mediaOnly)
+            let result = try await api.posts(provider: provider, query: query, page: acquisition?.page ?? page, sort: sort, immersive: mediaOnly)
             try Task.checkCancellation()
             if generation == requestGeneration, let acquisition {
                 let next = (result.hasMore ?? !result.items.isEmpty) ? acquisition.page + 1 : 1
@@ -434,7 +443,7 @@ final class AppStore: ObservableObject {
             if let failure = error as? APIError, case .providerStatus(_, let status) = failure, (400..<500).contains(status) { throw error }
             guard (error as? APIError)?.retryAfter == nil, let context, acquisition?.focused == true, !Task.isCancelled else { throw error }
             let key = context + "|query:"
-            let broad = RecommendationEngine.CandidateRequest(context: key, query: ParsedQuery(included: [], excluded: acquisition?.query.excluded ?? (exclusions + parsed.excluded)), page: candidateCursors[key] ?? page, focused: false)
+            let broad = RecommendationEngine.CandidateRequest(context: key, query: ParsedQuery(included: [], excluded: query.excluded), page: candidateCursors[key] ?? page, focused: false)
             let result = try await api.posts(provider: provider, query: broad.query, page: broad.page, sort: sort, immersive: mediaOnly)
             try Task.checkCancellation()
             if generation == requestGeneration {
@@ -464,11 +473,6 @@ final class AppStore: ObservableObject {
         // Immediate removal and feedback: no pixel inference on the feed path.
         feedExclusions.viewed(post)
         posts.removeAll { $0.stableID == post.stableID }
-        if visualAnalysisEnabled {
-            pendingVisualDislikes.removeAll { $0.stableID == post.stableID }
-            pendingVisualDislikes.append(post)
-            pendingVisualDislikes = Array(pendingVisualDislikes.suffix(16))
-        }
         Task(priority: .utility) { await record(.less, post: post) }
     }
 
@@ -521,7 +525,7 @@ final class AppStore: ObservableObject {
 
     func resetRecommendations() async {
         cancelManualVisualRefresh()
-        pendingVisualDislikes = []
+        stopActiveLearning()
         idleTask?.cancel(); feedExclusions.restore([]); visualScores = [:]; candidateCursors = [:]; historyOffset = 0
         await visual.reset()
         await recommendations.reset()
@@ -590,8 +594,12 @@ final class AppStore: ObservableObject {
     }
 
     private func record(_ event: RecommendationEvent, post: Post) async {
-        await visual.record(event, post: post)
-        await recommendations.record(event, post: post)
+        let envelope = FeedbackEnvelope(post: post, event: event)
+        plannedAcquisition = nil
+        await visual.stage(envelope, queueAnalysis: visualAnalysisEnabled)
+        await applyFeedback(envelope)
+        // A queued acquisition must not keep using the previous preference state.
+        plannedAcquisition = nil
         persistenceTask?.cancel()
         persistenceTask = Task(priority: .utility) { [weak self] in
             do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
@@ -599,8 +607,63 @@ final class AppStore: ObservableObject {
         }
         scheduleIdleIntelligence()
     }
+    private func recordSearch(provider: Provider, query: String) async {
+        guard !query.isEmpty else { return }
+        let post = Post(key: "search", id: "search", provider: provider.rawValue, tags: QueryParser.parse(query).included)
+        let envelope = FeedbackEnvelope(post: post, event: .download, query: query)
+        await visual.stage(envelope, queueAnalysis: false)
+        await applyFeedback(envelope); plannedAcquisition = nil; startActiveLearning()
+    }
+    private func applyFeedback(_ envelope: FeedbackEnvelope) async {
+        if let query = envelope.query, let provider = envelope.post.providerKey {
+            await recommendations.recordSearch(provider: provider, query: query, eventID: envelope.id)
+        } else { await recommendations.record(envelope.event, post: envelope.post, eventID: envelope.id) }
+        if await recommendationPersistence.save(await recommendationState()) { await visual.acknowledge(envelope.id) }
+    }
+    private func stopActiveLearning() {
+        activeLearningID = UUID(); activeLearningTask?.cancel(); activeLearningTask = nil
+    }
+    private func startActiveLearning() {
+        guard bootstrapped, activeLearningTask == nil, isForeground, !isManualVisualScanRunning else { return }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") && !ProcessInfo.processInfo.arguments.contains("--ui-testing-active-learning") { return }
+        #endif
+        let id = UUID(); activeLearningID = id
+        activeLearningTask = Task(priority: .background) { [weak self] in
+            guard let self else { return }
+            defer { if activeLearningID == id { activeLearningTask = nil } }
+            await recommendations.configureTaxonomy(await visual.metadataTaxonomy())
+            // Replaying a saved event is idempotent even if termination happened
+            // between saving the engine ledger and acknowledging its outbox.
+            for envelope in await visual.pendingFeedback() {
+                guard !Task.isCancelled else { return }; await applyFeedback(envelope)
+            }
+            UIDevice.current.isBatteryMonitoringEnabled = true
+            while !Task.isCancelled, isForeground, activeLearningID == id {
+                let battery = UIDevice.current.batteryLevel
+                let allowed = visualAnalysisEnabled && !isManualVisualScanRunning && !isLoading && memoryCooldown <= .now
+                    && (battery < 0 || battery >= 0.15) && !ProcessInfo.processInfo.isLowPowerModeEnabled
+                    && ProcessInfo.processInfo.thermalState.rawValue < 2
+                if allowed {
+                    let heavy = players.activeKey == nil && inlinePlaybackID == nil && activeTab != 1
+                        && fullScreenPlaybackID == nil && Date().timeIntervalSince(lastFeedMotion) >= 1.5
+                    let token = generation
+                    if await visual.processNext(heavy: heavy), !Task.isCancelled {
+                        let scores = await visual.scores(Array(posts.prefix(128)))
+                        let fingerprints = await visual.fingerprints()
+                        guard !Task.isCancelled else { return }
+                        if token == generation { visualScores = scores; feedExclusions.setFingerprints(fingerprints) }
+                        // Existing visibility/scroll guards protect every displayed card.
+                        await adaptRecommendationTail(token: token)
+                    }
+                }
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+        }
+    }
 
     func noteFeedMotion() {
+        if Date().timeIntervalSince(lastFeedMotion) >= 0.2 { stopActiveLearning(); startActiveLearning() }
         lastFeedMotion = .now
         idleTask?.cancel()
         if visualScanStatus != nil, visualScanStatus != "Visual update paused while scrolling" { visualScanStatus = "Visual update paused while scrolling" }
@@ -616,6 +679,7 @@ final class AppStore: ObservableObject {
         }
     }
     private func scheduleIdleIntelligence() {
+        startActiveLearning()
         idleTask?.cancel()
         guard !isManualVisualScanRunning else { return }
         idleTask = Task(priority: .background) { [weak self] in
@@ -630,12 +694,12 @@ final class AppStore: ObservableObject {
                 guard !Task.isCancelled, generation == token else { return }
                 plannedAcquisition = request
                 visualDiscoveryRound += 1
-                let terms = await visual.discoveryTerms(provider: selectedProvider)
-                if visualDiscoveryRound % 3 == 1, tasteChoice(for: selectedProvider).into.isEmpty, !terms.isEmpty {
-                    let term = terms[((visualDiscoveryRound - 1) / 3) % terms.count]
-                    let key = context + "|query:" + term
+                let queries = await visual.discoveryQueries(provider: selectedProvider)
+                if visualDiscoveryRound % 3 == 1, !queries.isEmpty {
+                    let terms = queries[(visualDiscoveryRound / 3) % queries.count]
+                    let key = context + "|query:" + terms.joined(separator: " ")
                     plannedAcquisition = RecommendationEngine.CandidateRequest(context: key,
-                        query: ParsedQuery(included: [term], excluded: request.query.excluded), page: candidateCursors[key] ?? 1, focused: true)
+                        query: ParsedQuery(included: terms, excluded: request.query.excluded), page: candidateCursors[key] ?? 1, focused: true)
                 }
             }
             visualScores = await visual.scores(posts)
@@ -650,32 +714,24 @@ final class AppStore: ObservableObject {
                     thermal: ProcessInfo.processInfo.thermalState.rawValue,
                     playback: players.activeKey != nil || inlinePlaybackID != nil || activeTab == 1 || fullScreenPlaybackID != nil || !isForeground, loading: isLoading)
                 if idle {
-                    if visualAnalysisEnabled {
-                        // Preview learning follows Dislike without holding playback.
-                        for post in Array(pendingVisualDislikes.prefix(2)) {
-                            guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
-                            await visual.analyzeDisliked(post, useVision: true)
-                            guard !Task.isCancelled else { return }
-                            pendingVisualDislikes.removeAll { $0.stableID == post.stableID }
-                        }
-                    }
                     if visualAnalysisEnabled { visualScanStatus = "Checking visual taste · \(offset)/\(history.count) favorites" }
                     if !scannedCachedFeed {
                         for post in posts.prefix(4) {
                             guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
-                            await visual.analyzeCachedPost(post, useVision: visualAnalysisEnabled)
+                            if visualAnalysisEnabled { _ = await visual.enqueue(post, priority: 1) }
                         }
                         scannedCachedFeed = true
                     }
                     for post in history.dropFirst(offset).prefix(4) {
                         guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
-                        await visual.analyzeFavorite(post, useVision: visualAnalysisEnabled)
+                        await visual.record(.like, post: post, queueAnalysis: false)
+                        if visualAnalysisEnabled, !(await visual.enqueue(post, priority: 1)) { break }
                         offset += 1
                         historyOffset = offset
                     }
                 }
                 do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
-            } while offset < history.count || (visualAnalysisEnabled && !pendingVisualDislikes.isEmpty)
+            } while offset < history.count
             guard !Task.isCancelled, generation == token else { return }
             feedExclusions.setFingerprints(await visual.fingerprints())
             visualScores = await visual.scores(posts)
@@ -699,13 +755,14 @@ final class AppStore: ObservableObject {
     /// Existing scans are reused; like ledgers are never reset or counted twice.
     func startManualVisualRefresh() {
         guard !isManualVisualScanRunning else { return }
-        idleTask?.cancel()
+        idleTask?.cancel(); stopActiveLearning()
         let id = UUID(); manualVisualID = id
         manualVisualProgress = VisualRefreshProgress(completed: 0, total: favorites.count, status: "Preparing visual update…", running: true)
         players.pauseAll()
         manualVisualTask = Task(priority: .background) { [weak self] in
             guard let self else { return }
             defer { if manualVisualID == id { manualVisualTask = nil } }
+            await visual.waitForWorker()
             let history = await visual.historicalQueue(Array(favorites.values))
             var checked = 0
             var lastProgress = Date.distantPast

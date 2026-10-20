@@ -107,13 +107,13 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertLessThanOrEqual(exclusions.recent.count, 2048)
     }
     func testConservativeDomainClassificationAndExplicitIdentity() {
-        XCTAssertEqual(VisualDomain.classify(post("a")), .anime)
+        XCTAssertEqual(VisualDomain.classify(post("a")), .uncertain)
         for provider in ["pornhub", "eporner", "redgifs"] {
-            XCTAssertEqual(VisualDomain.classify(post("b", provider: provider)), .realLife)
-            XCTAssertNil(VisualDomain.classify(post("b", provider: provider, tags: ["anime"])))
+            XCTAssertEqual(VisualDomain.classify(post("b", provider: provider)), .uncertain)
+            XCTAssertEqual(VisualDomain.classify(post("b", provider: provider, tags: ["anime"])), .anime)
         }
-        XCTAssertNil(VisualDomain.classify(post("c", tags: ["photo"])))
-        XCTAssertNil(VisualDomain.classify(post("d", provider: "hanime")))
+        XCTAssertEqual(VisualDomain.classify(post("c", tags: ["photo"])), .realLife)
+        XCTAssertEqual(VisualDomain.classify(post("d", provider: "hanime")), .uncertain)
         XCTAssertTrue(VisualFeatures.metadata(post("e", provider: "redgifs", tags: ["blonde_hair"]))!.subjects.isEmpty)
     }
     func testDislikedChunLiPresentationPreservesIdentityAndContext() {
@@ -153,17 +153,17 @@ final class FastFeedVisualTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let analyzer = VisualAnalysisService(directory: directory)
-        let anime = post("a", tags: ["chun_li", "qipao"])
-        let real = post("b", provider: "eporner", tags: ["jacket", "performer:explicit_metadata"])
+        let anime = post("a", tags: ["2d", "chun_li", "qipao"])
+        let real = post("b", provider: "eporner", tags: ["photo", "jacket", "performer:explicit_metadata"])
         for _ in 0..<3 {
             await analyzer.analyzeFavorite(anime, useVision: false)
             await analyzer.analyzeFavorite(real, useVision: false)
         }
         let saved = await analyzer.snapshot()
         XCTAssertEqual(saved.liked.count, 2)
-        XCTAssertNotNil(saved.profiles["anime"]?.attributes["clothing:qipao"])
-        XCTAssertNil(saved.profiles["anime"]?.attributes["clothing:jacket"])
-        XCTAssertNil(saved.profiles["realLife"]?.subjects["chun_li"])
+        XCTAssertNotNil(saved.profiles["rule34|anime"]?.attributes["clothing:qipao"])
+        XCTAssertNil(saved.profiles["rule34|anime"]?.attributes["clothing:jacket"])
+        XCTAssertNil(saved.profiles["eporner|realLife"]?.subjects["chun_li"])
         let restored = await VisualAnalysisService(directory: directory).snapshot()
         XCTAssertEqual(saved.profiles, restored.profiles)
         XCTAssertEqual(saved.features, restored.features)

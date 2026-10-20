@@ -1,6 +1,24 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testActiveLearningKeepsPlaybackAndDislikeResponsive() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-active-learning", "--measure-performance"]
+        let start = Date(); app.launch()
+        let video = app.buttons["inline-play-test:video"]
+        XCTAssertTrue(video.waitForExistence(timeout: 10))
+        print("QUICKTICK_METRIC simulator_fixture_launch_to_first_post_ms=\(Date().timeIntervalSince(start) * 1000)")
+        expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: video)
+        waitForExpectations(timeout: 15)
+        for _ in 0..<3 { app.swipeUp(); app.swipeDown() }
+        app.buttons["tab-Home"].tap()
+        let dislike = app.buttons["dislike-test:video"]
+        XCTAssertTrue(dislike.waitForExistence(timeout: 10)); dislike.tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dislike)
+        waitForExpectations(timeout: 5)
+        XCTAssertFalse(app.buttons["Close full image"].exists)
+        XCTAssertTrue(app.buttons["dislike-test:image"].exists)
+    }
     @MainActor func testCompactVisualSearchFiltersAndExcludedTags() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         app.buttons["search-filters"].tap()

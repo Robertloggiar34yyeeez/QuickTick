@@ -14,6 +14,10 @@ final class AppStore: ObservableObject {
     @Published var selectedProvider: Provider = .rule34 {
         didSet {
             guard oldValue != selectedProvider else { return }
+            if selectedProvider != .rule34 {
+                let plainQuery = SearchFilters.split(queryText).tags
+                if plainQuery != queryText { queryText = plainQuery; return }
+            }
             invalidateFeed()
         }
     }
@@ -233,6 +237,7 @@ final class AppStore: ObservableObject {
     }
 
     func handleMemoryPressure() {
+        cancelManualVisualRefresh()
         semanticTask?.cancel(); idleTask?.cancel()
         players.retain(Set(players.activeKey.map { [$0] } ?? []))
         Task { await MediaImagePipeline.shared.clearDecoded(); await recommendations.releaseSemanticModel(); await visual.releaseModels() }

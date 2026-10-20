@@ -6,6 +6,7 @@ final class NavigationTests: XCTestCase {
         app.buttons["search-filters"].tap()
         let input = app.textFields["search-filter-input"]
         XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap(); input.typeText("long_hair jacket")
+        app.buttons["search-keyboard-done"].tap()
         app.buttons["Exclude jacket"].tap()
         XCTAssertTrue(app.buttons["Include jacket"].exists)
         app.buttons["search-sort-filter"].tap(); app.buttons["Random"].tap()

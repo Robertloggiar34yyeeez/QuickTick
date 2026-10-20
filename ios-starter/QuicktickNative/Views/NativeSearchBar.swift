@@ -88,6 +88,7 @@ struct NativeSearchBar: View {
 
 private struct SearchFiltersPanel: View {
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var editingTags: Bool
     let provider: Provider
     @Binding var tags: String
     @Binding var filters: SearchFilters
@@ -104,6 +105,7 @@ private struct SearchFiltersPanel: View {
                     HStack {
                         Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                         TextField("Search tags · -tag to exclude", text: $tags)
+                            .focused($editingTags)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
                             .onSubmit(submit).accessibilityIdentifier("search-filter-input")
                     }.padding(12).background(AppTheme.surface, in: Capsule())
@@ -178,8 +180,14 @@ private struct SearchFiltersPanel: View {
                     Button(action: submit) { Label("Search", systemImage: "magnifyingglass").frame(maxWidth: .infinity, minHeight: 44) }
                         .buttonStyle(.borderedProminent).accessibilityIdentifier("apply-search-filters")
                 }.padding(16)
-            }.background(AppTheme.canvas).navigationTitle("Search").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+            }.scrollDismissesKeyboard(.interactively).background(AppTheme.canvas).navigationTitle("Search").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") { editingTags = false }.accessibilityIdentifier("search-keyboard-done")
+                    }
+                }
         }
     }
     private func filterLabel(_ title: String, icon: String) -> some View {

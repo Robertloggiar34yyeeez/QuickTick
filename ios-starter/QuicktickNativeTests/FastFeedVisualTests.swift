@@ -41,6 +41,8 @@ final class FastFeedVisualTests: XCTestCase {
     }
     @MainActor func testCachedVisualDuplicatesAreRemovedOnlyFromTheUnseenTail() async {
         let store = AppStore()
+        // Match a real refresh's revision setup before injecting fixture posts.
+        store.feedSort = "recent"; store.feedSort = "recommended"
         let head = post("visible", media: "https://one.test/a.jpg")
         let duplicate = post("copy", media: "https://two.test/b.jpg")
         let unique = post("unique", media: "https://two.test/c.jpg")
@@ -52,6 +54,14 @@ final class FastFeedVisualTests: XCTestCase {
         await store.adaptRecommendationTail(token: store.feedRevision)
         XCTAssertEqual(store.posts, [head, unique])
         store.selectedProvider = .eporner
+    }
+    @MainActor func testProviderSwitchStripsRule34FiltersBeforeRequestAndMemoryPressureStopsManualScan() {
+        let store = AppStore()
+        store.queryText = "long_hair -jacket sort:random rating:general score:>=25"
+        store.selectedProvider = .eporner
+        XCTAssertEqual(store.queryText, "long_hair -jacket")
+        store.startManualVisualRefresh(); store.handleMemoryPressure()
+        XCTAssertFalse(store.isManualVisualScanRunning)
     }
     @MainActor func testManualVisualRefreshProgressReusesLikeLedgerAndCanBeCancelled() async {
         let store = AppStore(), suffix = UUID().uuidString

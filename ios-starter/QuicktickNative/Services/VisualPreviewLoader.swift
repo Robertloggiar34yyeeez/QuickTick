@@ -10,6 +10,7 @@ actor VisualPreviewLoader {
     init() {
         let config = URLSessionConfiguration.ephemeral
         config.allowsExpensiveNetworkAccess = false; config.allowsConstrainedNetworkAccess = false
+        config.allowsCellularAccess = false
         config.networkServiceType = .background; config.httpMaximumConnectionsPerHost = 1
         config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 12
         session = URLSession(configuration: config)

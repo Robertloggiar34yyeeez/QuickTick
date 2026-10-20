@@ -11,7 +11,7 @@ REPO='SmilingWolf/wd-vit-tagger-v3'
 REV='7f6b584d0bd3f55c4531f14ba3d4761b2bccdc0f'
 OUT=Path('ios-starter/QuicktickNative/SemanticAssets'); OUT.mkdir(parents=True,exist_ok=True)
 BUILD=Path('build/wd-model'); BUILD.mkdir(parents=True,exist_ok=True)
-torch.set_num_threads(2); set_fused_attn(False)
+torch.set_num_threads(1); torch.set_num_interop_threads(1); set_fused_attn(False)
 base=timm.create_model('vit_base_patch16_224',pretrained=False,img_size=448,num_classes=10861,
     class_token=False,global_pool='avg',fc_norm=False,act_layer='gelu_tanh').eval()
 base.load_state_dict(load_file(hf_hub_download(REPO,'model.safetensors',revision=REV)),strict=True)
@@ -21,6 +21,12 @@ class Tagger(torch.nn.Module):
 wrapper=Tagger().eval()
 torch.manual_seed(17); example=torch.rand(1,3,448,448)*2-1
 traced=torch.jit.trace(wrapper,example,strict=False)
+# Compute references before Core ML loads its native runtime. Intel macOS can
+# crash in PyTorch's threading bridge when it runs after Core ML proxy creation.
+fixtures=[]
+for fixture in [example,torch.zeros_like(example)]:
+    with torch.inference_mode(): reference=wrapper(fixture).numpy().reshape(-1).copy()
+    fixtures.append((fixture.numpy().copy(),reference))
 model=ct.convert(traced,inputs=[ct.TensorType(name='image',shape=(1,3,448,448),dtype=np.float32)],
     outputs=[ct.TensorType(name='probabilities',dtype=np.float32)],minimum_deployment_target=ct.target.iOS17,
     compute_precision=ct.precision.FLOAT16,compute_units=ct.ComputeUnit.CPU_ONLY)
@@ -30,9 +36,8 @@ compressed.author='SmilingWolf / QuickTick Core ML conversion'; compressed.licen
 compressed.short_description='WD ViT Tagger v3; pinned weights; BGR normalized to [-1,1], white square letterbox, 448px.'
 package=BUILD/'WDTaggerV3.mlpackage'; compressed.save(str(package))
 report={'repo':REPO,'revision':REV,'precision':'int8 weights, float16 compute','input':'BGR NCHW [-1,1], white letterbox, 448x448','fixtures':[]}
-for fixture in [example,torch.zeros_like(example)]:
-    with torch.inference_mode(): reference=wrapper(fixture).numpy().reshape(-1)
-    start=time.perf_counter(); result=compressed.predict({'image':fixture.numpy()})['probabilities'].reshape(-1)
+for fixture,reference in fixtures:
+    start=time.perf_counter(); result=compressed.predict({'image':fixture})['probabilities'].reshape(-1)
     error=float(np.max(np.abs(reference-result)))
     top=set(np.argsort(reference)[-64:]); overlap=len(top.intersection(np.argsort(result)[-64:]))/64
     assert np.isfinite(result).all() and error<0.06 and overlap>=0.85,(error,overlap)

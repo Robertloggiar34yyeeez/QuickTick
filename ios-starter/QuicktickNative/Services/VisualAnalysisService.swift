@@ -95,6 +95,11 @@ actor VisualAnalysisService {
             enriched.embedding = encoded.vector; enriched.version = encoded.version
         }
         guard resourcesAllowAnalysis() else { return }
+        if before.domain == .anime {
+            let delay = await animeTagger.cooldownDelay()
+            if delay > 0 { do { try await Task.sleep(for: .seconds(delay)) } catch { return } }
+            guard resourcesAllowAnalysis() else { return }
+        }
         if before.domain == .anime, let tagged = await animeTagger.analyze(image, domain: .anime) {
             enriched.attributes.merge(tagged.attributes, uniquingKeysWith: max)
             if enriched.subjects.isEmpty { enriched.subjects = tagged.subjects }

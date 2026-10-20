@@ -544,6 +544,11 @@ struct CachedMediaImage: View {
                 previewDecoded = image
             }
         }
+        .onDisappear {
+            // Lazy stacks can retain row state after it leaves the viewport.
+            // Let the bounded shared cache own offscreen decoded image memory.
+            decoded = nil; previewDecoded = nil
+        }
     }
 }
 

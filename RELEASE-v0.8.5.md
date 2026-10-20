@@ -8,6 +8,8 @@ Settings now provides Update visual taste now, progress and cancellation. It inc
 
 Immersive paging removes full-screen blur and offscreen action rails. Playback ticks update a small, separate timeline rather than rebuilding the entire page ten times per second. Preview resolution is bounded to 512 pixels and page selection avoids unchanged state writes. Physical-device frame pacing still requires measurement.
 
+Offscreen image rows release their decoded state, leaving retention to the bounded shared cache instead of accumulating every visited thumbnail in lazy row state. Returning rows reload through the existing cache and cancellation path. This is a resource-lifetime fix; no measured peak-memory reduction is claimed.
+
 Duplicate filtering additionally normalizes recognized signed URLs, provider-ID aliases and cryptographic asset filenames across CDNs. Cheap difference hashes are captured during existing thumbnail decoding, independent of visual models. Newly discovered duplicates are removed from the unseen Home tail after scrolling settles, preserving visible cards and playback.
 
 The v0.8.5 IPA must be uploaded privately before this revision's simulator tests, then replaced in place after validation passes. Runtime and physical-device performance are not inferred from syntax or archive checks.

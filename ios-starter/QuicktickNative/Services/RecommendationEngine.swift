@@ -395,8 +395,12 @@ actor RecommendationEngine {
         let start = Date(); defer { rankLatencyMs = Date().timeIntervalSince(start) * 1000 }
         // Cheap bounded shortlist before quadratic diversity selection. Strong
         // candidates beyond the first page still get a chance to surface.
-        let shortlist = candidates.prefix(512).enumerated().map { ($0.offset, $0.element, score($0.element, taste: taste, recent: recent)) }
-            .sorted { $0.2 == $1.2 ? $0.0 < $1.0 : $0.2 > $1.2 }.prefix(128).map { $0.1 }
+        var scored: [(offset: Int, post: Post, value: Double)] = []
+        for (offset, post) in candidates.prefix(512).enumerated() {
+            scored.append((offset, post, score(post, taste: taste, recent: recent)))
+        }
+        scored.sort { a, b in a.value == b.value ? a.offset < b.offset : a.value > b.value }
+        let shortlist: [Post] = scored.prefix(128).map { $0.post }
         let selected = Set(shortlist.map(\.stableID))
         let overflow = candidates.filter { !selected.contains($0.stableID) }
         let candidates = shortlist

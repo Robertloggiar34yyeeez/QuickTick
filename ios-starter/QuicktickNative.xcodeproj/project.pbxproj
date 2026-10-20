@@ -299,6 +299,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "677532C9CC544A755F43E9BF";
 		};
+		"D822C7777F40BFDA72C1B2CD" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/VisualAppearanceEncoder.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"E4C45F22C51B7C28FCF2BCD2" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "D822C7777F40BFDA72C1B2CD";
+		};
 		"F8BDB3B414F6C5B7B93F13D5" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -308,6 +318,16 @@
 		"26064FE82E26D229EAB6F8FD" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "F8BDB3B414F6C5B7B93F13D5";
+		};
+		"18B638CEFC354F26447C14C5" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/VisualPreviewLoader.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F14C6A43112B24F26460B552" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "18B638CEFC354F26447C14C5";
 		};
 		"60E93205A75B91DE3BE3FF87" = {
 			"isa" = "PBXFileReference";
@@ -669,6 +689,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "073C0CC6C30BC6A644063462";
 		};
+		"31F72C8511E9D56C6D964112" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNativeTests/VisualTasteTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"D9A4DA6067AC04000E1A9187" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "31F72C8511E9D56C6D964112";
+		};
 		"E9C974562A88FC7884953A1A" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -757,7 +787,9 @@
 				"8C78320B0214E9830B8B704C",
 				"45331AC05FB4F8990DB8EF4A",
 				"6AE8F2C0D0AF140905FF1F4A",
+				"E4C45F22C51B7C28FCF2BCD2",
 				"26064FE82E26D229EAB6F8FD",
+				"F14C6A43112B24F26460B552",
 				"A3DBBA346C911D403CEE722E",
 				"040D543530D7BD3246239709",
 				"C6F2F0D622C7420C6DDC1F8D",
@@ -805,8 +837,8 @@
 				"TARGETED_DEVICE_FAMILY" = "1,2";
 				"CODE_SIGN_STYLE" = "Automatic";
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
-				"MARKETING_VERSION" = "0.7.5";
-				"CURRENT_PROJECT_VERSION" = "19";
+				"MARKETING_VERSION" = "0.8";
+				"CURRENT_PROJECT_VERSION" = "20";
 				"INFOPLIST_KEY_QUICKTICK_API_BASE_URL" = "$(QUICKTICK_API_BASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation" = "YES";
 				"INFOPLIST_KEY_UILaunchScreen_Generation" = "YES";
@@ -832,8 +864,8 @@
 				"TARGETED_DEVICE_FAMILY" = "1,2";
 				"CODE_SIGN_STYLE" = "Automatic";
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
-				"MARKETING_VERSION" = "0.7.5";
-				"CURRENT_PROJECT_VERSION" = "19";
+				"MARKETING_VERSION" = "0.8";
+				"CURRENT_PROJECT_VERSION" = "20";
 				"INFOPLIST_KEY_QUICKTICK_API_BASE_URL" = "$(QUICKTICK_API_BASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation" = "YES";
 				"INFOPLIST_KEY_UILaunchScreen_Generation" = "YES";
@@ -901,6 +933,7 @@
 				"60EFEBC722AC2DF982B5A117",
 				"822622462A5CC158D7A9B906",
 				"BFD69E6457B16CA77FD5DF7D",
+				"D9A4DA6067AC04000E1A9187",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -1138,7 +1171,9 @@
 				"7C54B72DC1B9E24B33CFEBC1",
 				"69C8057082F6B7A8ACC94A3D",
 				"677532C9CC544A755F43E9BF",
+				"D822C7777F40BFDA72C1B2CD",
 				"F8BDB3B414F6C5B7B93F13D5",
+				"18B638CEFC354F26447C14C5",
 				"60E93205A75B91DE3BE3FF87",
 				"7F7610B70DF2D38F9C5E70C8",
 				"7D831797AC7A7A23AD7F0698",
@@ -1175,6 +1210,7 @@
 				"3C6F9848C8D464270781E19A",
 				"CE84D0A97A98DC466C6E2D76",
 				"073C0CC6C30BC6A644063462",
+				"31F72C8511E9D56C6D964112",
 				"E9C974562A88FC7884953A1A",
 				"D24E64E264913BD5E956E1C5",
 				"A1C8F094F9709BD7577142CF",

@@ -11,11 +11,13 @@ actor VisualAnalysisService {
         var liked: Set<String> = []
         var seen: Set<String> = []
         var disliked: Set<String> = []
+        var analysisVersions: [String: String]? = nil
     }
     private var state = State()
     private var restored = false
     private var writeBlocked = false
     private var diskTask: Task<Void, Never>?
+    private var lastPreviewAttempt = Date.distantPast
     private let directory: URL
     init(directory: URL? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("QuicktickVisual-v1", isDirectory: true)
@@ -65,20 +67,37 @@ actor VisualAnalysisService {
     func analyzeCachedPost(_ post: Post, useVision: Bool) async {
         await analyze(post, favorite: false, useVision: useVision)
     }
+    func historicalQueue(_ posts: [Post]) -> [Post] { posts.sorted { $0.stableID < $1.stableID } }
     private func analyze(_ post: Post, favorite: Bool, useVision: Bool) async {
         guard resourcesAllowAnalysis() else { return }
         restore()
         if favorite { record(.like, post: post) }
-        guard useVision, resourcesAllowAnalysis(), let before = state.features[post.stableID] ?? VisualFeatures.metadata(post), !before.pixelsAnalyzed,
-              let image = await MediaImagePipeline.shared.cachedAnalysisImage(raw: post.cardPreviewURL) else { return }
+        guard useVision, resourcesAllowAnalysis(), state.analysisVersions?[post.stableID] != "appearance-v2",
+              let before = state.features[post.stableID] ?? VisualFeatures.metadata(post) else { return }
+        var preview = await MediaImagePipeline.shared.cachedAnalysisImage(raw: post.cardPreviewURL)
+        if preview == nil, favorite, resourcesAllowAnalysis() {
+            let delay = 3 - Date().timeIntervalSince(lastPreviewAttempt)
+            if delay > 0 { do { try await Task.sleep(for: .seconds(delay)) } catch { return } }
+            guard resourcesAllowAnalysis() else { return }
+            lastPreviewAttempt = .now
+            preview = await VisualPreviewLoader.shared.image(post)
+        }
+        guard let image = preview else { return }
         guard resourcesAllowAnalysis() else { return }
         var enriched = before
         enriched.pixelsAnalyzed = true
+        enriched.version = "cached-appearance-v2"
         enriched.fingerprint = Self.fingerprint(image.image)
+        enriched.attributes.merge(VisualAppearanceEncoder.attributes(image.image), uniquingKeysWith: max)
+        if let encoded = try? await VisualAppearanceEncoder.embedding(image) {
+            enriched.embedding = encoded.vector; enriched.version = encoded.version
+        }
+        guard resourcesAllowAnalysis() else { return }
         if before.domain == .realLife {
             // Vision labels describe presentation. Faces are never identity evidence.
             let request = VNClassifyImageRequest()
             request.preferBackgroundProcessing = true
+            request.usesCPUOnly = true
             let handler = VNImageRequestHandler(cgImage: image.image, options: [:])
             if (try? handler.perform([request])) != nil {
                 let allowed: Set<String> = ["beach", "forest", "outdoor", "indoor", "portrait", "night", "sunset"]
@@ -100,6 +119,8 @@ actor VisualAnalysisService {
         }
         state.profiles[before.domain.rawValue] = profile
         state.features[post.stableID] = enriched
+        if state.analysisVersions == nil { state.analysisVersions = [:] }
+        state.analysisVersions?[post.stableID] = "appearance-v2"
         trimFeatures()
         persist()
     }
@@ -115,10 +136,22 @@ actor VisualAnalysisService {
         restore(); return state.features.compactMapValues(\.fingerprint)
     }
     private func trimFeatures() {
-        if state.features.count > 2048 {
+        if state.features.count > 512 {
             let removable = state.features.keys.sorted()
-            for key in removable.prefix(state.features.count - 2048) { state.features.removeValue(forKey: key) }
+            for key in removable.prefix(state.features.count - 512) { state.features.removeValue(forKey: key) }
         }
+    }
+    func discoveryTerms(provider: Provider) -> [String] {
+        restore()
+        let domain: VisualDomain = provider == .rule34 ? .anime : .realLife
+        guard provider != .hanime, let profile = state.profiles[domain.rawValue] else { return [] }
+        return profile.attributes.filter { entry in
+            entry.value.positive >= 1.4 && entry.value.affinity > 0.08 &&
+                ["appearance:", "clothing:", "setting:", "style:"].contains(where: entry.key.hasPrefix)
+        }.sorted { $0.value.affinity > $1.value.affinity }.prefix(6).map { entry in
+            let raw = String(entry.key.split(separator: ":").last ?? "")
+            return provider == .rule34 ? raw : raw.replacingOccurrences(of: "_", with: " ")
+        }.filter { !$0.contains("composition") && !$0.contains("lighting") && !$0.contains("contrast") }
     }
     private func persist() {
         diskTask?.cancel()

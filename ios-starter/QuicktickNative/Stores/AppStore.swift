@@ -66,7 +66,7 @@ final class AppStore: ObservableObject {
     private var nextPage = 1
     private var encountered: Set<String> = []
     private var generation = UUID()
-    @Published var visualAnalysisEnabled = UserDefaults.standard.bool(forKey: "quicktick-visual-analysis-v1") {
+    @Published var visualAnalysisEnabled = (UserDefaults.standard.object(forKey: "quicktick-visual-analysis-v1") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(visualAnalysisEnabled, forKey: "quicktick-visual-analysis-v1"); scheduleIdleIntelligence() }
     }
     let visual = VisualAnalysisService()
@@ -76,6 +76,9 @@ final class AppStore: ObservableObject {
     private var plannedAcquisition: RecommendationEngine.CandidateRequest?
     private var candidateCursors: [String: Int] = [:]
     private var historyOffset = 0
+    private var lastFeedMotion = Date.distantPast
+    private var motionTask: Task<Void, Never>?
+    private var visualDiscoveryRound = 0
     private var persistenceTask: Task<Void, Never>?
     private var semanticTask: Task<Void, Never>?
     private var refreshFlight: Task<Void, Never>?
@@ -103,6 +106,7 @@ final class AppStore: ObservableObject {
     init(api: QuicktickAPIClient = QuicktickAPIClient(), localStorage: LocalStateStore = LocalStateStore()) {
         self.localStorage = localStorage
         self.api = api
+        players.onPlaybackStart = { [weak self] in self?.idleTask?.cancel() }
     }
 
     func bootstrap() async {
@@ -322,6 +326,7 @@ final class AppStore: ObservableObject {
         // The initial page belongs to bootstrap/refresh. Lazy footer appearance
         // must not race credential restoration or start a second page-one request.
         guard nextPage > 1, !isLoading, hasMore else { return }
+        idleTask?.cancel()
         // Reserve loading synchronously, so multiple lazy-cell callbacks share one page request.
         isLoading = true
         let flight = Task { await performLoadMore(immersive: immersive) }; pageFlight = flight
@@ -443,7 +448,8 @@ final class AppStore: ObservableObject {
     func adaptRecommendationTail(token: UUID) async {
         // A tab transition briefly has no active Home post. Ranking that whole
         // array would move the saved scroll anchor before playback reactivates.
-        guard activeTab == 0, inlinePlaybackID != nil || !protectedHomePostIDs.isEmpty else { return }
+        guard !Task.isCancelled, Date().timeIntervalSince(lastFeedMotion) >= 1.5,
+              activeTab == 0, inlinePlaybackID != nil || !protectedHomePostIDs.isEmpty else { return }
         let active = inlinePlaybackID
         let source = posts
         let activeIndex = source.firstIndex(where: { $0.stableID == active }) ?? 0
@@ -454,9 +460,10 @@ final class AppStore: ObservableObject {
         let prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
         let tail = Array(source.dropFirst(prefixCount))
         let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: Array(source.prefix(prefixCount)), visualScores: visualScores)
-        guard generation == token, activeTab == 0, feedSort == "recommended", posts.map(\.stableID) == source.map(\.stableID), inlinePlaybackID == active,
+        guard !Task.isCancelled, Date().timeIntervalSince(lastFeedMotion) >= 1.5,
+              generation == token, activeTab == 0, feedSort == "recommended", posts.map(\.stableID) == source.map(\.stableID), inlinePlaybackID == active,
               protectedHomePostIDs.isSubset(of: Set(source.prefix(prefixCount).map(\.stableID))) else { return }
-        posts = Array(source.prefix(prefixCount)) + ranked
+        if ranked != tail { posts = Array(source.prefix(prefixCount)) + ranked }
     }
 
     func resetRecommendations() async {
@@ -538,29 +545,51 @@ final class AppStore: ObservableObject {
         scheduleIdleIntelligence()
     }
 
+    func noteFeedMotion() {
+        lastFeedMotion = .now
+        idleTask?.cancel()
+        guard motionTask == nil else { return }
+        motionTask = Task(priority: .background) { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                guard let self else { return }
+                if Date().timeIntervalSince(lastFeedMotion) >= 1.5 {
+                    motionTask = nil; scheduleIdleIntelligence(); return
+                }
+            }
+        }
+    }
     private func scheduleIdleIntelligence() {
         idleTask?.cancel()
         idleTask = Task(priority: .background) { [weak self] in
             do { try await Task.sleep(for: .seconds(3)) } catch { return }
             guard let self else { return }
             let token = generation
+            guard Date().timeIntervalSince(lastFeedMotion) >= 1.5 else { return }
             if let context = candidateContext {
                 let request = await recommendations.candidateRequest(context: context, provider: selectedProvider,
                     taste: tasteChoice(for: selectedProvider), excluded: exclusions + QueryParser.parse(queryText).excluded)
                 guard !Task.isCancelled, generation == token else { return }
                 plannedAcquisition = request
+                visualDiscoveryRound += 1
+                let terms = await visual.discoveryTerms(provider: selectedProvider)
+                if visualDiscoveryRound % 3 == 1, tasteChoice(for: selectedProvider).into.isEmpty, let term = terms.first {
+                    let key = context + "|query:" + term
+                    plannedAcquisition = RecommendationEngine.CandidateRequest(context: key,
+                        query: ParsedQuery(included: [term], excluded: request.query.excluded), page: candidateCursors[key] ?? 1, focused: true)
+                }
             }
             visualScores = await visual.scores(posts)
             guard !Task.isCancelled, generation == token else { return }
             await adaptRecommendationTail(token: token)
-            let history = Array(favorites.values).sorted { $0.stableID < $1.stableID }
+            let history = await visual.historicalQueue(Array(favorites.values))
             var offset = historyOffset < history.count ? historyOffset : 0
             var scannedCachedFeed = false
             repeat {
                 guard !Task.isCancelled, generation == token else { return }
                 let idle = VisualAnalysisService.resourcesAllowAnalysis(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
                     thermal: ProcessInfo.processInfo.thermalState.rawValue,
-                    playback: players.activeKey != nil || fullScreenPlaybackID != nil || !isForeground, loading: isLoading)
+                    playback: players.activeKey != nil || inlinePlaybackID != nil || activeTab == 1 || fullScreenPlaybackID != nil || !isForeground, loading: isLoading)
                 if idle {
                     if !scannedCachedFeed {
                         for post in posts.prefix(4) {
@@ -582,7 +611,7 @@ final class AppStore: ObservableObject {
             feedExclusions.setFingerprints(await visual.fingerprints())
             visualScores = await visual.scores(posts)
             // Prepare future candidate acquisition in the background. The feed never waits for it.
-            if let context = candidateContext {
+            if plannedAcquisition == nil, let context = candidateContext {
                 let provider = selectedProvider
                 let request = await recommendations.candidateRequest(context: context, provider: provider,
                     taste: tasteChoice(for: provider), excluded: exclusions + QueryParser.parse(queryText).excluded)
@@ -611,7 +640,7 @@ final class AppStore: ObservableObject {
         await recommendationPersistence.save(await recommendationState())
         let provider = selectedProvider; let token = generation
         let interests = await recommendations.positiveTerms(provider: provider, taste: tasteChoice(for: provider))
-        if generation == token, selectedProvider == provider { learnedInterests = interests }
+        if generation == token, selectedProvider == provider, learnedInterests != interests { learnedInterests = interests }
     }
 
     func setTaste(into: [String], notInto: [String]) {

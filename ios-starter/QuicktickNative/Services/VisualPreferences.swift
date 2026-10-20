@@ -59,6 +59,20 @@ struct VisualProfile: Codable, Sendable, Equatable {
     var interactions: [String: VisualEvidence] = [:]
     var negativePresentations: [String: Set<String>] = [:]
     var clusters: [[Float]] = []
+    var negativeClusters: [[Float]] = []
+    var exposureClusters: [[Float]] = []
+    init() {}
+    enum CodingKeys: String, CodingKey { case attributes, subjects, interactions, negativePresentations, clusters, negativeClusters, exposureClusters }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        attributes = try c.decodeIfPresent([String: VisualEvidence].self, forKey: .attributes) ?? [:]
+        subjects = try c.decodeIfPresent([String: VisualEvidence].self, forKey: .subjects) ?? [:]
+        interactions = try c.decodeIfPresent([String: VisualEvidence].self, forKey: .interactions) ?? [:]
+        negativePresentations = try c.decodeIfPresent([String: Set<String>].self, forKey: .negativePresentations) ?? [:]
+        clusters = try c.decodeIfPresent([[Float]].self, forKey: .clusters) ?? []
+        negativeClusters = try c.decodeIfPresent([[Float]].self, forKey: .negativeClusters) ?? []
+        exposureClusters = try c.decodeIfPresent([[Float]].self, forKey: .exposureClusters) ?? []
+    }
     mutating func record(_ event: RecommendationEvent, features: VisualFeatures) {
         let positive: Double, negative: Double, exposure: Double
         switch event {
@@ -88,11 +102,17 @@ struct VisualProfile: Codable, Sendable, Equatable {
             let variedNegatives = (negativePresentations[subject]?.count ?? 0) >= 4
             update(&subjects[subject, default: VisualEvidence()], confidence: 0.7, penalize: variedNegatives)
         }
-        if positive > 0, !features.embedding.isEmpty, features.embedding.count <= 1024, features.embedding.allSatisfy(\.isFinite) {
-            if let i = clusters.indices.max(by: { SemanticRecommender.cosine(clusters[$0], features.embedding) < SemanticRecommender.cosine(clusters[$1], features.embedding) }),
-               SemanticRecommender.cosine(clusters[i], features.embedding) > 0.75 {
-                clusters[i] = SemanticRecommender.blend(clusters[i], features.embedding, alpha: 0.15)
-            } else if clusters.count < 8 { clusters.append(features.embedding) }
+        if !features.embedding.isEmpty, features.embedding.count <= 2048, features.embedding.allSatisfy(\.isFinite) {
+            func learn(_ values: inout [[Float]]) {
+                if let i = values.indices.max(by: { SemanticRecommender.cosine(values[$0], features.embedding) < SemanticRecommender.cosine(values[$1], features.embedding) }),
+                   SemanticRecommender.cosine(values[i], features.embedding) > 0.82 {
+                    values[i] = SemanticRecommender.blend(values[i], features.embedding, alpha: 0.12)
+                } else if values.count < 8 { values.append(features.embedding) }
+            }
+            if positive > 0 { learn(&clusters) }
+            if exposure > 0 { learn(&exposureClusters) }
+            let knownLikedIdentity = features.subjects.contains { (subjects[$0]?.positive ?? 0) > 0 }
+            if negative > 0, !knownLikedIdentity { learn(&negativeClusters) }
         }
         func bounded(_ values: [String: VisualEvidence], count: Int) -> [String: VisualEvidence] {
             guard values.count > count else { return values }
@@ -113,6 +133,9 @@ struct VisualProfile: Codable, Sendable, Equatable {
             score + features.attributes.keys.reduce(0.0) { $0 + (interactions[subject + "|" + $1]?.affinity ?? 0) }
         }
         let similarity = clusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
-        return max(-4, min(4, attributesScore + identity + context + similarity))
+        let baseline = exposureClusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
+        let avoidance = negativeClusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
+        let visual = similarity * 3 + max(-0.5, similarity - baseline) * 2 - max(0, avoidance - 0.85) * 5
+        return max(-4, min(4, attributesScore + identity + context + visual))
     }
 }

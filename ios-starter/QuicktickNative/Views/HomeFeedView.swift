@@ -79,6 +79,7 @@ struct HomeFeedView: View {
         .coordinateSpace(name: "home-viewport")
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
             guard store.feedRevision == revision else { return }
+            if frames != visibleFrames { store.noteFeedMotion() }
             visibleFrames = frames
             let bounds = CGRect(origin: .zero, size: viewport.size)
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))

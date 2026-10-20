@@ -81,8 +81,8 @@ struct SettingsView: View {
                 Button("Save exclusions") { store.setExclusions(exclusions.split(whereSeparator: \.isWhitespace).map(String.init)); Task { await store.refresh() } }
             }
             Section("Optional visual intelligence") {
-                Toggle("Analyze cached favorite previews while idle", isOn: $store.visualAnalysisEnabled)
-                Text("Separate anime and real-life preferences. Uses cached previews only; pauses during playback, feed loading, Low Power Mode and thermal pressure.").font(.footnote).foregroundStyle(.secondary)
+                Toggle("Learn visual taste while idle", isOn: $store.visualAnalysisEnabled)
+                Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
             }
             Section("Playback") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)

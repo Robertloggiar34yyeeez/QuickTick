@@ -14,7 +14,7 @@ import pathlib, plistlib
 root = pathlib.Path.cwd()
 app = root/'build/QuicktickNative.xcarchive/Products/Applications/QuicktickNative.app'
 info = plistlib.loads((app/'Info.plist').read_bytes())
-assert info['CFBundleVersion'] == '19' and info['CFBundleShortVersionString'] == '0.7.5'
+assert info['CFBundleVersion'] == '20' and info['CFBundleShortVersionString'] == '0.8'
 (root/'ios-starter/Config/xtool-Info.plist').write_bytes(plistlib.dumps(info))
 PY
 cd ios-starter
@@ -22,7 +22,7 @@ cd ios-starter
 "$XTOOL_BIN" dev build --configuration release --ipa 2>&1 | tee ../logs/xtool-app-package.txt
 cd "$ROOT"
 mkdir -p build/export
-cp ios-starter/xtool/QuicktickNative.ipa build/export/QuickTick-0.7.5-unsigned.ipa
-shasum -a 256 build/export/QuickTick-0.7.5-unsigned.ipa > build/export/SHA256SUMS.txt
-python3 scripts/verify-ipa.py build/export/QuickTick-0.7.5-unsigned.ipa build/export/SHA256SUMS.txt
+cp ios-starter/xtool/QuicktickNative.ipa build/export/QuickTick-0.8-unsigned.ipa
+shasum -a 256 build/export/QuickTick-0.8-unsigned.ipa > build/export/SHA256SUMS.txt
+python3 scripts/verify-ipa.py build/export/QuickTick-0.8-unsigned.ipa build/export/SHA256SUMS.txt
 printf '%s\n' 'Native direct-provider build; packaged by xtool from the verified user-supplied source.' 'Unsigned: install using AltStore/Sideloadly.' "Git commit: $GITHUB_SHA" > build/export/INSTALLATION.txt

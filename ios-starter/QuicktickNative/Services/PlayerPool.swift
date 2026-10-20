@@ -15,6 +15,7 @@ final class PlayerPool: ObservableObject {
     private(set) var activeKey: String?
     private(set) var activeOwner: String?
     var capacity = 3
+    var onPlaybackStart: (() -> Void)?
     func isPreparing(_ key: String) -> Bool { warming.contains(key) }
     func transitionVisiblePost() {
         suspendedPlayback = nil
@@ -35,6 +36,7 @@ final class PlayerPool: ObservableObject {
     }
 
     func activate(key: String, url: URL, muted: Bool, owner: String = "home") -> AVPlayer {
+        onPlaybackStart?()
         suspendedPlayback = nil
         // Feed transitions must preserve the next clips' pending prerolls.
         // pauseAll is reserved for tab/background transitions.

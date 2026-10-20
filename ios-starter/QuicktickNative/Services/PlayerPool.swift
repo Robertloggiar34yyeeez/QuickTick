@@ -14,6 +14,7 @@ final class PlayerPool: ObservableObject {
     private var suspendedPlayback: (key: String, owner: String)?
     private(set) var activeKey: String?
     private(set) var activeOwner: String?
+    var suspendedOwner: String? { suspendedPlayback?.owner }
     var capacity = 3
     var onPlaybackStart: (() -> Void)?
     func isPreparing(_ key: String) -> Bool { warming.contains(key) }

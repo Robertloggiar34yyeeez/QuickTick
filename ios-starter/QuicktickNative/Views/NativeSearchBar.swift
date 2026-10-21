@@ -17,65 +17,11 @@ struct NativeSearchBar: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                        TextField("Search tags", text: $form.text)
-                            .focused($focused).textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .submitLabel(.search).onSubmit { submit() }.accessibilityIdentifier("feed-search-input")
-                        Button { addTypedTags() } label: { Image(systemName: "plus.circle.fill").frame(width: 44, height: 44) }.accessibilityLabel("Add tags")
-                    }.padding(.horizontal, 12).background(AppTheme.surface, in: Capsule())
-                    if !suggestions.isEmpty {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack { ForEach(suggestions.prefix(6)) { item in
-                                Button(item.value) { chooseSuggestion(item.value) }.buttonStyle(.bordered)
-                            } }
-                        }
-                    }
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 10) {
-                            Menu {
-                                Picker("Feed order", selection: $form.sort) {
-                                    Text("Recommended").tag("recommended"); Text("Created").tag("recent"); Text("Popular").tag("popular")
-                                }
-                                if store.selectedProvider == .rule34 {
-                                    Picker("Tag order", selection: $form.filters.order) {
-                                        ForEach(SearchOrder.allCases) { Text($0.title).tag($0) }
-                                    }
-                                }
-                            } label: { filterLabel("Sorting", icon: "line.3.horizontal.decrease") }.accessibilityIdentifier("search-sort-filter")
-                            if store.selectedProvider == .rule34 {
-                                Menu {
-                                    Picker("Rating", selection: $form.filters.rating) {
-                                        Text("Any rating").tag("")
-                                        ForEach(SearchFilters.ratings, id: \.self) { Text($0.capitalized).tag($0) }
-                                    }
-                                } label: { filterLabel(form.filters.rating.isEmpty ? "Rating" : form.filters.rating.capitalized, icon: "eye") }.accessibilityIdentifier("search-rating-filter")
-                                Menu {
-                                    Picker("Minimum score", selection: $form.filters.minimumScore) {
-                                        Text("Any score").tag(Optional<Int>.none)
-                                        ForEach(SearchFilters.scores, id: \.self) { Text("≥ \($0)").tag(Optional($0)) }
-                                    }
-                                } label: { filterLabel(form.filters.minimumScore.map { "≥ \($0)" } ?? "Score", icon: "star") }.accessibilityIdentifier("search-score-filter")
-                            }
-                        }
-                    }
+                    inputRow
+                    autocompleteRow
+                    filterRow
                     HStack { Text("Selected tags").font(.headline); Spacer(); Button("Clear") { form.tags = []; form.text = ""; form.filters = SearchFilters() }.font(.caption) }
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), spacing: 8)], spacing: 8) {
-                        ForEach(form.tags) { tag in
-                            HStack(spacing: 0) {
-                                Button { form.tags.removeAll { $0.id == tag.id } } label: {
-                                    Text(tag.name.replacingOccurrences(of: "_", with: " ")).font(.caption).lineLimit(1).frame(maxWidth: .infinity, minHeight: 44)
-                                }.accessibilityLabel("Remove \(tag.name)")
-                                Button {
-                                    if let index = form.tags.firstIndex(where: { $0.id == tag.id }) { form.tags[index].excluded.toggle() }
-                                } label: { Image(systemName: tag.excluded ? "minus.circle.fill" : "nosign").frame(width: 44, height: 44) }
-                                    .accessibilityLabel("\(tag.excluded ? "Include" : "Exclude") \(tag.name)")
-                            }.buttonStyle(.plain).padding(.leading, 8)
-                                .foregroundStyle(tag.excluded ? Color.orange : Color.white)
-                                .background(tag.excluded ? Color.orange.opacity(0.15) : AppTheme.surface, in: Capsule())
-                                .overlay(Capsule().stroke(tag.excluded ? Color.orange.opacity(0.6) : .white.opacity(0.15)))
-                        }
-                    }
+                    selectedTagGrid
                     Text("Tap a tag name to remove it. Tap its block icon to include or exclude it.").font(.caption).foregroundStyle(.secondary)
                     Button(action: submit) { Label("Search", systemImage: "magnifyingglass").frame(maxWidth: .infinity, minHeight: 44) }
                         .buttonStyle(.borderedProminent).accessibilityIdentifier("apply-search-filters")
@@ -104,6 +50,73 @@ struct NativeSearchBar: View {
                     } catch { if !Task.isCancelled { suggestions = [] } }
                 }
         }.preferredColorScheme(.dark)
+    }
+    private var inputRow: some View {
+                    HStack {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Search tags", text: $form.text)
+                            .focused($focused).textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .submitLabel(.search).onSubmit { submit() }.accessibilityIdentifier("feed-search-input")
+                        Button { addTypedTags() } label: { Image(systemName: "plus.circle.fill").frame(width: 44, height: 44) }.accessibilityLabel("Add tags")
+                    }.padding(.horizontal, 12).background(AppTheme.surface, in: Capsule())
+    }
+    @ViewBuilder private var autocompleteRow: some View {
+                    if !suggestions.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack { ForEach(suggestions.prefix(6)) { item in
+                                Button(item.value) { chooseSuggestion(item.value) }.buttonStyle(.bordered)
+                            } }
+                        }
+                    }
+    }
+    private var filterRow: some View {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            Menu {
+                                Picker("Feed order", selection: $form.sort) {
+                                    Text("Recommended").tag("recommended"); Text("Created").tag("recent"); Text("Popular").tag("popular")
+                                }
+                                if store.selectedProvider == .rule34 {
+                                    Picker("Tag order", selection: $form.filters.order) {
+                                        ForEach(SearchOrder.allCases) { Text($0.title).tag($0) }
+                                    }
+                                }
+                            } label: { filterLabel("Sorting", icon: "line.3.horizontal.decrease") }.accessibilityIdentifier("search-sort-filter")
+                            if store.selectedProvider == .rule34 {
+                                Menu {
+                                    Picker("Rating", selection: $form.filters.rating) {
+                                        Text("Any rating").tag("")
+                                        ForEach(SearchFilters.ratings, id: \.self) { Text($0.capitalized).tag($0) }
+                                    }
+                                } label: { filterLabel(form.filters.rating.isEmpty ? "Rating" : form.filters.rating.capitalized, icon: "eye") }.accessibilityIdentifier("search-rating-filter")
+                                Menu {
+                                    Picker("Minimum score", selection: $form.filters.minimumScore) {
+                                        Text("Any score").tag(Optional<Int>.none)
+                                        ForEach(SearchFilters.scores, id: \.self) { Text("≥ \($0)").tag(Optional($0)) }
+                                    }
+                                } label: { filterLabel(form.filters.minimumScore.map { "≥ \($0)" } ?? "Score", icon: "star") }.accessibilityIdentifier("search-score-filter")
+                            }
+                        }
+                    }
+    }
+    private var selectedTagGrid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), spacing: 8)], spacing: 8) {
+            ForEach(form.tags) { tag in tagChip(tag) }
+        }
+    }
+    private func tagChip(_ tag: SearchTag) -> some View {
+        HStack(spacing: 0) {
+            Button { form.tags.removeAll { $0.id == tag.id } } label: {
+                Text(tag.name.replacingOccurrences(of: "_", with: " ")).font(.caption).lineLimit(1).frame(maxWidth: .infinity, minHeight: 44)
+            }.accessibilityLabel("Remove \(tag.name)")
+            Button {
+                if let index = form.tags.firstIndex(where: { $0.id == tag.id }) { form.tags[index].excluded.toggle() }
+            } label: { Image(systemName: tag.excluded ? "minus.circle.fill" : "nosign").frame(width: 44, height: 44) }
+                .accessibilityLabel("\(tag.excluded ? "Include" : "Exclude") \(tag.name)")
+        }.buttonStyle(.plain).padding(.leading, 8)
+            .foregroundStyle(tag.excluded ? Color.orange : Color.white)
+            .background(tag.excluded ? Color.orange.opacity(0.15) : AppTheme.surface, in: Capsule())
+            .overlay(Capsule().stroke(tag.excluded ? Color.orange.opacity(0.6) : .white.opacity(0.15)))
     }
     private func filterLabel(_ title: String, icon: String) -> some View {
         Label(title, systemImage: icon).font(.subheadline).padding(.horizontal, 12).frame(height: 40)

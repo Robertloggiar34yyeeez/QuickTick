@@ -118,7 +118,7 @@ struct ImmersiveFeedView: View {
             if activeID == nil { activeID = mediaPosts.first?.stableID }
             scrollTargetID = activeID
         }
-        .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision)") { await prewarm() }
+        .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")") { await prewarm() }
         .onChange(of: store.feedRevision) { _, _ in activeIndex = 0; activeID = mediaPosts.first?.stableID; scrollTargetID = activeID }
         .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
             if activeID == nil || !keys.contains(activeID ?? "") {

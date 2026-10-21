@@ -133,7 +133,7 @@ struct ImmersiveFeedView: View {
         .sheet(isPresented: $searchVisible) { NativeSearchBar(immersive: true) }
     }
     private func prewarm() async {
-        guard presentationActive, store.isForeground, !Task.isCancelled else { return }
+        guard presentationActive, store.isForeground, !store.isManualVisualScanRunning, !Task.isCancelled else { return }
         guard offline || collectionTab != nil || store.feedMediaOnly else { return }
         let clips = mediaPosts
         guard let activeID, let index = clips.firstIndex(where: { $0.stableID == activeID }) else {
@@ -167,7 +167,7 @@ struct ImmersiveFeedView: View {
                     if offlineMode { url = URL(string: post.mediaUrl) }
                     else { url = try? await resolver.resolve(post).mediaUrlURL }
                     guard !Task.isCancelled else { return }
-                    let stillPresenting = await MainActor.run { feedStore.isForeground && feedStore.activeTab == presentingTab }
+                    let stillPresenting = await MainActor.run { feedStore.isForeground && !feedStore.isManualVisualScanRunning && feedStore.activeTab == presentingTab }
                     guard stillPresenting, !Task.isCancelled else { return }
                     if let url { await pool.prewarm(key: post.stableID, url: url) }
                 }
@@ -317,8 +317,8 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(mediaRetry)") {
-            guard active, presentationActive, store.isForeground else { endExposure(); player = nil; ready = false; gifURL = nil; return }
+        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry)") {
+            guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else { endExposure(); player = nil; ready = false; gifURL = nil; return }
             exposureStarted = .now; exposure = PlaybackExposure(); loopStart = 0; gifDecoded = false; gifClock = 0; lastGIFSample = .now
             progress = 0; duration = 0; scrubbing = false; error = nil
             await prepare()
@@ -424,7 +424,7 @@ private struct ImmersiveItemView: View {
                 guard let remote = URL(string: resolved.mediaUrl) else { throw URLError(.badURL) }
                 url = remote
             }
-            guard !Task.isCancelled, active, presentationActive, store.isForeground else { return }
+            guard !Task.isCancelled, active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else { return }
             if post.type.lowercased() == "gif" { gifURL = url; return }
             let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner)
             player = p; p.isMuted = store.muted

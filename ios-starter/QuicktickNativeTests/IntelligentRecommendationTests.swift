@@ -1,0 +1,159 @@
+import XCTest
+import CoreGraphics
+import ImageIO
+@testable import QuicktickNative
+
+final class IntelligentRecommendationTests: XCTestCase {
+    func testIncrementalScanSkipsCurrentPostsAcrossRestartAndCombinesStats() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("preview.png")
+        let context = try XCTUnwrap(CGContext(data: nil, width: 128, height: 128, bitsPerComponent: 8, bytesPerRow: 512,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 128, height: 128))
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        var old = post("old", ["photo", "qipao"], provider: "redgifs")
+        old.mediaUrl = url.absoluteString; old.thumbUrl = url.absoluteString
+        _ = try await MediaImagePipeline.shared.image(raw: url.absoluteString, pixels: 128)
+        let visual = VisualAnalysisService(directory: directory.appendingPathComponent("state"))
+        await visual.analyzeFavorite(old, useVision: true)
+        let first = await visual.snapshot()
+        XCTAssertNotNil(first.analysisVersions?[old.stableID])
+        let new = post("new", ["photo", "jacket"], provider: "redgifs")
+        await visual.record(.like, post: new, queueAnalysis: false)
+        let queue = await visual.historicalQueue([old, new]); XCTAssertEqual(queue, [new])
+        await visual.analyzeFavorite(old, useVision: true)
+        let runs = await visual.inferenceRuns; XCTAssertEqual(runs, 1)
+        let combined = await visual.snapshot()
+        XCTAssertEqual(combined.profiles["redgifs|realLife"]?.attributes["clothing:qipao"], first.profiles["redgifs|realLife"]?.attributes["clothing:qipao"])
+        XCTAssertGreaterThan(combined.profiles["redgifs|realLife"]?.attributes["clothing:jacket"]?.positive ?? 0, 0)
+        let restored = VisualAnalysisService(directory: directory.appendingPathComponent("state"))
+        let afterRestart = await restored.historicalQueue([old, new]); XCTAssertEqual(afterRestart, [new])
+        var changed = old; changed.tags.append("portrait")
+        let invalidated = await restored.historicalQueue([changed]); XCTAssertEqual(invalidated, [changed])
+    }
+    func testExpiringSignaturesDoNotInvalidateContentButAssetParametersDo() {
+        let original = FeedExclusions.canonicalMediaURL("https://cdn.test/image.jpg?asset=1&token=old")
+        XCTAssertEqual(original, FeedExclusions.canonicalMediaURL("https://cdn.test/image.jpg?token=new&asset=1"))
+        XCTAssertNotEqual(original, FeedExclusions.canonicalMediaURL("https://cdn.test/image.jpg?asset=2&token=new"))
+    }
+    private func post(_ id: String, _ tags: [String], provider: String = "rule34") -> Post {
+        Post(key: provider + ":" + id, id: id, provider: provider, tags: tags, type: "image")
+    }
+    func testReviewedFranchiseMappingsAliasesCrossoversAndAmbiguity() {
+        let sf = TasteConcepts.resolve(["Chun-Li", "fortnite"])
+        XCTAssertEqual(sf.characters, ["chun_li"])
+        XCTAssertEqual(Set(sf.franchises), ["street_fighter", "fortnite"])
+        XCTAssertEqual(sf.evidence["franchise:street_fighter"]?.origin, "reviewed_mapping")
+        XCTAssertEqual(TasteConcepts.resolve(["shelly", "brawlstars"]).characters, ["shelly_brawl_stars"])
+        XCTAssertEqual(TasteConcepts.resolve(["colette_(brawl_stars)"]).franchises, ["brawl_stars"])
+        XCTAssertEqual(TasteConcepts.resolve(["fishstick_(fortnite)"]).franchises, ["fortnite"])
+        XCTAssertTrue(TasteConcepts.resolve(["shelly", "raven", "unknown"]).characters.isEmpty)
+        XCTAssertEqual(TasteConcepts.resolve(["franchise:unknown_series"]).franchises, ["unknown_series"])
+    }
+    func testContentBasedMediaClassificationAcrossProviders() {
+        for provider in Provider.allCases {
+            XCTAssertEqual(VisualDomain.classify(post("a", ["2d"], provider: provider.rawValue)), .anime)
+            XCTAssertEqual(VisualDomain.classify(post("b", ["3dcg", "anime"], provider: provider.rawValue)), .threeD)
+            XCTAssertEqual(VisualDomain.classify(post("c", ["photo"], provider: provider.rawValue)), .realLife)
+            XCTAssertEqual(VisualDomain.classify(post("d", ["photo", "3d"], provider: provider.rawValue)), .mixed)
+            XCTAssertEqual(VisualDomain.classify(post("e", ["animated", "realistic"], provider: provider.rawValue)), .uncertain)
+        }
+    }
+    func testSpecificArtistMediumAndPresentationOutweighBroadSimilarity() throws {
+        let liked = try XCTUnwrap(VisualFeatures.metadata(post("a", ["3d", "artist:one", "chun_li", "qipao"])))
+        let unrelated = try XCTUnwrap(VisualFeatures.metadata(post("b", ["3d", "artist:other", "chun_li", "jacket"])))
+        var profile = ContextTasteProfile()
+        for _ in 0..<6 { profile.record(.like, features: liked) }
+        let artistBefore = profile.dimensions["artist:one"]
+        profile.record(.less, features: unrelated)
+        XCTAssertEqual(profile.dimensions["artist:one"], artistBefore)
+        XCTAssertGreaterThan(profile.score(liked), profile.score(unrelated))
+        XCTAssertTrue(profile.discoveryQueries().contains { $0.contains("one") && $0.contains("3d") })
+        var unseen = liked; unseen.subjects = ["new_character"]; unseen.franchises = []
+        XCTAssertGreaterThan(profile.score(unseen), profile.score(unrelated))
+        let decoded = try JSONDecoder().decode(ContextTasteProfile.self, from: JSONEncoder().encode(profile))
+        XCTAssertEqual(decoded, profile)
+    }
+    func testDislikePresentationPreservesLikedCharacterAndFranchise() throws {
+        let liked = try XCTUnwrap(VisualFeatures.metadata(post("a", ["2d", "chun_li", "qipao", "watercolor"])))
+        let bad = try XCTUnwrap(VisualFeatures.metadata(post("b", ["2d", "chun_li", "jacket", "sketch"])))
+        var profile = ContextTasteProfile()
+        for _ in 0..<4 { profile.record(.like, features: liked) }
+        let identity = profile.dimensions["character:chun_li"], franchise = profile.dimensions["franchise:street_fighter"]
+        profile.record(.less, features: bad)
+        XCTAssertEqual(profile.dimensions["character:chun_li"], identity)
+        XCTAssertEqual(profile.dimensions["franchise:street_fighter"], franchise)
+        XCTAssertLessThan(profile.relationships["character:chun_li|clothing:jacket"]?.affinity ?? 0, 0)
+        XCTAssertGreaterThan(profile.score(liked), profile.score(bad))
+    }
+    func testActiveFeedbackDeduplicationPersistenceAndMediumIsolation() async throws {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let liked = post("like", ["2d", "chun_li", "qipao"])
+        await engine.record(.like, post: liked, eventID: "stable-event")
+        let before = await engine.snapshot()
+        await engine.record(.like, post: liked, eventID: "stable-event")
+        let after = await engine.snapshot()
+        XCTAssertEqual(before.contextualProfiles, after.contextualProfiles)
+        XCTAssertNotNil(after.contextualProfiles["rule34|anime"])
+        XCTAssertNil(after.contextualProfiles["rule34|threeD"])
+        XCTAssertNil(after.contextualProfiles["redgifs|anime"])
+        let restored = try JSONDecoder().decode(RecommendationState.self, from: JSONEncoder().encode(after))
+        let second = RecommendationEngine(semantic: SemanticRecommender(enabled: false)); await second.load(restored)
+        await second.record(.like, post: liked, eventID: "stable-event")
+        let replayed = await second.snapshot()
+        XCTAssertEqual(after.contextualProfiles, replayed.contextualProfiles)
+        await second.record(.less, post: post("bad", ["3d", "chun_li", "jacket"]))
+        let preserved = await second.snapshot()
+        XCTAssertEqual(preserved.contextualProfiles["rule34|anime"], after.contextualProfiles["rule34|anime"])
+    }
+    func testDurableOutboxAndBoundedPriorityQueue() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let visual = VisualAnalysisService(directory: directory)
+        for i in 0..<80 { _ = await visual.enqueue(post("\(i)", ["2d"]), priority: 1) }
+        let feedback = FeedbackEnvelope(id: "durable", post: post("negative", ["3d", "jacket"]), event: .less)
+        await visual.stage(feedback, queueAnalysis: true); await visual.stage(feedback, queueAnalysis: true)
+        let saved = await visual.snapshot()
+        XCTAssertEqual(saved.pending?.count, 64)
+        XCTAssertTrue(saved.pending?.contains { $0.post.id == "negative" && $0.priority == 5 } == true)
+        XCTAssertEqual(saved.outbox?.count, 1)
+        let recovered = VisualAnalysisService(directory: directory)
+        let pending = await recovered.pendingFeedback(); XCTAssertEqual(pending.map(\.id), ["durable"])
+        await recovered.acknowledge("durable")
+        let acknowledged = await recovered.snapshot(); XCTAssertTrue(acknowledged.outbox?.isEmpty == true)
+    }
+    func testExplicitAliasFamiliesHaveZeroLeakageAndInferredNegativesRemainSoft() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let taste = TasteChoice(done: true, into: [], notInto: ["anthropomorphic"])
+        let rejected = ["furry", "furry_male", "furry_female", "anthro", "anthro_female"].enumerated().map { post("\($0.offset)", [$0.element]) }
+        let allowed = post("ok", ["anthropology", "furrowed_brow"])
+        let ranked = await engine.rankFast(rejected + [allowed], taste: taste, recent: [])
+        XCTAssertEqual(ranked, [allowed])
+        await engine.record(.less, post: allowed)
+        let hard = await engine.isHardDisliked(allowed, taste: TasteChoice()); XCTAssertFalse(hard)
+        let request = await engine.candidateRequest(context: "aliases", provider: .rule34, taste: taste, excluded: [])
+        XCTAssertTrue(request.query.excluded.contains("furry")); XCTAssertTrue(request.query.excluded.contains("anthro"))
+    }
+    func testMetadataFixtureRelevanceAgainstLegacyScorer() async {
+        let legacy = RecommendationEngine(semantic: SemanticRecommender(enabled: false), contextualRanking: false)
+        let current = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        for i in 0..<8 {
+            let favorite = post("favorite\(i)", ["2d", "chun_li", "artist:one", "qipao", "watercolor"])
+            await legacy.record(.like, post: favorite); await current.record(.like, post: favorite)
+        }
+        let candidates = (0..<20).map { post("candidate\($0)", $0 < 10 ? ["3d", "chun_li", "artist:other", "animation"] : ["2d", "chun_li", "artist:one", "qipao", "watercolor"]) }
+        let start = Date()
+        let old = await legacy.rankFast(candidates, taste: TasteChoice(), recent: [])
+        let baselineMs = Date().timeIntervalSince(start) * 1000
+        let newStart = Date()
+        let new = await current.rankFast(candidates, taste: TasteChoice(), recent: [])
+        let currentMs = Date().timeIntervalSince(newStart) * 1000
+        func precision(_ posts: [Post]) -> Double { Double(posts.prefix(5).filter { $0.tags.contains("artist:one") && $0.tags.contains("2d") }.count) / 5 }
+        print("QUICKTICK_METRIC metadata_fixture_baseline_p5=\(precision(old)) current_p5=\(precision(new)) baseline_rank_ms=\(baselineMs) current_rank_ms=\(currentMs)")
+        XCTAssertGreaterThanOrEqual(precision(new), precision(old)); XCTAssertEqual(precision(new), 1)
+    }
+}

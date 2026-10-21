@@ -6,6 +6,7 @@ struct DecodedMediaImage: @unchecked Sendable {
     let image: CGImage
     let nativeSize: CGSize
     let comic: Bool
+    var perceptualHash: UInt64? = nil
     var cost: Int { image.bytesPerRow * image.height }
 }
 
@@ -56,7 +57,8 @@ actor MediaImagePipeline {
             cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: bucket, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
         }
         guard let cg else { throw URLError(.cannotDecodeContentData) }
-        let decoded = DecodedMediaImage(image: cg, nativeSize: CGSize(width: w, height: h), comic: comic)
+        let decoded = DecodedMediaImage(image: cg, nativeSize: CGSize(width: w, height: h), comic: comic,
+            perceptualHash: VisualAnalysisService.fingerprint(cg))
         if images[key] == nil { images[key] = decoded; bytes += decoded.cost; touch(key) }
         while bytes > 32 * 1024 * 1024, let oldest = order.first { order.removeFirst(); if let old = images.removeValue(forKey: oldest) { bytes -= old.cost } }
         return decoded
@@ -103,5 +105,16 @@ actor MediaImagePipeline {
     }
     private func touch(_ key: String) { order.removeAll { $0 == key }; order.append(key) }
     func clearDecoded() { images.removeAll(); order.removeAll(); bytes = 0; prefetchedGIF = nil }
+    /// Analysis may reuse decoded previews only. It cannot trigger network traffic.
+    func cachedAnalysisImage(raw: String) -> DecodedMediaImage? {
+        guard let key = order.reversed().first(where: { $0.hasPrefix(raw + ":") }), let value = images[key] else { return nil }
+        let scale = min(1, 384 / Double(max(value.image.width, value.image.height)))
+        let w = max(1, Int(Double(value.image.width) * scale)), h = max(1, Int(Double(value.image.height) * scale))
+        guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.draw(value.image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let image = context.makeImage() else { return nil }
+        return DecodedMediaImage(image: image, nativeSize: value.nativeSize, comic: value.comic)
+    }
     var decodedBytes: Int { bytes }
 }

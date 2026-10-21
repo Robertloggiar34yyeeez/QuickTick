@@ -14,7 +14,7 @@ import pathlib, plistlib
 root = pathlib.Path.cwd()
 app = root/'build/QuicktickNative.xcarchive/Products/Applications/QuicktickNative.app'
 info = plistlib.loads((app/'Info.plist').read_bytes())
-assert info['CFBundleVersion'] == '24' and info['CFBundleShortVersionString'] == '0.9.5'
+assert info['CFBundleVersion'] == '25' and info['CFBundleShortVersionString'] == '0.9.5'
 (root/'ios-starter/Config/xtool-Info.plist').write_bytes(plistlib.dumps(info))
 PY
 cd ios-starter

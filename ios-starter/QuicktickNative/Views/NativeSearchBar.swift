@@ -26,7 +26,10 @@ struct NativeSearchBar: View {
                     Button(action: submit) { Label("Search", systemImage: "magnifyingglass").frame(maxWidth: .infinity, minHeight: 44) }
                         .buttonStyle(.borderedProminent).accessibilityIdentifier("apply-search-filters")
                 }.padding(20)
-            }.scrollDismissesKeyboard(.interactively).background(AppTheme.canvas)
+            }.scrollDismissesKeyboard(.interactively).background(AppTheme.canvas.ignoresSafeArea())
+                .toolbarBackground(AppTheme.canvas, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+                .toolbarColorScheme(.dark, for: .navigationBar)
                 .navigationTitle("Search").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.accessibilityIdentifier("close-search") } }
                 .onAppear {
@@ -49,7 +52,10 @@ struct NativeSearchBar: View {
                         guard !Task.isCancelled else { return }; suggestions = values
                     } catch { if !Task.isCancelled { suggestions = [] } }
                 }
-        }.preferredColorScheme(.dark)
+        }.background(AppTheme.canvas.ignoresSafeArea())
+            .presentationBackground(AppTheme.canvas)
+            .presentationDragIndicator(.hidden)
+            .preferredColorScheme(.dark)
     }
     private var inputRow: some View {
                     HStack {

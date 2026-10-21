@@ -30,7 +30,7 @@ struct PostCardView: View {
         VStack(spacing: 0) {
             media.frame(width: mediaSize.width, height: mediaSize.height).clipped().contentShape(Rectangle())
                 .background {
-                    if playbackTab == 0 {
+                    if playbackTab == 0 || playbackTab == 2 {
                         GeometryReader { geometry in
                             Color.clear.preference(key: HomeVisibleFrames.self, value: [post.stableID: geometry.frame(in: .named("home-viewport"))])
                         }
@@ -52,6 +52,7 @@ struct PostCardView: View {
                     } else {
                     ActionIcon(title: "Like", symbol: store.favorites[post.stableID] == nil ? "heart" : "heart.fill", selected: store.favorites[post.stableID] != nil) { store.toggleFavorite(post) }
                     ActionIcon(title: "Less", symbol: "hand.thumbsdown") { store.less(post) }
+                        .accessibilityIdentifier("dislike-\(post.stableID)")
                     ActionIcon(title: "Download", symbol: "arrow.down.to.line") { store.download(post) }
                     ActionIcon(title: "Comments", symbol: "bubble.left") { comments = true }
                     }
@@ -72,9 +73,9 @@ struct PostCardView: View {
             }) {
                 if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning)") {
                 guard !Task.isCancelled else { return }
-                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground else { stopPlayback(); return }
+                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isManualVisualScanRunning else { stopPlayback(); return }
                 await preparePlayback()
             }
             .onDisappear {
@@ -100,7 +101,7 @@ struct PostCardView: View {
         Group {
             if let player, store.fullScreenPlaybackID != post.stableID {
                 ZStack {
-                    PosterView(url: post.cardPreviewURL)
+                    PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
                     NativePlayerSurface(player: player, fill: false, ready: $ready)
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready ? 1 : 0)
@@ -108,8 +109,11 @@ struct PostCardView: View {
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true, onSize: { nativeSize = $0; mediaAspect = $0.width / max(1,$0.height) })
             } else if post.type.lowercased() == "image" {
-                CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl, pixels: Int(mediaSize.width * 3), comic: true) { decoded in nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height) }
-            } else { PosterView(url: post.cardPreviewURL) }
+                CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl, pixels: Int(mediaSize.width * 3), comic: true, fill: true) { decoded in
+                    nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height)
+                    store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
+                }
+            } else { PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
         }
         .frame(width: mediaSize.width, height: mediaSize.height)
         .allowsHitTesting(false)

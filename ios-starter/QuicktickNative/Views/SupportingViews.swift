@@ -81,8 +81,45 @@ struct TasteOnboardingView: View {
 
 struct FavoritesView: View {
     @EnvironmentObject private var store: AppStore
+    @State private var immersive = false
+    @State private var activeID: String?
+    private var saved: [Post] { store.favorites.values.sorted { $0.stableID < $1.stableID } }
     var body: some View {
-        ScrollView { LazyVStack { ForEach(store.favorites.values.sorted { $0.stableID < $1.stableID }, id: \.stableID) { PostCardView(post: $0, playbackTab: 2) } }.padding() }
-            .scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Favorites")
+        Group {
+            if immersive {
+                ImmersiveFeedView(posts: saved, offline: false, activePostID: $activeID,
+                                  onClose: { immersive = false }, collectionTab: 2)
+            } else {
+                GeometryReader { geometry in
+                    ScrollView {
+                        LazyVStack(spacing: 18) {
+                            ForEach(saved, id: \.stableID) { post in
+                                PostCardView(post: post, available: CGSize(width: min(680, geometry.size.width), height: geometry.size.height), playbackTab: 2)
+                            }
+                        }.frame(maxWidth: .infinity).padding(.bottom, 18)
+                    }.coordinateSpace(name: "home-viewport")
+                        .onPreferenceChange(HomeVisibleFrames.self) { frames in
+                            guard store.activeTab == 2, store.isForeground, !immersive else { return }
+                            store.noteFeedMotion()
+                            let bounds = CGRect(origin: .zero, size: geometry.size)
+                            for (id, frame) in frames {
+                                if let post = store.favorites[id], frame.height > 0,
+                                   frame.intersection(bounds).height >= min(frame.height * 0.5, bounds.height * 0.5) {
+                                    store.recordImpression(post)
+                                }
+                            }
+                            if store.fullScreenPlaybackID == nil {
+                                let playable = Set(frames.keys.filter { store.favorites[$0]?.isImmersiveMedia == true })
+                                let key = VisiblePostSelector.select(frames: frames, viewport: bounds, current: store.inlinePlaybackID, eligible: playable)
+                                if key != store.inlinePlaybackID { store.inlinePlaybackID = key }
+                            }
+                        }
+                }
+            }
+        }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Favorites")
+            .toolbar {
+                Button(immersive ? "Feed" : "Immersive") { immersive.toggle() }
+                    .disabled(saved.isEmpty).accessibilityIdentifier("favorites-immersive")
+            }
     }
 }

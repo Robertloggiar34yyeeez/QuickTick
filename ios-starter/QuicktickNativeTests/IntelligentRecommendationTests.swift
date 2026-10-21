@@ -35,6 +35,53 @@ final class IntelligentRecommendationTests: XCTestCase {
         var changed = old; changed.tags.append("portrait")
         let invalidated = await restored.historicalQueue([changed]); XCTAssertEqual(invalidated, [changed])
     }
+    func testHistoricalFavoritesRemainAWeakSignalRatherThanOvertakingDiversity() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let favorites = (0..<100).map { post("saved-\($0)", ["chun_li", "qipao", "art"]) }
+        let matching = post("candidate", ["chun_li", "qipao", "art"])
+        let distinct = post("different", ["raven", "landscape", "sketch"])
+        await engine.configureFavorites(favorites)
+        let delta = await engine.score(matching, taste: TasteChoice(), recent: []) -
+            engine.score(distinct, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(delta, 0)
+        XCTAssertLessThanOrEqual(delta, 3.1, "The entire liked history must not force a large saturated boost")
+    }
+
+    func testFastRankingDiversifiesNearbyEqualScoreThemes() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let candidates = [
+            post("a1", ["chun_li", "qipao"]),
+            post("a2", ["chun_li", "qipao"]),
+            post("a3", ["chun_li", "qipao"]),
+            post("b1", ["raven", "landscape"]),
+            post("b2", ["raven", "landscape"])
+        ]
+        await engine.configureFavorites([post("liked", ["art", "misc"])])
+        let ranked = await engine.rankFast(candidates, taste: TasteChoice(), recent: [])
+        XCTAssertEqual(ranked.count, candidates.count)
+        XCTAssertEqual(ranked.first?.stableID, candidates.first?.stableID)
+        XCTAssertEqual(ranked.dropFirst().first?.stableID, candidates[3].stableID)
+    }
+
+    func testReconcileRemovesUnlikedVisualEvidenceWithoutResettingOtherLikes() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = VisualAnalysisService(directory: directory)
+        let a = post("visual-a", ["2d", "chun_li", "qipao"])
+        let b = post("visual-b", ["2d", "raven", "jacket"])
+        await service.reconcileFavorites([a, b])
+        let before = await service.snapshot()
+        XCTAssertEqual(before.liked.count, 2)
+        await service.reconcileFavorites([b])
+        let after = await service.snapshot()
+        XCTAssertEqual(after.liked, Set([b.stableID]))
+        XCTAssertEqual(after.profiles["rule34|anime"]?.subjects["chun_li"]?.positive ?? -1, 0, accuracy: 0.001)
+        XCTAssertGreaterThan(after.profiles["rule34|anime"]?.subjects["raven"]?.positive ?? 0, 0)
+        await service.reconcileFavorites([b])
+        let stable = await service.snapshot()
+        XCTAssertEqual(stable.profiles, after.profiles)
+    }
+
     func testAllCurrentFavoritesContributeWithoutReplayingLikeEvents() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let saved = (0..<32).map { post("saved-\($0)", ["chun_li", "qipao", "artist:example"]) }

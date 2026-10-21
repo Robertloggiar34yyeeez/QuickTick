@@ -133,6 +133,18 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
     }
 
+    @MainActor func testSwipeRightFromImmersiveEdgeReturnsToHome() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        app.buttons["tab-Immersive"].tap()
+        XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 10))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.55))
+        let destination = app.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.55))
+        start.press(forDuration: 0.07, thenDragTo: destination)
+        XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
+    }
+
     @MainActor func testFourTabsSettingsAndScrollToTop() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))

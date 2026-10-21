@@ -67,7 +67,8 @@ final class IntelligentRecommendationTests: XCTestCase {
         await service.reconcileFavorites(saved)
         let again = await service.snapshot()
         XCTAssertEqual(first.profiles, again.profiles)
-        XCTAssertEqual((await VisualAnalysisService(directory: directory).snapshot()).liked.count, saved.count)
+        let restored = await VisualAnalysisService(directory: directory).snapshot()
+        XCTAssertEqual(restored.liked.count, saved.count)
     }
 
     func testExpiringSignaturesDoNotInvalidateContentButAssetParametersDo() {

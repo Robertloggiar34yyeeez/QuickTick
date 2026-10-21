@@ -10,7 +10,7 @@ final class AppStore: ObservableObject {
         }
     }
     @Published var posts: [Post] = []
-    @Published var activeTab = 0 { didSet { if oldValue != activeTab { fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
+    @Published var activeTab = 0 { didSet { if oldValue != activeTab { fullScreenPlaybackID = nil; protectedHomePostIDs = []; activeImmersivePostID = nil; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
     @Published var isForeground = true { didSet {
         guard oldValue != isForeground else { return }
         if !isForeground { players.suspendActivePlayback() }
@@ -53,6 +53,7 @@ final class AppStore: ObservableObject {
     @Published var muted = false { didSet { persistLocal() } }
     @Published private(set) var feedMediaOnly = false
     private var candidateContext: String?
+    private var activeImmersivePostID: String?
     private var nextPage = 1
     private var encountered: Set<String> = []
     private var generation = UUID()
@@ -425,21 +426,40 @@ final class AppStore: ObservableObject {
         protectedHomePostIDs = keys
     }
 
+    func setVisibleImmersivePost(_ key: String?) {
+        guard activeTab == 1 else { return }
+        activeImmersivePostID = key
+    }
+
     func adaptRecommendationTail(token: UUID) async {
-        // A tab transition briefly has no active Home post. Ranking that whole
-        // array would move the saved scroll anchor before playback reactivates.
-        guard activeTab == 0, let active = inlinePlaybackID else { return }
+        // Both feeds adapt their unseen tail, never the actively viewed content.
+        // SwiftUI paging is especially sensitive to moving the current clip.
+        guard feedSort == "recommended" else { return }
+        let immersive = activeTab == 1 && feedMediaOnly
+        guard activeTab == 0 || immersive else { return }
+        let active = immersive ? activeImmersivePostID : inlinePlaybackID
+        guard let active, let activeIndex = posts.firstIndex(where: { $0.stableID == active }) else { return }
         let source = posts
-        guard let activeIndex = source.firstIndex(where: { $0.stableID == active }) else { return }
-        // Several cards can be visible, particularly on iPad. Moving a still
-        // below the active video can expose another clip and steal playback.
-        // Geometry remains owned by Home; this set only protects ranking.
-        let protected = protectedHomePostIDs.union([active])
-        let prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
+        // Protect all visible Home cards. In Immersive, the current page and
+        // every page before it stay fixed; only subsequent clips may be ranked.
+        let prefixCount: Int
+        if immersive {
+            prefixCount = activeIndex + 1
+        } else {
+            let protected = protectedHomePostIDs.union([active])
+            prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
+        }
         let tail = Array(source.dropFirst(prefixCount))
+        guard !tail.isEmpty else { return }
         let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: Array(source.prefix(prefixCount)))
-        guard generation == token, activeTab == 0, feedSort == "recommended", posts.map(\.stableID) == source.map(\.stableID), inlinePlaybackID == active,
-              protectedHomePostIDs.isSubset(of: Set(source.prefix(prefixCount).map(\.stableID))) else { return }
+        guard generation == token, feedSort == "recommended",
+              posts.map(\.stableID) == source.map(\.stableID) else { return }
+        if immersive {
+            guard activeTab == 1, feedMediaOnly, activeImmersivePostID == active else { return }
+        } else {
+            guard activeTab == 0, inlinePlaybackID == active,
+                  protectedHomePostIDs.isSubset(of: Set(source.prefix(prefixCount).map(\.stableID))) else { return }
+        }
         posts = Array(source.prefix(prefixCount)) + ranked
     }
 
@@ -469,6 +489,7 @@ final class AppStore: ObservableObject {
         let parsed = QueryParser.parse(queryText)
         let next = (parsed.included + [tag]).uniqued() + parsed.excluded.filter { $0.caseInsensitiveCompare(tag) != .orderedSame }.map { "-\($0)" }
         queryText = next.joined(separator: " ")
+        Task { await refresh(immersive: activeTab == 1) }
     }
 
     func excludeTag(_ tag: String) {
@@ -476,6 +497,7 @@ final class AppStore: ObservableObject {
         let included = parsed.included.filter { $0.caseInsensitiveCompare(tag) != .orderedSame }
         let excluded = (parsed.excluded + [tag]).uniqued().map { "-\($0)" }
         queryText = (included + excluded).joined(separator: " ")
+        Task { await refresh(immersive: activeTab == 1) }
     }
 
     func tasteChoice(for provider: Provider) -> TasteChoice {

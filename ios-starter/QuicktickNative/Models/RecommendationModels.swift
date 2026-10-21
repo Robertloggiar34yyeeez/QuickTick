@@ -147,7 +147,7 @@ struct RecommendationNoveltyModel: Codable, Sendable, Equatable {
         let incoming = Set(ids)
         offered.removeAll { incoming.contains($0) }
         offered.append(contentsOf: ids)
-        if offered.count > 2048 { offered = Array(offered.suffix(2048)) }
+        if offered.count > 8192 { offered = Array(offered.suffix(8192)) }
     }
     func contains(_ id: String) -> Bool { offered.contains(id) }
 }

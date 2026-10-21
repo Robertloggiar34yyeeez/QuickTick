@@ -120,6 +120,7 @@ final class AppStore: ObservableObject {
     private var motionTask: Task<Void, Never>?
     private var visualDiscoveryRound = 0
     private var persistenceTask: Task<Void, Never>?
+    private var pendingSkipIntents: Set<String> = []
     private var semanticTask: Task<Void, Never>?
     private var refreshFlight: Task<Void, Never>?
     private var pageFlight: Task<Void, Never>?
@@ -392,6 +393,7 @@ final class AppStore: ObservableObject {
                     encountered.insert(post.stableID).inserted && (!mediaOnly || post.isImmersiveMedia)
                         && !RecommendationTagRules.rejects(post, exclusions: Array(banned))
                 }
+                if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
                 incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
                 filtered = personalized
                     ? await recommendations.rankFast(incoming, taste: tasteChoice(for: provider), recent: [])
@@ -405,6 +407,10 @@ final class AppStore: ObservableObject {
             let immediate = filtered
             guard generation == token, !Task.isCancelled else { return }
             posts = immediate
+            if personalized {
+                await recommendations.recordOffered(immediate)
+                scheduleRecommendationPersistence()
+            }
             publishedNextPage = nextPage; publishedQuery = requestedQuery; publishedSort = requestedSort
             FeedPerformance.emit("first_posts", started: feedStarted, count: immediate.count)
             isLoading = false
@@ -453,6 +459,7 @@ final class AppStore: ObservableObject {
                 encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia)
                     && !RecommendationTagRules.rejects($0, exclusions: Array(banned))
             }
+            if candidateContext != nil { candidates = await recommendations.unseenRecommendations(candidates) }
             candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
                 recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
             let ranked = candidateContext != nil
@@ -465,6 +472,10 @@ final class AppStore: ObservableObject {
                 guard generation == token, !Task.isCancelled else { return }
             }
             posts.append(contentsOf: ranked)
+            if candidateContext != nil {
+                await recommendations.recordOffered(ranked)
+                scheduleRecommendationPersistence()
+            }
             publishedNextPage = nextPage
             FeedPerformance.emit("pagination", started: pageStarted, count: ranked.count)
             scheduleIdleIntelligence()
@@ -495,7 +506,8 @@ final class AppStore: ObservableObject {
             let result = try await api.posts(provider: provider, query: query, page: acquisition?.page ?? page, sort: sort, immersive: mediaOnly)
             try Task.checkCancellation()
             if generation == requestGeneration, let acquisition {
-                let next = (result.hasMore ?? !result.items.isEmpty) ? acquisition.page + 1 : 1
+                // Exhausted queries must not silently rewind to page one.
+                let next = acquisition.page + 1
                 candidateCursors[acquisition.context] = next
                 Task { await recommendations.advanceCandidatePage(context: acquisition.context, nextPage: next) }
             }
@@ -510,7 +522,7 @@ final class AppStore: ObservableObject {
             let result = try await api.posts(provider: provider, query: broad.query, page: broad.page, sort: sort, immersive: mediaOnly)
             try Task.checkCancellation()
             if generation == requestGeneration {
-                let next = (result.hasMore ?? !result.items.isEmpty) ? broad.page + 1 : 1
+                let next = broad.page + 1
                 candidateCursors[key] = next
                 Task { await recommendations.advanceCandidatePage(context: key, nextPage: next) }
             }
@@ -553,7 +565,40 @@ final class AppStore: ObservableObject {
     func notePreviewFingerprint(_ post: Post, hash: UInt64?) {
         if let hash { feedExclusions.registerFingerprint(post.stableID, hash: hash) }
     }
-    func recordQuickSkip(_ post: Post) { Task { await record(.quickSkip, post: post) } }
+    func recordQuickSkip(_ post: Post) {
+        guard feedSort == "recommended", favorites[post.stableID] == nil else { return }
+        let key = post.stableID
+        guard pendingSkipIntents.insert(key).inserted else { return }
+        plannedAcquisition = nil
+        Task(priority: .utility) { [weak self] in
+            guard let self, pendingSkipIntents.contains(key) else { return }
+            await recommendations.recordReversibleSkip(post)
+            // Returning during an actor hop must win even if the skip task
+            // happened to execute after the neutralization task.
+            if !pendingSkipIntents.contains(key) {
+                _ = await recommendations.neutralizeReversibleSkip(key)
+            }
+            scheduleRecommendationPersistence()
+        }
+    }
+    func neutralizeQuickSkip(_ post: Post) {
+        let key = post.stableID
+        pendingSkipIntents.remove(key)
+        plannedAcquisition = nil
+        Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            if await recommendations.neutralizeReversibleSkip(key) {
+                scheduleRecommendationPersistence()
+            }
+        }
+    }
+    private func scheduleRecommendationPersistence() {
+        persistenceTask?.cancel()
+        persistenceTask = Task(priority: .utility) { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(650)) } catch { return }
+            await self?.persistRecommendations()
+        }
+    }
     func recordReplay(_ post: Post) { Task { await record(.replay, post: post) } }
     func recordComplete(_ post: Post) { Task { await record(.complete, post: post) } }
     func recordWatch(_ post: Post, seconds: Double, completion: Double) { Task { await record(.watched(seconds: seconds, completion: completion), post: post) } }
@@ -911,7 +956,10 @@ final class AppStore: ObservableObject {
     }
     func recommendationState() async -> RecommendationState {
         var state = await recommendations.snapshot()
-        state.candidatePages = candidateCursors
+        // Candidate round counters are owned by the ranking actor. Replacing
+        // them with AppStore's query cursors previously reset the rotation on
+        // every persistence cycle and repeatedly reacquired the same page.
+        state.candidatePages.merge(candidateCursors) { _, latestCursor in latestCursor }
         return state
     }
     private func persistRecommendations() async {

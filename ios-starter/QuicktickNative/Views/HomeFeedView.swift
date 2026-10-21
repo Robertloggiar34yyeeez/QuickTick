@@ -9,6 +9,8 @@ struct HomeFeedView: View {
     @State private var immersive = false
     @State private var immersivePostID: String?
     @State private var visibleFrames: [String: CGRect] = [:]
+    @State private var lastVisibleTop: String?
+    @State private var visibleTopSince = Date.distantPast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var feedSelection
 
@@ -115,7 +117,11 @@ struct HomeFeedView: View {
                 proxy.scrollTo(scrollAnchor, anchor: .top)
             }
         }
-        .onChange(of: store.feedRevision) { _, _ in proxy.scrollTo("home-top", anchor: .top) }
+        .onChange(of: store.feedRevision) { _, _ in
+            lastVisibleTop = nil
+            visibleTopSince = .distantPast
+            proxy.scrollTo("home-top", anchor: .top)
+        }
         .overlay(alignment: .bottomLeading) {
             Group {
                 Button {
@@ -133,6 +139,22 @@ struct HomeFeedView: View {
             let bounds = CGRect(origin: .zero, size: viewport.size)
             let top = frames.filter { $0.value.intersects(bounds) }.min { $0.value.minY < $1.value.minY }?.key
             if let top, scrollAnchor != top { scrollAnchor = top }
+            if let top, top != lastVisibleTop {
+                let now = Date()
+                if !immersive, store.activeTab == 0, store.isForeground,
+                   store.feedSort == "recommended", !store.isLoading,
+                   let previousID = lastVisibleTop,
+                   let previousIndex = store.posts.firstIndex(where: { $0.stableID == previousID }),
+                   let nextIndex = store.posts.firstIndex(where: { $0.stableID == top }) {
+                    let dwell = now.timeIntervalSince(visibleTopSince)
+                    if QuickSkipDecision.dislikes(elapsed: dwell, from: previousIndex, to: nextIndex) {
+                        store.recordQuickSkip(store.posts[previousIndex])
+                    }
+                    store.neutralizeQuickSkip(store.posts[nextIndex])
+                }
+                lastVisibleTop = top
+                visibleTopSince = now
+            }
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
             selectVisiblePlayback(viewport: viewport.size)
         }

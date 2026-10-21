@@ -139,6 +139,43 @@ struct RecommendationProfile: Codable, Sendable, Equatable {
     }
 }
 
+/// Small, fully local novelty model. Persisting what was *offered* (not just
+/// watched) prevents page-one refreshes from serving the same cards again.
+struct RecommendationNoveltyModel: Codable, Sendable, Equatable {
+    var offered: [String] = []
+    mutating func record(_ ids: [String]) {
+        let incoming = Set(ids)
+        offered.removeAll { incoming.contains($0) }
+        offered.append(contentsOf: ids)
+        if offered.count > 8192 { offered = Array(offered.suffix(8192)) }
+    }
+    func contains(_ id: String) -> Bool { offered.contains(id) }
+}
+
+/// Explicitly reversible negative feedback from fast vertical scrolling.
+/// It is intentionally separate from irreversible thumbs-down and event-based
+/// learning so scrolling back never produces a contradictory positive signal.
+struct ReversibleSkipModel: Codable, Sendable, Equatable {
+    struct Evidence: Codable, Sendable, Equatable {
+        let id: String
+        let provider: String
+        let terms: [String]
+    }
+    var evidence: [Evidence] = []
+    mutating func mark(_ sample: Evidence) {
+        evidence.removeAll { $0.id == sample.id }
+        evidence.append(sample)
+        if evidence.count > 128 { evidence.removeFirst(evidence.count - 128) }
+    }
+    @discardableResult
+    mutating func neutralize(_ id: String) -> Bool {
+        let old = evidence.count
+        evidence.removeAll { $0.id == id }
+        return evidence.count != old
+    }
+    func contains(_ id: String) -> Bool { evidence.contains { $0.id == id } }
+}
+
 struct RecommendationState: Codable, Sendable, Equatable {
     var version: Int = 3
     var profiles: [String: RecommendationProfile] = [:]
@@ -146,8 +183,10 @@ struct RecommendationState: Codable, Sendable, Equatable {
     var contextualProfiles: [String: ContextTasteProfile] = [:]
     var scopedProfiles: [String: RecommendationProfile] = [:]
     var feedbackLedger: [String] = []
+    var novelty = RecommendationNoveltyModel()
+    var reversibleSkips = ReversibleSkipModel()
     init() {}
-    enum CodingKeys: String, CodingKey { case version, profiles, candidatePages, contextualProfiles, scopedProfiles, feedbackLedger }
+    enum CodingKeys: String, CodingKey { case version, profiles, candidatePages, contextualProfiles, scopedProfiles, feedbackLedger, novelty, reversibleSkips }
     init(from decoder: Decoder) throws {
         let fields = try decoder.container(keyedBy: CodingKeys.self)
         version = try fields.decodeIfPresent(Int.self, forKey: .version) ?? 3
@@ -156,6 +195,8 @@ struct RecommendationState: Codable, Sendable, Equatable {
         contextualProfiles = try fields.decodeIfPresent([String: ContextTasteProfile].self, forKey: .contextualProfiles) ?? [:]
         scopedProfiles = try fields.decodeIfPresent([String: RecommendationProfile].self, forKey: .scopedProfiles) ?? [:]
         feedbackLedger = try fields.decodeIfPresent([String].self, forKey: .feedbackLedger) ?? []
+        novelty = try fields.decodeIfPresent(RecommendationNoveltyModel.self, forKey: .novelty) ?? RecommendationNoveltyModel()
+        reversibleSkips = try fields.decodeIfPresent(ReversibleSkipModel.self, forKey: .reversibleSkips) ?? ReversibleSkipModel()
     }
 }
 

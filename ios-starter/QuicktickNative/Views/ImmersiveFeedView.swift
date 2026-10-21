@@ -19,6 +19,7 @@ struct ImmersiveFeedView: View {
     // On some OS versions it remains on an offscreen page after paging.
     @State private var scrollTargetID: String?
     @State private var activeIndex = 0
+    @State private var activeSince = Date.distantPast
     @State private var searchVisible = false
     @State private var preferencesVisible = false
     @StateObject private var previews = ImmersivePreviewCache()
@@ -117,9 +118,13 @@ struct ImmersiveFeedView: View {
             guard presentationActive else { return }
             if activeID == nil { activeID = mediaPosts.first?.stableID }
             scrollTargetID = activeID
+            activeSince = .now
         }
         .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")") { await prewarm() }
-        .onChange(of: store.feedRevision) { _, _ in activeIndex = 0; activeID = mediaPosts.first?.stableID; scrollTargetID = activeID }
+        .onChange(of: store.feedRevision) { _, _ in
+            activeSince = .distantPast
+            activeIndex = 0; activeID = mediaPosts.first?.stableID; scrollTargetID = activeID
+        }
         .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
             if activeID == nil || !keys.contains(activeID ?? "") {
                 activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
@@ -127,7 +132,24 @@ struct ImmersiveFeedView: View {
                 if keys.isEmpty { activeIndex = 0 }
             }
         }
-        .onChange(of: activeID) { _, key in store.protectImmersivePost(key); if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index } }
+        .onChange(of: activeID) { oldID, key in
+            let now = Date()
+            if !offline, collectionTab == nil, presentationActive, store.isForeground,
+               store.feedSort == "recommended", let oldID, let key,
+               let previous = mediaPosts.firstIndex(where: { $0.stableID == oldID }),
+               let next = mediaPosts.firstIndex(where: { $0.stableID == key }) {
+                if QuickSkipDecision.dislikes(elapsed: now.timeIntervalSince(activeSince),
+                                             from: previous, to: next) {
+                    store.recordQuickSkip(mediaPosts[previous])
+                }
+                // Going back removes a prior instant-skip dislike; it does not
+                // generate positive feedback or undo an explicit thumbs-down.
+                store.neutralizeQuickSkip(mediaPosts[next])
+            }
+            activeSince = now
+            store.protectImmersivePost(key)
+            if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index }
+        }
         .onDisappear { if store.players.activeOwner == playbackOwner { store.players.releaseAll() } }
         .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
         .sheet(isPresented: $searchVisible) { NativeSearchBar(immersive: true) }
@@ -482,7 +504,6 @@ private struct ImmersiveItemView: View {
         if let player, player.currentItem?.status == .readyToPlay { store.saveResume(post.stableID, seconds: player.currentTime().seconds) }
         if !offline {
             if watched - reportedWatch > 0 { store.recordWatch(post, seconds: watched - reportedWatch, completion: PlaybackExposure.completion(position: progress, watched: watched, duration: duration)) }
-            if watched > 0 && watched < 1.25 && !interacted { store.recordQuickSkip(post) }
         }
         watched = 0
         reportedWatch = 0

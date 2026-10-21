@@ -407,7 +407,10 @@ final class AppStore: ObservableObject {
             let immediate = filtered
             guard generation == token, !Task.isCancelled else { return }
             posts = immediate
-            if personalized { await recommendations.recordOffered(immediate) }
+            if personalized {
+                await recommendations.recordOffered(immediate)
+                scheduleRecommendationPersistence()
+            }
             publishedNextPage = nextPage; publishedQuery = requestedQuery; publishedSort = requestedSort
             FeedPerformance.emit("first_posts", started: feedStarted, count: immediate.count)
             isLoading = false
@@ -469,7 +472,10 @@ final class AppStore: ObservableObject {
                 guard generation == token, !Task.isCancelled else { return }
             }
             posts.append(contentsOf: ranked)
-            if candidateContext != nil { await recommendations.recordOffered(ranked) }
+            if candidateContext != nil {
+                await recommendations.recordOffered(ranked)
+                scheduleRecommendationPersistence()
+            }
             publishedNextPage = nextPage
             FeedPerformance.emit("pagination", started: pageStarted, count: ranked.count)
             scheduleIdleIntelligence()
@@ -563,6 +569,7 @@ final class AppStore: ObservableObject {
         guard feedSort == "recommended", favorites[post.stableID] == nil else { return }
         let key = post.stableID
         guard pendingSkipIntents.insert(key).inserted else { return }
+        plannedAcquisition = nil
         Task(priority: .utility) { [weak self] in
             guard let self, pendingSkipIntents.contains(key) else { return }
             await recommendations.recordReversibleSkip(post)
@@ -577,6 +584,7 @@ final class AppStore: ObservableObject {
     func neutralizeQuickSkip(_ post: Post) {
         let key = post.stableID
         pendingSkipIntents.remove(key)
+        plannedAcquisition = nil
         Task(priority: .utility) { [weak self] in
             guard let self else { return }
             if await recommendations.neutralizeReversibleSkip(key) {

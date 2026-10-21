@@ -159,7 +159,10 @@ struct ImmersiveFeedView: View {
         let pool = store.players
         let previewCache = previews
         await withTaskGroup(of: Void.self) { group in
-            for i in previewRange {
+            // Fetch the visible poster first; decoding future posters must
+            // not compete at the same priority with the current media startup.
+            group.addTask(priority: .userInitiated) { await previewCache.load(clips[index]) }
+            for i in previewRange where i != index {
                 let post = clips[i]
                 group.addTask(priority: .utility) {
                     await previewCache.load(post)
@@ -236,10 +239,27 @@ private struct ImmersiveItemView: View {
         GeometryReader { geo in
             ZStack(alignment: .center) {
                 AppTheme.canvas
-                if post.type.lowercased() != "image", !ready, gifURL == nil, let image = previews.images[post.stableID] {
-                    Image(uiImage: image).resizable().scaledToFit()
-                        .frame(width: geo.size.width, height: geo.size.height).clipped()
-                        .allowsHitTesting(false)
+                if post.type.lowercased() != "image" && gifURL == nil {
+                    // A nonblack poster surface exists immediately, even on a
+                    // slow network. The blurred thumbnail remains underneath
+                    // the video until AVPlayerLayer has an actual frame.
+                    RoundedRectangle(cornerRadius: 0)
+                        .fill(AppTheme.gradient)
+                        .opacity(0.32)
+                        .overlay {
+                            LinearGradient(colors: [AppTheme.accent.opacity(0.2), .black.opacity(0.25), AppTheme.accent.opacity(0.12)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                        }
+                        .ignoresSafeArea()
+                    if let image = previews.images[post.stableID] {
+                        Image(uiImage: image).resizable().scaledToFill()
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .blur(radius: ready ? 0 : 15)
+                            .opacity(ready ? 0 : 1)
+                            .clipped()
+                            .accessibilityHidden(true)
+                            .allowsHitTesting(false)
+                    }
                 }
                 if post.type.lowercased() == "image" {
                     CachedMediaImage(url: post.cardPreviewURL, pixels: 1440, comic: false)
@@ -249,6 +269,7 @@ private struct ImmersiveItemView: View {
                     NativePlayerSurface(player: player, fill: geo.size.width <= 600 && store.immersionFraming, ready: $ready, accessibilityID: "immersive-video-surface")
                         .frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height)
                         .opacity(ready ? 1 : 0)
+                        .animation(.easeOut(duration: 0.18), value: ready)
                         .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "gif", active, let gifURL {
@@ -625,6 +646,6 @@ struct CachedMediaImage: View {
             let decoded = try await MediaImagePipeline.shared.image(raw: post.cardPreviewURL, pixels: 512)
             guard !Task.isCancelled, retained.contains(key) else { return }
             images[key] = UIImage(cgImage: decoded.image)
-        } catch { /* Black fallback when the provider supplies no preview. */ }
+        } catch { /* Keep the tinted poster surface if the provider has no thumbnail. */ }
     }
 }

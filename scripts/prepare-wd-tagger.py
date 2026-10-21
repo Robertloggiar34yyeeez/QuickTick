@@ -10,6 +10,7 @@ REPO='SmilingWolf/wd-vit-tagger-v3'
 REV='7f6b584d0bd3f55c4531f14ba3d4761b2bccdc0f'
 OUT=Path('ios-starter/QuicktickNative/SemanticAssets'); OUT.mkdir(parents=True,exist_ok=True)
 BUILD=Path('build/wd-model'); BUILD.mkdir(parents=True,exist_ok=True)
+Path('logs').mkdir(parents=True,exist_ok=True)
 torch.set_num_threads(1); torch.set_num_interop_threads(1); set_fused_attn(False)
 base=timm.create_model('vit_base_patch16_224',pretrained=False,img_size=448,num_classes=10861,
     class_token=False,global_pool='avg',fc_norm=False,act_layer='gelu_tanh').eval()

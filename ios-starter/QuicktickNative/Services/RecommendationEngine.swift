@@ -71,6 +71,17 @@ actor RecommendationEngine {
     }
     func hasReversibleSkip(_ id: String) -> Bool { state.reversibleSkips.contains(id) }
 
+    private func repeatedlyRejectedTerms(source: String) -> [String] {
+        let general = profile(for: source)
+        return general.termEvidence.compactMap { term, evidence -> String? in
+            let canonical = RecommendationTagRules.canonical(term)
+            guard !Self.genericTasteTerms.contains(canonical),
+                  evidence.negative >= 2.2,
+                  evidence.negative > evidence.positive * 2.5 + 1.2 else { return nil }
+            return canonical
+        }.sorted()
+    }
+
     func markCandidateDrained(context: String) {
         drainedCandidateQueries = drainedCandidateQueries.filter { $0.value > .now }
         if drainedCandidateQueries.count < 96 || drainedCandidateQueries[context] != nil {
@@ -123,7 +134,9 @@ actor RecommendationEngine {
     // requests rotate across strong interests; the fourth browses broadly.
     // Each query owns its cursor in the existing persisted recommendation state.
     func candidateRequest(context: String, provider: Provider, taste: TasteChoice, excluded: [String], forceBroad: Bool = false) -> CandidateRequest {
-        let queryExclusions = RecommendationTagRules.queryExclusions(excluded + tasteTokens(source: provider.rawValue, values: taste.notInto))
+        let queryExclusions = RecommendationTagRules.queryExclusions(
+            excluded + tasteTokens(source: provider.rawValue, values: taste.notInto)
+            + repeatedlyRejectedTerms(source: provider.rawValue))
         let blocked = Set(queryExclusions.map { $0.lowercased() })
         let explicit = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }
         // Keep learned acquisition separate: adding many explicit tags must not
@@ -386,7 +399,9 @@ actor RecommendationEngine {
     }
 
     func isHardDisliked(_ post: Post, taste: TasteChoice) -> Bool {
-        RecommendationTagRules.rejects(post, exclusions: taste.notInto)
+        let source = post.provider.lowercased()
+        return RecommendationTagRules.rejects(post, exclusions: taste.notInto)
+            || RecommendationTagRules.rejects(post, exclusions: repeatedlyRejectedTerms(source: source))
     }
 
     func score(_ post: Post, taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:]) -> Double {
@@ -397,7 +412,7 @@ actor RecommendationEngine {
         let postTerms = terms(for: post)
         let into = Set(tasteTokens(source: source, values: taste.into))
         let notInto = Set(tasteTokens(source: source, values: taste.notInto))
-        if RecommendationTagRules.rejects(post, exclusions: taste.notInto) { return -1_000 }
+        if isHardDisliked(post, taste: taste) { return -1_000 }
         var score = log1p(max(0, post.score)) * 0.07
         let collaborative = max(0, min(1, collaborativeScores[gorseItemID(post)] ?? 0))
         score += collaborative * 18

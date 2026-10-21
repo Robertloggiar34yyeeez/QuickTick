@@ -217,7 +217,12 @@ private struct FullScreenVideoView: View {
                     Image(systemName: "xmark").font(.system(size: 20, weight: .bold))
                         .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
                 }.buttonStyle(.plain).foregroundStyle(.white).padding(12).accessibilityLabel("Close full screen video")
-            }.background(.black)
+            }
+            .background(.black)
+            .quicktickEdgeBack {
+                store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
+                onClose()
+            }
             .onReceive(player.publisher(for: \.timeControlStatus)) { status in
                 guard store.isForeground, store.fullScreenPlaybackID == postID else { return }
                 if status == .playing { store.pausedPlaybackID = nil }
@@ -259,7 +264,9 @@ private struct FullComicView: View {
                 Image(systemName: "xmark").font(.system(size: 20, weight: .bold)).frame(width: 48, height: 48)
                     .background(.ultraThinMaterial, in: Circle())
             }.buttonStyle(.plain).padding(12).accessibilityLabel("Close full image")
-        }.task {
+        }
+        .quicktickEdgeBack { dismiss() }
+        .task {
             do {
                 guard let location = (URL(string: url)?.isFileURL == true ? URL(string: url) : NativeProviderAPI.mediaURL(url)) else { throw URLError(.badURL) }
                 let full = try await MediaImagePipeline.shared.fullImage(url: location)

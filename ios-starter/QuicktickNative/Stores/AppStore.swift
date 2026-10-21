@@ -120,6 +120,7 @@ final class AppStore: ObservableObject {
     private var motionTask: Task<Void, Never>?
     private var visualDiscoveryRound = 0
     private var persistenceTask: Task<Void, Never>?
+    private var pendingSkipIntents: Set<String> = []
     private var semanticTask: Task<Void, Never>?
     private var refreshFlight: Task<Void, Never>?
     private var pageFlight: Task<Void, Never>?
@@ -560,16 +561,34 @@ final class AppStore: ObservableObject {
     }
     func recordQuickSkip(_ post: Post) {
         guard feedSort == "recommended", favorites[post.stableID] == nil else { return }
-        Task(priority: .utility) {
+        let key = post.stableID
+        guard pendingSkipIntents.insert(key).inserted else { return }
+        Task(priority: .utility) { [weak self] in
+            guard let self, pendingSkipIntents.contains(key) else { return }
             await recommendations.recordReversibleSkip(post)
-            await persistRecommendations()
+            // Returning during an actor hop must win even if the skip task
+            // happened to execute after the neutralization task.
+            if !pendingSkipIntents.contains(key) {
+                _ = await recommendations.neutralizeReversibleSkip(key)
+            }
+            scheduleRecommendationPersistence()
         }
     }
     func neutralizeQuickSkip(_ post: Post) {
-        Task(priority: .utility) {
-            if await recommendations.neutralizeReversibleSkip(post.stableID) {
-                await persistRecommendations()
+        let key = post.stableID
+        pendingSkipIntents.remove(key)
+        Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            if await recommendations.neutralizeReversibleSkip(key) {
+                scheduleRecommendationPersistence()
             }
+        }
+    }
+    private func scheduleRecommendationPersistence() {
+        persistenceTask?.cancel()
+        persistenceTask = Task(priority: .utility) { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(650)) } catch { return }
+            await self?.persistRecommendations()
         }
     }
     func recordReplay(_ post: Post) { Task { await record(.replay, post: post) } }

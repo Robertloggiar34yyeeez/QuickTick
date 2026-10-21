@@ -4,7 +4,7 @@ struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
     @Binding var scrollAnchor: String?
-    @State private var showSearch = false
+    @Binding var showSearch: Bool
     @State private var focusSearch = false
     @State private var onboarding = false
     @State private var immersive = false

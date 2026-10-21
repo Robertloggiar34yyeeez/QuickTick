@@ -48,6 +48,32 @@ final class IntelligentRecommendationTests: XCTestCase {
         XCTAssertLessThanOrEqual(delta, 3.1, "The entire liked history must not force a large saturated boost")
     }
 
+    func testGlobalDislikeAppliesInAnotherVisualContext() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let disliked = post("reject", ["2d", "jacket"])
+        await engine.record(.less, post: disliked)
+        let otherContext = post("other-context", ["3d", "jacket"])
+        let neutral = post("safe-context", ["3d", "landscape"])
+        let negative = await engine.score(otherContext, taste: TasteChoice(), recent: [])
+        let neutralScore = await engine.score(neutral, taste: TasteChoice(), recent: [])
+        XCTAssertLessThan(negative, neutralScore)
+    }
+
+    func testReconciledLikeStillEnqueuesPixelAnalysis() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = VisualAnalysisService(directory: directory)
+        let liked = post("queue-like", ["2d", "chun_li"])
+        await service.reconcileFavorites([liked])
+        let beforePending = await service.pendingCount()
+        XCTAssertEqual(beforePending, 0)
+        await service.record(.like, post: liked)
+        let pending = await service.pendingCount()
+        XCTAssertGreaterThan(pending, 0, "The async like must still request visual analysis after metadata reconciliation")
+        let snapshot = await service.snapshot()
+        XCTAssertEqual(snapshot.profiles["rule34|anime"]?.subjects["chun_li"]?.positive ?? 0, 0.7, accuracy: 0.001)
+    }
+
     func testFastRankingDiversifiesNearbyEqualScoreThemes() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let candidates = [

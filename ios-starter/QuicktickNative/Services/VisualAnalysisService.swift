@@ -119,6 +119,25 @@ actor VisualAnalysisService {
         record(envelope.event, post: envelope.post, queueAnalysis: queueAnalysis)
         flush()
     }
+    // Batch metadata for the complete favorites collection before slow pixel
+    // inference. Existing IDs are not double-counted and scans are not redone.
+    func reconcileFavorites(_ favorites: [Post]) {
+        restore()
+        loadTaxonomy()
+        var changed = false
+        for post in favorites {
+            guard !state.liked.contains(post.stableID),
+                  let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy) else { continue }
+            let cached = state.features[post.stableID]
+            let features = cached?.domain == metadata.domain ? cached! : metadata
+            state.liked.insert(post.stableID)
+            state.features[post.stableID] = features
+            state.profiles[profileKey(post), default: VisualProfile()].record(.like, features: features)
+            changed = true
+        }
+        if changed { trimFeatures(); persist() }
+    }
+
     func pendingFeedback() -> [FeedbackEnvelope] { restore(); return state.outbox ?? [] }
     func acknowledge(_ id: String) { state.outbox?.removeAll { $0.id == id }; persist() }
     func pendingCount() -> Int { restore(); return state.pending?.count ?? 0 }
@@ -207,7 +226,9 @@ actor VisualAnalysisService {
         let before = state.features[post.stableID]?.domain == metadata.domain ? state.features[post.stableID]! : metadata
         var preview = await MediaImagePipeline.shared.cachedAnalysisImage(raw: post.cardPreviewURL)
         if preview == nil, !lightweight, (favorite || disliked), resourcesAllowAnalysis(), VisualPreviewLoader.thumbnailURL(post) != nil {
-            let delay = 3 - Date().timeIntervalSince(lastPreviewAttempt)
+            // Keep requests bounded while avoiding a three-second penalty per
+            // favorite during an explicit idle/manual refresh.
+            let delay = 0.9 - Date().timeIntervalSince(lastPreviewAttempt)
             if delay > 0 { do { try await Task.sleep(for: .seconds(delay)) } catch { return } }
             guard resourcesAllowAnalysis() else { return }
             lastPreviewAttempt = .now

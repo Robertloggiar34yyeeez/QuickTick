@@ -9,6 +9,8 @@ struct HomeFeedView: View {
     @State private var immersive = false
     @State private var immersivePostID: String?
     @State private var visibleFrames: [String: CGRect] = [:]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var feedSelection
 
     var body: some View {
         GeometryReader { viewport in
@@ -16,26 +18,78 @@ struct HomeFeedView: View {
         ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Home").font(.system(.title, design: .rounded).weight(.bold)).accessibilityIdentifier("home-title")
-                    Text(store.feedSort == "recommended" ? "Selected for your interests" : "Browse your sources").font(.subheadline).foregroundStyle(.white.opacity(0.5))
-                }.id("home-top").padding(.top, 16)
-                HStack(spacing: 8) {
-                    ForEach([("Home", "recent"), ("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
-                        Button { store.feedSort = mode; Task { await store.refresh() } } label: {
-                            Text(title).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
-                                .frame(maxWidth: .infinity, minHeight: AppTheme.controlHeight)
-                                .background(store.feedSort == mode ? AppTheme.surface : .clear, in: RoundedRectangle(cornerRadius: AppTheme.controlRadius))
-                                .overlay(RoundedRectangle(cornerRadius: AppTheme.controlRadius).stroke(.white.opacity(store.feedSort == mode ? 0.18 : 0.04)))
-                        }.buttonStyle(.plain).accessibilityIdentifier("feed-\(mode)").accessibilityAddTraits(store.feedSort == mode ? .isSelected : [])
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
+                        Text("YOUR SPACE").tracking(2).foregroundStyle(AppTheme.secondaryLabel)
                     }
-                    Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44,height: 44).background(AppTheme.gradient,in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Refresh feed")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    Text("Home")
+                        .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                        .accessibilityIdentifier("home-title")
+                    Text(store.feedSort == "recommended" ? "Selected for your interests" : "Browse your sources")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.secondaryLabel)
+                }.id("home-top").padding(.top, 18).padding(.bottom, 4)
+                HStack(spacing: 10) {
+                    HStack(spacing: 3) {
+                        ForEach([("Home", "recent"), ("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
+                            Button {
+                                store.feedSort = mode
+                                Task { await store.refresh() }
+                            } label: {
+                                Text(title)
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.78)
+                                    .foregroundStyle(store.feedSort == mode ? .white : AppTheme.secondaryLabel)
+                                    .frame(maxWidth: .infinity, minHeight: AppTheme.controlHeight)
+                                    .contentShape(RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous))
+                                    .background {
+                                        if store.feedSort == mode {
+                                            RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous)
+                                                .fill(AppTheme.gradient)
+                                                .matchedGeometryEffect(id: "feed-mode", in: feedSelection)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(QuicktickPressStyle())
+                            .animation(reduceMotion ? nil : AppTheme.spring, value: store.feedSort)
+                            .accessibilityIdentifier("feed-\(mode)")
+                            .accessibilityAddTraits(store.feedSort == mode ? .isSelected : [])
+                        }
+                    }
+                    .padding(4)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+                    Button { Task { await store.refresh() } } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(width: 50, height: 52)
+                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(QuicktickPressStyle())
+                    .accessibilityLabel("Refresh feed")
                 }
                 Color.clear.frame(height: 0).id("home-search")
                 Button { onboarding = true } label: {
-                    Label("What would you like to see?", systemImage: "sparkles")
-                        .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                }.buttonStyle(.plain).accessibilityIdentifier("personalize-feed")
+                    HStack(spacing: 12) {
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(AppTheme.accent)
+                            .frame(width: 36, height: 36)
+                            .background(AppTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                        Text("What would you like to see?")
+                            .font(.subheadline.weight(.medium))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, minHeight: 60)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityIdentifier("personalize-feed")
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
                 } else if store.posts.isEmpty && !store.isLoading {

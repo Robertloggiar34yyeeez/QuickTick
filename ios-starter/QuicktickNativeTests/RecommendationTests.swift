@@ -73,6 +73,31 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(saved.candidatePages["rule34|clips|round"], before.candidatePages["rule34|clips|round"])
     }
 
+    func testInstantSkipClassifierRejectsReverseSwipeAndLongDwell() {
+        XCTAssertTrue(QuickSkipDecision.dislikes(elapsed: 0.35, from: 0, to: 1))
+        XCTAssertTrue(QuickSkipDecision.dislikes(elapsed: 1.1, from: 1, to: 3))
+        XCTAssertFalse(QuickSkipDecision.dislikes(elapsed: 0.05, from: 0, to: 1))
+        XCTAssertFalse(QuickSkipDecision.dislikes(elapsed: 2.0, from: 0, to: 1))
+        XCTAssertFalse(QuickSkipDecision.dislikes(elapsed: 0.2, from: 3, to: 2))
+        XCTAssertFalse(QuickSkipDecision.dislikes(elapsed: 0.2, from: 1, to: 1))
+    }
+
+    func testStrongRepeatedNegativeThemeIsFilteredButSingleDislikeIsNot() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let one = Post(key: "r:1", id: "1", provider: "rule34", tags: ["unwanted_theme", "red_hair"])
+        let two = Post(key: "r:2", id: "2", provider: "rule34", tags: ["unwanted_theme", "blue_hair"])
+        let candidate = Post(key: "r:3", id: "3", provider: "rule34", tags: ["unwanted_theme", "outside"])
+        await engine.record(.less, post: one)
+        let initiallyAllowed = await engine.isHardDisliked(candidate, taste: TasteChoice())
+        XCTAssertFalse(initiallyAllowed)
+        for _ in 0..<3 {
+            await engine.record(.less, post: one)
+            await engine.record(.less, post: two)
+        }
+        let nowRejected = await engine.isHardDisliked(candidate, taste: TasteChoice())
+        XCTAssertTrue(nowRejected)
+    }
+
     @MainActor func testImportCannotRaceInitialProfileRestoration() async {
         let store = AppStore()
         store.exclusions = ["existing"]
@@ -93,8 +118,8 @@ final class RecommendationTests: XCTestCase {
         for _ in 0..<4 { requests.append(await engine.candidateRequest(context: "rule34|test", provider: .rule34, taste: taste, excluded: [])) }
         XCTAssertTrue(requests[0].query.included.first?.hasPrefix("new_topic_") == true)
         XCTAssertEqual(requests[1].query.included, ["engineering"])
-        XCTAssertEqual(requests[2].query.included, ["engineering"])
-        XCTAssertFalse(requests[3].focused)
+        XCTAssertFalse(requests[2].focused, "One of three requests should explore broadly")
+        XCTAssertTrue(requests[3].focused)
         XCTAssertTrue(requests.allSatisfy { $0.query.excluded.contains("blocked") })
         let after = await engine.snapshot()
         XCTAssertEqual(after.profiles, before.profiles)

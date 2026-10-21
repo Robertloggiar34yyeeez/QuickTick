@@ -6,6 +6,7 @@ struct NativeSearchBar: View {
     var immersive = false
     @Binding var focusRequested: Bool
     @FocusState private var focused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var form = SearchDraft()
     @State private var suggestions: [TagSuggestion] = []
     @State private var loaded = false
@@ -23,8 +24,14 @@ struct NativeSearchBar: View {
                     HStack { Text("Selected tags").font(.headline); Spacer(); Button("Clear") { form.tags = []; form.text = ""; form.filters = SearchFilters() }.font(.caption) }
                     selectedTagGrid
                     Text("Tap a tag name to remove it. Tap its block icon to include or exclude it.").font(.caption).foregroundStyle(.secondary)
-                    Button(action: submit) { Label("Search", systemImage: "magnifyingglass").frame(maxWidth: .infinity, minHeight: 44) }
-                        .buttonStyle(.borderedProminent).accessibilityIdentifier("apply-search-filters")
+                    Button(action: submit) {
+                        Label("Search", systemImage: "magnifyingglass")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 52)
+                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(QuicktickPressStyle())
+                    .accessibilityIdentifier("apply-search-filters")
                 }.padding(20)
             }.scrollDismissesKeyboard(.interactively).background(AppTheme.canvas.ignoresSafeArea())
                 .toolbarBackground(AppTheme.canvas, for: .navigationBar)
@@ -58,19 +65,61 @@ struct NativeSearchBar: View {
             .preferredColorScheme(.dark)
     }
     private var inputRow: some View {
-                    HStack {
-                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                        TextField("Search tags", text: $form.text)
-                            .focused($focused).textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .submitLabel(.search).onSubmit { submit() }.accessibilityIdentifier("feed-search-input")
-                        Button { addTypedTags() } label: { Image(systemName: "plus.circle.fill").frame(width: 44, height: 44) }.accessibilityLabel("Add tags")
-                    }.padding(.horizontal, 12).background(AppTheme.surface, in: Capsule())
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(focused ? AppTheme.accent : AppTheme.secondaryLabel)
+                .frame(width: 26)
+            TextField("Search tags", text: $form.text)
+                .focused($focused)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .onSubmit { submit() }
+                .tint(AppTheme.accent)
+                .accessibilityIdentifier("feed-search-input")
+            if !form.text.isEmpty {
+                Button {
+                    form.text = ""
+                    suggestions = []
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(AppTheme.secondaryLabel)
+                        .frame(width: 36, height: 44)
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityLabel("Clear search text")
+            }
+            Button { addTypedTags() } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 13))
+            }
+            .buttonStyle(QuicktickPressStyle())
+            .accessibilityLabel("Add tags")
+        }
+        .padding(10)
+        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(focused ? AppTheme.accent.opacity(0.7) : AppTheme.border, lineWidth: focused ? 1.5 : 1)
+        }
+        .shadow(color: focused ? AppTheme.accent.opacity(0.14) : .clear, radius: 12)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: focused)
     }
     @ViewBuilder private var autocompleteRow: some View {
                     if !suggestions.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack { ForEach(suggestions.prefix(6)) { item in
-                                Button(item.value) { chooseSuggestion(item.value) }.buttonStyle(.bordered)
+                                Button(item.value) { chooseSuggestion(item.value) }
+                                    .font(.caption.weight(.medium))
+                                    .padding(.horizontal, 12)
+                                    .frame(minHeight: 36)
+                                    .background(AppTheme.accent.opacity(0.13), in: Capsule())
+                                    .overlay(Capsule().stroke(AppTheme.accent.opacity(0.25), lineWidth: 1))
+                                    .buttonStyle(QuicktickPressStyle())
                             } }
                         }
                     }
@@ -121,13 +170,13 @@ struct NativeSearchBar: View {
                 .accessibilityLabel("\(tag.excluded ? "Include" : "Exclude") \(tag.name)")
         }.buttonStyle(.plain).padding(.leading, 8)
             .foregroundStyle(tag.excluded ? Color.orange : Color.white)
-            .background(tag.excluded ? Color.orange.opacity(0.15) : AppTheme.surface, in: Capsule())
+            .background(tag.excluded ? Color.orange.opacity(0.15) : AppTheme.elevatedSurface, in: Capsule())
             .overlay(Capsule().stroke(tag.excluded ? Color.orange.opacity(0.6) : .white.opacity(0.15)))
     }
     private func filterLabel(_ title: String, icon: String) -> some View {
         Label(title, systemImage: icon).font(.subheadline).padding(.horizontal, 12).frame(height: 40)
-            .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.2)))
+            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(AppTheme.border))
     }
     private func add(_ text: String) {
         for tag in SearchTag.parse(text) {

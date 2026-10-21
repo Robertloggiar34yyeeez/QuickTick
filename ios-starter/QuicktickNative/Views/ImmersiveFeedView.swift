@@ -138,8 +138,8 @@ struct ImmersiveFeedView: View {
                store.feedSort == "recommended", let oldID, let key,
                let previous = mediaPosts.firstIndex(where: { $0.stableID == oldID }),
                let next = mediaPosts.firstIndex(where: { $0.stableID == key }) {
-                if next > previous, now.timeIntervalSince(activeSince) >= 0.08,
-                   now.timeIntervalSince(activeSince) <= 1.25 {
+                if QuickSkipDecision.dislikes(elapsed: now.timeIntervalSince(activeSince),
+                                             from: previous, to: next) {
                     store.recordQuickSkip(mediaPosts[previous])
                 }
                 // Going back removes a prior instant-skip dislike; it does not

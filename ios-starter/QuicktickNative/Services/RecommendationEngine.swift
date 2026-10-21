@@ -19,6 +19,36 @@ actor RecommendationEngine {
     private(set) var rankLatencyMs = 0.0
     private var drainedCandidateQueries: [String: Date] = [:]
     private var taxonomy: VisualTagTaxonomy?
+    // Non-persisted, deduplicated affinity from every CURRENT saved favorite.
+    // Rebuilding on changes avoids replaying old likes into the event ledger.
+    private var savedFavoriteAffinity: [String: [String: Double]] = [:]
+
+    func configureFavorites(_ favorites: [Post]) {
+        var counts: [String: [String: Int]] = [:]
+        var totals: [String: Int] = [:]
+        for post in favorites {
+            let source = post.provider.lowercased()
+            totals[source, default: 0] += 1
+            for term in Set(terms(for: post)) {
+                counts[source, default: [:]][term, default: 0] += 1
+            }
+        }
+        savedFavoriteAffinity = [:]
+        for source in counts.keys {
+            let total = Double(max(1, totals[source] ?? 1))
+            savedFavoriteAffinity[source] = counts[source]!.mapValues { count in
+                // Strong repeat preferences, but dampen broad tags and large libraries.
+                min(5.0, log1p(Double(count)) * 2.3) *
+                    min(1.0, sqrt(Double(count) / total) * 2.0)
+            }
+        }
+    }
+
+    private func savedFavoriteTerms(source: String, limit: Int) -> [(String, Double)] {
+        (savedFavoriteAffinity[source] ?? [:]).sorted {
+            $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
+        }.prefix(limit).map { ($0.key, $0.value) }
+    }
     func configureTaxonomy(_ value: VisualTagTaxonomy?) { taxonomy = value }
     func markCandidateDrained(context: String) {
         drainedCandidateQueries = drainedCandidateQueries.filter { $0.value > .now }
@@ -73,8 +103,17 @@ actor RecommendationEngine {
         let explicit = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }
         // Keep learned acquisition separate: adding many explicit tags must not
         // evict the established profile from candidate discovery.
-        let learned = positiveTermEntries(source: provider.rawValue, taste: TasteChoice(), limit: 8)
-            .filter { $0.1 >= 3 && !blocked.contains($0.0) && !explicit.contains($0.0) }.map { $0.0 }
+        let learnedHistory = positiveTermEntries(source: provider.rawValue, taste: TasteChoice(), limit: 12)
+            .filter { $0.1 >= 3 && !blocked.contains($0.0) && !explicit.contains($0.0) }
+        let saved = savedFavoriteTerms(source: provider.rawValue, limit: 20)
+            .filter { !blocked.contains($0.0) && !explicit.contains($0.0) }
+        // Both explicit feedback history and the entire current favorites library
+        // contribute to acquisition, without re-training existing events.
+        let learned = Array(Set((learnedHistory + saved).map(\.0))).sorted { a, b in
+            let sa = (learnedHistory.first { $0.0 == a }?.1 ?? 0) + (saved.first { $0.0 == a }?.1 ?? 0) * 2
+            let sb = (learnedHistory.first { $0.0 == b }?.1 ?? 0) + (saved.first { $0.0 == b }?.1 ?? 0) * 2
+            return sa == sb ? a < b : sa > sb
+        }.prefix(16)
         let roundKey = context + "|round"
         let round = max(0, (state.candidatePages[roundKey] ?? 1) - 1)
         advanceCandidatePage(context: roundKey, nextPage: (round + 1) % 12_000 + 1)
@@ -334,6 +373,14 @@ actor RecommendationEngine {
         var score = log1p(max(0, post.score)) * 0.07
         let collaborative = max(0, min(1, collaborativeScores[gorseItemID(post)] ?? 0))
         score += collaborative * 18
+        // A cached, bounded score over ALL saved likes, not merely the last
+        // viewed posts or the top contextual terms. Explicit negatives still win.
+        let savedWeights = savedFavoriteAffinity[source] ?? [:]
+        let savedScore = Set(postTerms).reduce(0.0) { sum, term in
+            let generic = ["2d", "3d", "2d_art", "3d_art", "animation", "animated", "video"].contains(RecommendationTagRules.canonical(term))
+            return sum + (savedWeights[term] ?? 0) * (generic ? 0.15 : 1)
+        }
+        score += min(12, savedScore * 1.35)
 
         let topPositive = positiveTermEntries(source: source, taste: taste, limit: 8, learned: p)
         for term in postTerms {
@@ -380,7 +427,7 @@ actor RecommendationEngine {
         let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(128, candidates.count)) }
         guard let first = candidates.first else { return [] }
         let p = profile(for: first.provider.lowercased())
-        let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty
+        let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !savedFavoriteAffinity.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty
             || !p.terms.isEmpty || !p.negativeThemes.isEmpty || !p.termEvidence.isEmpty
         guard hasSignal else { return candidates }
         var scored: [(post: Post, value: Double, offset: Int)] = []

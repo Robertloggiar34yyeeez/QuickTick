@@ -24,6 +24,8 @@ actor VisualAnalysisService {
         var profiles: [String: VisualProfile] = [:]
         var features: [String: VisualFeatures] = [:]
         var liked: Set<String> = []
+        // Maps liked stable IDs to their source/visual-domain profile for reversible learning.
+        var likedProfileKeys: [String: String]? = nil
         var seen: Set<String> = []
         var disliked: Set<String> = []
         var analysisVersions: [String: String]? = nil
@@ -91,8 +93,13 @@ actor VisualAnalysisService {
         let cached = state.features[post.stableID]
         let features = cached?.domain == metadata.domain ? cached! : metadata
         switch event {
-        case .like: guard state.liked.insert(post.stableID).inserted else { return }
-        case .unlike: guard state.liked.remove(post.stableID) != nil else { return }
+        case .like:
+            guard state.liked.insert(post.stableID).inserted else { return }
+            if state.likedProfileKeys == nil { state.likedProfileKeys = [:] }
+            state.likedProfileKeys?[post.stableID] = profileKey(post)
+        case .unlike:
+            guard state.liked.remove(post.stableID) != nil else { return }
+            state.likedProfileKeys?.removeValue(forKey: post.stableID)
         case .impression:
             guard state.seen.insert(post.stableID).inserted else { return }
             if state.seen.count > 4096 { state.seen = [post.stableID] }
@@ -119,21 +126,41 @@ actor VisualAnalysisService {
         record(envelope.event, post: envelope.post, queueAnalysis: queueAnalysis)
         flush()
     }
-    // Batch metadata for the complete favorites collection before slow pixel
-    // inference. Existing IDs are not double-counted and scans are not redone.
+    // Synchronize exactly the current saved likes, including unlikes made while
+    // offline or during a sync. Never replay a like already in the ledger.
+    // Preserve learned dislikes and impressions in their respective profiles.
     func reconcileFavorites(_ favorites: [Post]) {
         restore()
         loadTaxonomy()
+        let current = Set(favorites.map(\.stableID))
         var changed = false
+        for id in state.liked.subtracting(current) {
+            if let previous = state.features[id] {
+                // Old state versions did not store a profile key; recover it
+                // from the stable provider ID and the cached visual domain.
+                let prefix = id.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
+                let key = state.likedProfileKeys?[id] ?? prefix + "|" + previous.domain.rawValue
+                state.profiles[key, default: VisualProfile()].record(.unlike, features: previous)
+            }
+            state.liked.remove(id)
+            state.likedProfileKeys?.removeValue(forKey: id)
+            changed = true
+        }
         for post in favorites {
-            guard !state.liked.contains(post.stableID),
-                  let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy) else { continue }
+            guard let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy) else { continue }
             let cached = state.features[post.stableID]
             let features = cached?.domain == metadata.domain ? cached! : metadata
-            state.liked.insert(post.stableID)
-            state.features[post.stableID] = features
-            state.profiles[profileKey(post), default: VisualProfile()].record(.like, features: features)
-            changed = true
+            let key = profileKey(post)
+            if state.likedProfileKeys == nil { state.likedProfileKeys = [:] }
+            if state.liked.insert(post.stableID).inserted {
+                state.features[post.stableID] = features
+                state.profiles[key, default: VisualProfile()].record(.like, features: features)
+                changed = true
+            }
+            if state.likedProfileKeys?[post.stableID] != key {
+                state.likedProfileKeys?[post.stableID] = key
+                changed = true
+            }
         }
         if changed { trimFeatures(); persist() }
     }

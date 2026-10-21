@@ -53,7 +53,10 @@ actor RecommendationEngine {
     // Both models are metadata-only, so ranking stays safe on the scrolling path.
     func unseenRecommendations(_ posts: [Post]) -> [Post] {
         let offered = Set(state.novelty.offered)
-        return posts.filter { offered.isDisjoint(with: FeedExclusions.identifiers($0)) }
+        let seen = Set(state.profiles.values.flatMap(\.recentSeen))
+        return posts.filter {
+            !seen.contains($0.stableID) && offered.isDisjoint(with: FeedExclusions.identifiers($0))
+        }
     }
     func recordOffered(_ posts: [Post]) {
         // Cross-provider mirrors, signed CDN URLs and API aliases should not

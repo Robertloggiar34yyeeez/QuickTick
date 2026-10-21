@@ -428,12 +428,13 @@ actor RecommendationEngine {
         // thumbs-down it does not change permanent term evidence or visual profiles.
         let candidateTerms = Set(postTerms.map(RecommendationTagRules.canonical))
         let recentSkips = state.reversibleSkips.evidence.suffix(24).filter { $0.provider == source }
-        let skipPenalty = recentSkips.map { skip -> Double in
+        let skipPenalty = recentSkips.reduce(0.0) { total, skip in
             let common = candidateTerms.intersection(skip.terms)
-            guard !common.isEmpty else { return 0 }
-            return min(8, Double(common.count) * 2.5)
-        }.max() ?? 0
-        score -= skipPenalty
+            return total + min(5, Double(common.count) * 1.8)
+        }
+        // Several independent quick skips expressing the same aversion
+        // outweigh one accidental swipe, without permanently blacklisting it.
+        score -= min(24, skipPenalty)
         if state.reversibleSkips.contains(post.stableID) { score -= 20 }
 
         let topPositive = positiveTermEntries(source: source, taste: taste, limit: 8, learned: p)

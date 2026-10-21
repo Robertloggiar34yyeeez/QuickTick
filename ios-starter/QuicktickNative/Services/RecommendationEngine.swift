@@ -64,6 +64,10 @@ actor RecommendationEngine {
     }
 
 
+    private static let genericTasteTerms: Set<String> = [
+        "2d", "3d", "3d_animation", "animation", "animated", "video",
+        "image", "photo", "solo", "highres", "rating:safe", "rating:explicit"
+    ]
     private let maxTerms = 140
     private let maxSeen = 2048
     private let maxQueries = 14
@@ -105,8 +109,8 @@ actor RecommendationEngine {
         // evict the established profile from candidate discovery.
         let learnedHistory = positiveTermEntries(source: provider.rawValue, taste: TasteChoice(), limit: 12)
             .filter { $0.1 >= 3 && !blocked.contains($0.0) && !explicit.contains($0.0) }
-        let saved = savedFavoriteTerms(source: provider.rawValue, limit: 20)
-            .filter { !blocked.contains($0.0) && !explicit.contains($0.0) }
+        let saved = savedFavoriteTerms(source: provider.rawValue, limit: 14)
+            .filter { !blocked.contains($0.0) && !explicit.contains($0.0) && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0)) }
         // Both explicit feedback history and the entire current favorites library
         // contribute to acquisition, without re-training existing events.
         let learned = Array(Set((learnedHistory + saved).map(\.0))).sorted { a, b in
@@ -117,12 +121,14 @@ actor RecommendationEngine {
         let roundKey = context + "|round"
         let round = max(0, (state.candidatePages[roundKey] ?? 1) - 1)
         advanceCandidatePage(context: roundKey, nextPage: (round + 1) % 12_000 + 1)
-        var focused = !forceBroad && (!explicit.isEmpty || !learned.isEmpty) && round % 4 != 3
+        // A third of pages is deliberately broad; otherwise narrow favorite
+        // searches cycle through the same creators and subjects indefinitely.
+        var focused = !forceBroad && (!explicit.isEmpty || !learned.isEmpty) && round % 3 != 2
         var terms: [String]
         if !focused { terms = [] }
         else if !explicit.isEmpty && (learned.isEmpty || round % 4 == 0) { terms = [explicit[(round / 4 + (learned.isEmpty ? round % 4 : 0)) % explicit.count]] }
         else { terms = [learned[(round / 4 * 2 + max(0, round % 4 - 1)) % learned.count]] }
-        if focused, explicit.isEmpty || round % 4 != 0 {
+        if focused, (explicit.isEmpty || round % 4 != 0) && round % 3 == 0 {
             let queries = state.contextualProfiles.filter { $0.key.hasPrefix(provider.rawValue + "|") }
                 .sorted { $0.key < $1.key }.flatMap { $0.value.discoveryQueries() }
                 .filter { !$0.contains(where: { blocked.contains(RecommendationTagRules.canonical($0)) }) }
@@ -373,14 +379,14 @@ actor RecommendationEngine {
         var score = log1p(max(0, post.score)) * 0.07
         let collaborative = max(0, min(1, collaborativeScores[gorseItemID(post)] ?? 0))
         score += collaborative * 18
-        // A cached, bounded score over ALL saved likes, not merely the last
-        // viewed posts or the top contextual terms. Explicit negatives still win.
+        // Historical likes are a weak tie-breaker, not a second dominant
+        // recommender. Avoid saturated +12 boosts that collapsed variation.
         let savedWeights = savedFavoriteAffinity[source] ?? [:]
         let savedScore = Set(postTerms).reduce(0.0) { sum, term in
-            let generic = ["2d", "3d", "2d_art", "3d_art", "animation", "animated", "video"].contains(RecommendationTagRules.canonical(term))
-            return sum + (savedWeights[term] ?? 0) * (generic ? 0.15 : 1)
+            let generic = Self.genericTasteTerms.contains(RecommendationTagRules.canonical(term))
+            return sum + (savedWeights[term] ?? 0) * (generic ? 0.08 : 1)
         }
-        score += min(12, savedScore * 1.35)
+        score += min(3.0, log1p(savedScore) * 0.9)
 
         let topPositive = positiveTermEntries(source: source, taste: taste, limit: 8, learned: p)
         for term in postTerms {
@@ -436,7 +442,33 @@ actor RecommendationEngine {
             scored.append((post: post, value: score(post, taste: taste, recent: recent), offset: offset))
         }
         scored.sort { $0.value == $1.value ? $0.offset < $1.offset : $0.value > $1.value }
-        return scored.map(\.post) + candidates.dropFirst(128).filter { !isHardDisliked($0, taste: taste) }
+        // Lightweight, bounded diversification without model inference:
+        // compare the next 20 candidates against recent chosen themes so
+        // adjacent cards do not repeat the same near-identical subjects.
+        var output: [Post] = []
+        var termWindow: [Set<String>] = []
+        let previous = recent.suffix(5).map { Set(terms(for: $0)).subtracting(Self.genericTasteTerms) }
+        let maxDiversified = min(48, scored.count)
+        while output.count < maxDiversified {
+            let count = min(20, scored.count)
+            let context = Array((previous + termWindow).suffix(5))
+            var best = 0
+            var bestScore = -Double.infinity
+            for index in 0..<count {
+                let terms = Set(self.terms(for: scored[index].post)).subtracting(Self.genericTasteTerms)
+                let overlap = context.map { seen -> Double in
+                    guard !terms.isEmpty, !seen.isEmpty else { return 0 }
+                    return Double(terms.intersection(seen).count) / Double(max(1, min(terms.count, seen.count)))
+                }.max() ?? 0
+                let adjusted = scored[index].value - overlap * 6.5
+                if adjusted > bestScore { best = index; bestScore = adjusted }
+            }
+            let item = scored.remove(at: best)
+            output.append(item.post)
+            termWindow.append(Set(terms(for: item.post)).subtracting(Self.genericTasteTerms))
+        }
+        output += scored.map(\.post)
+        return output + candidates.dropFirst(128).filter { !isHardDisliked($0, taste: taste) }
     }
 
     func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], visualScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {

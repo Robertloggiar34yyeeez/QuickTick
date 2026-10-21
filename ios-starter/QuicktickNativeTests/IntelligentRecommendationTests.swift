@@ -35,6 +35,41 @@ final class IntelligentRecommendationTests: XCTestCase {
         var changed = old; changed.tags.append("portrait")
         let invalidated = await restored.historicalQueue([changed]); XCTAssertEqual(invalidated, [changed])
     }
+    func testAllCurrentFavoritesContributeWithoutReplayingLikeEvents() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let saved = (0..<32).map { post("saved-\($0)", ["chun_li", "qipao", "artist:example"]) }
+        let matching = post("candidate", ["chun_li", "qipao", "artist:example"])
+        let unrelated = post("unrelated", ["jacket", "landscape", "artist:other"])
+        await engine.configureFavorites(saved)
+        let favScore = await engine.score(matching, taste: TasteChoice(), recent: [])
+        let otherScore = await engine.score(unrelated, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(favScore, otherScore)
+        let request = await engine.candidateRequest(context: "complete-likes", provider: .rule34,
+            taste: TasteChoice(), excluded: [])
+        XCTAssertTrue(request.focused)
+        XCTAssertFalse(request.query.included.isEmpty)
+        // Reconfiguration does not create synthetic feedback or mutate history.
+        let after = await engine.snapshot()
+        XCTAssertEqual(after.profiles.values.reduce(0) { $0 + $1.stats.likes }, 0)
+        await engine.configureFavorites([])
+        let cleared = await engine.score(matching, taste: TasteChoice(), recent: [])
+        XCTAssertLessThan(cleared, favScore)
+    }
+
+    func testFavoriteMetadataBatchIsIdempotentAndRestorable() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = VisualAnalysisService(directory: directory)
+        let saved = (0..<12).map { post("batch-\($0)", ["2d", "chun_li", "qipao"]) }
+        await service.reconcileFavorites(saved)
+        let first = await service.snapshot()
+        XCTAssertEqual(first.liked.count, saved.count)
+        await service.reconcileFavorites(saved)
+        let again = await service.snapshot()
+        XCTAssertEqual(first.profiles, again.profiles)
+        XCTAssertEqual((await VisualAnalysisService(directory: directory).snapshot()).liked.count, saved.count)
+    }
+
     func testExpiringSignaturesDoNotInvalidateContentButAssetParametersDo() {
         let original = FeedExclusions.canonicalMediaURL("https://cdn.test/image.jpg?asset=1&token=old")
         XCTAssertEqual(original, FeedExclusions.canonicalMediaURL("https://cdn.test/image.jpg?token=new&asset=1"))

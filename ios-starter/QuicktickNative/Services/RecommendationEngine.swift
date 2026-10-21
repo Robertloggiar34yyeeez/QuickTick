@@ -50,6 +50,27 @@ actor RecommendationEngine {
         }.prefix(limit).map { ($0.key, $0.value) }
     }
     func configureTaxonomy(_ value: VisualTagTaxonomy?) { taxonomy = value }
+    // Both models are metadata-only, so ranking stays safe on the scrolling path.
+    func unseenRecommendations(_ posts: [Post]) -> [Post] {
+        let offered = Set(state.novelty.offered)
+        return posts.filter { !offered.contains($0.stableID) }
+    }
+    func recordOffered(_ posts: [Post]) {
+        state.novelty.record(posts.map(\.stableID))
+    }
+    func recordReversibleSkip(_ post: Post) {
+        guard !state.reversibleSkips.contains(post.stableID) else { return }
+        let source = post.provider.lowercased()
+        let terms = Array(Set(terms(for: post).map(RecommendationTagRules.canonical)
+            .filter { !Self.genericTasteTerms.contains($0) })).sorted().prefix(24)
+        state.reversibleSkips.mark(.init(id: post.stableID, provider: source, terms: Array(terms)))
+    }
+    @discardableResult
+    func neutralizeReversibleSkip(_ id: String) -> Bool {
+        state.reversibleSkips.neutralize(id)
+    }
+    func hasReversibleSkip(_ id: String) -> Bool { state.reversibleSkips.contains(id) }
+
     func markCandidateDrained(context: String) {
         drainedCandidateQueries = drainedCandidateQueries.filter { $0.value > .now }
         if drainedCandidateQueries.count < 96 || drainedCandidateQueries[context] != nil {
@@ -388,6 +409,17 @@ actor RecommendationEngine {
             return sum + (savedWeights[term] ?? 0) * (generic ? 0.08 : 1)
         }
         score += min(3.0, log1p(savedScore) * 0.9)
+        // An instant swipe away is an explicitly reversible negative; unlike a
+        // thumbs-down it does not change permanent term evidence or visual profiles.
+        let candidateTerms = Set(postTerms.map(RecommendationTagRules.canonical))
+        let recentSkips = state.reversibleSkips.evidence.suffix(24).filter { $0.provider == source }
+        let skipPenalty = recentSkips.map { skip -> Double in
+            let common = candidateTerms.intersection(skip.terms)
+            guard !common.isEmpty else { return 0 }
+            return min(8, Double(common.count) * 2.5)
+        }.max() ?? 0
+        score -= skipPenalty
+        if state.reversibleSkips.contains(post.stableID) { score -= 20 }
 
         let topPositive = positiveTermEntries(source: source, taste: taste, limit: 8, learned: p)
         for term in postTerms {
@@ -447,7 +479,7 @@ actor RecommendationEngine {
         let p = profile(for: first.provider.lowercased())
         let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !savedFavoriteAffinity.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty
             || !p.terms.isEmpty || !p.negativeThemes.isEmpty || !p.termEvidence.isEmpty
-        guard hasSignal else { return candidates }
+        guard hasSignal || !state.reversibleSkips.evidence.isEmpty else { return candidates }
         var scored: [(post: Post, value: Double, offset: Int)] = []
         for (offset, post) in candidates.prefix(128).enumerated() {
             guard !isHardDisliked(post, taste: taste) else { continue }

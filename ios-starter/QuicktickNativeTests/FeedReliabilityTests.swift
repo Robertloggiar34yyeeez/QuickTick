@@ -297,4 +297,46 @@ final class FeedReliabilityTests: XCTestCase {
         let load = await semantic.modelLoadMs;let warm = await semantic.embeddingMs
         print("QUICKTICK_METRIC bge_load_ms=\(load) embedding_ms=\(warm)")
     }
+
+    @MainActor func testImmersiveRanksOnlyUnseenTailAndKeepsViewedPrefix() async {
+        let store = AppStore(); store.selectedProvider = .eporner; store.activeTab = 1
+        let first = Post(key: "viewed", id: "1", provider: "Eporner", tags: ["baking"], type: "video")
+        let current = Post(key: "current", id: "2", provider: "Eporner", tags: ["baking"], type: "video")
+        let weak = Post(key: "weak", id: "3", provider: "Eporner", tags: ["baking"], type: "video")
+        let strong = Post(key: "strong", id: "4", provider: "Eporner", tags: ["engineering"], type: "video")
+        await store.recommendations.record(.like, post: strong)
+        store.posts = [first, current, weak, strong]
+        store.protectImmersivePost(current.stableID)
+        await store.adaptRecommendationTail(token: store.feedRevision)
+        XCTAssertEqual(Array(store.posts.prefix(2)), [first, current])
+        XCTAssertEqual(store.posts[2].stableID, strong.stableID)
+        store.protectImmersivePost(first.stableID)
+        await store.adaptRecommendationTail(token: store.feedRevision)
+        XCTAssertEqual(Array(store.posts.prefix(2)), [first, current])
+    }
+    @MainActor func testSearchCommitRetainsFeedUntilNewResponse() {
+        let store = AppStore()
+        let current = Post(key: "current", id: "1", provider: "Eporner", type: "video")
+        store.posts = [current]
+        store.commitSearch(query: "engineering -blocked", sort: "recent")
+        XCTAssertEqual(store.posts, [current])
+        XCTAssertEqual(store.queryText, "engineering -blocked")
+        XCTAssertEqual(store.feedSort, "recent")
+    }
+
+    @MainActor func testTabSwitchRestoresIndependentQueriesAndFeeds() async {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
+        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
+        let store = AppStore(api: QuicktickAPIClient(baseURL: nil, session: session)); store.selectedProvider = .eporner
+        let home = Post(key: "home-saved", id: "1", provider: "Eporner", type: "image")
+        let clip = Post(key: "clip-saved", id: "2", provider: "Eporner", type: "video")
+        store.commitSearch(query: "home_tag", sort: "recent"); await store.refresh(); store.posts = [home]
+        await store.selectFeedTab(1)
+        store.commitSearch(query: "video_tag -blocked", sort: "popular"); await store.refresh(immersive: true); store.posts = [clip]
+        await store.selectFeedTab(0)
+        XCTAssertEqual(store.queryText, "home_tag"); XCTAssertEqual(store.feedSort, "recent"); XCTAssertEqual(store.posts, [home])
+        await store.selectFeedTab(1)
+        XCTAssertEqual(store.queryText, "video_tag -blocked"); XCTAssertEqual(store.feedSort, "popular"); XCTAssertEqual(store.posts, [clip])
+        store.handleMemoryPressure()
+    }
 }

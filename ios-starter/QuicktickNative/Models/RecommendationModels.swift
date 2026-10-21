@@ -45,7 +45,7 @@ struct RecommendationTransfer: Codable, Transferable, Sendable, Identifiable {
         guard format == "QuickTick recommendation profile", version == 1,
               semanticVersion == "bge-micro-v2-3edf6d7-96-v1", (1...2).contains(preferences.version),
               Set(preferences.sources.keys).isSubset(of: providers), Set(profiles.keys).isSubset(of: providers),
-              Set(semanticProfiles.keys).isSubset(of: providers), strings(exclusions, limit: 512) else {
+              semanticProfiles.keys.allSatisfy({ key in providers.contains(key) || key.split(separator: "|").count == 2 && providers.contains(String(key.split(separator: "|").first ?? "")) && VisualDomain(rawValue: String(key.split(separator: "|").last ?? "")) != nil }), strings(exclusions, limit: 512) else {
             throw APIError.server("This is not a supported QuickTick recommendation profile.")
         }
         for taste in preferences.sources.values {
@@ -87,7 +87,7 @@ actor RecommendationTransferReader {
     }
 }
 
-enum RecommendationEvent: Sendable, Equatable {
+enum RecommendationEvent: Codable, Sendable, Equatable {
     case impression
     case like
     case unlike
@@ -143,13 +143,19 @@ struct RecommendationState: Codable, Sendable, Equatable {
     var version: Int = 3
     var profiles: [String: RecommendationProfile] = [:]
     var candidatePages: [String: Int] = [:]
+    var contextualProfiles: [String: ContextTasteProfile] = [:]
+    var scopedProfiles: [String: RecommendationProfile] = [:]
+    var feedbackLedger: [String] = []
     init() {}
-    enum CodingKeys: String, CodingKey { case version, profiles, candidatePages }
+    enum CodingKeys: String, CodingKey { case version, profiles, candidatePages, contextualProfiles, scopedProfiles, feedbackLedger }
     init(from decoder: Decoder) throws {
         let fields = try decoder.container(keyedBy: CodingKeys.self)
         version = try fields.decodeIfPresent(Int.self, forKey: .version) ?? 3
         profiles = try fields.decodeIfPresent([String: RecommendationProfile].self, forKey: .profiles) ?? [:]
         candidatePages = try fields.decodeIfPresent([String: Int].self, forKey: .candidatePages) ?? [:]
+        contextualProfiles = try fields.decodeIfPresent([String: ContextTasteProfile].self, forKey: .contextualProfiles) ?? [:]
+        scopedProfiles = try fields.decodeIfPresent([String: RecommendationProfile].self, forKey: .scopedProfiles) ?? [:]
+        feedbackLedger = try fields.decodeIfPresent([String].self, forKey: .feedbackLedger) ?? []
     }
 }
 

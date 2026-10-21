@@ -1,35 +1,62 @@
 import Foundation
 import SwiftUI
+import UIKit
+
+struct VisualRefreshProgress: Equatable, Sendable {
+    var completed: Int
+    var total: Int
+    var status: String
+    var running: Bool
+    var fraction: Double { total == 0 ? (running ? 0 : 1) : Double(completed) / Double(total) }
+}
 
 @MainActor
 final class AppStore: ObservableObject {
     @Published var selectedProvider: Provider = .rule34 {
         didSet {
             guard oldValue != selectedProvider else { return }
+            savedFeeds.removeAll()
+            if selectedProvider != .rule34 {
+                let plainQuery = SearchFilters.split(queryText).tags
+                if plainQuery != queryText { queryText = plainQuery; return }
+            }
             invalidateFeed()
         }
     }
-    @Published var posts: [Post] = []
-    @Published var activeTab = 0 { didSet { if oldValue != activeTab { fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
+    @Published var posts: [Post] = [] {
+        didSet { postsByID = Dictionary(posts.map { ($0.stableID, $0) }, uniquingKeysWith: { first, _ in first }) }
+    }
+    private var postsByID: [String: Post] = [:]
+    func postForID(_ id: String) -> Post? { postsByID[id] }
+    @Published var activeTab = 0 { didSet { if oldValue != activeTab { idleTask?.cancel(); fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
     @Published var isForeground = true { didSet {
         guard oldValue != isForeground else { return }
-        if !isForeground { players.suspendActivePlayback() }
+        if !isForeground { idleTask?.cancel(); stopActiveLearning(); cancelManualVisualRefresh(); players.suspendActivePlayback() }
         else {
             // A rapid inactive→active transition can coalesce SwiftUI task IDs
             // while the app is suspended. Resume the retained player directly,
             // only if its existing feed and visible-post owners still agree.
-            let owner = [0: "home", 1: "immersive", 2: "favorites", 3: "downloads"][activeTab] ?? "home"
-            let allowed = activeTab == 1 ? Set(posts.map(\.stableID)) : Set(inlinePlaybackID.map { [$0] } ?? [])
+            let savedOwner = players.suspendedOwner ?? players.activeOwner
+            let owner = savedOwner ?? ([0: "home", 1: "immersive", 2: "favorites", 3: "downloads"][activeTab] ?? "home")
+            let allowed: Set<String>
+            if activeTab == 1 || (activeTab == 0 && owner == "home-immersive") { allowed = Set(posts.map(\.stableID)) }
+            else if activeTab == 2 && owner == "favorites-immersive" { allowed = Set(favorites.keys) }
+            else if activeTab == 3 && owner == "offline-immersive" { allowed = Set(downloads.records.compactMap { $0.offlinePost?.stableID }) }
+            else { allowed = Set(inlinePlaybackID.map { [$0] } ?? []) }
             players.resumeSuspendedPlayback(allowed: allowed, owner: owner, muted: muted, pausedKey: pausedPlaybackID)
+            if bootstrapped { visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil; scheduleIdleIntelligence() }
         }
     } }
     @Published var pausedPlaybackID: String?
     @Published var fullScreenPlaybackID: String?
-    @Published var inlinePlaybackID: String? { didSet { if oldValue != inlinePlaybackID { pausedPlaybackID = nil; players.pauseAll() } } }
-    @Published var queryText = "" { didSet { if oldValue != queryText { invalidateFeed() } } }
-    @Published var feedSort = "recommended" { didSet { if oldValue != feedSort { invalidateFeed() } } }
+    @Published var inlinePlaybackID: String? { didSet { if oldValue != inlinePlaybackID { idleTask?.cancel(); pausedPlaybackID = nil; if players.activeOwner != "immersive", players.activeOwner?.hasSuffix("-immersive") != true { players.transitionVisiblePost() } } } }
+    @Published var queryText = "" { didSet { if oldValue != queryText && !committingSearch { invalidateFeed() } } }
+    @Published var feedSort = "recommended" { didSet { if oldValue != feedSort && !committingSearch { invalidateFeed() } } }
     @Published private(set) var feedRevision = UUID()
-    @Published var favorites: [String: Post] = [:]
+    @Published var favorites: [String: Post] = [:] {
+        didSet { favoriteExclusionIDs = Set(favorites.values.flatMap { FeedExclusions.identifiers($0) }) }
+    }
+    private var favoriteExclusionIDs: Set<String> = []
     @Published var exclusions: [String] = []
     @Published var tasteSetup = TasteSetup()
     @Published var lastError: String?
@@ -54,8 +81,32 @@ final class AppStore: ObservableObject {
     @Published private(set) var feedMediaOnly = false
     private var candidateContext: String?
     private var nextPage = 1
+    private var publishedNextPage = 1
+    private var publishedQuery = ""
+    private var publishedSort = "recommended"
     private var encountered: Set<String> = []
     private var generation = UUID()
+    @Published var visualAnalysisEnabled = (UserDefaults.standard.object(forKey: "quicktick-visual-analysis-v1") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(visualAnalysisEnabled, forKey: "quicktick-visual-analysis-v1"); scheduleIdleIntelligence() }
+    }
+    let visual = VisualAnalysisService()
+    @Published private(set) var visualScanStatus: String?
+    @Published private(set) var manualVisualProgress: VisualRefreshProgress?
+    var isManualVisualScanRunning: Bool { manualVisualProgress?.running == true }
+    private var manualVisualTask: Task<Void, Never>?
+    private var manualVisualID = UUID()
+    private var feedExclusions = FeedExclusions()
+    private var visualScores: [String: Double] = [:]
+    private var activeLearningTask: Task<Void, Never>?
+    private var activeLearningID = UUID()
+    private var memoryCooldown = Date.distantPast
+    private var idleTask: Task<Void, Never>?
+    private var plannedAcquisition: RecommendationEngine.CandidateRequest?
+    private var candidateCursors: [String: Int] = [:]
+    private var lastFeedMotion = Date.distantPast
+    private var motionTask: Task<Void, Never>?
+    private var visualDiscoveryRound = 0
+    private var persistenceTask: Task<Void, Never>?
     private var semanticTask: Task<Void, Never>?
     private var refreshFlight: Task<Void, Never>?
     private var pageFlight: Task<Void, Never>?
@@ -82,6 +133,11 @@ final class AppStore: ObservableObject {
     init(api: QuicktickAPIClient = QuicktickAPIClient(), localStorage: LocalStateStore = LocalStateStore()) {
         self.localStorage = localStorage
         self.api = api
+        players.onPlaybackStart = { [weak self] in
+            self?.idleTask?.cancel()
+            self?.stopActiveLearning(); self?.startActiveLearning()
+            if self?.visualScanStatus != nil, self?.visualScanStatus != "Visual update paused for playback" { self?.visualScanStatus = "Visual update paused for playback" }
+        }
     }
 
     func bootstrap() async {
@@ -93,6 +149,7 @@ final class AppStore: ObservableObject {
             posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []
             if ProcessInfo.processInfo.arguments.contains("--ui-testing-download-images") { downloads.useUITestDownloads(posts) }
             hasMore = false; bootstrapped = true
+            FeedFrameMonitor.shared.startIfRequested()
             return
         }
         #endif
@@ -115,7 +172,9 @@ final class AppStore: ObservableObject {
             do { try KeychainStore.set(generated, account: "quicktick-sync-id"); syncID = generated }
             catch { lastError = "Keychain: \(error.localizedDescription)" }
         }
-        if let local = await recommendationPersistence.load() { await recommendations.load(local) }
+        if let local = await recommendationPersistence.load() {
+            await restoreRecommendationState(local)
+        }
         let recommendationWarning = await recommendationPersistence.lastError
         if let recommendationWarning { storageWarning = recommendationWarning }
         var credentials = ProviderCredentials()
@@ -127,10 +186,11 @@ final class AppStore: ObservableObject {
         local.snapshot.pornhub.auth.session = credentials.pornhubSession
         await api.setCredentials(credentials)
         downloads.onCompleted = { [weak self] post in Task { await self?.record(.download, post: post) } }
-        await downloads.restoreTasks()
         bootstrapped = true
-        Task { await syncWhenActive() }
+        visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil
         await refresh()
+        FeedFrameMonitor.shared.startIfRequested()
+        Task(priority: .utility) { await downloads.restoreTasks(); await syncWhenActive() }
     }
 
     func setCloudSyncEnabled(_ enabled: Bool) async throws {
@@ -153,7 +213,7 @@ final class AppStore: ObservableObject {
         let canonical = try QuicktickSyncCrypto.parse(value).full
         if let flight = syncFlight { _ = try? await flight.value }
         guard !isSyncing else { throw APIError.server("Sync is already running. Please wait.") }
-        isSyncing = true; syncFailed = false; syncStatus = "Checking cloud profileÃ¢â‚¬Â¦"
+        isSyncing = true; syncFailed = false; syncStatus = "Checking cloud profileÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦"
         defer { isSyncing = false }
         do {
             // Verify the server response and decrypt before replacing a working identity.
@@ -164,7 +224,7 @@ final class AppStore: ObservableObject {
             syncID = canonical
             syncTask?.cancel()
             if let remote { try await applySyncSnapshot(remote) }
-            syncStatus = "Saving merged profileÃ¢â‚¬Â¦"
+            syncStatus = "Saving merged profileÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦"
             let revision = syncRevision
             try await sync.push(syncID: canonical, snapshot: currentSnapshot())
             syncStatus = remote == nil ? "Cloud profile created. Use this same ID on your other devices." : "Cloud profile merged and synced."
@@ -186,15 +246,19 @@ final class AppStore: ObservableObject {
     }
 
     func handleMemoryPressure() {
-        semanticTask?.cancel()
+        memoryCooldown = .now.addingTimeInterval(30); stopActiveLearning()
+        cancelManualVisualRefresh()
+        semanticTask?.cancel(); idleTask?.cancel()
         players.retain(Set(players.activeKey.map { [$0] } ?? []))
-        Task { await MediaImagePipeline.shared.clearDecoded(); await recommendations.releaseSemanticModel() }
+        Task { await MediaImagePipeline.shared.clearDecoded(); await recommendations.releaseSemanticModel(); await visual.releaseModels() }
     }
 
     private func invalidateFeed() {
         fullScreenPlaybackID = nil
+        idleTask?.cancel(); plannedAcquisition = nil
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel(); semanticTask = nil
         generation = UUID(); feedRevision = generation; posts = []; encountered = []; nextPage = 1
+        publishedNextPage = 1; publishedQuery = queryText; publishedSort = feedSort
         hasMore = true; candidateContext = nil; isLoading = false; lastError = nil; inlinePlaybackID = nil; players.releaseAll()
         learnedInterests = []; recommendationMode = "On-device recommendations"
     }
@@ -205,38 +269,78 @@ final class AppStore: ObservableObject {
             if feedMediaOnly != mediaOnly { invalidateFeed(); feedMediaOnly = mediaOnly }
             // Preference edits still apply locally while the provider is cooling
             // down. No network retry or model inference is needed for this rank.
-            let provider = selectedProvider, revision = feedRevision
-            let taste = tasteChoice(for: provider)
             if feedSort == "recommended", QueryParser.parse(queryText).included.isEmpty {
-                let ranked = await recommendations.rank(posts, taste: taste, recent: [])
-                guard selectedProvider == provider, feedRevision == revision,
-                      tasteChoice(for: provider).into == taste.into, tasteChoice(for: provider).notInto == taste.notInto else { return }
-                posts = ranked
+                posts = feedExclusions.filter(posts, favorites: Array(favorites.values), recommended: true, favoriteIDs: favoriteExclusionIDs)
             }
             lastError = APIError.rateLimited(selectedProvider, deadline).localizedDescription; return
         }
-        refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel()
+        refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel(); idleTask?.cancel()
         let flight = Task { await performRefresh(immersive: immersive, trainSearch: trainSearch) }
         refreshFlight = flight
         await withTaskCancellationHandler { await flight.value } onCancel: { flight.cancel() }
     }
+    private struct SavedFeed {
+        var provider: Provider
+        var query: String
+        var sort: String
+        var publishedQuery: String
+        var publishedSort: String
+        var posts: [Post]
+        var encountered: Set<String>
+        var nextPage: Int
+        var hasMore: Bool
+        var context: String?
+        var protected: Set<String>
+    }
+    private var savedFeeds: [Int: SavedFeed] = [:]
+    private var committingSearch = false
+    var searchDrafts: [Int: SearchDraft] = [:]
+    func commitSearch(query: String, sort: String) {
+        committingSearch = true
+        queryText = query; feedSort = sort
+        committingSearch = false
+    }
     func selectFeedTab(_ tab: Int) async {
         guard (0...3).contains(tab) else { return }
-        fullScreenPlaybackID = nil
-        activeTab = tab
+        if tab == activeTab {
+            if tab < 2 { await refresh(immersive: tab == 1) }
+            return
+        }
+        if activeTab < 2 {
+            savedFeeds[activeTab] = SavedFeed(provider: selectedProvider, query: queryText, sort: feedSort, publishedQuery: publishedQuery, publishedSort: publishedSort,
+                posts: posts, encountered: Set(posts.map(\.stableID)), nextPage: publishedNextPage, hasMore: hasMore,
+                context: candidateContext, protected: protectedImmersiveIDs)
+        }
+        refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel()
+        generation = UUID(); feedRevision = generation; isLoading = false
+        fullScreenPlaybackID = nil; activeTab = tab
         guard tab < 2 else { return }
-        feedSort = "recommended"
-        queryText = ""
+        feedMediaOnly = tab == 1
+        if let saved = savedFeeds[tab], saved.provider == selectedProvider {
+            commitSearch(query: saved.query, sort: saved.sort)
+            let blocked = Set((exclusions + QueryParser.parse(saved.query).excluded + tasteChoice(for: selectedProvider).notInto).map { $0.lowercased() })
+            posts = saved.posts.filter { !RecommendationTagRules.rejects($0, exclusions: Array(blocked)) }; encountered = saved.encountered; nextPage = saved.nextPage
+            publishedNextPage = nextPage; publishedQuery = saved.publishedQuery; publishedSort = saved.publishedSort
+            hasMore = saved.hasMore; candidateContext = saved.context
+            protectedImmersiveIDs = saved.protected; lastError = nil
+            if (posts.isEmpty && nextPage <= 1) || publishedQuery != queryText || publishedSort != feedSort { await refresh(immersive: tab == 1) }
+            return
+        }
+        commitSearch(query: "", sort: "recommended")
+        posts = []; encountered = []; nextPage = 1; candidateContext = nil; protectedImmersiveIDs = []
         await refresh(immersive: tab == 1)
     }
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
         let mediaOnly = immersive || activeTab == 1
         feedMediaOnly = mediaOnly
+        protectedImmersiveIDs = []; immersivePlaybackID = nil
         generation = UUID(); feedRevision = generation; inlinePlaybackID = nil; players.pauseAll()
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") { posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []; hasMore = false; return }
         #endif
+        plannedAcquisition = nil
+        let feedStarted = Date()
         let token = generation
         let requestedSort = feedSort
         let requestedQuery = queryText
@@ -247,18 +351,17 @@ final class AppStore: ObservableObject {
         do {
             let parsed = QueryParser.parse(requestedQuery)
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                await recommendations.recordSearch(provider: selectedProvider, query: queryText)
+                let search = SearchFilters.split(queryText).tags
+                Task(priority: .utility) { await recordSearch(provider: provider, query: search) }
             }
             let personalized = requestedSort == "recommended" && parsed.included.isEmpty
-            let banned = Set((exclusions + parsed.excluded).map { $0.lowercased() })
+            let banned = Set((exclusions + parsed.excluded + tasteChoice(for: provider).notInto).map(RecommendationTagRules.canonical))
             let context = provider.rawValue + "|batch40|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
             candidateContext = personalized ? context : nil
-            let previous = Set(posts.map(\.stableID))
             var requestedPage = 1
             guard generation == token, !Task.isCancelled else { return }
             encountered = []
             var filtered: [Post] = []
-            let taste = tasteChoice(for: provider)
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
             var broaden = false
             for _ in 0..<5 {
@@ -272,40 +375,27 @@ final class AppStore: ObservableObject {
                 nextPage = requestedPage; hasMore = (page.hasMore ?? !page.items.isEmpty) || acquisition?.focused == true
                 var incoming = page.items.filter { post in
                     encountered.insert(post.stableID).inserted && (!mediaOnly || post.isImmersiveMedia)
-                        && banned.isDisjoint(with: Set(post.tags.map { $0.lowercased() }))
+                        && !RecommendationTagRules.rejects(post, exclusions: Array(banned))
                 }
-                if personalized {
-                    incoming = await recommendations.unseen(incoming.filter { !previous.contains($0.stableID) })
-                    incoming = await recommendations.rank(incoming, taste: taste, recent: posts)
-                    guard generation == token, !Task.isCancelled else { return }
-                    await recommendations.advanceCandidatePage(context: acquisition?.context ?? context, nextPage: (page.hasMore ?? !page.items.isEmpty) ? nextPage : 1)
-                }
-                filtered = incoming
-                if incoming.isEmpty, let acquisition, acquisition.focused {
+                incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
+                filtered = personalized
+                    ? await recommendations.rankFast(incoming, taste: tasteChoice(for: provider), recent: [])
+                    : incoming
+                if filtered.isEmpty, let acquisition, acquisition.focused {
                     broaden = true
-                    if page.hasMore == false { await recommendations.markCandidateDrained(context: acquisition.context) }
+                    if page.hasMore == false { Task { await recommendations.markCandidateDrained(context: acquisition.context) } }
                 }
                 if !filtered.isEmpty || !hasMore { break }
             }
             let immediate = filtered
             guard generation == token, !Task.isCancelled else { return }
             posts = immediate
-            semanticTask?.cancel()
-            if requestedSort == "recommended" {
-                semanticTask = Task(priority: .utility) { [weak self] in
-                    guard let self else { return }
-                    await recommendations.prepareSemantic(filtered, taste: taste)
-                    guard !Task.isCancelled, generation == token else { return }
-                    await adaptRecommendationTail(token: token)
-                }
-            }
+            publishedNextPage = nextPage; publishedQuery = requestedQuery; publishedSort = requestedSort
+            FeedPerformance.emit("first_posts", started: feedStarted, count: immediate.count)
             isLoading = false
             releasedLoading = true
             recommendationMode = "On-device recommendations"
-            let interests = await recommendations.positiveTerms(provider: provider, taste: taste)
-            guard generation == token, !Task.isCancelled else { return }
-            learnedInterests = interests
-            await persistRecommendations()
+            scheduleIdleIntelligence()
             if generation == token, !restoreFailed { lastError = nil }
         } catch {
             if generation == token, !Task.isCancelled { recordFeedError(error, provider: provider) }
@@ -316,7 +406,8 @@ final class AppStore: ObservableObject {
         if let deadline = feedRetryAfter, deadline > .now { return }
         // The initial page belongs to bootstrap/refresh. Lazy footer appearance
         // must not race credential restoration or start a second page-one request.
-        guard nextPage > 1, !isLoading, hasMore else { return }
+        guard nextPage > 1, !isLoading, hasMore, publishedQuery == queryText, publishedSort == feedSort else { return }
+        idleTask?.cancel()
         // Reserve loading synchronously, so multiple lazy-cell callbacks share one page request.
         isLoading = true
         let flight = Task { await performLoadMore(immersive: immersive) }; pageFlight = flight
@@ -324,6 +415,7 @@ final class AppStore: ObservableObject {
     }
     private func performLoadMore(immersive: Bool) async {
         let token = generation
+        let pageStarted = Date()
         defer { if token == generation { isLoading = false } }
         guard !Task.isCancelled, hasMore else { return }
         let provider = selectedProvider
@@ -341,45 +433,57 @@ final class AppStore: ObservableObject {
             let page = response.page
             guard generation == token, !Task.isCancelled else { return }
             nextPage = requestedPage + 1; hasMore = (page.hasMore ?? !page.items.isEmpty) || acquisition?.focused == true
-            let banned = Set((exclusions + parsed.excluded).map { $0.lowercased() })
-            var candidates = page.items.filter { encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia) && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
-            if let context = candidateContext {
-                candidates = await recommendations.unseen(candidates)
-                guard generation == token, !Task.isCancelled else { return }
-                await recommendations.advanceCandidatePage(context: acquisition?.context ?? context, nextPage: (page.hasMore ?? !page.items.isEmpty) ? nextPage : 1)
+            let banned = Set((exclusions + parsed.excluded + tasteChoice(for: provider).notInto).map(RecommendationTagRules.canonical))
+            var candidates = page.items.filter {
+                encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia)
+                    && !RecommendationTagRules.rejects($0, exclusions: Array(banned))
             }
-            let ranked = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(candidates, taste: tasteChoice(for: provider), recent: posts) : candidates
+            candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
+                recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
+            let ranked = candidateContext != nil
+                ? await recommendations.rankFast(candidates, taste: tasteChoice(for: provider), recent: Array(posts.suffix(10)))
+                : candidates
             guard generation == token, !Task.isCancelled else { return }
             if ranked.isEmpty, let acquisition, acquisition.focused {
                 broaden = true
-                if page.hasMore == false { await recommendations.markCandidateDrained(context: acquisition.context) }
+                if page.hasMore == false { Task { await recommendations.markCandidateDrained(context: acquisition.context) } }
                 guard generation == token, !Task.isCancelled else { return }
             }
             posts.append(contentsOf: ranked)
-            if feedSort == "recommended" {
-                semanticTask?.cancel()
-                let semanticCandidates = candidates
-                semanticTask = Task(priority:.utility) { [weak self] in
-                    guard let self else { return }
-                    await recommendations.prepareSemantic(semanticCandidates, taste: tasteChoice(for: provider))
-                    guard !Task.isCancelled, generation == token else { return }
-                    await adaptRecommendationTail(token:token)
-                }
-            }
+            publishedNextPage = nextPage
+            FeedPerformance.emit("pagination", started: pageStarted, count: ranked.count)
+            scheduleIdleIntelligence()
             if !hasMore || (!(immersive || feedMediaOnly) && !ranked.isEmpty) || ((immersive || feedMediaOnly) && ranked.contains(where: \.isImmersiveMedia)) { break }
             if attempt == 4 { lastError = "No new posts in the last five pages. Tap Load more to continue." }
             }
             guard generation == token, !Task.isCancelled else { return }
-            await persistRecommendations()
         } catch { if token == generation, !Task.isCancelled { recordFeedError(error, provider: provider) } }
     }
 
     private func fetchCandidates(provider: Provider, parsed: ParsedQuery, context: String?, page: Int, sort: String, mediaOnly: Bool, forceBroad: Bool = false) async throws -> (page: PostPage, request: RecommendationEngine.CandidateRequest?) {
-        let acquisition: RecommendationEngine.CandidateRequest?
-        if let context { acquisition = await recommendations.candidateRequest(context: context, provider: provider, taste: tasteChoice(for: provider), excluded: exclusions + parsed.excluded, forceBroad: forceBroad) }
-        else { acquisition = nil }
+        var acquisition = context == nil || forceBroad ? nil : plannedAcquisition
+        plannedAcquisition = nil
+        // Source-of-candidates needs interests immediately, not only after idle.
+        if let context, acquisition == nil, !forceBroad {
+            acquisition = await recommendations.candidateRequest(context: context, provider: provider,
+                taste: tasteChoice(for: provider), excluded: exclusions + parsed.excluded)
+        }
+        if let context {
+            let key = acquisition?.context ?? context + "|query:"
+            acquisition = RecommendationEngine.CandidateRequest(context: key, query: acquisition?.query ?? parsed,
+                page: candidateCursors[key] ?? acquisition?.page ?? page, focused: acquisition?.focused ?? false)
+        }
+        let requestGeneration = generation
+        var query = acquisition?.query ?? parsed
+        query.excluded = RecommendationTagRules.queryExclusions(query.excluded + exclusions + tasteChoice(for: provider).notInto)
         do {
-            let result = try await api.posts(provider: provider, query: acquisition?.query ?? parsed, page: acquisition?.page ?? page, sort: sort, immersive: mediaOnly)
+            let result = try await api.posts(provider: provider, query: query, page: acquisition?.page ?? page, sort: sort, immersive: mediaOnly)
+            try Task.checkCancellation()
+            if generation == requestGeneration, let acquisition {
+                let next = (result.hasMore ?? !result.items.isEmpty) ? acquisition.page + 1 : 1
+                candidateCursors[acquisition.context] = next
+                Task { await recommendations.advanceCandidatePage(context: acquisition.context, nextPage: next) }
+            }
             return (result, acquisition)
         } catch {
             // A failed interest search must not remove a provider's working
@@ -387,8 +491,14 @@ final class AppStore: ObservableObject {
             if let failure = error as? APIError, case .providerStatus(_, let status) = failure, (400..<500).contains(status) { throw error }
             guard (error as? APIError)?.retryAfter == nil, let context, acquisition?.focused == true, !Task.isCancelled else { throw error }
             let key = context + "|query:"
-            let broad = RecommendationEngine.CandidateRequest(context: key, query: ParsedQuery(included: [], excluded: acquisition?.query.excluded ?? (exclusions + parsed.excluded)), page: await recommendations.candidatePage(context: key), focused: false)
+            let broad = RecommendationEngine.CandidateRequest(context: key, query: ParsedQuery(included: [], excluded: query.excluded), page: candidateCursors[key] ?? page, focused: false)
             let result = try await api.posts(provider: provider, query: broad.query, page: broad.page, sort: sort, immersive: mediaOnly)
+            try Task.checkCancellation()
+            if generation == requestGeneration {
+                let next = (result.hasMore ?? !result.items.isEmpty) ? broad.page + 1 : 1
+                candidateCursors[key] = next
+                Task { await recommendations.advanceCandidatePage(context: key, nextPage: next) }
+            }
             return (result, broad)
         }
     }
@@ -402,18 +512,32 @@ final class AppStore: ObservableObject {
             favorites[post.stableID] = post
             event = .like
         }
-        Task { await record(event, post: post) }
+        Task(priority: .utility) { await record(event, post: post) }
         local.snapshot.favoriteMeta[post.stableID] = FavoriteMeta(liked: favorites[post.stableID] != nil, updatedAt: timestamp())
         persistLocal(); queueSync()
     }
 
-    func less(_ post: Post) { posts.removeAll { $0.stableID == post.stableID }; Task { await record(.less, post: post) } }
+    func less(_ post: Post) {
+        // Immediate removal and feedback: no pixel inference on the feed path.
+        feedExclusions.viewed(post)
+        posts.removeAll { $0.stableID == post.stableID }
+        Task(priority: .utility) { await record(.less, post: post) }
+    }
 
     func download(_ post: Post) {
         downloads.download(post)
     }
 
-    func recordImpression(_ post: Post) { Task { await record(.impression, post: post) } }
+    func recordImpression(_ post: Post) {
+        if activeTab == 1 { protectedImmersiveIDs.insert(post.stableID) }
+        guard !feedExclusions.hasViewed(post.stableID) else { return }
+        feedExclusions.viewed(post)
+        Task(priority: .utility) { await record(.impression, post: post) }
+    }
+
+    func notePreviewFingerprint(_ post: Post, hash: UInt64?) {
+        if let hash { feedExclusions.registerFingerprint(post.stableID, hash: hash) }
+    }
     func recordQuickSkip(_ post: Post) { Task { await record(.quickSkip, post: post) } }
     func recordReplay(_ post: Post) { Task { await record(.replay, post: post) } }
     func recordComplete(_ post: Post) { Task { await record(.complete, post: post) } }
@@ -425,25 +549,42 @@ final class AppStore: ObservableObject {
         protectedHomePostIDs = keys
     }
 
+    private var tailRankTask: Task<Void, Never>?
+    private var immersivePlaybackID: String?
+    private var protectedImmersiveIDs: Set<String> = []
+    func protectImmersivePost(_ key: String?) {
+        guard activeTab == 1 else { return }
+        guard immersivePlaybackID != key else { return }
+        immersivePlaybackID = key
+        if let key { protectedImmersiveIDs.insert(key) }
+        let token = generation
+        tailRankTask?.cancel()
+        tailRankTask = Task(priority: .utility) { await adaptRecommendationTail(token: token) }
+    }
     func adaptRecommendationTail(token: UUID) async {
-        // A tab transition briefly has no active Home post. Ranking that whole
-        // array would move the saved scroll anchor before playback reactivates.
-        guard activeTab == 0, let active = inlinePlaybackID else { return }
+        let tab = activeTab
+        guard tab == 0 || tab == 1, feedSort == "recommended",
+              let active = tab == 1 ? immersivePlaybackID : inlinePlaybackID else { return }
         let source = posts
         guard let activeIndex = source.firstIndex(where: { $0.stableID == active }) else { return }
-        // Several cards can be visible, particularly on iPad. Moving a still
-        // below the active video can expose another clip and steal playback.
-        // Geometry remains owned by Home; this set only protects ranking.
-        let protected = protectedHomePostIDs.union([active])
+        let protected = (tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs).union([active])
         let prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
-        let tail = Array(source.dropFirst(prefixCount))
-        let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: Array(source.prefix(prefixCount)))
-        guard generation == token, activeTab == 0, feedSort == "recommended", posts.map(\.stableID) == source.map(\.stableID), inlinePlaybackID == active,
-              protectedHomePostIDs.isSubset(of: Set(source.prefix(prefixCount).map(\.stableID))) else { return }
-        posts = Array(source.prefix(prefixCount)) + ranked
+        let prefix = Array(source.prefix(prefixCount))
+        let tail = feedExclusions.filter(Array(source.dropFirst(prefixCount)), favorites: Array(favorites.values), existing: prefix, recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
+        let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: prefix, visualScores: visualScores)
+        let stillProtected = tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs
+        guard !Task.isCancelled, generation == token, activeTab == tab, feedSort == "recommended",
+              posts.map(\.stableID) == source.map(\.stableID),
+              (tab == 1 ? immersivePlaybackID : inlinePlaybackID) == active,
+              stillProtected.isSubset(of: Set(prefix.map(\.stableID))) else { return }
+        if ranked.map(\.stableID) != Array(source.dropFirst(prefixCount)).map(\.stableID) { posts = prefix + ranked }
     }
 
     func resetRecommendations() async {
+        cancelManualVisualRefresh()
+        stopActiveLearning()
+        idleTask?.cancel(); feedExclusions.restore([]); visualScores = [:]; candidateCursors = [:]
+        await visual.reset()
         await recommendations.reset()
         await persistRecommendations()
         resetStatus = "Learned history cleared on this device."
@@ -510,16 +651,251 @@ final class AppStore: ObservableObject {
     }
 
     private func record(_ event: RecommendationEvent, post: Post) async {
-        await recommendations.record(event, post: post)
-        await persistRecommendations()
-        if feedSort == "recommended" { await adaptRecommendationTail(token: generation) }
+        let envelope = FeedbackEnvelope(post: post, event: event)
+        plannedAcquisition = nil
+        await visual.stage(envelope, queueAnalysis: visualAnalysisEnabled)
+        await applyFeedback(envelope)
+        // A queued acquisition must not keep using the previous preference state.
+        plannedAcquisition = nil
+        persistenceTask?.cancel()
+        persistenceTask = Task(priority: .utility) { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            await self?.persistRecommendations()
+        }
+        scheduleIdleIntelligence()
+    }
+    private func recordSearch(provider: Provider, query: String) async {
+        guard !query.isEmpty else { return }
+        let post = Post(key: "search", id: "search", provider: provider.rawValue, tags: QueryParser.parse(query).included)
+        let envelope = FeedbackEnvelope(post: post, event: .download, query: query)
+        await visual.stage(envelope, queueAnalysis: false)
+        await applyFeedback(envelope); plannedAcquisition = nil; startActiveLearning()
+    }
+    private func applyFeedback(_ envelope: FeedbackEnvelope) async {
+        if let query = envelope.query, let provider = envelope.post.providerKey {
+            await recommendations.recordSearch(provider: provider, query: query, eventID: envelope.id)
+        } else { await recommendations.record(envelope.event, post: envelope.post, eventID: envelope.id) }
+        if await recommendationPersistence.save(await recommendationState()) { await visual.acknowledge(envelope.id) }
+    }
+    private func stopActiveLearning() {
+        activeLearningID = UUID(); activeLearningTask?.cancel(); activeLearningTask = nil
+    }
+    private func startActiveLearning() {
+        guard bootstrapped, activeLearningTask == nil, isForeground, !isManualVisualScanRunning, semanticPreparationID == nil else { return }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") && !ProcessInfo.processInfo.arguments.contains("--ui-testing-active-learning") { return }
+        #endif
+        let id = UUID(); activeLearningID = id
+        activeLearningTask = Task(priority: .background) { [weak self] in
+            guard let self else { return }
+            defer { if activeLearningID == id { activeLearningTask = nil } }
+            await recommendations.configureTaxonomy(await visual.metadataTaxonomy())
+            // Replaying a saved event is idempotent even if termination happened
+            // between saving the engine ledger and acknowledging its outbox.
+            for envelope in await visual.pendingFeedback() {
+                guard !Task.isCancelled else { return }; await applyFeedback(envelope)
+            }
+            UIDevice.current.isBatteryMonitoringEnabled = true
+            while !Task.isCancelled, isForeground, activeLearningID == id {
+                let battery = UIDevice.current.batteryLevel
+                let allowed = visualAnalysisEnabled && !isManualVisualScanRunning && !isLoading && memoryCooldown <= .now
+                    && (battery < 0 || battery >= 0.15) && !ProcessInfo.processInfo.isLowPowerModeEnabled
+                    && ProcessInfo.processInfo.thermalState.rawValue < 2
+                if allowed {
+                    let heavy = players.activeKey == nil && inlinePlaybackID == nil && activeTab != 1
+                        && fullScreenPlaybackID == nil && Date().timeIntervalSince(lastFeedMotion) >= 1.5
+                    let token = generation
+                    if await visual.processNext(heavy: heavy), !Task.isCancelled {
+                        let scores = await visual.scores(Array(posts.prefix(128)))
+                        let fingerprints = await visual.fingerprints()
+                        guard !Task.isCancelled else { return }
+                        if token == generation { visualScores = scores; feedExclusions.setFingerprints(fingerprints) }
+                        // Existing visibility/scroll guards protect every displayed card.
+                        await adaptRecommendationTail(token: token)
+                    }
+                }
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+        }
     }
 
+    func noteFeedMotion() {
+        if Date().timeIntervalSince(lastFeedMotion) >= 0.2 { stopActiveLearning(); startActiveLearning() }
+        lastFeedMotion = .now
+        idleTask?.cancel()
+        if visualScanStatus != nil, visualScanStatus != "Visual update paused while scrolling" { visualScanStatus = "Visual update paused while scrolling" }
+        guard motionTask == nil else { return }
+        motionTask = Task(priority: .background) { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                guard let self else { return }
+                if Date().timeIntervalSince(lastFeedMotion) >= 1.5 {
+                    motionTask = nil; scheduleIdleIntelligence(); return
+                }
+            }
+        }
+    }
+    private var semanticPreparationID: UUID?
+    private func scheduleIdleIntelligence() {
+        startActiveLearning()
+        idleTask?.cancel()
+        guard !isManualVisualScanRunning else { return }
+        idleTask = Task(priority: .background) { [weak self] in
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            guard let self else { return }
+            let token = generation
+            defer { if generation == token, !Task.isCancelled { visualScanStatus = nil } }
+            guard Date().timeIntervalSince(lastFeedMotion) >= 1.5 else { return }
+            if let context = candidateContext {
+                let request = await recommendations.candidateRequest(context: context, provider: selectedProvider,
+                    taste: tasteChoice(for: selectedProvider), excluded: exclusions + QueryParser.parse(queryText).excluded)
+                guard !Task.isCancelled, generation == token else { return }
+                plannedAcquisition = request
+                visualDiscoveryRound += 1
+                let queries = await visual.discoveryQueries(provider: selectedProvider)
+                if visualDiscoveryRound % 3 == 1, !queries.isEmpty {
+                    let terms = queries[(visualDiscoveryRound / 3) % queries.count]
+                    let key = context + "|query:" + terms.joined(separator: " ")
+                    plannedAcquisition = RecommendationEngine.CandidateRequest(context: key,
+                        query: ParsedQuery(included: terms, excluded: request.query.excluded), page: candidateCursors[key] ?? 1, focused: true)
+                }
+            }
+            visualScores = await visual.scores(posts)
+            guard !Task.isCancelled, generation == token else { return }
+            await adaptRecommendationTail(token: token)
+            let history = await visual.historicalQueue(Array(favorites.values))
+            var offset = 0
+            var scannedCachedFeed = false
+            repeat {
+                guard !Task.isCancelled, generation == token else { return }
+                let idle = VisualAnalysisService.resourcesAllowAnalysis(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
+                    thermal: ProcessInfo.processInfo.thermalState.rawValue,
+                    playback: players.activeKey != nil || inlinePlaybackID != nil || activeTab == 1 || fullScreenPlaybackID != nil || !isForeground, loading: isLoading)
+                if idle {
+                    if visualAnalysisEnabled { visualScanStatus = "Checking visual taste Ãƒâ€šÃ‚· \(offset)/\(history.count) favorites" }
+                    if !scannedCachedFeed {
+                        for post in posts.prefix(4) {
+                            guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
+                            if visualAnalysisEnabled { _ = await visual.enqueue(post, priority: 1) }
+                        }
+                        scannedCachedFeed = true
+                    }
+                    for post in history.dropFirst(offset).prefix(4) {
+                        guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
+                        await visual.record(.like, post: post, queueAnalysis: false)
+                        if visualAnalysisEnabled, !(await visual.enqueue(post, priority: 1)) { break }
+                        offset += 1
+                    }
+                }
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            } while offset < history.count
+            guard !Task.isCancelled, generation == token else { return }
+            feedExclusions.setFingerprints(await visual.fingerprints())
+            visualScores = await visual.scores(posts)
+            // Prepare future candidate acquisition in the background. The feed never waits for it.
+            if plannedAcquisition == nil, let context = candidateContext {
+                let provider = selectedProvider
+                let request = await recommendations.candidateRequest(context: context, provider: provider,
+                    taste: tasteChoice(for: provider), excluded: exclusions + QueryParser.parse(queryText).excluded)
+                guard !Task.isCancelled, generation == token, !isLoading else { return }
+                plannedAcquisition = request
+            }
+            guard players.activeKey == nil, isForeground, !isLoading else { return }
+            let battery = UIDevice.current.batteryLevel
+            guard battery < 0 || battery >= 0.15 else { return }
+            let preparation = UUID(); semanticPreparationID = preparation
+            stopActiveLearning()
+            defer {
+                if semanticPreparationID == preparation { semanticPreparationID = nil; startActiveLearning() }
+            }
+            await visual.waitForWorker()
+            guard !Task.isCancelled, generation == token, !isManualVisualScanRunning else { return }
+            await visual.releaseModels()
+            await recommendations.prepareSemantic(Array(posts.prefix(8)), taste: tasteChoice(for: selectedProvider))
+            await recommendations.releaseSemanticModel()
+            guard !Task.isCancelled, generation == token else { return }
+            await persistRecommendations()
+            await adaptRecommendationTail(token: token)
+        }
+    }
+
+    /// Explicit user action, independent of the automatic idle-learning toggle.
+    /// Existing scans are reused; like ledgers are never reset or counted twice.
+    func startManualVisualRefresh() {
+        guard !isManualVisualScanRunning else { return }
+        idleTask?.cancel(); stopActiveLearning()
+        let id = UUID(); manualVisualID = id
+        manualVisualProgress = VisualRefreshProgress(completed: 0, total: 0, status: "Checking for new posts…", running: true)
+        players.pauseAll()
+        manualVisualTask = Task(priority: .background) { [weak self] in
+            guard let self else { return }
+            defer { if manualVisualID == id { manualVisualTask = nil } }
+            // Drain a cancelled text prediction before starting a visual pass.
+            await recommendations.releaseSemanticModel()
+            await visual.waitForWorker()
+            let history = await visual.historicalQueue(Array(favorites.values))
+            guard !Task.isCancelled, manualVisualID == id else { return }
+            manualVisualProgress = VisualRefreshProgress(completed: 0, total: history.count, status: "Scanning new posts…", running: true)
+            var checked = 0
+            var lastProgress = Date.distantPast
+            for post in history {
+                guard !Task.isCancelled, manualVisualID == id else { return }
+                while !VisualAnalysisService.resourcesAllowAnalysis(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
+                    thermal: ProcessInfo.processInfo.thermalState.rawValue,
+                    playback: players.activeKey != nil || !isForeground, loading: isLoading) {
+                    let paused = VisualRefreshProgress(completed: checked, total: history.count,
+                        status: "Paused for playback, loading or power conditions", running: true)
+                    if manualVisualProgress != paused { manualVisualProgress = paused }
+                    do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                    guard !Task.isCancelled, manualVisualID == id else { return }
+                }
+                await visual.analyzeFavorite(post, useVision: true)
+                guard !Task.isCancelled, manualVisualID == id else { return }
+                checked += 1
+                if Date().timeIntervalSince(lastProgress) >= 0.2 || checked == history.count {
+                    manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
+                        status: "Checking favorites Ãƒâ€šÃ‚· \(checked)/\(history.count)", running: true)
+                    lastProgress = .now
+                }
+                await Task.yield()
+            }
+            guard !Task.isCancelled, manualVisualID == id else { return }
+            let fingerprints = await visual.fingerprints()
+            let scores = await visual.scores(posts)
+            guard !Task.isCancelled, manualVisualID == id else { return }
+            feedExclusions.setFingerprints(fingerprints); visualScores = scores
+            await adaptRecommendationTail(token: feedRevision)
+            guard !Task.isCancelled, manualVisualID == id else { return }
+            manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
+                status: history.isEmpty ? "No new posts to scan Ãƒâ€šÃ‚· visual taste is up to date" : "Visual taste updated Ãƒâ€šÃ‚· \(checked) new posts analyzed", running: false)
+            visualScanStatus = nil
+            scheduleIdleIntelligence()
+        }
+    }
+    func cancelManualVisualRefresh() {
+        guard isManualVisualScanRunning else { return }
+        manualVisualID = UUID(); manualVisualTask?.cancel(); manualVisualTask = nil
+        if var progress = manualVisualProgress {
+            progress.running = false; progress.status = "Update stopped Ãƒâ€šÃ‚· \(progress.completed)/\(progress.total) checked"
+            manualVisualProgress = progress
+        }
+    }
+
+    func restoreRecommendationState(_ state: RecommendationState) async {
+        await recommendations.load(state)
+        feedExclusions.restore(state.profiles.values.flatMap(\.recentSeen))
+        candidateCursors = state.candidatePages
+    }
+    func recommendationState() async -> RecommendationState {
+        var state = await recommendations.snapshot()
+        state.candidatePages = candidateCursors
+        return state
+    }
     private func persistRecommendations() async {
-        await recommendationPersistence.save(await recommendations.snapshot())
+        await recommendationPersistence.save(await recommendationState())
         let provider = selectedProvider; let token = generation
         let interests = await recommendations.positiveTerms(provider: provider, taste: tasteChoice(for: provider))
-        if generation == token, selectedProvider == provider { learnedInterests = interests }
+        if generation == token, selectedProvider == provider, learnedInterests != interests { learnedInterests = interests }
     }
 
     func setTaste(into: [String], notInto: [String]) {
@@ -565,7 +941,7 @@ final class AppStore: ObservableObject {
         guard !isSyncing else { throw APIError.server("Sync is already running. Please wait.") }
         let identity = syncID
         _ = try QuicktickSyncCrypto.parse(identity)
-        isSyncing = true; syncFailed = false; syncStatus = "SyncingÃ¢â‚¬Â¦"
+        isSyncing = true; syncFailed = false; syncStatus = "SyncingÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦"
         let flight = Task { @MainActor in
             let (remote, _) = try await self.sync.pull(syncID: identity)
             try Task.checkCancellation()

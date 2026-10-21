@@ -23,8 +23,15 @@ private struct DownloadContent: View {
                         if let post = record.offlinePost {
                             PostCardView(post: post, available: CGSize(width: min(680, geometry.size.width - 32), height: geometry.size.height), playbackTab: 3, offline: true, onDelete: { manager.delete(record) })
                                 .frame(maxWidth: .infinity)
-                            Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                .accessibilityIdentifier("download-size-\(record.key)")
+                            HStack {
+                                Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                    .accessibilityIdentifier("download-size-\(record.key)")
+                                Spacer()
+                                if let url = record.exportURL {
+                                    ShareLink(item: url) { Label("Export", systemImage: "square.and.arrow.up") }
+                                        .accessibilityIdentifier("export-download-\(record.key)")
+                                }
+                            }
                         } else {
                         VStack(alignment: .leading) {
                             HStack {

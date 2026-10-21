@@ -12,6 +12,87 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(nativeShare.isHittable)
         let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Native recommendation profile sharing"; capture.lifetime = .keepAlways; add(capture)
     }
+    @MainActor func testManualVisualRefreshShowsProgressAndLoopsDownloadedGIF() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-download-images", "--ui-testing-download-gif"]
+        app.launch()
+        app.buttons["tab-Immersive"].tap()
+        let like = app.buttons["immersive-Like"]
+        XCTAssertTrue(like.waitForExistence(timeout: 10))
+        if like.value as? String != "Liked" { like.tap() }
+        app.buttons["open-settings"].tap()
+        let refresh = app.buttons["force-visual-refresh"]
+        for _ in 0..<12 { if refresh.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(refresh.isHittable); refresh.tap()
+        let progress = app.descendants(matching: .any).matching(identifier: "manual-visual-progress").firstMatch
+        XCTAssertTrue(progress.waitForExistence(timeout: 10))
+        let gif = app.descendants(matching: .any).matching(identifier: "visual-refresh-gif").firstMatch
+        for _ in 0..<3 { if gif.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(gif.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "value == %@", "Looping"), evaluatedWith: gif)
+        waitForExpectations(timeout: 15)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Manual visual refresh progress and local GIF loop"; capture.lifetime = .keepAlways; add(capture)
+    }
+    @MainActor func testActiveLearningKeepsPlaybackAndDislikeResponsive() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-active-learning", "--measure-performance"]
+        let start = Date(); app.launch()
+        let video = app.buttons["inline-play-test:video"]
+        XCTAssertTrue(video.waitForExistence(timeout: 10))
+        print("QUICKTICK_METRIC simulator_fixture_launch_to_first_post_ms=\(Date().timeIntervalSince(start) * 1000)")
+        expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: video)
+        waitForExpectations(timeout: 15)
+        for _ in 0..<3 { app.swipeUp(); app.swipeDown() }
+        app.buttons["tab-Home"].tap()
+        let dislike = app.buttons["dislike-test:video"]
+        XCTAssertTrue(dislike.waitForExistence(timeout: 10)); dislike.tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dislike)
+        waitForExpectations(timeout: 5)
+        XCTAssertFalse(app.buttons["Close full image"].exists)
+        XCTAssertTrue(app.buttons["dislike-test:image"].exists)
+    }
+    @MainActor func testHomeDislikeCannotOpenTheLowerImage() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        // A tall image directly below this video extends beyond its clipped
+        // drawing bounds. Tap the actual coordinate, as a finger would.
+        let dislike = app.buttons["dislike-test:video"]
+        XCTAssertTrue(dislike.waitForExistence(timeout: 10))
+        XCTAssertTrue(dislike.isHittable)
+        dislike.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dislike)
+        waitForExpectations(timeout: 5)
+        XCTAssertFalse(app.buttons["Close full image"].exists)
+        XCTAssertTrue(app.buttons["dislike-test:image"].exists)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Home dislike removes upper post without opening lower image"
+        capture.lifetime = .keepAlways; add(capture)
+    }
+    @MainActor func testFavoritesImmersiveAndDownloadExport() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]
+        app.launch()
+        app.buttons["tab-Immersive"].tap()
+        let like = app.buttons["immersive-Like"]
+        XCTAssertTrue(like.waitForExistence(timeout: 10))
+        if like.value as? String != "Liked" { like.tap() }
+        app.buttons["tab-Favorites"].tap()
+        let immersive = app.buttons["favorites-immersive"]
+        XCTAssertTrue(immersive.waitForExistence(timeout: 10))
+        immersive.tap()
+        XCTAssertTrue(app.otherElements["immersive-media-test:video"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Back"].exists)
+        app.buttons["Back"].tap()
+        app.buttons["tab-Downloads"].tap()
+        let export = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "export-download-")).firstMatch
+        for _ in 0..<6 {
+            if export.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(export.isHittable)
+        export.tap()
+        XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 10) || app.buttons["Save to Files"].exists || app.otherElements["ActivityListView"].exists)
+    }
     override func setUp() async throws {
         continueAfterFailure = false
         await MainActor.run { XCUIDevice.shared.orientation = .portrait }
@@ -84,10 +165,20 @@ final class NavigationTests: XCTestCase {
         if keyboardIntroduction.waitForExistence(timeout: 2) { keyboardIntroduction.tap() }
         expectation(for: NSPredicate(format: "value == %@", "engineering"), evaluatedWith: fields.firstMatch)
         waitForExpectations(timeout: 10)
-        app.buttons["Search"].firstMatch.tap()
+        app.buttons["apply-search-filters"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fields.firstMatch)
+        waitForExpectations(timeout: 10)
+        app.buttons["Toggle search"].tap()
         XCTAssertTrue(fields.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(fields.count, 1)
-        XCTAssertEqual(fields.firstMatch.value as? String, "engineering")
+        XCTAssertTrue(app.buttons["Remove engineering"].exists)
+        app.buttons["Exclude engineering"].tap()
+        XCTAssertTrue(app.buttons["Include engineering"].exists)
+        app.buttons["Include engineering"].tap()
+        XCTAssertTrue(app.buttons["Exclude engineering"].exists)
+        app.buttons["close-search"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fields.firstMatch)
+        waitForExpectations(timeout: 10)
     }
     @MainActor func testDownloadedImagesUseNormalFeedAndCloseFullComic() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]; app.launch()

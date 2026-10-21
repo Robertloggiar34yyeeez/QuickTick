@@ -44,8 +44,10 @@ final class RecommendationTests: XCTestCase {
     }
     func testBoundedLookAheadKeepsAllUniqueAllowedPostsAndPreferencesFirst() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
-        let posts = (0..<240).map { index in
-            Post(key: "rule34:\(index)", id: String(index), provider: "rule34", tags: [index == 239 ? "engineering" : (index == 238 ? "blocked" : "topic_\(index % 30)")])
+        var posts: [Post] = []
+        for index in 0..<240 {
+            let tag: String = index == 239 ? "engineering" : (index == 238 ? "blocked" : "topic_\(index % 30)")
+            posts.append(Post(key: "rule34:\(index)", id: String(index), provider: "rule34", tags: [tag]))
         }
         let start = Date()
         let ranked = await engine.rank(posts + [posts[0]], taste: TasteChoice(done: true, into: ["engineering"], notInto: ["blocked"]), recent: [])
@@ -140,5 +142,14 @@ final class RecommendationTests: XCTestCase {
         let scores = [await engine.gorseItemID(blocked): 1.0]
         let ranked = await engine.rank([blocked], taste: TasteChoice(done: true, into: [], notInto: ["blocked_theme"]), recent: [], collaborativeScores: scores)
         XCTAssertTrue(ranked.isEmpty)
+    }
+
+    func testSearchControlsDoNotBecomeTasteInterests() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await engine.recordSearch(provider: .rule34, query: "sort:score:desc engineering -blocked rating:explicit score:>=50")
+        let state = await engine.snapshot()
+        XCTAssertEqual(state.profiles["rule34"]?.recentQueries.last, "engineering -blocked")
+        XCTAssertGreaterThan(state.profiles["rule34"]?.terms["engineering"] ?? 0, 0)
+        for term in ["sort", "score", "desc", "rating", "explicit"] { XCTAssertNil(state.profiles["rule34"]?.terms[term]) }
     }
 }

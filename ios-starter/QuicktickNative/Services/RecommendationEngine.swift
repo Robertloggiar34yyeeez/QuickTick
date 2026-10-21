@@ -3,7 +3,10 @@ import Foundation
 actor RecommendationEngine {
     private(set) var state = RecommendationState()
     let semantic: SemanticRecommender
-    init(semantic: SemanticRecommender = SemanticRecommender()) { self.semantic = semantic }
+    private let contextualRanking: Bool
+    init(semantic: SemanticRecommender = SemanticRecommender(), contextualRanking: Bool = true) {
+        self.semantic = semantic; self.contextualRanking = contextualRanking
+    }
     struct DebugScore: Sendable {
         let semantic: SemanticScore
         let tags: Double
@@ -15,6 +18,8 @@ actor RecommendationEngine {
     private(set) var debugScores: [String: DebugScore] = [:]
     private(set) var rankLatencyMs = 0.0
     private var drainedCandidateQueries: [String: Date] = [:]
+    private var taxonomy: VisualTagTaxonomy?
+    func configureTaxonomy(_ value: VisualTagTaxonomy?) { taxonomy = value }
     func markCandidateDrained(context: String) {
         drainedCandidateQueries = drainedCandidateQueries.filter { $0.value > .now }
         if drainedCandidateQueries.count < 96 || drainedCandidateQueries[context] != nil {
@@ -63,9 +68,9 @@ actor RecommendationEngine {
     // requests rotate across strong interests; the fourth browses broadly.
     // Each query owns its cursor in the existing persisted recommendation state.
     func candidateRequest(context: String, provider: Provider, taste: TasteChoice, excluded: [String], forceBroad: Bool = false) -> CandidateRequest {
-        let queryExclusions = Array(Set(excluded + tasteTokens(source: provider.rawValue, values: taste.notInto))).sorted()
+        let queryExclusions = RecommendationTagRules.queryExclusions(excluded + tasteTokens(source: provider.rawValue, values: taste.notInto))
         let blocked = Set(queryExclusions.map { $0.lowercased() })
-        let explicit = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }.sorted()
+        let explicit = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }
         // Keep learned acquisition separate: adding many explicit tags must not
         // evict the established profile from candidate discovery.
         let learned = positiveTermEntries(source: provider.rawValue, taste: TasteChoice(), limit: 8)
@@ -78,6 +83,24 @@ actor RecommendationEngine {
         if !focused { terms = [] }
         else if !explicit.isEmpty && (learned.isEmpty || round % 4 == 0) { terms = [explicit[(round / 4 + (learned.isEmpty ? round % 4 : 0)) % explicit.count]] }
         else { terms = [learned[(round / 4 * 2 + max(0, round % 4 - 1)) % learned.count]] }
+        if focused, explicit.isEmpty || round % 4 != 0 {
+            let queries = state.contextualProfiles.filter { $0.key.hasPrefix(provider.rawValue + "|") }
+                .sorted { $0.key < $1.key }.flatMap { $0.value.discoveryQueries() }
+                .filter { !$0.contains(where: { blocked.contains(RecommendationTagRules.canonical($0)) }) }
+            if !queries.isEmpty { terms = queries[round % queries.count] }
+        }
+        // Prefer co-liked character/artist + medium instead of isolated generic 3D.
+        if focused, provider == .rule34, let anchor = terms.first {
+            let styles: Set<String> = ["2d", "3d", "2d_art", "3d_art", "3dcg",
+                "3d_animation", "animation", "animated", "watercolor", "sketch", "pixel_art"]
+            let related = profile(for: provider.rawValue).related
+            if let partner = (explicit + learned).first(where: { term in
+                let complements = term != anchor && styles.contains(anchor) != styles.contains(term)
+                let chosen = explicit.contains(anchor) && explicit.contains(term)
+                let likedTogether = (related[anchor]?[term] ?? related[term]?[anchor] ?? 0) >= 0.6
+                return complements && (chosen || likedTogether)
+            }) { terms.append(partner) }
+        }
         if focused, let deadline = drainedCandidateQueries[context + "|query:" + terms.joined(separator: " ")], deadline > .now {
             focused = false; terms = []
         }
@@ -108,7 +131,12 @@ actor RecommendationEngine {
         let source = post.provider.lowercased()
         let raw = (post.tags + [post.caption, post.category].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         if source == Provider.rule34.rawValue {
-            return Array(Set(raw.map { $0.lowercased() })).sorted().prefix(36).map { $0 }
+            let values = raw.flatMap { value in
+                let tag = value.lowercased()
+                let canonical = RecommendationTagRules.canonical(tag)
+                return canonical == tag ? [tag] : [tag, canonical]
+            }
+            return Array(Set(values)).sorted().prefix(48).map { $0 }
         }
         var out: [String] = []
         for value in raw.prefix(24) {
@@ -149,9 +177,18 @@ actor RecommendationEngine {
         return Array(result.prefix(28))
     }
 
-    func recordSearch(provider: Provider, query: String) {
-        let parts = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    func recordSearch(provider: Provider, query: String, eventID: String? = nil) {
+        if let eventID {
+            guard !state.feedbackLedger.contains(eventID) else { return }
+            state.feedbackLedger.append(eventID); state.feedbackLedger = Array(state.feedbackLedger.suffix(2048))
+        }
+        let parts = SearchFilters.split(query).tags.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         guard !parts.isEmpty else { return }
+        let searchPost = Post(key: "search", id: "search", provider: provider.rawValue,
+            tags: parts.filter { !$0.hasPrefix("-") && !$0.hasPrefix("sort:") && !$0.hasPrefix("score:") && !$0.hasPrefix("rating:") }, type: "image")
+        if let features = VisualFeatures.metadata(searchPost, taxonomy: taxonomy) {
+            state.contextualProfiles[TasteConcepts.profileKey(searchPost), default: ContextTasteProfile()].record(.download, features: features)
+        }
         var profile = profile(for: provider.rawValue)
         let positives = tasteTokens(source: provider.rawValue, values: parts.filter { !$0.hasPrefix("-") }.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "~")) })
         let negatives = tasteTokens(source: provider.rawValue, values: parts.filter { $0.hasPrefix("-") }.map { String($0.dropFirst()) })
@@ -170,12 +207,37 @@ actor RecommendationEngine {
             profile.recentQueries = Array(profile.recentQueries.suffix(maxQueries))
         }
         state.profiles[provider.rawValue] = normalized(profile)
+        let searchKey = TasteConcepts.profileKey(searchPost)
+        var scoped = state.scopedProfiles[searchKey] ?? RecommendationProfile()
+        applyTermDelta(&scoped, terms: positives, delta: 8); applyTermDelta(&scoped, terms: negatives, delta: -5)
+        recordEvidence(&scoped, terms: positives, positive: 0.7, negative: 0, search: 1)
+        recordEvidence(&scoped, terms: negatives, positive: 0, negative: 0.6, search: 0)
+        state.scopedProfiles[searchKey] = normalized(scoped)
     }
 
-    func record(_ event: RecommendationEvent, post: Post) async {
-        await semantic.record(event, post: post)
+    func record(_ event: RecommendationEvent, post: Post, eventID: String? = nil) async {
+        if let eventID {
+            guard !state.feedbackLedger.contains(eventID) else { return }
+            state.feedbackLedger.append(eventID); state.feedbackLedger = Array(state.feedbackLedger.suffix(2048))
+        }
+        if let features = VisualFeatures.metadata(post, taxonomy: taxonomy) {
+            state.contextualProfiles[TasteConcepts.profileKey(post), default: ContextTasteProfile()].record(event, features: features)
+        }
+        var evidencePost = post
+        if [.less, .unlike, .quickSkip].contains(event), let features = VisualFeatures.metadata(post, taxonomy: taxonomy) {
+            // Ambiguous negative feedback describes this presentation first.
+            evidencePost.tags.removeAll { tag in
+                let normalized = tag.lowercased().replacingOccurrences(of: "-", with: "_")
+                let canonical = TasteConcepts.canonical(normalized)
+                return ["character:", "performer:", "artist:", "franchise:", "uploader:"].contains(where: normalized.hasPrefix)
+                    || features.subjects.contains(canonical) || (features.artists ?? []).contains(canonical)
+                    || (features.franchises ?? []).contains(canonical)
+            }
+            evidencePost.caption = nil; evidencePost.category = nil
+            evidencePost.creator = nil
+        }
         let source = post.provider.lowercased()
-        let signalTerms = terms(for: post)
+        let signalTerms = terms(for: evidencePost)
         var profile = profile(for: source)
         let negativeShare = 1 / sqrt(Double(max(1, min(signalTerms.count, 12))))
         var delta = 0.0
@@ -195,6 +257,8 @@ actor RecommendationEngine {
             recordEvidence(&profile, terms: signalTerms, positive: 0, negative: 0.8 * negativeShare, search: 0)
         case .less:
             profile.stats.less += 1; delta = -10; negativeThemeDelta = 6
+            profile.recentSeen.removeAll { $0 == post.stableID }; profile.recentSeen.append(post.stableID)
+            profile.recentSeen = Array(profile.recentSeen.suffix(maxSeen))
             recordEvidence(&profile, terms: signalTerms, positive: 0, negative: 1.35 * negativeShare, search: 0)
         case .download:
             profile.stats.downloads += 1; delta = 16; negativeThemeDelta = -6
@@ -219,8 +283,18 @@ actor RecommendationEngine {
         }
 
         if delta != 0 { applyTermDelta(&profile, terms: signalTerms, delta: delta) }
-        if negativeThemeDelta != 0 { adjustNegativeThemes(&profile, post: post, delta: negativeThemeDelta) }
+        if negativeThemeDelta != 0 { adjustNegativeThemes(&profile, post: evidencePost, delta: negativeThemeDelta) }
         state.profiles[source] = normalized(profile)
+        let key = TasteConcepts.profileKey(post)
+        var scoped = state.scopedProfiles[key] ?? RecommendationProfile()
+        if delta != 0 { applyTermDelta(&scoped, terms: signalTerms, delta: delta) }
+        if negativeThemeDelta != 0 { adjustNegativeThemes(&scoped, post: evidencePost, delta: negativeThemeDelta) }
+        recordEvidence(&scoped, terms: signalTerms, positive: max(0, delta / 14), negative: max(0, -delta / 10) * negativeShare, search: 0)
+        if event == .impression || event == .less {
+            scoped.recentSeen.removeAll { $0 == post.stableID }; scoped.recentSeen.append(post.stableID)
+        }
+        state.scopedProfiles[key] = normalized(scoped)
+        await semantic.record(event, post: evidencePost, eventID: eventID)
     }
 
     func positiveTerms(provider: Provider, taste: TasteChoice, limit: Int = 16) -> [String] {
@@ -246,42 +320,26 @@ actor RecommendationEngine {
     }
 
     func isHardDisliked(_ post: Post, taste: TasteChoice) -> Bool {
-        let source = post.provider.lowercased()
-        let profile = profile(for: source)
-        let postTerms = terms(for: post)
-        let blockedTaste = Set(tasteTokens(source: source, values: taste.notInto))
-        if postTerms.contains(where: blockedTaste.contains) { return true }
-
-        for term in postTerms {
-            let evidence = profile.termEvidence[term] ?? RecommendationTermEvidence()
-            if evidence.negative >= 1.8,
-               evidence.negative > evidence.positive * 1.15,
-               effectiveTermScore(source: source, term: term, taste: taste) <= -4 { return true }
-        }
-
-        var strongThemeHits = 0
-        for theme in themeSignatures(for: post) {
-            let value = profile.negativeThemes[theme] ?? 0
-            if value >= 6 { strongThemeHits += 1 }
-            if value >= 10 { return true }
-        }
-        return strongThemeHits >= 2
+        RecommendationTagRules.rejects(post, exclusions: taste.notInto)
     }
 
     func score(_ post: Post, taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:]) -> Double {
         let source = post.provider.lowercased()
-        let p = profile(for: source)
+        let scopedKey = contextualRanking ? TasteConcepts.profileKey(post) : source
+        let p = contextualRanking ? (state.scopedProfiles[scopedKey] ?? RecommendationProfile()) : profile(for: source)
         let postTerms = terms(for: post)
         let into = Set(tasteTokens(source: source, values: taste.into))
         let notInto = Set(tasteTokens(source: source, values: taste.notInto))
+        if RecommendationTagRules.rejects(post, exclusions: taste.notInto) { return -1_000 }
         var score = log1p(max(0, post.score)) * 0.07
         let collaborative = max(0, min(1, collaborativeScores[gorseItemID(post)] ?? 0))
         score += collaborative * 18
 
-        let topPositive = positiveTermEntries(source: source, taste: taste, limit: 8)
+        let topPositive = positiveTermEntries(source: source, taste: taste, limit: 8, learned: p)
         for term in postTerms {
-            let own = effectiveTermScore(source: source, term: term, taste: taste)
-            score += own * 1.7
+            let own = effectiveTermScore(source: source, term: term, taste: taste, learned: p)
+            let genericMedium = ["2d", "3d", "3d_animation", "animation", "animated"].contains(RecommendationTagRules.canonical(term))
+            score += own * (contextualRanking && genericMedium && own > 0 && !into.contains(term) ? 0.15 : 1.7)
             if into.contains(term) { score += 8 }
             if notInto.contains(term) { score -= 22 }
             if abs(own) < 0.05 {
@@ -292,17 +350,62 @@ actor RecommendationEngine {
             }
         }
 
+        // Identity+style co-occurrence beats an isolated generic style tag.
+        let styles: Set<String> = ["2d", "3d", "2d_art", "3d_art", "3dcg",
+            "3d_animation", "animation", "animated", "watercolor", "sketch", "pixel_art"]
+        let matched = Set(postTerms)
+        for anchor in positiveTermEntries(source: source, taste: taste, limit: 8, learned: p).map(\.0) where matched.contains(anchor) {
+            if let edges = p.related[anchor] {
+                let strength = edges.filter {
+                    matched.contains($0.key) && styles.contains(anchor) != styles.contains($0.key)
+                }.map(\.value).max() ?? 0
+                score += min(7.5, strength * 2)
+            }
+        }
         if p.recentSeen.contains(post.stableID) { score -= 1_000 }
         score -= negativeThemePenalty(profile: p, post: post)
-        let negativeHits = postTerms.filter { effectiveTermScore(source: source, term: $0, taste: taste) < -0.5 }.count
+        let negativeHits = postTerms.filter { effectiveTermScore(source: source, term: $0, taste: taste, learned: p) < -0.5 }.count
         score -= Double(negativeHits) * 24
         let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
         score -= min(6, Double(postTerms.filter(recentTerms.contains).count) * 0.42)
+        if contextualRanking, let context = state.contextualProfiles[scopedKey], let features = VisualFeatures.metadata(post, taxonomy: taxonomy) {
+            score += context.score(features) * 4
+        }
         return score
     }
 
-    func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
+    /// Cheap metadata ranking before publication: no ML, images, or network access.
+    /// An untouched profile retains the provider's original order.
+    func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post]) -> [Post] {
+        let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(128, candidates.count)) }
+        guard let first = candidates.first else { return [] }
+        let p = profile(for: first.provider.lowercased())
+        let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty
+            || !p.terms.isEmpty || !p.negativeThemes.isEmpty || !p.termEvidence.isEmpty
+        guard hasSignal else { return candidates }
+        var scored: [(post: Post, value: Double, offset: Int)] = []
+        for (offset, post) in candidates.prefix(128).enumerated() {
+            guard !isHardDisliked(post, taste: taste) else { continue }
+            scored.append((post: post, value: score(post, taste: taste, recent: recent), offset: offset))
+        }
+        scored.sort { $0.value == $1.value ? $0.offset < $1.offset : $0.value > $1.value }
+        return scored.map(\.post) + candidates.dropFirst(128).filter { !isHardDisliked($0, taste: taste) }
+    }
+
+    func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], visualScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
+        guard !Task.isCancelled else { return candidates }
         let start = Date(); defer { rankLatencyMs = Date().timeIntervalSince(start) * 1000 }
+        // Cheap bounded shortlist before quadratic diversity selection. Strong
+        // candidates beyond the first page still get a chance to surface.
+        var scored: [(offset: Int, post: Post, value: Double)] = []
+        for (offset, post) in candidates.prefix(512).enumerated() {
+            scored.append((offset, post, score(post, taste: taste, recent: recent)))
+        }
+        scored.sort { a, b in a.value == b.value ? a.offset < b.offset : a.value > b.value }
+        let shortlist: [Post] = scored.prefix(128).map { $0.post }
+        let selected = Set(shortlist.map(\.stableID))
+        let overflow = candidates.filter { !selected.contains($0.stableID) }
+        let candidates = shortlist
         let semanticScores = await semantic.scores(candidates, taste: taste)
         let vectors = await semantic.diversityVectors(candidates + recent)
         let weights = semantic.weights
@@ -313,15 +416,17 @@ actor RecommendationEngine {
         // Tokenize once, rather than for every comparison in the diversity loop.
         let termCache = Dictionary((candidates + recent).map { ($0.stableID, terms(for: $0)) }, uniquingKeysWith: { first, _ in first })
         var unique = Set<String>()
-        var pool = candidates.filter { unique.insert($0.stableID).inserted && !isHardDisliked($0, taste: taste) }
-            .enumerated()
-             .map { entry in
-                let raw = score(entry.element, taste: taste, recent: recent, collaborativeScores: collaborativeScores)
-                let seen = profile(for: entry.element.provider.lowercased()).recentSeen.contains(entry.element.stableID) ? -weights.seen : 0
-                let tags = tanh((raw - (seen == 0 ? 0 : -1000)) / 35) * weights.tag
-                let semantic = semanticScores[entry.element.stableID] ?? SemanticScore()
-                return (post: entry.element, base: tags + semantic.total(weights) + seen - Double(entry.offset) * 0.002, tags: tags, seen: seen)
-            }
+        var pool: [(post: Post, base: Double, tags: Double, seen: Double)] = []
+        for (offset, post) in candidates.enumerated() {
+            guard unique.insert(post.stableID).inserted, !isHardDisliked(post, taste: taste) else { continue }
+            let raw = score(post, taste: taste, recent: recent, collaborativeScores: collaborativeScores)
+            let seen: Double = profile(for: post.provider.lowercased()).recentSeen.contains(post.stableID) ? -weights.seen : 0
+            let tagScore = tanh((raw - (seen == 0 ? 0 : -1000)) / 35) * weights.tag
+            let semanticScore = semanticScores[post.stableID] ?? SemanticScore()
+            let visualScore = max(-4, min(4, visualScores[post.stableID] ?? 0))
+            let base = tagScore + semanticScore.total(weights) + visualScore + seen - Double(offset) * 0.002
+            pool.append((post: post, base: base, tags: tagScore, seen: seen))
+        }
         var chosen: [Post] = []
         var similarityCache: [String: [String: Double]] = [:]
         // Bound look-ahead ranking as the endless feed grows. Hard filters still
@@ -329,6 +434,7 @@ actor RecommendationEngine {
         let target = min(limit ?? 48, pool.count)
 
         while chosen.count < target, !pool.isEmpty {
+            guard !Task.isCancelled else { return candidates }
             let context = Array((recent + chosen).suffix(8))
             let contextTerms = Set(context.flatMap { termCache[$0.stableID] ?? [] })
             let lastTerms = Set(context.last.flatMap { termCache[$0.stableID] } ?? [])
@@ -364,7 +470,8 @@ actor RecommendationEngine {
             }
             chosen.append(pool.remove(at: bestIndex).post)
         }
-        return limit == nil ? chosen + pool.map(\.post) : chosen
+        let remainder = overflow.filter { !isHardDisliked($0, taste: taste) && unique.insert($0.stableID).inserted }
+        return limit == nil ? chosen + pool.map(\.post) + remainder : chosen
     }
 
     func gorseItemID(_ post: Post) -> String {
@@ -390,7 +497,9 @@ actor RecommendationEngine {
 
     private func tasteTokens(source: String, values: [String]) -> [String] {
         if source == Provider.rule34.rawValue {
-            return Array(Set(values.map { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: " ", with: "_") }.filter { !$0.isEmpty }))
+            var used = Set<String>()
+            return values.map { RecommendationTagRules.canonical($0) }
+                .filter { !$0.isEmpty && used.insert($0).inserted }
         }
         var out: [String] = []
         for value in values {
@@ -402,9 +511,9 @@ actor RecommendationEngine {
         return out
     }
 
-    private func effectiveTermScore(source: String, term: String, taste: TasteChoice) -> Double {
+    private func effectiveTermScore(source: String, term: String, taste: TasteChoice, learned: RecommendationProfile? = nil) -> Double {
         guard isTermAllowed(source: source, term: term) else { return 0 }
-        let p = profile(for: source)
+        let p = learned ?? profile(for: source)
         var score = p.terms[term] ?? 0
         let e = p.termEvidence[term] ?? RecommendationTermEvidence()
         score += min(24, e.positive * 3.2 + e.search * 4.5)
@@ -416,10 +525,10 @@ actor RecommendationEngine {
         return score
     }
 
-    private func positiveTermEntries(source: String, taste: TasteChoice, limit: Int) -> [(String, Double)] {
-        let p = profile(for: source)
+    private func positiveTermEntries(source: String, taste: TasteChoice, limit: Int, learned: RecommendationProfile? = nil) -> [(String, Double)] {
+        let p = learned ?? profile(for: source)
         let candidates = Set(p.terms.keys).union(tasteTokens(source: source, values: taste.into)).union(tasteTokens(source: source, values: taste.notInto))
-        return candidates.map { ($0, effectiveTermScore(source: source, term: $0, taste: taste)) }
+        return candidates.map { ($0, effectiveTermScore(source: source, term: $0, taste: taste, learned: p)) }
             .filter { $0.1 > 0.2 }.sorted { $0.1 > $1.1 }.prefix(limit).map { $0 }
     }
 
@@ -479,6 +588,14 @@ actor RecommendationEngine {
             p.recentQueries = Array(p.recentQueries.suffix(maxQueries))
             p.recentSeen = Array(p.recentSeen.suffix(maxSeen))
             state.profiles[source] = p
+        }
+        for key in state.scopedProfiles.keys {
+            var p = normalized(state.scopedProfiles[key] ?? RecommendationProfile())
+            p.terms = Dictionary(uniqueKeysWithValues: p.terms.filter { abs($0.value) > 0.03 }.sorted { abs($0.value) > abs($1.value) }.prefix(maxTerms).map { ($0.key, $0.value) })
+            let keep = Set(p.terms.keys)
+            p.termEvidence = p.termEvidence.filter { keep.contains($0.key) }
+            p.related = p.related.filter { keep.contains($0.key) }.mapValues { $0.filter { keep.contains($0.key) } }
+            state.scopedProfiles[key] = p
         }
     }
 

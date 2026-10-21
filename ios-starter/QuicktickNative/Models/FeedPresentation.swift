@@ -1,6 +1,15 @@
 import Foundation
 import CoreGraphics
 
+// Pure gesture classifier for Home and Immersive. Ignore layout jitter,
+ // backwards paging, and deliberate viewing. A return to a previously
+ // skipped post is always neutralization, never positive feedback.
+enum QuickSkipDecision {
+    static func dislikes(elapsed: TimeInterval, from: Int, to: Int) -> Bool {
+        elapsed.isFinite && to > from && elapsed >= 0.08 && elapsed <= 1.25
+    }
+}
+
 struct VisiblePostSelector {
     static func immersive(frames: [String: CGRect], viewport: CGRect, current: String?, keys: Set<String>) -> String? {
         // Between full pages neither crosses the normal visibility threshold.

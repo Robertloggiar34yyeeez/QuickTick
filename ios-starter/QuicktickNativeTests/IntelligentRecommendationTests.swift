@@ -41,8 +41,9 @@ final class IntelligentRecommendationTests: XCTestCase {
         let matching = post("candidate", ["chun_li", "qipao", "art"])
         let distinct = post("different", ["raven", "landscape", "sketch"])
         await engine.configureFavorites(favorites)
-        let delta = await engine.score(matching, taste: TasteChoice(), recent: []) -
-            engine.score(distinct, taste: TasteChoice(), recent: [])
+        let matchScore = await engine.score(matching, taste: TasteChoice(), recent: [])
+        let distinctScore = await engine.score(distinct, taste: TasteChoice(), recent: [])
+        let delta = matchScore - distinctScore
         XCTAssertGreaterThan(delta, 0)
         XCTAssertLessThanOrEqual(delta, 3.1, "The entire liked history must not force a large saturated boost")
     }
@@ -76,7 +77,7 @@ final class IntelligentRecommendationTests: XCTestCase {
         let after = await service.snapshot()
         XCTAssertEqual(after.liked, Set([b.stableID]))
         XCTAssertEqual(after.profiles["rule34|anime"]?.subjects["chun_li"]?.positive ?? -1, 0, accuracy: 0.001)
-        XCTAssertGreaterThan(after.profiles["rule34|anime"]?.subjects["raven"]?.positive ?? 0, 0)
+        XCTAssertGreaterThan(after.profiles["rule34|anime"]?.attributes["clothing:jacket"]?.positive ?? 0, 0)
         await service.reconcileFavorites([b])
         let stable = await service.snapshot()
         XCTAssertEqual(stable.profiles, after.profiles)

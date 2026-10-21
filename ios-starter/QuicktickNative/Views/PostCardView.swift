@@ -28,7 +28,7 @@ struct PostCardView: View {
     private var mediaSize: CGSize { MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: (post.nativeSize.map { post.type.lowercased() == "image" && $0.height > $0.width * 4 ? 2 / 3 : $0.width / $0.height }) ?? mediaAspect, available: available) }
     var body: some View {
         VStack(spacing: 0) {
-            media.frame(width: mediaSize.width, height: mediaSize.height).clipped()
+            media.frame(width: mediaSize.width, height: mediaSize.height).clipped().contentShape(Rectangle())
                 .background {
                     if playbackTab == 0 {
                         GeometryReader { geometry in
@@ -112,6 +112,11 @@ struct PostCardView: View {
             } else { PosterView(url: post.cardPreviewURL) }
         }
         .frame(width: mediaSize.width, height: mediaSize.height)
+        .allowsHitTesting(false)
+        .overlay {
+            if !post.isImmersiveMedia { Color.clear.contentShape(Rectangle()).onTapGesture { fullImage = true } }
+        }
+        .contentShape(Rectangle())
         .overlay(alignment: .topTrailing) {
             if post.type.lowercased() == "video" {
                 Button { store.fullScreenPlaybackID = post.stableID } label: {
@@ -144,7 +149,6 @@ struct PostCardView: View {
                 }.buttonStyle(.plain).padding(10).accessibilityLabel("View full image")
             }
         }
-        .onTapGesture { if !post.isImmersiveMedia { fullImage = true } }
     }
     private func preparePlayback() async {
         preparing = true; playbackError = nil; playing = false

@@ -173,7 +173,6 @@ actor RecommendationEngine {
     }
 
     func record(_ event: RecommendationEvent, post: Post) async {
-        await semantic.record(event, post: post)
         let source = post.provider.lowercased()
         let signalTerms = terms(for: post)
         var profile = profile(for: source)
@@ -221,6 +220,7 @@ actor RecommendationEngine {
         if delta != 0 { applyTermDelta(&profile, terms: signalTerms, delta: delta) }
         if negativeThemeDelta != 0 { adjustNegativeThemes(&profile, post: post, delta: negativeThemeDelta) }
         state.profiles[source] = normalized(profile)
+        await semantic.record(event, post: post)
     }
 
     func positiveTerms(provider: Provider, taste: TasteChoice, limit: Int = 16) -> [String] {
@@ -301,7 +301,20 @@ actor RecommendationEngine {
         return score
     }
 
+    // No semantic actor calls or model work on initial provider publication.
+    func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post]) -> [Post] {
+        var seen = Set<String>()
+        let unique = candidates.filter { seen.insert($0.stableID).inserted && !isHardDisliked($0, taste: taste) }
+        var scored: [(Post, Double, Int)] = []
+        for (index, post) in unique.prefix(512).enumerated() {
+            scored.append((post, score(post, taste: taste, recent: recent), index))
+        }
+        scored.sort { $0.1 == $1.1 ? $0.2 < $1.2 : $0.1 > $1.1 }
+        return scored.map { $0.0 } + Array(unique.dropFirst(512))
+    }
+
     func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
+        guard !Task.isCancelled else { return candidates }
         let start = Date(); defer { rankLatencyMs = Date().timeIntervalSince(start) * 1000 }
         let semanticScores = await semantic.scores(candidates, taste: taste)
         let vectors = await semantic.diversityVectors(candidates + recent)
@@ -313,15 +326,16 @@ actor RecommendationEngine {
         // Tokenize once, rather than for every comparison in the diversity loop.
         let termCache = Dictionary((candidates + recent).map { ($0.stableID, terms(for: $0)) }, uniquingKeysWith: { first, _ in first })
         var unique = Set<String>()
-        var pool = candidates.filter { unique.insert($0.stableID).inserted && !isHardDisliked($0, taste: taste) }
-            .enumerated()
-             .map { entry in
-                let raw = score(entry.element, taste: taste, recent: recent, collaborativeScores: collaborativeScores)
-                let seen = profile(for: entry.element.provider.lowercased()).recentSeen.contains(entry.element.stableID) ? -weights.seen : 0
-                let tags = tanh((raw - (seen == 0 ? 0 : -1000)) / 35) * weights.tag
-                let semantic = semanticScores[entry.element.stableID] ?? SemanticScore()
-                return (post: entry.element, base: tags + semantic.total(weights) + seen - Double(entry.offset) * 0.002, tags: tags, seen: seen)
-            }
+        var pool: [(post: Post, base: Double, tags: Double, seen: Double)] = []
+        for (offset, post) in candidates.enumerated() {
+            guard unique.insert(post.stableID).inserted, !isHardDisliked(post, taste: taste) else { continue }
+            let raw = score(post, taste: taste, recent: recent, collaborativeScores: collaborativeScores)
+            let seen: Double = profile(for: post.provider.lowercased()).recentSeen.contains(post.stableID) ? -weights.seen : 0
+            let tagScore = tanh((raw - (seen == 0 ? 0 : -1000)) / 35) * weights.tag
+            let semanticScore = semanticScores[post.stableID] ?? SemanticScore()
+            let base = tagScore + semanticScore.total(weights) + seen - Double(offset) * 0.002
+            pool.append((post: post, base: base, tags: tagScore, seen: seen))
+        }
         var chosen: [Post] = []
         var similarityCache: [String: [String: Double]] = [:]
         // Bound look-ahead ranking as the endless feed grows. Hard filters still
@@ -329,6 +343,7 @@ actor RecommendationEngine {
         let target = min(limit ?? 48, pool.count)
 
         while chosen.count < target, !pool.isEmpty {
+            guard !Task.isCancelled else { return candidates }
             let context = Array((recent + chosen).suffix(8))
             let contextTerms = Set(context.flatMap { termCache[$0.stableID] ?? [] })
             let lastTerms = Set(context.last.flatMap { termCache[$0.stableID] } ?? [])

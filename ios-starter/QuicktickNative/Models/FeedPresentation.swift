@@ -2,6 +2,12 @@ import Foundation
 import CoreGraphics
 
 struct VisiblePostSelector {
+    static func immersive(frames: [String: CGRect], viewport: CGRect, current: String?, keys: Set<String>) -> String? {
+        // Between full pages neither crosses the normal visibility threshold.
+        // Keep ownership through that gap and transient empty layout preferences.
+        select(frames: frames, viewport: viewport, current: current, eligible: keys)
+            ?? current.flatMap { keys.contains($0) ? $0 : nil }
+    }
     static func select(frames: [String: CGRect], viewport: CGRect, current: String?, eligible: Set<String>? = nil) -> String? {
         guard viewport.height > 0 else { return nil }
         let candidates = frames.compactMap { key, rect -> (String, CGFloat, CGFloat)? in
@@ -24,6 +30,14 @@ struct VisiblePostSelector {
     }
 }
 
+enum PlaybackPosition {
+    static func resume(_ seconds: Double?, duration: Double) -> Double? {
+        guard let seconds, seconds.isFinite, seconds > 0, duration.isFinite,
+              duration > 1, seconds < duration - 0.5 else { return nil }
+        return seconds
+    }
+}
+
 enum MediaSizing {
     // Full viewing canvas: deliberately separate from the bounded Home cards.
     static func immersive(aspect: CGFloat, available: CGSize) -> CGSize {
@@ -36,8 +50,24 @@ enum MediaSizing {
         let ratio = aspect.isFinite && aspect > 0 ? aspect : 4 / 3
         let wide = available.width > 600
         let maxHeight = min(wide ? 620 : 560, max(1, available.height * 0.72))
-        var width = min(available.width, wide ? 680 : available.width, maxHeight * ratio)
-        if let native, native.width > 0 { width = min(width, native.width) }
-        return CGSize(width: max(1, width), height: max(1, width / ratio))
+        let width = max(1, min(available.width, 680))
+        return CGSize(width: width, height: max(1, min(width / ratio, maxHeight)))
+    }
+}
+
+// Count advancing media time, capped by elapsed wall time. Buffering, pauses,
+// loading and discontinuous seeks never become positive engagement.
+struct PlaybackExposure {
+    private var previousMedia: Double?
+    private var previousWall: Double?
+    private var wasPlaying = false
+    mutating func sample(media: Double?, wall: Double, playing: Bool) -> Double {
+        defer { previousMedia = media; previousWall = wall; wasPlaying = playing }
+        guard playing || wasPlaying, let previousWall, wall > previousWall else { return 0 }
+        let elapsed = min(2, wall - previousWall)
+        guard let media, let previousMedia, media.isFinite, previousMedia.isFinite else { return 0 }
+        let advance = media - previousMedia
+        guard advance > 0, advance <= elapsed * 1.5 + 0.25 else { return 0 }
+        return min(elapsed, advance)
     }
 }

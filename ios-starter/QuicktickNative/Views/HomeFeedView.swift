@@ -31,7 +31,7 @@ struct HomeFeedView: View {
                     }
                     Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44,height: 44).background(AppTheme.gradient,in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Refresh feed")
                 }
-                searchBar.id("home-search")
+                Color.clear.frame(height: 0).id("home-search")
                 Button { onboarding = true } label: {
                     Label("What would you like to see?", systemImage: "sparkles")
                         .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -81,6 +81,8 @@ struct HomeFeedView: View {
             guard store.feedRevision == revision else { return }
             visibleFrames = frames
             let bounds = CGRect(origin: .zero, size: viewport.size)
+            let top = frames.filter { $0.value.intersects(bounds) }.min { $0.value.minY < $1.value.minY }?.key
+            if let top, scrollAnchor != top { scrollAnchor = top }
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
             selectVisiblePlayback(viewport: viewport.size)
         }
@@ -124,6 +126,7 @@ struct HomeFeedView: View {
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $onboarding) { TasteOnboardingView() }
+        .sheet(isPresented: $showSearch) { NativeSearchBar() }
         .onChange(of: store.posts) { _, posts in
             if !posts.isEmpty && !store.tasteChoice(for: store.selectedProvider).done { onboarding = true }
         }
@@ -132,17 +135,18 @@ struct HomeFeedView: View {
     }
 
     private func selectVisiblePlayback(viewport: CGSize) {
-        guard store.activeTab == 0, store.isForeground else { return }
+        guard !immersive, store.activeTab == 0, store.isForeground else { return }
         let candidate = visibleCandidate(viewport: viewport)
         if store.inlinePlaybackID != candidate { store.inlinePlaybackID = candidate }
     }
     private func visibleCandidate(viewport: CGSize) -> String? {
-        guard store.activeTab == 0, store.isForeground else { return nil }
+        guard !immersive, store.activeTab == 0, store.isForeground else { return nil }
         if let fullScreen = store.fullScreenPlaybackID { return fullScreen }
         let playable = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
         return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playable)
     }
     private func warmNext(after key: String?) async {
+        guard !immersive, store.activeTab == 0, store.isForeground, !Task.isCancelled else { return }
         guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }
         let next = Array(store.posts.dropFirst(index + 1).prefix(2))
         let nextVideo = store.posts.dropFirst(index + 1).prefix(4).first { $0.type.lowercased() == "video" }

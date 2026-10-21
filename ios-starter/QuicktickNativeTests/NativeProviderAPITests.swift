@@ -140,16 +140,16 @@ final class NativeProviderAPITests: XCTestCase {
         let invalid = HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil, headerFields: ["Retry-After": "NaN"])!
         XCTAssertEqual(NativeProviderAPI.retryDeadline(invalid, now: now, attempt: 1).timeIntervalSince(now), 2)
     }
-    @MainActor func testReselectingFeedRefreshesRecommendedAndChangesGeneration() async {
+    @MainActor func testReselectingFeedPreservesQueryAndGeneration() async {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let store = AppStore(api: api)
         store.selectedProvider = .eporner
         store.feedSort = "recent"; store.queryText = "old search"
         await store.selectFeedTab(0)
         let first = store.feedRevision
-        XCTAssertEqual(store.feedSort, "recommended"); XCTAssertEqual(store.queryText, "")
+        XCTAssertEqual(store.feedSort, "recent"); XCTAssertEqual(store.queryText, "old search")
         await store.selectFeedTab(0)
-        XCTAssertNotEqual(first, store.feedRevision)
+        XCTAssertEqual(first, store.feedRevision)
         await store.selectFeedTab(1)
         XCTAssertEqual(store.activeTab, 1); XCTAssertTrue(store.feedMediaOnly)
     }

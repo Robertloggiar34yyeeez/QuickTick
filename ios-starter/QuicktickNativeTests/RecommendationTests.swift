@@ -44,8 +44,10 @@ final class RecommendationTests: XCTestCase {
     }
     func testBoundedLookAheadKeepsAllUniqueAllowedPostsAndPreferencesFirst() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
-        let posts = (0..<240).map { index in
-            Post(key: "rule34:\(index)", id: String(index), provider: "rule34", tags: [index == 239 ? "engineering" : (index == 238 ? "blocked" : "topic_\(index % 30)")])
+        var posts: [Post] = []
+        for index in 0..<240 {
+            let tag: String = index == 239 ? "engineering" : (index == 238 ? "blocked" : "topic_\(index % 30)")
+            posts.append(Post(key: "rule34:\(index)", id: String(index), provider: "rule34", tags: [tag]))
         }
         let start = Date()
         let ranked = await engine.rank(posts + [posts[0]], taste: TasteChoice(done: true, into: ["engineering"], notInto: ["blocked"]), recent: [])

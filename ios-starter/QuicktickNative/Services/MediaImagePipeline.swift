@@ -16,6 +16,7 @@ actor MediaImagePipeline {
     private var images: [String: DecodedMediaImage] = [:]
     private var order: [String] = []
     private var bytes = 0
+    private var prefetchedGIF: (key: String, bytes: Data)?
     private var flights: [String: Task<Data, Error>] = [:]
     private var waiters: [String: Set<UUID>] = [:]
     private(set) var hits = 0
@@ -67,6 +68,7 @@ actor MediaImagePipeline {
         return DecodedMediaImage(image:image,nativeSize:CGSize(width:image.width,height:image.height),comic:true)
     }
     func data(url: URL) async throws -> Data {
+        if let cached = prefetchedGIF, cached.key == url.absoluteString { return cached.bytes }
         if url.isFileURL { return try Data(contentsOf: url) }
         guard NativeProviderAPI.mediaURL(url.absoluteString) != nil else { throw URLError(.badURL) }
         let key = url.absoluteString
@@ -88,6 +90,10 @@ actor MediaImagePipeline {
             let bytes = try await pending.value; try Task.checkCancellation(); return bytes
         } onCancel: { Task { await self.finishWaiter(key, waiter: waiter, cancel: true) } }
     }
+    func prefetchGIF(url: URL) async {
+        guard !Task.isCancelled, let data = try? await data(url: url), !Task.isCancelled, data.count <= 8 * 1024 * 1024 else { return }
+        prefetchedGIF = (url.absoluteString, data)
+    }
     private func finishWaiter(_ key: String, waiter: UUID, cancel: Bool) {
         guard waiters[key]?.remove(waiter) != nil else { return }
         if waiters[key]?.isEmpty == true {
@@ -96,6 +102,6 @@ actor MediaImagePipeline {
         }
     }
     private func touch(_ key: String) { order.removeAll { $0 == key }; order.append(key) }
-    func clearDecoded() { images.removeAll(); order.removeAll(); bytes = 0 }
+    func clearDecoded() { images.removeAll(); order.removeAll(); bytes = 0; prefetchedGIF = nil }
     var decodedBytes: Int { bytes }
 }

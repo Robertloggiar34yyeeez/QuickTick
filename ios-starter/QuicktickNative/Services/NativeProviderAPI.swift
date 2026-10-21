@@ -26,7 +26,7 @@ actor ProviderRequestGate {
 // Provider networking lives on the API actor, never on a scrolling view. No
 // requests in this service use the optional QuickTick Sync origin.
 enum NativeProviderAPI {
-    static let userAgent = "QuickTickNative/0.6.26"
+    static let userAgent = "QuickTickNative/0.9.5"
     static let quicktickHost = "quick-tick-webb.vercel.app"
 
     static func origin(_ provider: Provider) -> URL {

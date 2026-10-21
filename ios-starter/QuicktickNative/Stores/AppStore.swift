@@ -6,6 +6,7 @@ final class AppStore: ObservableObject {
     @Published var selectedProvider: Provider = .rule34 {
         didSet {
             guard oldValue != selectedProvider else { return }
+            savedFeeds.removeAll()
             invalidateFeed()
         }
     }
@@ -18,16 +19,21 @@ final class AppStore: ObservableObject {
             // A rapid inactive→active transition can coalesce SwiftUI task IDs
             // while the app is suspended. Resume the retained player directly,
             // only if its existing feed and visible-post owners still agree.
-            let owner = [0: "home", 1: "immersive", 2: "favorites", 3: "downloads"][activeTab] ?? "home"
-            let allowed = activeTab == 1 ? Set(posts.map(\.stableID)) : Set(inlinePlaybackID.map { [$0] } ?? [])
+            let savedOwner = players.suspendedOwner ?? players.activeOwner
+            let owner = savedOwner ?? ([0: "home", 1: "immersive", 2: "favorites", 3: "downloads"][activeTab] ?? "home")
+            let allowed: Set<String>
+            if activeTab == 1 || (activeTab == 0 && owner == "home-immersive") { allowed = Set(posts.map(\.stableID)) }
+            else if activeTab == 2 && owner == "favorites-immersive" { allowed = Set(favorites.keys) }
+            else if activeTab == 3 && owner == "offline-immersive" { allowed = Set(downloads.records.compactMap { $0.offlinePost?.stableID }) }
+            else { allowed = Set(inlinePlaybackID.map { [$0] } ?? []) }
             players.resumeSuspendedPlayback(allowed: allowed, owner: owner, muted: muted, pausedKey: pausedPlaybackID)
         }
     } }
     @Published var pausedPlaybackID: String?
     @Published var fullScreenPlaybackID: String?
-    @Published var inlinePlaybackID: String? { didSet { if oldValue != inlinePlaybackID { pausedPlaybackID = nil; players.pauseAll() } } }
-    @Published var queryText = "" { didSet { if oldValue != queryText { invalidateFeed() } } }
-    @Published var feedSort = "recommended" { didSet { if oldValue != feedSort { invalidateFeed() } } }
+    @Published var inlinePlaybackID: String? { didSet { if oldValue != inlinePlaybackID { pausedPlaybackID = nil; if players.activeOwner != "immersive", players.activeOwner?.hasSuffix("-immersive") != true { players.transitionVisiblePost() } } } }
+    @Published var queryText = "" { didSet { if oldValue != queryText && !committingSearch { invalidateFeed() } } }
+    @Published var feedSort = "recommended" { didSet { if oldValue != feedSort && !committingSearch { invalidateFeed() } } }
     @Published private(set) var feedRevision = UUID()
     @Published var favorites: [String: Post] = [:]
     @Published var exclusions: [String] = []
@@ -220,19 +226,54 @@ final class AppStore: ObservableObject {
         refreshFlight = flight
         await withTaskCancellationHandler { await flight.value } onCancel: { flight.cancel() }
     }
+    private struct SavedFeed {
+        var provider: Provider
+        var query: String
+        var sort: String
+        var posts: [Post]
+        var encountered: Set<String>
+        var nextPage: Int
+        var hasMore: Bool
+        var context: String?
+        var protected: Set<String>
+    }
+    private var savedFeeds: [Int: SavedFeed] = [:]
+    private var committingSearch = false
+    var searchDrafts: [Int: SearchDraft] = [:]
+    func commitSearch(query: String, sort: String) {
+        committingSearch = true
+        queryText = query; feedSort = sort
+        committingSearch = false
+    }
     func selectFeedTab(_ tab: Int) async {
-        guard (0...3).contains(tab) else { return }
-        fullScreenPlaybackID = nil
-        activeTab = tab
+        guard (0...3).contains(tab), tab != activeTab else { return }
+        if activeTab < 2 {
+            savedFeeds[activeTab] = SavedFeed(provider: selectedProvider, query: queryText, sort: feedSort,
+                posts: posts, encountered: encountered, nextPage: nextPage, hasMore: hasMore,
+                context: candidateContext, protected: protectedImmersiveIDs)
+        }
+        refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel()
+        generation = UUID(); feedRevision = generation; isLoading = false
+        fullScreenPlaybackID = nil; activeTab = tab
         guard tab < 2 else { return }
-        feedSort = "recommended"
-        queryText = ""
+        feedMediaOnly = tab == 1
+        if let saved = savedFeeds[tab], saved.provider == selectedProvider {
+            commitSearch(query: saved.query, sort: saved.sort)
+            let blocked = Set((exclusions + QueryParser.parse(saved.query).excluded + tasteChoice(for: selectedProvider).notInto).map { $0.lowercased() })
+            posts = saved.posts.filter { blocked.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }; encountered = saved.encountered; nextPage = saved.nextPage
+            hasMore = saved.hasMore; candidateContext = saved.context
+            protectedImmersiveIDs = saved.protected; lastError = nil
+            return
+        }
+        commitSearch(query: "", sort: "recommended")
+        posts = []; encountered = []; nextPage = 1; candidateContext = nil; protectedImmersiveIDs = []
         await refresh(immersive: tab == 1)
     }
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
         let mediaOnly = immersive || activeTab == 1
         feedMediaOnly = mediaOnly
+        protectedImmersiveIDs = []; immersivePlaybackID = nil
         generation = UUID(); feedRevision = generation; inlinePlaybackID = nil; players.pauseAll()
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") { posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []; hasMore = false; return }
@@ -250,7 +291,7 @@ final class AppStore: ObservableObject {
                 await recommendations.recordSearch(provider: selectedProvider, query: queryText)
             }
             let personalized = requestedSort == "recommended" && parsed.included.isEmpty
-            let banned = Set((exclusions + parsed.excluded).map { $0.lowercased() })
+            let banned = Set((exclusions + parsed.excluded + tasteChoice(for: selectedProvider).notInto).map { $0.lowercased() })
             let context = provider.rawValue + "|batch40|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
             candidateContext = personalized ? context : nil
             let previous = Set(posts.map(\.stableID))
@@ -275,8 +316,8 @@ final class AppStore: ObservableObject {
                         && banned.isDisjoint(with: Set(post.tags.map { $0.lowercased() }))
                 }
                 if personalized {
-                    incoming = await recommendations.unseen(incoming.filter { !previous.contains($0.stableID) })
-                    incoming = await recommendations.rank(incoming, taste: taste, recent: posts)
+                    incoming = await recommendations.unseen(incoming.filter { !previous.contains($0.stableID) && favorites[$0.stableID] == nil })
+                    incoming = await recommendations.rankFast(incoming, taste: taste, recent: posts)
                     guard generation == token, !Task.isCancelled else { return }
                     await recommendations.advanceCandidatePage(context: acquisition?.context ?? context, nextPage: (page.hasMore ?? !page.items.isEmpty) ? nextPage : 1)
                 }
@@ -341,14 +382,14 @@ final class AppStore: ObservableObject {
             let page = response.page
             guard generation == token, !Task.isCancelled else { return }
             nextPage = requestedPage + 1; hasMore = (page.hasMore ?? !page.items.isEmpty) || acquisition?.focused == true
-            let banned = Set((exclusions + parsed.excluded).map { $0.lowercased() })
+            let banned = Set((exclusions + parsed.excluded + tasteChoice(for: selectedProvider).notInto).map { $0.lowercased() })
             var candidates = page.items.filter { encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia) && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }
             if let context = candidateContext {
-                candidates = await recommendations.unseen(candidates)
+                candidates = await recommendations.unseen(candidates.filter { favorites[$0.stableID] == nil })
                 guard generation == token, !Task.isCancelled else { return }
                 await recommendations.advanceCandidatePage(context: acquisition?.context ?? context, nextPage: (page.hasMore ?? !page.items.isEmpty) ? nextPage : 1)
             }
-            let ranked = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rank(candidates, taste: tasteChoice(for: provider), recent: posts) : candidates
+            let ranked = parsed.included.isEmpty && feedSort == "recommended" ? await recommendations.rankFast(candidates, taste: tasteChoice(for: provider), recent: posts) : candidates
             guard generation == token, !Task.isCancelled else { return }
             if ranked.isEmpty, let acquisition, acquisition.focused {
                 broaden = true
@@ -379,7 +420,7 @@ final class AppStore: ObservableObject {
         if let context { acquisition = await recommendations.candidateRequest(context: context, provider: provider, taste: tasteChoice(for: provider), excluded: exclusions + parsed.excluded, forceBroad: forceBroad) }
         else { acquisition = nil }
         do {
-            let result = try await api.posts(provider: provider, query: acquisition?.query ?? parsed, page: acquisition?.page ?? page, sort: sort, immersive: mediaOnly)
+            let result = try await api.posts(provider: provider, query: acquisition?.query ?? ParsedQuery(included: parsed.included, excluded: TasteChoice.normalized(exclusions + parsed.excluded + tasteChoice(for: provider).notInto)), page: acquisition?.page ?? page, sort: sort, immersive: mediaOnly)
             return (result, acquisition)
         } catch {
             // A failed interest search must not remove a provider's working
@@ -413,7 +454,7 @@ final class AppStore: ObservableObject {
         downloads.download(post)
     }
 
-    func recordImpression(_ post: Post) { Task { await record(.impression, post: post) } }
+    func recordImpression(_ post: Post) { if activeTab == 1 { protectedImmersiveIDs.insert(post.stableID) }; Task { await record(.impression, post: post) } }
     func recordQuickSkip(_ post: Post) { Task { await record(.quickSkip, post: post) } }
     func recordReplay(_ post: Post) { Task { await record(.replay, post: post) } }
     func recordComplete(_ post: Post) { Task { await record(.complete, post: post) } }
@@ -425,22 +466,34 @@ final class AppStore: ObservableObject {
         protectedHomePostIDs = keys
     }
 
+    private var tailRankTask: Task<Void, Never>?
+    private var immersivePlaybackID: String?
+    private var protectedImmersiveIDs: Set<String> = []
+    func protectImmersivePost(_ key: String?) {
+        guard activeTab == 1 else { return }
+        guard immersivePlaybackID != key else { return }
+        immersivePlaybackID = key
+        if let key { protectedImmersiveIDs.insert(key) }
+        let token = generation
+        tailRankTask?.cancel()
+        tailRankTask = Task(priority: .utility) { await adaptRecommendationTail(token: token) }
+    }
     func adaptRecommendationTail(token: UUID) async {
-        // A tab transition briefly has no active Home post. Ranking that whole
-        // array would move the saved scroll anchor before playback reactivates.
-        guard activeTab == 0, let active = inlinePlaybackID else { return }
+        let tab = activeTab
+        guard tab == 0 || tab == 1, feedSort == "recommended",
+              let active = tab == 1 ? immersivePlaybackID : inlinePlaybackID else { return }
         let source = posts
         guard let activeIndex = source.firstIndex(where: { $0.stableID == active }) else { return }
-        // Several cards can be visible, particularly on iPad. Moving a still
-        // below the active video can expose another clip and steal playback.
-        // Geometry remains owned by Home; this set only protects ranking.
-        let protected = protectedHomePostIDs.union([active])
+        let protected = (tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs).union([active])
         let prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
-        let tail = Array(source.dropFirst(prefixCount))
-        let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: Array(source.prefix(prefixCount)))
-        guard generation == token, activeTab == 0, feedSort == "recommended", posts.map(\.stableID) == source.map(\.stableID), inlinePlaybackID == active,
-              protectedHomePostIDs.isSubset(of: Set(source.prefix(prefixCount).map(\.stableID))) else { return }
-        posts = Array(source.prefix(prefixCount)) + ranked
+        let prefix = Array(source.prefix(prefixCount))
+        let ranked = await recommendations.rank(Array(source.dropFirst(prefixCount)), taste: tasteChoice(for: selectedProvider), recent: prefix)
+        let stillProtected = tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs
+        guard !Task.isCancelled, generation == token, activeTab == tab, feedSort == "recommended",
+              posts.map(\.stableID) == source.map(\.stableID),
+              (tab == 1 ? immersivePlaybackID : inlinePlaybackID) == active,
+              stillProtected.isSubset(of: Set(prefix.map(\.stableID))) else { return }
+        if ranked.map(\.stableID) != Array(source.dropFirst(prefixCount)).map(\.stableID) { posts = prefix + ranked }
     }
 
     func resetRecommendations() async {

@@ -3,12 +3,55 @@ import AVFoundation
 @testable import QuicktickNative
 
 final class ImmersiveMediaTests: XCTestCase {
+    func testPagingGapKeepsCurrentPlayerButDeletedPostDoesNot() {
+        let viewport = CGRect(x: 0, y: 0, width: 400, height: 800)
+        let halfway = ["first": CGRect(x: 0, y: -400, width: 400, height: 800), "next": CGRect(x: 0, y: 400, width: 400, height: 800)]
+        XCTAssertEqual(VisiblePostSelector.immersive(frames: halfway, viewport: viewport, current: "first", keys: ["first", "next"]), "first")
+        XCTAssertEqual(VisiblePostSelector.immersive(frames: [:], viewport: viewport, current: "first", keys: ["first", "next"]), "first")
+        XCTAssertNil(VisiblePostSelector.immersive(frames: [:], viewport: viewport, current: "first", keys: ["next"]))
+        XCTAssertEqual(VisiblePostSelector.immersive(frames: ["next": viewport], viewport: viewport, current: "first", keys: ["first", "next"]), "next")
+        XCTAssertNil(VisiblePostSelector.select(frames: halfway, viewport: viewport, current: "first"))
+    }
+    func testResumeRejectsEndOrInvalidDurationBeforeSeeking() {
+        XCTAssertEqual(PlaybackPosition.resume(5, duration: 20), 5)
+        for position in [Double.nan, .infinity, -1, 0, 19.9, 20, 50] {
+            XCTAssertNil(PlaybackPosition.resume(position, duration: 20))
+        }
+        XCTAssertNil(PlaybackPosition.resume(5, duration: .nan))
+        XCTAssertNil(PlaybackPosition.resume(5, duration: .infinity))
+        XCTAssertNil(PlaybackPosition.resume(5, duration: 0))
+    }
+    @MainActor func testLateInlineSelectionCannotPauseImmersivePlayback() {
+        let store = AppStore()
+        let url = URL(fileURLWithPath: "/tmp/clip.mp4")
+        _ = store.players.activate(key: "clip", url: url, muted: true, owner: "immersive")
+        store.inlinePlaybackID = "late-home-layout"
+        XCTAssertEqual(store.players.activeKey, "clip")
+        XCTAssertEqual(store.players.activeOwner, "immersive")
+        store.players.releaseAll()
+    }
+    @MainActor func testRealFixtureAdvancesAfterFirstActivationAndReverseSwipe() async throws {
+        let posts = try await UITestMediaFactory.shared.posts(sort: "recommended")
+        let url = try XCTUnwrap(URL(string: posts[0].mediaUrl))
+        let pool = PlayerPool()
+        defer { pool.releaseAll() }
+        for key in ["first", "next", "first"] {
+            let player = pool.activate(key: key, url: url, muted: true, owner: "immersive")
+            let start = player.currentTime().seconds
+            for _ in 0..<200 {
+                if player.currentTime().seconds > start + 0.2 { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            XCTAssertEqual(player.currentItem?.status, .readyToPlay)
+            XCTAssertGreaterThan(player.currentTime().seconds, start + 0.2, "Playback must advance on \(key)")
+        }
+    }
     func testImmersiveLandscapeUsesCanvasInsteadOfHomeNativeSizeCap() {
         let available = CGSize(width: 1280, height: 900)
         let output = MediaSizing.immersive(aspect: 16 / 9, available: available)
         XCTAssertEqual(output.width, 1280)
         XCTAssertEqual(output.height, 720)
-        XCTAssertEqual(MediaSizing.size(native: CGSize(width: 320, height: 180), aspect: 16 / 9, available: available).width, 320)
+        XCTAssertEqual(MediaSizing.size(native: CGSize(width: 320, height: 180), aspect: 16 / 9, available: available).width, 680)
     }
     func testImmersiveAspectFitAcrossRotationAndSplitWindows() {
         for available in [CGSize(width: 1280, height: 900), CGSize(width: 900, height: 1280), CGSize(width: 600, height: 800)] {

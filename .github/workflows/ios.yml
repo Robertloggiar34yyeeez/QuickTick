@@ -1,6 +1,7 @@
 name: Native iOS build and IPA
 on:
   push:
+    branches-ignore: ['ipa-uploaded/**']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -48,10 +49,21 @@ jobs:
           key: xtool-d802c719-macos15-intel-xcode26.3-v1
       - uses: actions/upload-artifact@v4
         with:
-          name: QuickTick-0.6.26-unsigned-IPA
+          name: QuickTick-0.9.5-unsigned-IPA
           path: build/export/
           if-no-files-found: error
           retention-days: 14
+      - name: Wait for private Drive IPA upload before testing
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do
+            if git ls-remote --exit-code origin "refs/heads/ipa-uploaded/v095-$SOURCE_SHA" >/dev/null 2>&1; then exit 0; fi
+            sleep 10
+          done
+          echo "Private Drive IPA upload gate not released"; exit 1
       - name: Build and test native iOS app
         shell: bash
         run: |

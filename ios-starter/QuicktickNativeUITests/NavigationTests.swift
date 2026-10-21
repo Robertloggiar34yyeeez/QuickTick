@@ -84,10 +84,20 @@ final class NavigationTests: XCTestCase {
         if keyboardIntroduction.waitForExistence(timeout: 2) { keyboardIntroduction.tap() }
         expectation(for: NSPredicate(format: "value == %@", "engineering"), evaluatedWith: fields.firstMatch)
         waitForExpectations(timeout: 10)
-        app.buttons["Search"].firstMatch.tap()
+        app.buttons["apply-search-filters"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fields.firstMatch)
+        waitForExpectations(timeout: 10)
+        app.buttons["Toggle search"].tap()
         XCTAssertTrue(fields.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(fields.count, 1)
-        XCTAssertEqual(fields.firstMatch.value as? String, "engineering")
+        XCTAssertTrue(app.buttons["Remove engineering"].exists)
+        app.buttons["Exclude engineering"].tap()
+        XCTAssertTrue(app.buttons["Include engineering"].exists)
+        app.buttons["Include engineering"].tap()
+        XCTAssertTrue(app.buttons["Exclude engineering"].exists)
+        app.buttons["close-search"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fields.firstMatch)
+        waitForExpectations(timeout: 10)
     }
     @MainActor func testDownloadedImagesUseNormalFeedAndCloseFullComic() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]; app.launch()

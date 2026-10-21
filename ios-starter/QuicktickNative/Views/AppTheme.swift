@@ -32,6 +32,36 @@ struct QuicktickPressStyle: ButtonStyle {
     }
 }
 
+// Keep native vertical paging, AVPlayer controls and comic zoom gestures intact:
+// only an intentional rightward swipe from the extreme left edge exits.
+struct QuicktickEdgeBack: ViewModifier {
+    let onBack: () -> Void
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .leading) {
+            Color.clear
+                .frame(width: 32)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 24).onEnded { gesture in
+                        let dx = gesture.translation.width
+                        let dy = gesture.translation.height
+                        guard dx > 80, abs(dy) < min(70, dx * 0.65) else { return }
+                        onBack()
+                    }
+                )
+                .padding(.top, 64)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+extension View {
+    func quicktickEdgeBack(_ onBack: @escaping () -> Void) -> some View {
+        modifier(QuicktickEdgeBack(onBack: onBack))
+    }
+}
+
 struct ActionIcon: View {
     let title: String
     let symbol: String

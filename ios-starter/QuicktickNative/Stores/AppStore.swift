@@ -54,7 +54,14 @@ final class AppStore: ObservableObject {
     @Published var feedSort = "recommended" { didSet { if oldValue != feedSort && !committingSearch { invalidateFeed() } } }
     @Published private(set) var feedRevision = UUID()
     @Published var favorites: [String: Post] = [:] {
-        didSet { favoriteExclusionIDs = Set(favorites.values.flatMap { FeedExclusions.identifiers($0) }) }
+        didSet {
+            favoriteExclusionIDs = Set(favorites.values.flatMap { FeedExclusions.identifiers($0) })
+            // Snapshot ALL current likes; do not replay events or hold the UI.
+            Task { [weak self] in
+                guard let self else { return }
+                await self.recommendations.configureFavorites(Array(self.favorites.values))
+            }
+        }
     }
     private var favoriteExclusionIDs: Set<String> = []
     @Published var exclusions: [String] = []
@@ -175,6 +182,8 @@ final class AppStore: ObservableObject {
         if let local = await recommendationPersistence.load() {
             await restoreRecommendationState(local)
         }
+        await recommendations.configureFavorites(Array(favorites.values))
+        await visual.reconcileFavorites(Array(favorites.values))
         let recommendationWarning = await recommendationPersistence.lastError
         if let recommendationWarning { storageWarning = recommendationWarning }
         var credentials = ProviderCredentials()
@@ -763,6 +772,7 @@ final class AppStore: ObservableObject {
             visualScores = await visual.scores(posts)
             guard !Task.isCancelled, generation == token else { return }
             await adaptRecommendationTail(token: token)
+            await visual.reconcileFavorites(Array(favorites.values))
             let history = await visual.historicalQueue(Array(favorites.values))
             var offset = 0
             var scannedCachedFeed = false

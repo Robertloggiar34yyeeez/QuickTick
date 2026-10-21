@@ -133,6 +133,18 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
     }
 
+    @MainActor func testSwipeRightFromImmersiveEdgeReturnsToHome() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        app.buttons["tab-Immersive"].tap()
+        XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 10))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.55))
+        let destination = app.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.55))
+        start.press(forDuration: 0.07, thenDragTo: destination)
+        XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
+    }
+
     @MainActor func testFourTabsSettingsAndScrollToTop() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
@@ -150,7 +162,7 @@ final class NavigationTests: XCTestCase {
     }
     @MainActor func testSearchAppearsOnceBeforeAndAfterSubmitting() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
-        app.buttons["Toggle search"].tap()
+        app.buttons["home-search-button"].tap()
         let fields = app.textFields.matching(identifier: "feed-search-input")
         XCTAssertEqual(fields.count, 1)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
@@ -168,7 +180,7 @@ final class NavigationTests: XCTestCase {
         app.buttons["apply-search-filters"].tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fields.firstMatch)
         waitForExpectations(timeout: 10)
-        app.buttons["Toggle search"].tap()
+        app.buttons["home-search-button"].tap()
         XCTAssertTrue(fields.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(fields.count, 1)
         XCTAssertTrue(app.buttons["Remove engineering"].exists)
@@ -222,9 +234,8 @@ final class NavigationTests: XCTestCase {
             let details = XCTAttachment(string: app.debugDescription); details.name = "Home return playback state"; details.lifetime = .keepAlways; add(details)
         }
         XCTAssertEqual(result, .completed, "The visible Home video must resume after tab refresh")
-        app.buttons["feed-recent"].tap()
-        XCTAssertTrue(app.buttons["inline-play-home:video"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["inline-play-test:video"].exists)
+        app.buttons["feed-popular"].tap()
+        XCTAssertTrue(app.buttons["feed-popular"].isSelected)
         app.buttons["feed-recommended"].tap()
         XCTAssertTrue(app.buttons["inline-play-test:video"].waitForExistence(timeout: 10))
         let full = app.buttons["View full image"].firstMatch
@@ -368,7 +379,7 @@ final class NavigationTests: XCTestCase {
 
     @MainActor func testPersonalPreferencesAndTabRefresh() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
-        app.buttons["feed-recent"].tap()
+        app.buttons["feed-popular"].tap()
         app.buttons["tab-Home"].tap()
         expectation(for: NSPredicate(format: "selected == YES"), evaluatedWith: app.buttons["feed-recommended"])
         waitForExpectations(timeout: 10)

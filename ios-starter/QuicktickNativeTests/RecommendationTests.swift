@@ -16,6 +16,63 @@ final class RecommendationTests: XCTestCase {
         XCTAssertFalse(continued.focused); XCTAssertEqual(continued.page, 7)
         let saved = await engine.snapshot(); XCTAssertEqual(saved.profiles["rule34"], profile)
     }
+    func testNoveltyExcludesPreviouslyOfferedPostsAndSignedURIAliasesAfterReload() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let original = Post(key: "rule34:10", id: "10", provider: "rule34",
+            mediaUrl: "https://cdn.example.invalid/abc123.mp4?token=one", type: "video")
+        let alias = Post(key: "rule34:other", id: "other", provider: "rule34",
+            mediaUrl: "https://cdn.example.invalid/abc123.mp4?token=two", type: "video")
+        let novel = Post(key: "rule34:11", id: "11", provider: "rule34", type: "video")
+        await engine.recordOffered([original])
+        let remaining = await engine.unseenRecommendations([original, alias, novel])
+        XCTAssertEqual(remaining.map(\.stableID), [novel.stableID])
+        let state = await engine.snapshot()
+        let restored = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await restored.load(state)
+        let after = await restored.unseenRecommendations([original, alias, novel])
+        XCTAssertEqual(after.map(\.stableID), [novel.stableID])
+    }
+
+    func testInstantSkipIsNegativeAndScrollBackNeutralizesWithoutPositiveTraining() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let skipped = Post(key: "r:skip", id: "skip", provider: "rule34", tags: ["portrait", "jacket", "night"])
+        let similar = Post(key: "r:similar", id: "similar", provider: "rule34", tags: ["portrait", "jacket", "night"])
+        let before = await engine.score(similar, taste: TasteChoice(), recent: [])
+        await engine.recordReversibleSkip(skipped)
+        let disliked = await engine.score(similar, taste: TasteChoice(), recent: [])
+        XCTAssertLessThan(disliked, before)
+        let wasSkipped = await engine.hasReversibleSkip(skipped.stableID)
+        XCTAssertTrue(wasSkipped)
+        let neutralized = await engine.neutralizeReversibleSkip(skipped.stableID)
+        XCTAssertTrue(neutralized)
+        let neutral = await engine.score(similar, taste: TasteChoice(), recent: [])
+        XCTAssertEqual(neutral, before, accuracy: 0.0001)
+        let state = await engine.snapshot()
+        XCTAssertEqual(state.profiles["rule34"]?.stats.likes ?? 0, 0)
+        XCTAssertEqual(state.profiles["rule34"]?.stats.less ?? 0, 0)
+    }
+
+    func testRepeatedFastSkipsMoreStronglyDownrankASharedPresentation() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let similar = Post(key: "r:match", id: "match", provider: "rule34", tags: ["portrait", "jacket"])
+        let one = Post(key: "r:one", id: "one", provider: "rule34", tags: ["portrait", "jacket"])
+        let two = Post(key: "r:two", id: "two", provider: "rule34", tags: ["portrait", "jacket"])
+        await engine.recordReversibleSkip(one)
+        let oneScore = await engine.score(similar, taste: TasteChoice(), recent: [])
+        await engine.recordReversibleSkip(two)
+        let twoScore = await engine.score(similar, taste: TasteChoice(), recent: [])
+        XCTAssertLessThan(twoScore, oneScore)
+    }
+
+    @MainActor func testCandidateRoundCountersAreKeptWhenSavingAppState() async {
+        let store = AppStore()
+        _ = await store.recommendations.candidateRequest(context: "rule34|clips", provider: .rule34,
+            taste: TasteChoice(done: true, into: ["portrait"]), excluded: [])
+        let before = await store.recommendations.snapshot()
+        let saved = await store.recommendationState()
+        XCTAssertEqual(saved.candidatePages["rule34|clips|round"], before.candidatePages["rule34|clips|round"])
+    }
+
     @MainActor func testImportCannotRaceInitialProfileRestoration() async {
         let store = AppStore()
         store.exclusions = ["existing"]

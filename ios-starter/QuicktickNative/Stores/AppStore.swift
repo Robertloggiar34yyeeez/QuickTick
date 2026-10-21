@@ -435,7 +435,7 @@ final class AppStore: ObservableObject {
         // Both feeds adapt their unseen tail, never the actively viewed content.
         // SwiftUI paging is especially sensitive to moving the current clip.
         guard feedSort == "recommended" else { return }
-        let immersive = activeTab == 1 && feedMediaOnly
+        let immersive = activeTab == 1
         guard activeTab == 0 || immersive else { return }
         let active = immersive ? activeImmersivePostID : inlinePlaybackID
         guard let active, let activeIndex = posts.firstIndex(where: { $0.stableID == active }) else { return }
@@ -455,7 +455,7 @@ final class AppStore: ObservableObject {
         guard generation == token, feedSort == "recommended",
               posts.map(\.stableID) == source.map(\.stableID) else { return }
         if immersive {
-            guard activeTab == 1, feedMediaOnly, activeImmersivePostID == active else { return }
+            guard activeTab == 1, activeImmersivePostID == active else { return }
         } else {
             guard activeTab == 0, inlinePlaybackID == active,
                   protectedHomePostIDs.isSubset(of: Set(source.prefix(prefixCount).map(\.stableID))) else { return }

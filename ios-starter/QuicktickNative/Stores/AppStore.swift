@@ -204,6 +204,7 @@ final class AppStore: ObservableObject {
         fullScreenPlaybackID = nil
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel(); semanticTask = nil
         generation = UUID(); feedRevision = generation; posts = []; encountered = []; nextPage = 1
+        publishedNextPage = 1; publishedQuery = queryText; publishedSort = feedSort
         hasMore = true; candidateContext = nil; isLoading = false; lastError = nil; inlinePlaybackID = nil; players.releaseAll()
         learnedInterests = []; recommendationMode = "On-device recommendations"
     }
@@ -269,7 +270,7 @@ final class AppStore: ObservableObject {
             publishedNextPage = nextPage; publishedQuery = saved.publishedQuery; publishedSort = saved.publishedSort
             hasMore = saved.hasMore; candidateContext = saved.context
             protectedImmersiveIDs = saved.protected; lastError = nil
-            if publishedQuery != queryText || publishedSort != feedSort { await refresh(immersive: tab == 1) }
+            if (posts.isEmpty && nextPage <= 1) || publishedQuery != queryText || publishedSort != feedSort { await refresh(immersive: tab == 1) }
             return
         }
         commitSearch(query: "", sort: "recommended")

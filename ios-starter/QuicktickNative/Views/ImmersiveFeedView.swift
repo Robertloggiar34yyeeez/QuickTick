@@ -209,6 +209,7 @@ private struct ImmersiveItemView: View {
     @State private var playing = true
     @State private var watched = 0.0
     @State private var reportedWatch = 0.0
+    @State private var loopStart = 0.0
     @State private var interacted = false
     @State private var progress = 0.0
     @State private var duration = 0.0
@@ -318,7 +319,7 @@ private struct ImmersiveItemView: View {
         }
         .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(mediaRetry)") {
             guard active, presentationActive, store.isForeground else { endExposure(); player = nil; ready = false; gifURL = nil; return }
-            exposureStarted = .now; exposure = PlaybackExposure(); gifDecoded = false; gifClock = 0; lastGIFSample = .now
+            exposureStarted = .now; exposure = PlaybackExposure(); loopStart = 0; gifDecoded = false; gifClock = 0; lastGIFSample = .now
             progress = 0; duration = 0; scrubbing = false; error = nil
             await prepare()
             guard !Task.isCancelled else { return }
@@ -356,7 +357,7 @@ private struct ImmersiveItemView: View {
                 sampleExposure()
                 if watched > reportedWatch {
                     if !offline, watched - reportedWatch >= 10 {
-                        store.recordWatch(post, seconds: watched - reportedWatch, completion: progress)
+                        store.recordWatch(post, seconds: watched - reportedWatch, completion: PlaybackExposure.completion(position: progress, watched: watched, duration: duration))
                         reportedWatch = watched
                     }
                 }
@@ -367,15 +368,18 @@ private struct ImmersiveItemView: View {
         .onChange(of: store.muted) { _, value in player?.isMuted = value }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
             guard active, presentationActive, store.isForeground, let item = notification.object as? AVPlayerItem, item === player?.currentItem else { return }
-            if !offline { store.recordComplete(post); store.recordReplay(post) }
+            sampleExposure()
+            let length = player?.currentItem?.duration.seconds ?? 0
+            let played = PlaybackExposure.completion(position: 1, watched: watched - loopStart, duration: length)
+            if !offline, played >= 0.8 { store.recordComplete(post); if loopStart > 0 { store.recordReplay(post) } }
+            loopStart = watched
             guard let player else { return }
-            let shouldPlay = playing
             let pool = store.players
             let key = post.stableID
             let owner = playbackOwner
             player.seek(to: .zero) { finished in
                 Task { @MainActor in
-                    guard finished, shouldPlay, pool.activeKey == key, pool.activeOwner == owner else { return }
+                    guard finished, playing, store.isForeground, pool.activeKey == key, pool.activeOwner == owner else { return }
                     player.play()
                 }
             }
@@ -434,7 +438,7 @@ private struct ImmersiveItemView: View {
     }
     private func sampleExposure() {
         let now = Date()
-        let running = player?.timeControlStatus == .playing && !scrubbing
+        let running = ready && player?.timeControlStatus == .playing && !scrubbing
         var media = player?.currentTime().seconds
         var advancing = running
         if gifURL != nil {
@@ -450,7 +454,7 @@ private struct ImmersiveItemView: View {
         guard exposureStarted != nil else { return }
         if let player, player.currentItem?.status == .readyToPlay { store.saveResume(post.stableID, seconds: player.currentTime().seconds) }
         if !offline {
-            if watched - reportedWatch > 0 { store.recordWatch(post, seconds: watched - reportedWatch, completion: progress) }
+            if watched - reportedWatch > 0 { store.recordWatch(post, seconds: watched - reportedWatch, completion: PlaybackExposure.completion(position: progress, watched: watched, duration: duration)) }
             if watched > 0 && watched < 1.25 && !interacted { store.recordQuickSkip(post) }
         }
         watched = 0

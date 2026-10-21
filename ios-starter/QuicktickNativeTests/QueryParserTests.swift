@@ -37,4 +37,11 @@ final class QueryParserTests: XCTestCase {
         XCTAssertEqual(exposure.sample(media: 30.75, wall: 17, playing: true), 0.75)
         XCTAssertEqual(exposure.sample(media: 0, wall: 18, playing: true), 0)
     }
+
+    func testSeekingToEndDoesNotImplyCompletedWatch() {
+        XCTAssertEqual(PlaybackExposure.completion(position: 0.95, watched: 0.5, duration: 20), 0.025)
+        XCTAssertEqual(PlaybackExposure.completion(position: 1, watched: 19, duration: 20), 0.95)
+        XCTAssertEqual(PlaybackExposure.completion(position: 1, watched: 0, duration: 20), 0)
+        XCTAssertEqual(PlaybackExposure.completion(position: 1, watched: 20, duration: .nan), 0)
+    }
 }

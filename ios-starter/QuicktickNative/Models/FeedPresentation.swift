@@ -58,6 +58,11 @@ enum MediaSizing {
 // Count advancing media time, capped by elapsed wall time. Buffering, pauses,
 // loading and discontinuous seeks never become positive engagement.
 struct PlaybackExposure {
+    static func completion(position: Double, watched: Double, duration: Double) -> Double {
+        guard position.isFinite, watched.isFinite, duration.isFinite, duration > 0 else { return 0 }
+        return max(0, min(1, min(position, watched / duration)))
+    }
+
     private var previousMedia: Double?
     private var previousWall: Double?
     private var wasPlaying = false

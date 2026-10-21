@@ -147,7 +147,7 @@ struct HomeFeedView: View {
                    let previousIndex = store.posts.firstIndex(where: { $0.stableID == previousID }),
                    let nextIndex = store.posts.firstIndex(where: { $0.stableID == top }) {
                     let dwell = now.timeIntervalSince(visibleTopSince)
-                    if nextIndex > previousIndex, dwell >= 0.08, dwell <= 1.25 {
+                    if QuickSkipDecision.dislikes(elapsed: dwell, from: previousIndex, to: nextIndex) {
                         store.recordQuickSkip(store.posts[previousIndex])
                     }
                     store.neutralizeQuickSkip(store.posts[nextIndex])

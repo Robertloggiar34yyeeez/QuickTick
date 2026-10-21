@@ -500,6 +500,14 @@ final class AppStore: ObservableObject {
         Task { await refresh(immersive: activeTab == 1) }
     }
 
+    func removeTag(_ tag: String) {
+        let parsed = QueryParser.parse(queryText)
+        let included = parsed.included.filter { $0.caseInsensitiveCompare(tag) != .orderedSame }
+        let excluded = parsed.excluded.filter { $0.caseInsensitiveCompare(tag) != .orderedSame }.map { "-\($0)" }
+        queryText = (included + excluded).joined(separator: " ")
+        Task { await refresh(immersive: activeTab == 1) }
+    }
+
     func tasteChoice(for provider: Provider) -> TasteChoice {
         tasteSetup.sources[provider.rawValue] ?? TasteChoice()
     }

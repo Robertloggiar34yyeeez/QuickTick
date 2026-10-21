@@ -131,6 +131,12 @@ struct ImmersiveFeedView: View {
         .onDisappear { if store.players.activeOwner == playbackOwner { store.players.releaseAll() } }
         .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
         .sheet(isPresented: $searchVisible) { NativeSearchBar(immersive: true) }
+        .quicktickEdgeBack {
+            // Nested viewers close to their originating feed. The primary
+            // Immersive tab returns to Home without affecting page navigation.
+            if let onClose { onClose() }
+            else { Task { await store.selectFeedTab(0) } }
+        }
     }
     private func prewarm() async {
         guard presentationActive, store.isForeground, !store.isManualVisualScanRunning, !Task.isCancelled else { return }

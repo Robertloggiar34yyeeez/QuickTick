@@ -330,9 +330,9 @@ final class FeedReliabilityTests: XCTestCase {
         let store = AppStore(api: QuicktickAPIClient(baseURL: nil, session: session)); store.selectedProvider = .eporner
         let home = Post(key: "home-saved", id: "1", provider: "Eporner", type: "image")
         let clip = Post(key: "clip-saved", id: "2", provider: "Eporner", type: "video")
-        store.commitSearch(query: "home_tag", sort: "recent"); store.posts = [home]
+        store.commitSearch(query: "home_tag", sort: "recent"); await store.refresh(); store.posts = [home]
         await store.selectFeedTab(1)
-        store.commitSearch(query: "video_tag -blocked", sort: "popular"); store.posts = [clip]
+        store.commitSearch(query: "video_tag -blocked", sort: "popular"); await store.refresh(immersive: true); store.posts = [clip]
         await store.selectFeedTab(0)
         XCTAssertEqual(store.queryText, "home_tag"); XCTAssertEqual(store.feedSort, "recent"); XCTAssertEqual(store.posts, [home])
         await store.selectFeedTab(1)

@@ -143,4 +143,13 @@ final class RecommendationTests: XCTestCase {
         let ranked = await engine.rank([blocked], taste: TasteChoice(done: true, into: [], notInto: ["blocked_theme"]), recent: [], collaborativeScores: scores)
         XCTAssertTrue(ranked.isEmpty)
     }
+
+    func testSearchControlsDoNotBecomeTasteInterests() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await engine.recordSearch(provider: .rule34, query: "sort:score:desc engineering -blocked rating:explicit score:>=50")
+        let state = await engine.snapshot()
+        XCTAssertEqual(state.profiles["rule34"]?.recentQueries.last, "engineering -blocked")
+        XCTAssertGreaterThan(state.profiles["rule34"]?.terms["engineering"] ?? 0, 0)
+        for term in ["sort", "score", "desc", "rating", "explicit"] { XCTAssertNil(state.profiles["rule34"]?.terms[term]) }
+    }
 }

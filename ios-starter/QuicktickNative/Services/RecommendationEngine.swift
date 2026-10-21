@@ -150,7 +150,7 @@ actor RecommendationEngine {
     }
 
     func recordSearch(provider: Provider, query: String) {
-        let parts = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let parts = SearchFilters.split(query).tags.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         guard !parts.isEmpty else { return }
         var profile = profile(for: provider.rawValue)
         let positives = tasteTokens(source: provider.rawValue, values: parts.filter { !$0.hasPrefix("-") }.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "~")) })

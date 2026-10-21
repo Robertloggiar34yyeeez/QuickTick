@@ -60,6 +60,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var feedMediaOnly = false
     private var candidateContext: String?
     private var nextPage = 1
+    private var publishedNextPage = 1
+    private var publishedQuery = ""
+    private var publishedSort = "recommended"
     private var encountered: Set<String> = []
     private var generation = UUID()
     private var semanticTask: Task<Void, Never>?
@@ -230,6 +233,8 @@ final class AppStore: ObservableObject {
         var provider: Provider
         var query: String
         var sort: String
+        var publishedQuery: String
+        var publishedSort: String
         var posts: [Post]
         var encountered: Set<String>
         var nextPage: Int
@@ -248,8 +253,8 @@ final class AppStore: ObservableObject {
     func selectFeedTab(_ tab: Int) async {
         guard (0...3).contains(tab), tab != activeTab else { return }
         if activeTab < 2 {
-            savedFeeds[activeTab] = SavedFeed(provider: selectedProvider, query: queryText, sort: feedSort,
-                posts: posts, encountered: encountered, nextPage: nextPage, hasMore: hasMore,
+            savedFeeds[activeTab] = SavedFeed(provider: selectedProvider, query: queryText, sort: feedSort, publishedQuery: publishedQuery, publishedSort: publishedSort,
+                posts: posts, encountered: Set(posts.map(\.stableID)), nextPage: publishedNextPage, hasMore: hasMore,
                 context: candidateContext, protected: protectedImmersiveIDs)
         }
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel()
@@ -261,8 +266,10 @@ final class AppStore: ObservableObject {
             commitSearch(query: saved.query, sort: saved.sort)
             let blocked = Set((exclusions + QueryParser.parse(saved.query).excluded + tasteChoice(for: selectedProvider).notInto).map { $0.lowercased() })
             posts = saved.posts.filter { blocked.isDisjoint(with: Set($0.tags.map { $0.lowercased() })) }; encountered = saved.encountered; nextPage = saved.nextPage
+            publishedNextPage = nextPage; publishedQuery = saved.publishedQuery; publishedSort = saved.publishedSort
             hasMore = saved.hasMore; candidateContext = saved.context
             protectedImmersiveIDs = saved.protected; lastError = nil
+            if publishedQuery != queryText || publishedSort != feedSort { await refresh(immersive: tab == 1) }
             return
         }
         commitSearch(query: "", sort: "recommended")
@@ -331,6 +338,7 @@ final class AppStore: ObservableObject {
             let immediate = filtered
             guard generation == token, !Task.isCancelled else { return }
             posts = immediate
+            publishedNextPage = nextPage; publishedQuery = requestedQuery; publishedSort = requestedSort
             semanticTask?.cancel()
             if requestedSort == "recommended" {
                 semanticTask = Task(priority: .utility) { [weak self] in
@@ -357,7 +365,7 @@ final class AppStore: ObservableObject {
         if let deadline = feedRetryAfter, deadline > .now { return }
         // The initial page belongs to bootstrap/refresh. Lazy footer appearance
         // must not race credential restoration or start a second page-one request.
-        guard nextPage > 1, !isLoading, hasMore else { return }
+        guard nextPage > 1, !isLoading, hasMore, publishedQuery == queryText, publishedSort == feedSort else { return }
         // Reserve loading synchronously, so multiple lazy-cell callbacks share one page request.
         isLoading = true
         let flight = Task { await performLoadMore(immersive: immersive) }; pageFlight = flight
@@ -397,6 +405,7 @@ final class AppStore: ObservableObject {
                 guard generation == token, !Task.isCancelled else { return }
             }
             posts.append(contentsOf: ranked)
+            publishedNextPage = nextPage
             if feedSort == "recommended" {
                 semanticTask?.cancel()
                 let semanticCandidates = candidates

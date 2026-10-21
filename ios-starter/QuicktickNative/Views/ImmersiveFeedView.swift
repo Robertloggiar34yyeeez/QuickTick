@@ -642,10 +642,20 @@ struct CachedMediaImage: View {
             return
         }
         #endif
-        do {
-            let decoded = try await MediaImagePipeline.shared.image(raw: post.cardPreviewURL, pixels: 512)
+        let urls = [post.thumbUrl, post.cardPreviewURL]
+            .filter { !$0.isEmpty }
+            .reduce(into: [String]()) { result, raw in
+                let ext = URL(string: raw)?.pathExtension.lowercased() ?? ""
+                guard !["mp4", "webm", "mov", "m3u8", "gif"].contains(ext) else { return }
+                if !result.contains(raw) { result.append(raw) }
+            }
+        for raw in urls {
+            guard !Task.isCancelled, retained.contains(key) else { return }
+            guard let decoded = try? await MediaImagePipeline.shared.image(raw: raw, pixels: 384) else { continue }
             guard !Task.isCancelled, retained.contains(key) else { return }
             images[key] = UIImage(cgImage: decoded.image)
-        } catch { /* Keep the tinted poster surface if the provider has no thumbnail. */ }
+            return
+        }
+        // Keep the tinted poster surface if the provider has no thumbnail.
     }
 }

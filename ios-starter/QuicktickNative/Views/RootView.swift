@@ -4,6 +4,8 @@ struct RootView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var navigationSelection
+    @State private var brieflyNamedTab: Int?
+    @State private var tabNameTask: Task<Void, Never>?
     @State private var showSettings = false
     @State private var homeAnchor: String?
     @State private var immersiveAnchor: String?
@@ -29,13 +31,13 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if !sideNavigation {
                     HStack(spacing: 4) { tabButtons(vertical: false) }
-                        .padding(6)
+                        .padding(4)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
                         .shadow(color: .black.opacity(0.45), radius: 16, y: 5)
-                        .padding(.horizontal, 14)
-                        .padding(.top, 8)
-                        .padding(.bottom, 8)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                        .padding(.bottom, 5)
                         .background(AppTheme.background)
                 }
             }
@@ -51,6 +53,17 @@ struct RootView: View {
                 }
             }
         }
+.onChange(of: store.activeTab) { _, tab in
+            tabNameTask?.cancel()
+            guard !reduceMotion else { brieflyNamedTab = nil; return }
+            withAnimation(.easeIn(duration: 0.11)) { brieflyNamedTab = tab }
+            tabNameTask = Task {
+                try? await Task.sleep(for: .milliseconds(360))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.14)) { brieflyNamedTab = nil }
+            }
+        }
+        .onDisappear { tabNameTask?.cancel() }
         .tint(.white)
         .background(AppTheme.background)
         .modifier(ProfileImportConfirmation(enabled: !showSettings))
@@ -67,19 +80,21 @@ struct RootView: View {
             Button {
                 Task { await store.selectFeedTab(index) }
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: tabs[index].1)
-                        .font(.system(size: 20, weight: .semibold))
-                    if !vertical && store.activeTab == index {
+                Group {
+                    if store.activeTab == index && brieflyNamedTab == index {
                         Text(tabs[index].0)
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                            .minimumScaleFactor(0.8)
+                            .transition(.opacity)
+                    } else {
+                        Image(systemName: tabs[index].1)
+                            .font(.system(size: 20, weight: .semibold))
+                            .transition(.opacity)
                     }
                 }
-                .foregroundStyle(store.activeTab == index ? .white : .white.opacity(0.65))
-                .frame(width: vertical ? 48 : nil, height: vertical ? 48 : 52)
+                                .foregroundStyle(store.activeTab == index ? .white : .white.opacity(0.65))
+                .frame(width: vertical ? 46 : nil, height: vertical ? 46 : 48)
                 .frame(maxWidth: vertical ? nil : .infinity)
                 .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .background {

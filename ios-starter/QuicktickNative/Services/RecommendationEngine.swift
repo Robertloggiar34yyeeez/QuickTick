@@ -371,7 +371,8 @@ actor RecommendationEngine {
     func score(_ post: Post, taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:]) -> Double {
         let source = post.provider.lowercased()
         let scopedKey = contextualRanking ? TasteConcepts.profileKey(post) : source
-        let p = contextualRanking ? (state.scopedProfiles[scopedKey] ?? RecommendationProfile()) : profile(for: source)
+        let general = profile(for: source)
+        let p = contextualRanking ? (state.scopedProfiles[scopedKey] ?? RecommendationProfile()) : general
         let postTerms = terms(for: post)
         let into = Set(tasteTokens(source: source, values: taste.into))
         let notInto = Set(tasteTokens(source: source, values: taste.notInto))
@@ -390,7 +391,12 @@ actor RecommendationEngine {
 
         let topPositive = positiveTermEntries(source: source, taste: taste, limit: 8, learned: p)
         for term in postTerms {
-            let own = effectiveTermScore(source: source, term: term, taste: taste, learned: p)
+            let contextual = effectiveTermScore(source: source, term: term, taste: taste, learned: p)
+            let overall = effectiveTermScore(source: source, term: term, taste: taste, learned: general)
+            // Learn from the medium-specific context while respecting global
+            // negative presentation feedback even on previously unseen contexts.
+            let own = overall < -0.5 ? min(contextual, overall) :
+                (contextualRanking ? contextual * 0.72 + overall * 0.28 : overall)
             let genericMedium = ["2d", "3d", "3d_animation", "animation", "animated"].contains(RecommendationTagRules.canonical(term))
             score += own * (contextualRanking && genericMedium && own > 0 && !into.contains(term) ? 0.15 : 1.7)
             if into.contains(term) { score += 8 }
@@ -417,7 +423,13 @@ actor RecommendationEngine {
         }
         if p.recentSeen.contains(post.stableID) { score -= 1_000 }
         score -= negativeThemePenalty(profile: p, post: post)
-        let negativeHits = postTerms.filter { effectiveTermScore(source: source, term: $0, taste: taste, learned: p) < -0.5 }.count
+        if contextualRanking {
+            score -= negativeThemePenalty(profile: general, post: post)
+        }
+        let negativeHits = postTerms.filter {
+            effectiveTermScore(source: source, term: $0, taste: taste, learned: p) < -0.5 ||
+            effectiveTermScore(source: source, term: $0, taste: taste, learned: general) < -0.5
+        }.count
         score -= Double(negativeHits) * 24
         let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
         score -= min(6, Double(postTerms.filter(recentTerms.contains).count) * 0.42)

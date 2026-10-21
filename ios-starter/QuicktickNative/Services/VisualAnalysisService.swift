@@ -24,6 +24,10 @@ actor VisualAnalysisService {
         var profiles: [String: VisualProfile] = [:]
         var features: [String: VisualFeatures] = [:]
         var liked: Set<String> = []
+        // Maps liked stable IDs to their source/visual-domain profile for reversible learning.
+        var likedProfileKeys: [String: String]? = nil
+        // Sparse per-like feature snapshots survive the bounded preview cache.
+        var likedEvidence: [String: VisualFeatures]? = nil
         var seen: Set<String> = []
         var disliked: Set<String> = []
         var analysisVersions: [String: String]? = nil
@@ -46,6 +50,14 @@ actor VisualAnalysisService {
     private(set) var cacheHits = 0
     func metadataTaxonomy() -> VisualTagTaxonomy? { loadTaxonomy(); return taxonomy }
     private func profileKey(_ post: Post) -> String { TasteConcepts.profileKey(post) }
+    private func likeEvidence(_ features: VisualFeatures) -> VisualFeatures {
+        // Record non-pixel vectors separately; they are not needed for undo and
+        // keeping every large embedding would overgrow the saved visual state.
+        var saved = features
+        saved.embedding = []
+        saved.fingerprint = nil
+        return saved
+    }
     private func loadTaxonomy() {
         guard !taxonomyAttempted else { return }; taxonomyAttempted = true
         guard let url = Bundle.main.url(forResource: "visual-tag-taxonomy", withExtension: "json"),
@@ -89,10 +101,24 @@ actor VisualAnalysisService {
         restore()
         guard !Task.isCancelled, let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy) else { return }
         let cached = state.features[post.stableID]
-        let features = cached?.domain == metadata.domain ? cached! : metadata
+        let features = (event == .unlike ? state.likedEvidence?[post.stableID] : nil)
+            ?? (cached?.domain == metadata.domain ? cached! : metadata)
         switch event {
-        case .like: guard state.liked.insert(post.stableID).inserted else { return }
-        case .unlike: guard state.liked.remove(post.stableID) != nil else { return }
+        case .like:
+            guard state.liked.insert(post.stableID).inserted else {
+                // Reconciled metadata can precede the asynchronous tap event.
+                // Queue its pixel scan without adding the same like twice.
+                if queueAnalysis { _ = enqueue(post, priority: 4) }
+                return
+            }
+            if state.likedProfileKeys == nil { state.likedProfileKeys = [:] }
+            state.likedProfileKeys?[post.stableID] = profileKey(post)
+            if state.likedEvidence == nil { state.likedEvidence = [:] }
+            state.likedEvidence?[post.stableID] = likeEvidence(features)
+        case .unlike:
+            guard state.liked.remove(post.stableID) != nil else { return }
+            state.likedProfileKeys?.removeValue(forKey: post.stableID)
+            state.likedEvidence?.removeValue(forKey: post.stableID)
         case .impression:
             guard state.seen.insert(post.stableID).inserted else { return }
             if state.seen.count > 4096 { state.seen = [post.stableID] }
@@ -119,21 +145,48 @@ actor VisualAnalysisService {
         record(envelope.event, post: envelope.post, queueAnalysis: queueAnalysis)
         flush()
     }
-    // Batch metadata for the complete favorites collection before slow pixel
-    // inference. Existing IDs are not double-counted and scans are not redone.
+    // Synchronize exactly the current saved likes, including unlikes made while
+    // offline or during a sync. Never replay a like already in the ledger.
+    // Preserve learned dislikes and impressions in their respective profiles.
     func reconcileFavorites(_ favorites: [Post]) {
         restore()
         loadTaxonomy()
+        let current = Set(favorites.map(\.stableID))
         var changed = false
+        for id in state.liked.subtracting(current) {
+            if let previous = state.likedEvidence?[id] ?? state.features[id] {
+                // Old state versions did not store a profile key; recover it
+                // from the stable provider ID and the cached visual domain.
+                let prefix = id.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
+                let key = state.likedProfileKeys?[id] ?? prefix + "|" + previous.domain.rawValue
+                state.profiles[key, default: VisualProfile()].record(.unlike, features: previous)
+            }
+            state.liked.remove(id)
+            state.likedProfileKeys?.removeValue(forKey: id)
+            state.likedEvidence?.removeValue(forKey: id)
+            changed = true
+        }
         for post in favorites {
-            guard !state.liked.contains(post.stableID),
-                  let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy) else { continue }
+            guard let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy) else { continue }
             let cached = state.features[post.stableID]
             let features = cached?.domain == metadata.domain ? cached! : metadata
-            state.liked.insert(post.stableID)
-            state.features[post.stableID] = features
-            state.profiles[profileKey(post), default: VisualProfile()].record(.like, features: features)
-            changed = true
+            let key = profileKey(post)
+            if state.likedProfileKeys == nil { state.likedProfileKeys = [:] }
+            if state.liked.insert(post.stableID).inserted {
+                state.features[post.stableID] = features
+                state.profiles[key, default: VisualProfile()].record(.like, features: features)
+                if state.likedEvidence == nil { state.likedEvidence = [:] }
+                state.likedEvidence?[post.stableID] = likeEvidence(features)
+                changed = true
+            } else if state.likedEvidence?[post.stableID] == nil {
+                if state.likedEvidence == nil { state.likedEvidence = [:] }
+                state.likedEvidence?[post.stableID] = likeEvidence(features)
+                changed = true
+            }
+            if state.likedProfileKeys?[post.stableID] != key {
+                state.likedProfileKeys?[post.stableID] = key
+                changed = true
+            }
         }
         if changed { trimFeatures(); persist() }
     }
@@ -215,7 +268,9 @@ actor VisualAnalysisService {
                     state.profiles[profileKey(post), default: VisualProfile()].record(.unlike, features: old)
                     state.profiles[profileKey(post), default: VisualProfile()].record(.like, features: updated)
                 }
-                state.features[post.stableID] = updated; persist()
+                state.features[post.stableID] = updated
+                if state.liked.contains(post.stableID) { state.likedEvidence?[post.stableID] = likeEvidence(updated) }
+                persist()
             }
         }
         if favorite { record(.like, post: post) }
@@ -287,6 +342,7 @@ actor VisualAnalysisService {
         }
         state.profiles[profileKey(post)] = profile
         state.features[post.stableID] = enriched
+        if state.liked.contains(post.stableID) { state.likedEvidence?[post.stableID] = likeEvidence(enriched) }
         if state.analysisVersions == nil { state.analysisVersions = [:] }
         if !lightweight, !taggerCoolingDown { state.analysisVersions?[post.stableID] = revision; inferenceRuns += 1 }
         lightVersions[post.stableID] = revision

@@ -56,13 +56,19 @@ final class AppStore: ObservableObject {
     @Published var favorites: [String: Post] = [:] {
         didSet {
             favoriteExclusionIDs = Set(favorites.values.flatMap { FeedExclusions.identifiers($0) })
-            // Snapshot ALL current likes; do not replay events or hold the UI.
-            Task { [weak self] in
-                guard let self else { return }
-                await self.recommendations.configureFavorites(Array(self.favorites.values))
+            // Refresh from the complete latest snapshot and cancel obsolete
+            // updates. Neither model inference nor network work blocks taps.
+            favoriteSyncTask?.cancel()
+            let snapshot = Array(favorites.values)
+            favoriteSyncTask = Task(priority: .utility) { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                await self.recommendations.configureFavorites(snapshot)
+                guard !Task.isCancelled else { return }
+                await self.visual.reconcileFavorites(snapshot)
             }
         }
     }
+    private var favoriteSyncTask: Task<Void, Never>?
     private var favoriteExclusionIDs: Set<String> = []
     @Published var exclusions: [String] = []
     @Published var tasteSetup = TasteSetup()
@@ -773,32 +779,35 @@ final class AppStore: ObservableObject {
             guard !Task.isCancelled, generation == token else { return }
             await adaptRecommendationTail(token: token)
             await visual.reconcileFavorites(Array(favorites.values))
-            let history = await visual.historicalQueue(Array(favorites.values))
-            var offset = 0
-            var scannedCachedFeed = false
-            repeat {
-                guard !Task.isCancelled, generation == token else { return }
-                let idle = VisualAnalysisService.resourcesAllowAnalysis(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            // Queue a bounded batch and return rather than parking a worker
+            // for minutes while the user scrolls, plays clips or uses Low Power
+            // Mode. The background worker processes queued previews when safe.
+            if visualAnalysisEnabled {
+                let idle = VisualAnalysisService.resourcesAllowAnalysis(
+                    lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
                     thermal: ProcessInfo.processInfo.thermalState.rawValue,
-                    playback: players.activeKey != nil || inlinePlaybackID != nil || activeTab == 1 || fullScreenPlaybackID != nil || !isForeground, loading: isLoading)
+                    playback: players.activeKey != nil || inlinePlaybackID != nil
+                        || activeTab == 1 || fullScreenPlaybackID != nil || !isForeground,
+                    loading: isLoading)
                 if idle {
-                    if visualAnalysisEnabled { visualScanStatus = "Checking visual taste Ãƒâ€šÃ‚· \(offset)/\(history.count) favorites" }
-                    if !scannedCachedFeed {
-                        for post in posts.prefix(4) {
-                            guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
-                            if visualAnalysisEnabled { _ = await visual.enqueue(post, priority: 1) }
-                        }
-                        scannedCachedFeed = true
+                    for post in posts.prefix(4) {
+                        guard !Task.isCancelled, generation == token else { return }
+                        _ = await visual.enqueue(post, priority: 1)
                     }
-                    for post in history.dropFirst(offset).prefix(4) {
-                        guard !Task.isCancelled, players.activeKey == nil, !isLoading else { break }
-                        await visual.record(.like, post: post, queueAnalysis: false)
-                        if visualAnalysisEnabled, !(await visual.enqueue(post, priority: 1)) { break }
-                        offset += 1
+                    let history = await visual.historicalQueue(Array(favorites.values))
+                    var queued = 0
+                    for post in history.prefix(24) {
+                        guard !Task.isCancelled, generation == token else { return }
+                        if !(await visual.enqueue(post, priority: 3)) { break }
+                        queued += 1
                     }
+                    if queued > 0 {
+                        visualScanStatus = "Queued \(queued) favorites for visual analysis"
+                    }
+                } else {
+                    visualScanStatus = "Visual analysis paused until the device is idle"
                 }
-                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
-            } while offset < history.count
+            }
             guard !Task.isCancelled, generation == token else { return }
             feedExclusions.setFingerprints(await visual.fingerprints())
             visualScores = await visual.scores(posts)
@@ -876,8 +885,12 @@ final class AppStore: ObservableObject {
             feedExclusions.setFingerprints(fingerprints); visualScores = scores
             await adaptRecommendationTail(token: feedRevision)
             guard !Task.isCancelled, manualVisualID == id else { return }
+            let remaining = await visual.historicalQueue(Array(favorites.values))
             manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
-                status: history.isEmpty ? "No new posts to scan Ãƒâ€šÃ‚· visual taste is up to date" : "Visual taste updated Ãƒâ€šÃ‚· \(checked) new posts analyzed", running: false)
+                status: history.isEmpty ? "All favorite previews already analyzed" :
+                    (remaining.isEmpty ? "Visual taste updated: \(checked) posts checked" :
+                    "Checked \(checked) favorites; \(remaining.count) previews unavailable or pending retry"),
+                running: false)
             visualScanStatus = nil
             scheduleIdleIntelligence()
         }

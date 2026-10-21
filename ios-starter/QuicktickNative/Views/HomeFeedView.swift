@@ -17,23 +17,18 @@ struct HomeFeedView: View {
         let revision = store.feedRevision
         ScrollViewReader { proxy in
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
-                        Text("YOUR SPACE").tracking(2).foregroundStyle(AppTheme.secondaryLabel)
-                    }
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    Text("Home")
-                        .font(.system(.largeTitle, design: .rounded).weight(.bold))
-                        .accessibilityIdentifier("home-title")
-                    Text(store.feedSort == "recommended" ? "Selected for your interests" : "Browse your sources")
+            LazyVStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(store.feedSort == "recommended" ? "Selected for your interests" : "Popular from your sources")
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.secondaryLabel)
-                }.id("home-top").padding(.top, 18).padding(.bottom, 4)
+                        .accessibilityIdentifier("home-title")
+                }
+                .id("home-top")
+                .padding(.top, 8)
                 HStack(spacing: 10) {
                     HStack(spacing: 3) {
-                        ForEach([("Home", "recent"), ("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
+                        ForEach([("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
                             Button {
                                 store.feedSort = mode
                                 Task { await store.refresh() }
@@ -62,29 +57,30 @@ struct HomeFeedView: View {
                     .padding(4)
                     .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
-                    Button { Task { await store.refresh() } } label: {
-                        Image(systemName: "arrow.clockwise")
+                    Button { showSearch = true } label: {
+                        Image(systemName: "magnifyingglass")
                             .font(.system(size: 17, weight: .semibold))
-                            .frame(width: 50, height: 52)
+                            .frame(width: 48, height: 48)
                             .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
                     .buttonStyle(QuicktickPressStyle())
-                    .accessibilityLabel("Refresh feed")
+                    .accessibilityLabel("Search")
+                    .accessibilityIdentifier("home-search-button")
                 }
-                Color.clear.frame(height: 0).id("home-search")
                 Button { onboarding = true } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "sparkles")
                             .foregroundStyle(AppTheme.accent)
-                            .frame(width: 36, height: 36)
+                            .frame(width: 32, height: 32)
                             .background(AppTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
                         Text("What would you like to see?")
                             .font(.subheadline.weight(.medium))
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AppTheme.secondaryLabel)
                     }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, minHeight: 60)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, minHeight: 50)
                     .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
                 }
@@ -163,14 +159,18 @@ struct HomeFeedView: View {
         .toolbarBackground(AppTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) { Text("QuickTick").font(.subheadline.weight(.semibold)) }
+            ToolbarItem(placement: .principal) {
+                Text("QuickTick")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .tracking(-0.5)
+                    .accessibilityIdentifier("quicktick-brand")
+            }
             ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 10) {
+                HStack(spacing: 6) {
                     Menu { ForEach(Provider.allCases) { p in Button(p.displayName) { store.selectedProvider = p; Task { await store.refresh() } } } } label: {
-                        Text(store.selectedProvider.displayName).font(.caption.weight(.medium)).padding(.horizontal, 12).frame(height: 44)
+                        Text(store.selectedProvider.displayName).font(.caption.weight(.medium)).padding(.horizontal, 10).frame(height: 44)
                             .background(AppTheme.surface, in: Capsule()).overlay(Capsule().stroke(.white.opacity(0.15)))
                     }
-                    Button { showSearch = true; withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("home-search", anchor: .top) } } label: { Image(systemName: "magnifyingglass").font(.system(size: 19)).frame(width: 44, height: 44).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Toggle search")
                     SettingsLauncher(isPresented: $showSettings)
                 }
             }

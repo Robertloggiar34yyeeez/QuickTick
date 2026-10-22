@@ -64,7 +64,7 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             // interests, not identity/species evidence. Keep a small bounded
             // feature budget for the on-device context model.
             if (result.attributes.count < 36),
-               taxonomy?.general?.contains(TasteConcepts.canonical(tag)) == true,
+               taxonomy?.kind(of: tag) == .interest,
                !["solo", "2d", "3d", "video", "animated", "highres"].contains(tag) {
                 result.attributes["interest:" + TasteConcepts.canonical(tag)] = 0.75
             }
@@ -104,9 +104,11 @@ struct VisualTagTaxonomy: Decodable, Sendable {
     enum Kind: Sendable { case character, artist, interest, unknown }
     func kind(of raw: String) -> Kind {
         let canonical = TasteConcepts.canonical(raw)
-        if characters.contains(canonical) { return .character }
-        if artists.contains(canonical) { return .artist }
-        if general?.contains(canonical) == true { return .interest }
+        let variants = [canonical, raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                        canonical.replacingOccurrences(of: "_", with: "-")]
+        if variants.contains(where: characters.contains) { return .character }
+        if variants.contains(where: artists.contains) { return .artist }
+        if variants.contains(where: { general?.contains($0) == true }) { return .interest }
         return .unknown
     }
 }

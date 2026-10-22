@@ -101,7 +101,7 @@ struct VisualTagTaxonomy: Decodable, Sendable {
     // Decodes old v1 bundles too. No network or user data required.
     let general: Set<String>?
 
-    enum Kind: Sendable { case character, artist, interest, unknown }
+    enum Kind: Sendable, Equatable { case character, artist, interest, unknown }
     func kind(of raw: String) -> Kind {
         let canonical = TasteConcepts.canonical(raw)
         let variants = [canonical, raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),

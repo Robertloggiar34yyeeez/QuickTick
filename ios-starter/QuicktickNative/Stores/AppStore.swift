@@ -385,7 +385,12 @@ final class AppStore: ObservableObject {
             var broaden = false
             for _ in 0..<5 {
                 guard generation == token, !Task.isCancelled else { return }
-                let response = try await fetchCandidates(provider: provider, parsed: parsed, context: personalized ? context : nil, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly, forceBroad: broaden)
+                let response = personalized && !broaden
+                    ? try await fetchBlendedCandidates(provider: provider, parsed: parsed,
+                        context: context, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly)
+                    : try await fetchCandidates(provider: provider, parsed: parsed,
+                        context: personalized ? context : nil, page: requestedPage,
+                        sort: requestedSort, mediaOnly: mediaOnly, forceBroad: broaden)
                 let acquisition = response.request
                 let page = response.page
                 requestedPage = acquisition?.page ?? requestedPage
@@ -455,7 +460,12 @@ final class AppStore: ObservableObject {
             var broaden = false
             for attempt in 0..<5 {
             guard generation == token, !Task.isCancelled else { return }
-            let response = try await fetchCandidates(provider: provider, parsed: parsed, context: candidateContext, page: nextPage, sort: feedSort, mediaOnly: feedMediaOnly, forceBroad: broaden)
+            let response = candidateContext != nil && !broaden
+                ? try await fetchBlendedCandidates(provider: provider, parsed: parsed,
+                    context: candidateContext!, page: nextPage, sort: feedSort, mediaOnly: feedMediaOnly)
+                : try await fetchCandidates(provider: provider, parsed: parsed,
+                    context: candidateContext, page: nextPage, sort: feedSort,
+                    mediaOnly: feedMediaOnly, forceBroad: broaden)
             let acquisition = response.request
             let requestedPage = acquisition?.page ?? nextPage
             let page = response.page
@@ -494,6 +504,71 @@ final class AppStore: ObservableObject {
             }
             guard generation == token, !Task.isCancelled else { return }
         } catch { if token == generation, !Task.isCancelled { recordFeedError(error, provider: provider) } }
+    }
+
+    // Rank across two independent candidate pools rather than rearranging a
+    // single 40-post search page. Network fetches run in parallel, and only
+    // cached metadata is scored on the first paint. A duplicate focused query
+    // is replaced by a broad discovery page to avoid two copies of one source.
+    private func fetchBlendedCandidates(provider: Provider, parsed: ParsedQuery, context: String,
+                                        page: Int, sort: String, mediaOnly: Bool)
+        async throws -> (page: PostPage, request: RecommendationEngine.CandidateRequest?) {
+        plannedAcquisition = nil
+        let taste = tasteChoice(for: provider)
+        let exclusions = self.exclusions + parsed.excluded
+        let first = await recommendations.candidateRequest(
+            context: context, provider: provider, taste: taste, excluded: exclusions)
+        var second = await recommendations.candidateRequest(
+            context: context, provider: provider, taste: taste, excluded: exclusions)
+        if first.context == second.context {
+            let broadKey = context + "|query:"
+            second = RecommendationEngine.CandidateRequest(
+                context: broadKey,
+                query: ParsedQuery(included: [], excluded: first.query.excluded),
+                page: await recommendations.candidatePage(context: broadKey), focused: false)
+        }
+        func prepared(_ request: RecommendationEngine.CandidateRequest)
+            -> (key: String, query: ParsedQuery, page: Int) {
+            let cursor = candidateCursors[request.context] ?? request.page
+            var query = request.query
+            query.excluded = RecommendationTagRules.queryExclusions(
+                query.excluded + exclusions + taste.notInto)
+            return (request.context, query, cursor)
+        }
+        let a = prepared(first), b = prepared(second)
+        let requestedGeneration = generation
+        // async let keeps both requests structured and cancels outstanding
+        // work when the parent refresh is cancelled.
+        async let primary: PostPage? = try? await api.posts(
+            provider: provider, query: a.query, page: a.page,
+            sort: sort, immersive: mediaOnly)
+        async let secondary: PostPage? = try? await api.posts(
+            provider: provider, query: b.query, page: b.page,
+            sort: sort, immersive: mediaOnly)
+        let (firstPage, secondPage) = await (primary, secondary)
+        try Task.checkCancellation()
+        guard firstPage != nil || secondPage != nil else {
+            // Preserve meaningful HTTP/auth errors from the normal pathway.
+            return try await fetchCandidates(provider: provider, parsed: parsed,
+                context: context, page: page, sort: sort, mediaOnly: mediaOnly)
+        }
+        if generation == requestedGeneration {
+            if firstPage != nil {
+                candidateCursors[a.key] = a.page + 1
+                await recommendations.advanceCandidatePage(context: a.key, nextPage: a.page + 1)
+            }
+            if secondPage != nil {
+                candidateCursors[b.key] = b.page + 1
+                await recommendations.advanceCandidatePage(context: b.key, nextPage: b.page + 1)
+            }
+        }
+        let combined = PostPage(
+            items: (firstPage?.items ?? []) + (secondPage?.items ?? []),
+            hasMore: (firstPage?.hasMore ?? false) || (secondPage?.hasMore ?? false))
+        let used = firstPage != nil ? first : second
+        let usedPage = firstPage != nil ? a.page : b.page
+        return (combined, RecommendationEngine.CandidateRequest(
+            context: used.context, query: used.query, page: usedPage, focused: used.focused))
     }
 
     private func fetchCandidates(provider: Provider, parsed: ParsedQuery, context: String?, page: Int, sort: String, mediaOnly: Bool, forceBroad: Bool = false) async throws -> (page: PostPage, request: RecommendationEngine.CandidateRequest?) {

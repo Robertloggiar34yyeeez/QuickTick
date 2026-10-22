@@ -95,8 +95,8 @@ final class NativeProviderAPITests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
-        store.selectedProvider = .eporner
         await store.bootstrap()
+        store.selectedProvider = .eporner
         await store.recommendations.load(RecommendationState())
         NativeProviderProtocol.log.reset()
         await store.refresh()
@@ -117,8 +117,8 @@ final class NativeProviderAPITests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
-        store.selectedProvider = .eporner
         await store.bootstrap()
+        store.selectedProvider = .eporner
         // Supply distinct intentional interests without updating on-disk user
         // preferences or depending on external network responses.
         await store.recommendations.record(.like,

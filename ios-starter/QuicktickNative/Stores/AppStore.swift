@@ -1014,7 +1014,7 @@ final class AppStore: ObservableObject {
         let id = UUID(); manualVisualID = id
         manualVisualProgress = VisualRefreshProgress(completed: 0, total: 0, status: "Checking for new posts…", running: true)
         players.pauseAll()
-        manualVisualTask = Task(priority: .background) { [weak self] in
+        manualVisualTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }
             defer { if manualVisualID == id { manualVisualTask = nil } }
             // Drain a cancelled text prediction before starting a visual pass.

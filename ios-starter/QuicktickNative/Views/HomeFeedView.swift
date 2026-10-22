@@ -199,6 +199,13 @@ struct HomeFeedView: View {
             }
         }
 
+        .onChange(of: store.feedRevision) { _, _ in
+            // Keep the search sheet alive while new results are committed.
+            // Scroll, rather than replacing the whole NavigationStack subtree.
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                proxy.scrollTo("home-top", anchor: .top)
+            }
+        }
         .refreshable { await store.refresh() }
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }

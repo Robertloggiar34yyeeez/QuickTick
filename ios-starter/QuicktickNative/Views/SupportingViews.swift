@@ -331,6 +331,12 @@ struct FirstRunSetupView: View {
                 ? "Choose familiar characters. Their franchise helps discover related characters; styles and artists stay separate so one liked character doesn't imply liking every 3D artist."
                 : "Choose starter keywords for this source, or add your own words below.")
                 .foregroundStyle(.secondary)
+            if let focused = previewPick {
+                simpleExample(focused)
+                    .task(id: "\(provider.rawValue):\(focused.id)") {
+                        await loadExample(for: focused)
+                    }
+            }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 10)], spacing: 10) {
                 ForEach(suggestions) { pick in
                     Button {
@@ -361,12 +367,6 @@ struct FirstRunSetupView: View {
                     .buttonStyle(QuicktickPressStyle())
                     .accessibilityIdentifier("simple-pick-\(pick.id)")
                 }
-            }
-            if let focused = previewPick {
-                simpleExample(focused)
-                    .task(id: "\(provider.rawValue):\(focused.id)") {
-                        await loadExample(for: focused)
-                    }
             }
             if isRule34 {
                 if !selectedPicks.isEmpty {

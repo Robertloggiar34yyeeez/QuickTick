@@ -101,7 +101,7 @@ final class NativeProviderAPITests: XCTestCase {
         NativeProviderProtocol.log.reset()
         await store.refresh()
         let requests = NativeProviderProtocol.log.snapshot()
-            .filter { $0.url?.path == "/api/v2/video/search/" }
+            .filter { $0.url?.path.hasPrefix("/api/v2/video/search") == true }
         let pages = requests.compactMap { request in
             URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
                 .queryItems?.first(where: { $0.name == "page" })?.value
@@ -127,7 +127,7 @@ final class NativeProviderAPITests: XCTestCase {
         NativeProviderProtocol.log.reset()
         await store.refresh()
         let searches = NativeProviderProtocol.log.snapshot()
-            .filter { $0.url?.path == "/api/v2/video/search/" }
+            .filter { $0.url?.path.hasPrefix("/api/v2/video/search") == true }
             .compactMap { request in
                 URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
                     .queryItems?.first(where: { $0.name == "query" })?.value
@@ -140,7 +140,13 @@ final class NativeProviderAPITests: XCTestCase {
 
     func testPornhubFeed404TriesCanonicalRouteOnce() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
-        let page = try await api.posts(provider: .pornhub, query: QueryParser.parse("route-fixture"), page: 1)
+        let page: PostPage
+        do {
+            page = try await api.posts(provider: .pornhub, query: QueryParser.parse("route-fixture"), page: 1)
+        } catch {
+            XCTFail("Expected fallback to the canonical public route; requests: \(NativeProviderProtocol.log.snapshot().compactMap(\.url)) error: \(error)")
+            return
+        }
         XCTAssertEqual(page.items.count, 1)
         XCTAssertEqual(NativeProviderProtocol.log.snapshot().map { $0.url!.path }, ["/webmasters/search", "/webmasters/search/"])
     }

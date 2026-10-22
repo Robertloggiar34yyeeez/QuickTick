@@ -241,10 +241,12 @@ final class FastFeedVisualTests: XCTestCase {
         let start = Date()
         await store.refresh()
         print("QUICKTICK_METRIC fixture_first_posts_ms=\(Date().timeIntervalSince(start) * 1000)")
-        XCTAssertEqual(store.posts.map(\.id), ["1", "2"])
+        XCTAssertEqual(store.posts.map(\.id), ["1", "2", "3", "4"],
+                       "A recommended refresh must blend two unique candidate pages")
         XCTAssertFalse(store.isLoading)
         await store.loadMore()
-        XCTAssertEqual(store.posts.map(\.id), ["1", "2", "3", "4"])
+        XCTAssertEqual(store.posts.map(\.id), ["1", "2", "3", "4", "5", "6", "7", "8"],
+                       "Pagination should advance beyond both initial candidate pages")
         store.recordImpression(store.posts[0]); store.recordImpression(store.posts[1])
         store.favorites[store.posts[2].stableID] = store.posts[2]
         await store.refresh()

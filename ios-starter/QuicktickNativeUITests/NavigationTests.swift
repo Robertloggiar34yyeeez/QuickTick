@@ -225,6 +225,24 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 10))
     }
 
+    @MainActor func testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-first-run"]
+        app.launch()
+        let next = app.buttons["first-run-continue"]
+        XCTAssertTrue(next.waitForExistence(timeout: 12))
+        XCTAssertTrue(app.staticTexts["Your feed.\nYour taste."].exists)
+        next.tap()
+        XCTAssertTrue(app.staticTexts["Choose your source"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.secureTextFields["first-run-rule34-key"].exists)
+        next.tap()
+        XCTAssertTrue(app.staticTexts["Teach QuickTick your taste"].waitForExistence(timeout: 5))
+        next.tap()
+        XCTAssertTrue(app.staticTexts["You're ready"].waitForExistence(timeout: 5))
+        next.tap()
+        XCTAssertTrue(app.buttons["tab-Home"].waitForExistence(timeout: 10))
+    }
+
     @MainActor func testHomeInlinePlaybackAndComicClose() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         let playback = app.buttons["inline-play-test:video"]

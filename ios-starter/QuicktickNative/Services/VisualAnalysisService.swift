@@ -169,9 +169,33 @@ actor VisualAnalysisService {
         for post in favorites {
             guard let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy) else { continue }
             let cached = state.features[post.stableID]
-            let features = cached?.domain == metadata.domain ? cached! : metadata
+            var features = cached?.domain == metadata.domain ? cached! : metadata
             let key = profileKey(post)
             if state.likedProfileKeys == nil { state.likedProfileKeys = [:] }
+            // Taxonomy or reviewed-character updates should enrich the
+            // existing cached pixels without launching a new Vision scan.
+            // Reverse prior like evidence first to prevent double counting.
+            let subjects = Array(Set(features.subjects + metadata.subjects)).sorted()
+            let artists = Array(Set((features.artists ?? []) + (metadata.artists ?? []))).sorted()
+            let franchises = Array(Set((features.franchises ?? []) + (metadata.franchises ?? []))).sorted()
+            if features.subjects != subjects || (features.artists ?? []) != artists
+                || (features.franchises ?? []) != franchises {
+                let previous = state.likedEvidence?[post.stableID] ?? features
+                features.subjects = subjects
+                features.artists = artists.isEmpty ? nil : artists
+                features.franchises = franchises.isEmpty ? nil : franchises
+                var evidence = features.conceptEvidence ?? [:]
+                evidence.merge(metadata.conceptEvidence ?? [:]) { _, new in new }
+                features.conceptEvidence = evidence.isEmpty ? nil : evidence
+                if state.liked.contains(post.stableID) {
+                    state.profiles[key, default: VisualProfile()].record(.unlike, features: previous)
+                    state.profiles[key, default: VisualProfile()].record(.like, features: features)
+                    if state.likedEvidence == nil { state.likedEvidence = [:] }
+                    state.likedEvidence?[post.stableID] = likeEvidence(features)
+                }
+                state.features[post.stableID] = features
+                changed = true
+            }
             if state.liked.insert(post.stableID).inserted {
                 state.features[post.stableID] = features
                 state.profiles[key, default: VisualProfile()].record(.like, features: features)

@@ -773,6 +773,9 @@ final class AppStore: ObservableObject {
             while !Task.isCancelled, isForeground, activeLearningID == id {
                 let battery = UIDevice.current.batteryLevel
                 let allowed = visualAnalysisEnabled && !isManualVisualScanRunning && !isLoading && memoryCooldown <= .now
+                    // Even cached decoding competes with AVKit and gesture
+                    // rendering. Resume taste work only after scrolling rests.
+                    && Date().timeIntervalSince(lastFeedMotion) >= 1.5
                     && (battery < 0 || battery >= 0.15) && !ProcessInfo.processInfo.isLowPowerModeEnabled
                     && ProcessInfo.processInfo.thermalState.rawValue < 2
                 if allowed {

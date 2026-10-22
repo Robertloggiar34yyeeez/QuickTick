@@ -21,7 +21,6 @@ final class RecommendationTests: XCTestCase {
                       "Keyword providers should not silently insert fictional identities")
     }
 
-final class RecommendationTests: XCTestCase {
     func testDrainedInterestFallsBackToAdvancingBroadCursorWithoutResettingProfile() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var state = RecommendationState(); var profile = RecommendationProfile(); profile.terms = ["engineering": 20]

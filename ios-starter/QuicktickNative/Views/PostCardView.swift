@@ -126,14 +126,17 @@ struct PostCardView: View {
         .allowsHitTesting(false)
         .overlay {
             if post.type.lowercased() == "video" {
-                Color.clear.contentShape(Rectangle()).onTapGesture {
+                Button {
                     if player != nil {
                         store.fullScreenPlaybackID = post.stableID
                     } else {
                         pendingVideoFullscreen = true
                         store.inlinePlaybackID = post.stableID
                     }
+                } label: {
+                    Color.clear.contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .accessibilityLabel("Open full screen video")
                 .accessibilityIdentifier("fullscreen-\(post.stableID)")
             } else if !post.isImmersiveMedia {

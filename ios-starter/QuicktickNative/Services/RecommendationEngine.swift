@@ -66,10 +66,11 @@ actor RecommendationEngine {
         return result
     }
 
-    private func fictionalWildlifeConfusion(_ post: Post) -> Bool {
+    private func fictionalWildlifeConfusion(_ post: Post, taste: TasteChoice) -> Bool {
         let source = post.provider.lowercased()
         guard sourcesWithRougeLikes.contains(source),
-              !sourcesWithWildlifeLikes.contains(source) else { return false }
+              !sourcesWithWildlifeLikes.contains(source),
+              Set(taste.into.map(TasteConcepts.canonical)).isDisjoint(with: Self.wildlifeOnlyTerms) else { return false }
         let normalized = Set((post.tags + [post.category].compactMap { $0 }).map(TasteConcepts.canonical))
         guard !normalized.isDisjoint(with: Self.wildlifeOnlyTerms) else { return false }
         if !TasteConcepts.resolve(post.tags).characters.isEmpty { return false }
@@ -82,10 +83,15 @@ actor RecommendationEngine {
         guard VisualDomain.classify(post) == .threeD,
               let trusted = trusted3DCredits[source], !trusted.isEmpty else { return 0 }
         let credited = credits(for: post)
-        if !credited.isDisjoint(with: trusted) { return 16 }
-        // Explicitly different credits are stronger evidence than missing
-        // credits. Do not hard-blacklist an unidentified potentially good post.
-        return credited.isEmpty ? -18 : -36
+        let trustedArtists = trusted.filter { $0.hasPrefix("artist:") }
+        let candidateArtists = credited.filter { $0.hasPrefix("artist:") }
+        if !trustedArtists.isEmpty && !candidateArtists.isEmpty {
+            // A shared aggregator/uploader cannot override the credited artist.
+            return candidateArtists.isDisjoint(with: trustedArtists) ? -50 : 20
+        }
+        if !credited.isDisjoint(with: trusted) { return 9 }
+        // Unknown artist = uncertainty, not a global 3D dislike.
+        return credited.isEmpty ? -18 : -34
     }
 
     func configureFavorites(_ favorites: [Post]) {
@@ -240,7 +246,12 @@ actor RecommendationEngine {
         // Keep learned acquisition separate: adding many explicit tags must not
         // evict the established profile from candidate discovery.
         let learnedHistory = positiveTermEntries(source: provider.rawValue, taste: TasteChoice(), limit: 12)
-            .filter { $0.1 >= 3 && !blocked.contains($0.0) && !explicit.contains($0.0) }
+            .filter {
+                $0.1 >= 3 && !blocked.contains($0.0) && !explicit.contains($0.0)
+                && !(sourcesWithRougeLikes.contains(provider.rawValue)
+                    && !sourcesWithWildlifeLikes.contains(provider.rawValue)
+                    && Self.wildlifeOnlyTerms.contains(RecommendationTagRules.canonical($0.0)))
+            }
         let saved = savedFavoriteTerms(source: provider.rawValue, limit: 14)
             .filter {
                 !blocked.contains($0.0) && !explicit.contains($0.0)
@@ -510,7 +521,7 @@ actor RecommendationEngine {
 
     func isHardDisliked(_ post: Post, taste: TasteChoice) -> Bool {
         let source = post.provider.lowercased()
-        return fictionalWildlifeConfusion(post)
+        return fictionalWildlifeConfusion(post, taste: taste)
             || RecommendationTagRules.rejects(post, exclusions: taste.notInto)
             || RecommendationTagRules.rejects(post, exclusions: repeatedlyRejectedTerms(source: source))
     }
@@ -767,6 +778,14 @@ actor RecommendationEngine {
 
     private func effectiveTermScore(source: String, term: String, taste: TasteChoice, learned: RecommendationProfile? = nil) -> Double {
         guard isTermAllowed(source: source, term: term) else { return 0 }
+        // An old Rouge like may have trained bare "bat" before character
+        // disambiguation. Never use that accidental association positively
+        // unless the user explicitly asked for the animal itself.
+        if sourcesWithRougeLikes.contains(source), !sourcesWithWildlifeLikes.contains(source),
+           Self.wildlifeOnlyTerms.contains(RecommendationTagRules.canonical(term)),
+           !taste.into.map(TasteConcepts.canonical).contains(RecommendationTagRules.canonical(term)) {
+            return min(0, learned?.terms[term] ?? profile(for: source).terms[term] ?? 0)
+        }
         let p = learned ?? profile(for: source)
         var score = p.terms[term] ?? 0
         let e = p.termEvidence[term] ?? RecommendationTermEvidence()

@@ -19,11 +19,20 @@ struct NativeSearchBar: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     inputRow
-                    autocompleteRow
+                    if store.selectedProvider == .rule34 {
+                        autocompleteRow
+                    }
                     filterRow
-                    HStack { Text("Selected tags").font(.headline); Spacer(); Button("Clear") { form.tags = []; form.text = ""; form.filters = SearchFilters() }.font(.caption) }
-                    selectedTagGrid
-                    Text("Tap a tag name to remove it. Tap its block icon to include or exclude it.").font(.caption).foregroundStyle(.secondary)
+                    if store.selectedProvider == .rule34 {
+                        HStack { Text("Selected tags").font(.headline); Spacer(); Button("Clear") { form.tags = []; form.text = ""; form.filters = SearchFilters() }.font(.caption) }
+                        selectedTagGrid
+                        Text("Tap a tag name to remove it. Tap its block icon to include or exclude it.").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Search titles, descriptions and keywords with natural phrases. Unlike Rule34, these providers use free-text search rather than tag-only queries.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        Button("Clear keywords") { form.text = "" }
+                            .font(.caption).disabled(form.text.isEmpty)
+                    }
                     Button(action: submit) {
                         Label("Search", systemImage: "magnifyingglass")
                             .font(.subheadline.weight(.semibold))
@@ -42,7 +51,10 @@ struct NativeSearchBar: View {
                 .onAppear {
                     guard !loaded else { return }; loaded = true; focused = true
                     let split = SearchFilters.split(store.queryText)
-                    form = store.searchDrafts[tab] ?? SearchDraft(tags: SearchTag.parse(split.tags), filters: split.filters, sort: store.feedSort)
+                    form = store.searchDrafts[tab] ?? SearchDraft(
+                        text: store.selectedProvider == .rule34 ? "" : split.tags,
+                        tags: store.selectedProvider == .rule34 ? SearchTag.parse(split.tags) : [],
+                        filters: split.filters, sort: store.feedSort)
                 }
                 .onDisappear { store.searchDrafts[tab] = form }
                 .task(id: store.selectedProvider.rawValue + ":" + form.text) {
@@ -70,7 +82,7 @@ struct NativeSearchBar: View {
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(focused ? AppTheme.accent : AppTheme.secondaryLabel)
                 .frame(width: 26)
-            TextField("Search tags", text: $form.text)
+            TextField(store.selectedProvider == .rule34 ? "Search tags" : "Search titles and keywords", text: $form.text)
                 .focused($focused)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -90,15 +102,17 @@ struct NativeSearchBar: View {
                 .buttonStyle(QuicktickPressStyle())
                 .accessibilityLabel("Clear search text")
             }
-            Button { addTypedTags() } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 13))
+            if store.selectedProvider == .rule34 {
+                Button { addTypedTags() } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 13))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityLabel("Add tags")
             }
-            .buttonStyle(QuicktickPressStyle())
-            .accessibilityLabel("Add tags")
         }
         .padding(10)
         .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -193,10 +207,17 @@ struct NativeSearchBar: View {
     }
     private func addTypedTags() { add(form.text); form.text = ""; suggestions = [] }
     private func submit() {
-        addTypedTags(); focused = false
+        let isTagProvider = store.selectedProvider == .rule34
+        if isTagProvider { addTypedTags() }
+        focused = false
         store.searchDrafts[tab] = form
-        let tags = form.tags.map { ($0.excluded ? "-" : "") + $0.name }.joined(separator: " ")
-        let query = form.filters.query(tags: tags, provider: store.selectedProvider)
+        let query: String
+        if isTagProvider {
+            let tags = form.tags.map { ($0.excluded ? "-" : "") + $0.name }.joined(separator: " ")
+            query = form.filters.query(tags: tags, provider: store.selectedProvider)
+        } else {
+            query = form.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         store.commitSearch(query: query, sort: form.sort)
         dismiss()
         Task { await store.refresh(immersive: immersive, trainSearch: true) }

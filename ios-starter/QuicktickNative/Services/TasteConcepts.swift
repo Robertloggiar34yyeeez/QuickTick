@@ -3,9 +3,9 @@ import Foundation
 /// Small, reviewed relationships; the larger credited-tag lookup stays optional.
 /// Sources and ambiguity policy are recorded in TAXONOMY-v0.9.md.
 enum TasteConcepts {
-    // Keep pixel-analysis cache versions stable; newly reviewed identity
-    // aliases are reconciled as metadata without forcing expensive rescans.
-    static let version = "concepts-2026-10-20-v1"
+    // Versions the per-favorite metadata/appearance cache. New action facets
+    // must be revisited after an in-place IPA upgrade.
+    static let version = "concepts-2026-10-23-actions-v2"
     static let aliases: [String: String] = [
         "chunli": "chun_li", "chun_li_(street_fighter)": "chun_li",
         "chun_li_(street_fighter_series)": "chun_li", "streetfighter": "street_fighter",
@@ -81,6 +81,28 @@ enum TasteConcepts {
         }
         return result
     }
+}
+
+/// Explicitly tagged pose and gaze are relationships, not identities. We do
+/// not infer these actions from faces or from unverified video titles.
+enum ActionSemantics {
+    static let aliases: [String: String] = [
+        "leaning_over": "pose:leaning_forward", "leaning_forward": "pose:leaning_forward",
+        "bending_forward": "pose:leaning_forward", "bent_over": "pose:leaning_forward",
+        "leaning_back": "pose:leaning_back", "leaning_backwards": "pose:leaning_back",
+        "looking_at_viewer": "gaze:at_viewer", "looking_at_camera": "gaze:at_viewer",
+        "eye_contact": "gaze:at_viewer", "looking_away": "gaze:away",
+        "looking_to_the_side": "gaze:away", "looking_to_side": "gaze:away",
+        "looking_down": "gaze:down", "looking_up": "gaze:up",
+        "sitting": "pose:sitting", "seated": "pose:sitting",
+        "standing": "pose:standing", "kneeling": "pose:kneeling",
+        "lying": "pose:lying", "lying_down": "pose:lying",
+        "running": "pose:running", "dancing": "pose:dancing"
+    ]
+
+    static func facet(_ raw: String) -> String? { aliases[TasteConcepts.canonical(raw)] }
+    static func facets(_ tags: [String]) -> Set<String> { Set(tags.compactMap(facet)) }
+    static func axis(_ facet: String) -> String { String(facet.split(separator: ":").first ?? "") }
 }
 
 struct ConceptEvidence: Codable, Sendable, Equatable {

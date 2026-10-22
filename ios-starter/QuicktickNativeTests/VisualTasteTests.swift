@@ -109,6 +109,15 @@ final class VisualTasteTests: XCTestCase {
         XCTAssertNotNil(result.attributes["appearance:long_hair"]); XCTAssertNotNil(result.attributes["clothing:qipao"])
         XCTAssertFalse(result.attributes.keys.contains { $0.contains("rating") })
     }
+    func testWDV3ActionLabelsUnifyWithProviderPoseAndGaze() {
+        let labels = [WDAnimeTagger.Label(name: "looking_at_viewer", category: 0),
+            WDAnimeTagger.Label(name: "bent_over", category: 0),
+            WDAnimeTagger.Label(name: "looking_away", category: 0)]
+        let result = WDAnimeTagger.signals(labels: labels, probabilities: [0.88, 0.83, 0.22])
+        XCTAssertNotNil(result.attributes["gaze:at_viewer"])
+        XCTAssertNotNil(result.attributes["pose:leaning_forward"])
+        XCTAssertNil(result.attributes["gaze:away"])
+    }
     func testBundledWDV3RunsOnlyForAnimeAndReleasesModel() async throws {
         let tagger = WDAnimeTagger(), sample = image(red: 0.7, green: 0.4, blue: 0.2)
         let real = await tagger.analyze(sample, domain: .realLife)

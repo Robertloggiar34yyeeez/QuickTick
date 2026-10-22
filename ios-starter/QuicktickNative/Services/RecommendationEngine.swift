@@ -21,6 +21,7 @@ struct ConditionalTasteModel: Sendable {
     private var subjectsByMedium: [String: Set<String>] = [:]
     private var artistsByMedium: [String: Set<String>] = [:]
     private var approvedPairs: [String: Set<String>] = [:]
+    private var actionsByMedium: [String: [String: Int]] = [:]
 
     private static func mediumKey(_ post: Post) -> String {
         post.provider.lowercased() + "|" + (VisualDomain.classify(post)?.rawValue ?? "uncertain")
@@ -30,6 +31,7 @@ struct ConditionalTasteModel: Sendable {
         subjectsByMedium.removeAll(keepingCapacity: true)
         artistsByMedium.removeAll(keepingCapacity: true)
         approvedPairs.removeAll(keepingCapacity: true)
+        actionsByMedium.removeAll(keepingCapacity: true)
         for post in favorites {
             let key = Self.mediumKey(post)
             guard !key.hasSuffix("|uncertain"), !key.hasSuffix("|mixed"),
@@ -40,6 +42,9 @@ struct ConditionalTasteModel: Sendable {
             artistsByMedium[key, default: []].formUnion(artists)
             for subject in subjects where !artists.isEmpty {
                 approvedPairs[key + "|" + subject, default: []].formUnion(artists)
+            }
+            for facet in ActionSemantics.facets(post.tags) {
+                actionsByMedium[key, default: [:]][facet, default: 0] += 1
             }
         }
     }
@@ -55,9 +60,24 @@ struct ConditionalTasteModel: Sendable {
         let approvedPair = subjects.contains { subject in
             !artists.isDisjoint(with: approvedPairs[key + "|" + subject] ?? [])
         }
+        let likedActions = actionsByMedium[key] ?? [:]
+        let candidateActions = ActionSemantics.facets(post.tags)
+        let actionBoost = candidateActions.reduce(0.0) { value, facet in
+            value + min(3.5, Double(likedActions[facet] ?? 0) * 1.4)
+        }
+        // Penalize explicitly conflicting presentations with repeated
+        // evidence. Untagged images remain unknown, never automatically bad.
+        let actionConflict = candidateActions.reduce(0.0) { value, facet in
+            let competing = likedActions.filter {
+                ActionSemantics.axis($0.key) == ActionSemantics.axis(facet) && $0.key != facet
+            }
+            let count = competing.values.max() ?? 0
+            return value + (count >= 2 && likedActions[facet] == nil ? 2.5 : 0)
+        }
         // One matched character alone cannot outweigh an unapproved credited
         // artist. Confident pairs win; unknown creators get no artist boost.
         return (exactSubject ? 2.0 : 0) + (exactArtist ? 3.0 : 0) + (approvedPair ? 4.0 : 0)
+            + min(6.0, actionBoost) - min(5.0, actionConflict)
     }
 }
 
@@ -164,6 +184,7 @@ actor RecommendationEngine {
     private var sourcesWithRougeLikes: Set<String> = []
     private var sourcesWithFictionalCharacters: Set<String> = []
     private var sourcesWithWildlifeLikes: Set<String> = []
+    private var favoriteMediumCounts: [String: [VisualDomain: Int]] = [:]
 
     private static let wildlifeOnlyTerms: Set<String> = [
         "bat", "bats", "wildlife", "wild_animal", "animals", "animal",
@@ -215,6 +236,28 @@ actor RecommendationEngine {
         }
     }
 
+    /// A decisive, source-specific saved history is evidence about *medium*.
+    /// Do not assume a liked anime character means unrelated photographs or
+    /// render styles are wanted. Sparse histories and mixed/untagged media
+    /// remain discoverable; explicit medium preferences always win.
+    private func stronglyUnsupportedMedium(_ post: Post, taste: TasteChoice) -> Bool {
+        guard let medium = VisualDomain.classify(post),
+              medium != .uncertain, medium != .mixed,
+              let counts = favoriteMediumCounts[post.provider.lowercased()] else { return false }
+        let clearCounts = counts.filter { $0.key != .uncertain && $0.key != .mixed }
+        guard clearCounts.values.reduce(0, +) >= 6, (counts[medium] ?? 0) == 0,
+              let primary = clearCounts.max(by: { $0.value < $1.value }), primary.value >= 6 else { return false }
+        let explicit = Set(taste.into.map(RecommendationTagRules.canonical))
+        let mediumTags: Set<String>
+        switch medium {
+        case .anime: mediumTags = ["2d", "anime", "illustration", "manga"]
+        case .threeD: mediumTags = ["3d", "3dcg", "3d_animation", "render"]
+        case .realLife: mediumTags = ["photo", "photography", "real_person", "live_action"]
+        case .mixed, .uncertain: return false
+        }
+        return explicit.isDisjoint(with: mediumTags)
+    }
+
     func preferenceGuardPenalty(_ post: Post) -> Double {
         let source = post.provider.lowercased()
         guard VisualDomain.classify(post) == .threeD,
@@ -239,8 +282,12 @@ actor RecommendationEngine {
         sourcesWithRougeLikes = []
         sourcesWithFictionalCharacters = []
         sourcesWithWildlifeLikes = []
+        favoriteMediumCounts = [:]
         for post in favorites {
             let source = post.provider.lowercased()
+            if let medium = VisualDomain.classify(post) {
+                favoriteMediumCounts[source, default: [:]][medium, default: 0] += 1
+            }
             let normalized = Set(post.tags.map(TasteConcepts.canonical))
             let characters = TasteConcepts.resolve(post.tags, taxonomy: taxonomy).characters
             if !characters.isEmpty { sourcesWithFictionalCharacters.insert(source) }
@@ -357,9 +404,14 @@ actor RecommendationEngine {
     func load(_ value: RecommendationState) {
         drainedCandidateQueries.removeAll()
         sessionTaste = SessionPreferenceModel()
-        state = value
-        if state.version < 3 { state.version = 3 }
+        state = value.upgradedForCurrentRanking()
         for key in state.profiles.keys { state.profiles[key] = normalized(state.profiles[key] ?? RecommendationProfile()) }
+    }
+
+    func rebuildCandidateAcquisition() {
+        state = state.rebuildingCandidates()
+        drainedCandidateQueries.removeAll()
+        debugScores.removeAll()
     }
 
     func snapshot() -> RecommendationState {
@@ -690,6 +742,7 @@ actor RecommendationEngine {
         let source = post.provider.lowercased()
         return fictionalWildlifeConfusion(post, taste: taste)
             || explicitlyOther3DArtist(post, taste: taste)
+            || stronglyUnsupportedMedium(post, taste: taste)
             || RecommendationTagRules.rejects(post, exclusions: taste.notInto)
             || RecommendationTagRules.rejects(post, exclusions: repeatedlyRejectedTerms(source: source))
     }
@@ -795,6 +848,9 @@ actor RecommendationEngine {
         let selected = chosen.subtracting(inherited)
         let observed = Set(terms(for: post).map(RecommendationTagRules.canonical))
         if !selected.isEmpty && !selected.isDisjoint(with: observed) { return true }
+        if !ActionSemantics.facets(post.tags).isDisjoint(with: ActionSemantics.facets(taste.into)) {
+            return true
+        }
 
         // For profiles built from real Likes/Favorites, demand repeated,
         // independently saved evidence before narrowing an otherwise empty

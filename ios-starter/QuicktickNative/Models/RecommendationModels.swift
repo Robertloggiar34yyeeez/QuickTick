@@ -177,7 +177,8 @@ struct ReversibleSkipModel: Codable, Sendable, Equatable {
 }
 
 struct RecommendationState: Codable, Sendable, Equatable {
-    var version: Int = 3
+    static let currentVersion = 4
+    var version: Int = currentVersion
     var profiles: [String: RecommendationProfile] = [:]
     var candidatePages: [String: Int] = [:]
     var contextualProfiles: [String: ContextTasteProfile] = [:]
@@ -197,6 +198,22 @@ struct RecommendationState: Codable, Sendable, Equatable {
         feedbackLedger = try fields.decodeIfPresent([String].self, forKey: .feedbackLedger) ?? []
         novelty = try fields.decodeIfPresent(RecommendationNoveltyModel.self, forKey: .novelty) ?? RecommendationNoveltyModel()
         reversibleSkips = try fields.decodeIfPresent(ReversibleSkipModel.self, forKey: .reversibleSkips) ?? ReversibleSkipModel()
+    }
+
+    func upgradedForCurrentRanking() -> Self {
+        guard version < Self.currentVersion else { return self }
+        var result = self
+        result.version = Self.currentVersion
+        return result.rebuildingCandidates()
+    }
+
+    func rebuildingCandidates() -> Self {
+        var result = self
+        // Invalidate only acquisition/candidate exposure. User intent,
+        // explicit dislikes, watched history and visual profiles survive.
+        result.candidatePages.removeAll()
+        result.novelty.offered.removeAll()
+        return result
     }
 }
 

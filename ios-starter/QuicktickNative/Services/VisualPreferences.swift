@@ -63,6 +63,10 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             result.creators = [(post.providerKey?.rawValue ?? post.provider.lowercased()) + ":" + creator.lowercased()]
         }
         result.attributes["motion:" + (post.isImmersiveMedia ? "moving" : "still")] = 1
+        for facet in ActionSemantics.facets(post.tags) {
+            // An unspecified action stays unknown, not negative evidence.
+            result.attributes[facet] = 0.95
+        }
         for raw in post.tags.prefix(128) {
             let tag = raw.lowercased().replacingOccurrences(of: " ", with: "_")
             for (axis, known) in vocabulary where known.contains(tag) { result.attributes[axis + ":" + tag] = 0.9 }

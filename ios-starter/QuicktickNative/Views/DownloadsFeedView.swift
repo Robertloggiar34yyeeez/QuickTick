@@ -17,6 +17,22 @@ private struct DownloadContent: View {
                 GeometryReader { geometry in
                 ScrollView {
                 LazyVStack(spacing: 18) {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Saved offline")
+                                .font(.system(size: 30, weight: .bold, design: .rounded))
+                                .tracking(-1)
+                            Text("\(manager.records.count) downloads, always with you")
+                                .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
+                        }
+                        Spacer()
+                        Image(systemName: "arrow.down.to.line")
+                            .font(.system(size: 23))
+                            .foregroundStyle(.white)
+                            .frame(width: 48, height: 48)
+                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16))
+                    }
+                    .padding(.top, 2)
                     if let error = manager.storageError { Text(error).foregroundStyle(.orange) }
                     if manager.records.isEmpty { ContentUnavailableView("No downloads yet", systemImage: "arrow.down.to.line", description: Text("Save posts to view them offline here.")) }
                     ForEach(manager.records) { record in
@@ -33,7 +49,7 @@ private struct DownloadContent: View {
                                 }
                             }
                         } else {
-                        VStack(alignment: .leading) {
+                        VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 if let path = record.thumbnailLocalPath {
                                     CachedMediaImage(url: URL(fileURLWithPath: path).absoluteString, pixels: 216).frame(width: 72, height: 72).clipped()
@@ -52,6 +68,9 @@ private struct DownloadContent: View {
                                 Spacer(); Button("Delete", role: .destructive) { manager.delete(record) }
                             }.buttonStyle(.bordered)
                         }
+                        .padding(14)
+                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
+                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(AppTheme.border))
                         }
                     }
                 }.padding(16).frame(maxWidth: .infinity)

@@ -29,7 +29,9 @@ struct ImmersiveFeedView: View {
 
     private var mediaPosts: [Post] { collectionTab == 2 ? posts : posts.filter(\.isImmersiveMedia) }
     private var presentationActive: Bool {
-        collectionTab.map { store.activeTab == $0 } ?? (offline ? store.activeTab == 3 : (onClose != nil ? store.activeTab == 0 : store.activeTab == 1))
+        !store.isStudioPresented &&
+            (collectionTab.map { store.activeTab == $0 }
+                ?? (offline ? store.activeTab == 3 : (onClose != nil ? store.activeTab == 0 : store.activeTab == 1)))
     }
     private var playbackOwner: String { offline ? "offline-immersive" : (collectionTab == 2 ? "favorites-immersive" : (onClose != nil ? "home-immersive" : "immersive")) }
 

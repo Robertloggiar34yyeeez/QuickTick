@@ -2,6 +2,118 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
+    func testInstalledIPAMigratesV3CacheIntoV4WithoutDeletingTheOriginal() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var older = RecommendationState()
+        older.version = 3
+        var profile = RecommendationProfile()
+        profile.terms = ["looking_at_viewer": 8, "leaning_over": -11]
+        older.profiles["rule34"] = profile
+        older.candidatePages = ["rule34|old": 17]
+        try JSONEncoder().encode(older).write(to: root.appendingPathComponent("recommendations-v3.json"))
+
+        let persistence = RecommendationPersistence(directory: root)
+        let loaded = await persistence.load()
+        let recovered = try XCTUnwrap(loaded)
+        let wasLegacy = await persistence.loadedLegacyFile
+        XCTAssertTrue(wasLegacy)
+        let upgraded = recovered.upgradedForCurrentRanking()
+        let saved = await persistence.save(upgraded)
+        XCTAssertTrue(saved)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("recommendations-v3.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("recommendations-v4.json").path))
+        XCTAssertTrue(upgraded.candidatePages.isEmpty)
+        XCTAssertEqual(upgraded.profiles["rule34"], profile)
+        let persisted = await persistence.load()
+        let reloaded = try XCTUnwrap(persisted)
+        let stillLegacy = await persistence.loadedLegacyFile
+        XCTAssertFalse(stillLegacy)
+        XCTAssertEqual(reloaded.version, RecommendationState.currentVersion)
+        XCTAssertEqual(reloaded.profiles["rule34"], profile)
+    }
+
+    func testUpgradeRescansCandidateAcquisitionButPreservesExplicitNegativeEvidence() {
+        var state = RecommendationState()
+        state.version = 3
+        state.candidatePages = ["rule34|round": 9]
+        state.novelty.offered = ["rule34:unseen"]
+        var profile = RecommendationProfile()
+        profile.terms = ["looking_away": -7, "leaning_over": 11]
+        profile.recentSeen = ["rule34:watched"]
+        state.profiles["rule34"] = profile
+        state.feedbackLedger = ["deliberate-feedback"]
+        let migrated = state.upgradedForCurrentRanking()
+        XCTAssertEqual(migrated.version, RecommendationState.currentVersion)
+        XCTAssertTrue(migrated.candidatePages.isEmpty)
+        XCTAssertTrue(migrated.novelty.offered.isEmpty)
+        XCTAssertEqual(migrated.profiles["rule34"], profile)
+        XCTAssertEqual(migrated.feedbackLedger, state.feedbackLedger)
+        XCTAssertEqual(migrated.upgradedForCurrentRanking(), migrated)
+        XCTAssertEqual(migrated.rebuildingCandidates().profiles, migrated.profiles)
+    }
+
+    func testActionTagsHaveMeaningAndRejectOpposingPoseOrGaze() async {
+        XCTAssertEqual(ActionSemantics.facet("leaning over"), "pose:leaning_forward")
+        XCTAssertEqual(ActionSemantics.facet("bent_over"), "pose:leaning_forward")
+        XCTAssertEqual(ActionSemantics.facet("looking at viewer"), "gaze:at_viewer")
+        XCTAssertEqual(ActionSemantics.facet("looking_away"), "gaze:away")
+        XCTAssertNotEqual(ActionSemantics.facet("looking_up"), ActionSemantics.facet("looking_down"))
+        let favored = Post(key: "rule34:l", id: "l", provider: "rule34",
+            tags: ["2d", "chun_li", "leaning_over", "looking_at_viewer"])
+        let compatible = Post(key: "rule34:yes", id: "yes", provider: "rule34",
+            tags: ["2d", "chun_li", "leaning_forward", "eye_contact"])
+        let conflicting = Post(key: "rule34:no", id: "no", provider: "rule34",
+            tags: ["2d", "chun_li", "leaning_back", "looking_away"])
+        let dimensions = VisualFeatures.metadata(favored)!.attributes
+        XCTAssertNotNil(dimensions["pose:leaning_forward"])
+        XCTAssertNotNil(dimensions["gaze:at_viewer"])
+        XCTAssertTrue(RecommendationTagRules.rejects(compatible, exclusions: ["looking at viewer"]))
+        XCTAssertTrue(RecommendationTagRules.rejects(compatible, exclusions: ["leaning over"]))
+        XCTAssertFalse(RecommendationTagRules.rejects(conflicting, exclusions: ["looking at viewer"]))
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await engine.configureFavorites([favored, favored])
+        let first = await engine.score(compatible, taste: TasteChoice(), recent: [])
+        let second = await engine.score(conflicting, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(first, second)
+    }
+
+    func testDecisiveFavoriteMediumDoesNotLeakUnrelatedRenderStyles() async {
+        let liked = (0..<6).map { index in
+            Post(key: "rule34:a\(index)", id: "a\(index)", provider: "rule34",
+                 tags: ["2d", "chun_li", "looking_at_viewer"])
+        }
+        let photo = Post(key: "rule34:p", id: "p", provider: "rule34",
+            tags: ["photography", "real_person", "chun_li"])
+        let sketch = Post(key: "rule34:s", id: "s", provider: "rule34",
+            tags: ["2d", "chun_li", "looking_at_viewer"])
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await engine.configureFavorites(liked)
+        let rejectsPhoto = await engine.isHardDisliked(photo, taste: TasteChoice())
+        let acceptsSketch = await engine.isHardDisliked(sketch, taste: TasteChoice())
+        let explicitPhoto = await engine.isHardDisliked(photo, taste: TasteChoice(done: true, into: ["photography"]))
+        XCTAssertTrue(rejectsPhoto)
+        XCTAssertFalse(acceptsSketch)
+        XCTAssertFalse(explicitPhoto)
+    }
+
+    func testImagePromptUsesActionsAndTaxonomyCreditedArtists() {
+        let posts = [
+            Post(key: "rule34:one", id: "one", provider: "rule34",
+                tags: ["2d", "chun_li", "favorite_artist", "looking_at_viewer", "leaning_over", "beach"]),
+            Post(key: "rule34:two", id: "two", provider: "rule34",
+                tags: ["2d", "chun_li", "favorite_artist", "looking_at_camera", "beach"])
+        ]
+        let seed = StudioPromptSeed.build(favorites: posts,
+            taxonomy: VisualTagTaxonomy(version: "test", artists: ["favorite_artist"], characters: ["chun_li"]))
+        XCTAssertEqual(seed.characters.first, "chun_li")
+        XCTAssertEqual(seed.artists.first, "favorite_artist")
+        XCTAssertTrue(seed.attributes.contains("at_viewer"))
+        XCTAssertEqual(seed.scenes.first, "beach")
+        XCTAssertTrue(seed.prompt.contains("art by favorite artist"))
+        XCTAssertTrue(seed.prompt.contains("looking at viewer"))
+    }
     func testSimpleOnboardingSeparatesFictionalCharactersFromBroadKeywords() {
         let characters = StarterTastePick.characters
         let keywords = StarterTastePick.keywords

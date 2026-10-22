@@ -21,14 +21,27 @@ struct HomeFeedView: View {
         ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(store.feedSort == "recommended" ? "Selected for your interests" : "Popular from your sources")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.secondaryLabel)
-                        .accessibilityIdentifier("home-title")
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(store.feedSort == "recommended" ? "For you" : "Trending")
+                            .font(.system(size: 33, weight: .bold, design: .rounded))
+                            .tracking(-1.3)
+                        Text(store.feedSort == "recommended" ? "Selected for your interests" : "Popular from your sources")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.secondaryLabel)
+                            .accessibilityIdentifier("home-title")
+                    }
+                    Spacer()
+                    Image(systemName: store.feedSort == "recommended" ? "sparkles" : "flame.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 48, height: 48)
+                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 17))
+                        .rotationEffect(.degrees(-9))
+                        .accessibilityHidden(true)
                 }
                 .id("home-top")
-                .padding(.top, 8)
+                .padding(.top, 14)
                 .padding(.horizontal, 16)
                 HStack(spacing: 10) {
                     HStack(spacing: 3) {
@@ -74,20 +87,24 @@ struct HomeFeedView: View {
                 .padding(.horizontal, 16)
                 Button { onboarding = true } label: {
                     HStack(spacing: 12) {
-                        Image(systemName: "sparkles")
-                            .foregroundStyle(AppTheme.accent)
-                            .frame(width: 32, height: 32)
-                            .background(AppTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-                        Text("What would you like to see?")
-                            .font(.subheadline.weight(.medium))
+                        Image(systemName: "slider.horizontal.3")
+                            .foregroundStyle(.white)
+                            .frame(width: 38, height: 38)
+                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 13))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Make it yours")
+                                .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                            Text("Fine-tune your feed and interests")
+                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        }
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AppTheme.secondaryLabel)
                     }
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, minHeight: 50)
-                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, minHeight: 58)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous).stroke(AppTheme.accent.opacity(0.26), lineWidth: 1))
                 }
                 .buttonStyle(QuicktickPressStyle())
                 .accessibilityIdentifier("personalize-feed")
@@ -146,7 +163,7 @@ struct HomeFeedView: View {
             if let top, scrollAnchor != top { scrollAnchor = top }
             if let top, top != lastVisibleTop {
                 let now = Date()
-                if !immersive, store.activeTab == 0, store.isForeground,
+                if !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented,
                    store.feedSort == "recommended", !store.isLoading,
                    let previousID = lastVisibleTop,
                    let previousIndex = store.posts.firstIndex(where: { $0.stableID == previousID }),
@@ -163,12 +180,12 @@ struct HomeFeedView: View {
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
             selectVisiblePlayback(viewport: viewport.size)
         }
-        .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
+        .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)
         }
-        .task(id: "\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.feedRevision)") {
-            guard !Task.isCancelled, store.activeTab == 0, store.isForeground, store.feedRevision == revision else { return }
+        .task(id: "\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision)") {
+            guard !Task.isCancelled, store.activeTab == 0, store.isForeground, !store.isStudioPresented, store.feedRevision == revision else { return }
             await warmNext(after: store.inlinePlaybackID)
         }
         #if DEBUG
@@ -226,18 +243,18 @@ struct HomeFeedView: View {
     }
 
     private func selectVisiblePlayback(viewport: CGSize) {
-        guard !immersive, store.activeTab == 0, store.isForeground else { return }
+        guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented else { return }
         let candidate = visibleCandidate(viewport: viewport)
         if store.inlinePlaybackID != candidate { store.inlinePlaybackID = candidate }
     }
     private func visibleCandidate(viewport: CGSize) -> String? {
-        guard !immersive, store.activeTab == 0, store.isForeground else { return nil }
+        guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented else { return nil }
         if let fullScreen = store.fullScreenPlaybackID { return fullScreen }
         let playable = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
         return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playable)
     }
     private func warmNext(after key: String?) async {
-        guard !immersive, store.activeTab == 0, store.isForeground, !Task.isCancelled else { return }
+        guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented, !Task.isCancelled else { return }
         guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }
         let next = Array(store.posts.dropFirst(index + 1).prefix(2))
         let nextVideo = store.posts.dropFirst(index + 1).prefix(4).first { $0.type.lowercased() == "video" }

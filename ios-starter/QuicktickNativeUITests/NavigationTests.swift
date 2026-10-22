@@ -77,6 +77,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(like.waitForExistence(timeout: 10))
         if like.value as? String != "Liked" { like.tap() }
         app.buttons["tab-Favorites"].tap()
+        XCTAssertTrue(app.buttons["favorites-shuffle"].waitForExistence(timeout: 10))
         let immersive = app.buttons["favorites-immersive"]
         XCTAssertTrue(immersive.waitForExistence(timeout: 10))
         immersive.tap()
@@ -203,6 +204,25 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(close.waitForExistence(timeout: 10))
         let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Downloaded comic full view"; capture.lifetime = .keepAlways; add(capture)
         close.tap(); XCTAssertTrue(app.navigationBars["Downloads"].exists)
+    }
+
+    @MainActor func testFullscreenVideoSwipeUpDismissesOnlyStandardViewer() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        let surface = app.buttons["fullscreen-test:video"]
+        XCTAssertTrue(surface.waitForExistence(timeout: 12))
+        surface.tap()
+        let close = app.buttons["Close full screen video"]
+        XCTAssertTrue(close.waitForExistence(timeout: 12))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.96))
+        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.44))
+        start.press(forDuration: 0.06, thenDragTo: finish)
+        XCTAssertFalse(close.exists, "Swipe up from bottom should exit standard full screen")
+        // Immersive vertical paging uses a different view without this dismiss
+        // modifier, so its swipe-up gesture still advances within the feed.
+        app.buttons["tab-Immersive"].tap()
+        XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 10))
     }
 
     @MainActor func testHomeInlinePlaybackAndComicClose() {

@@ -35,8 +35,85 @@ actor RecommendationEngine {
     // Non-persisted, deduplicated affinity from every CURRENT saved favorite.
     // Rebuilding on changes avoids replaying old likes into the event ledger.
     private var savedFavoriteAffinity: [String: [String: Double]] = [:]
+    private var currentFavorites: [Post] = []
+    // Unlike generic tag weights, these preserve *which* 3D artists were
+    // liked. Unknown 3D creators never inherit a character's positive score.
+    private var trusted3DCredits: [String: Set<String>] = [:]
+    private var trusted3DArtistTags: [String: [String]] = [:]
+    private var sourcesWithRougeLikes: Set<String> = []
+    private var sourcesWithWildlifeLikes: Set<String> = []
+
+    private static let wildlifeOnlyTerms: Set<String> = [
+        "bat", "bats", "wildlife", "wild_animal", "animals", "animal",
+        "fox", "foxes", "wolf", "wolves", "dog", "dogs", "cat", "cats",
+        "pet", "pets", "zoo", "nature_documentary", "real_animal"
+    ]
+
+    private func credits(for post: Post) -> Set<String> {
+        var result: Set<String> = []
+        for raw in post.tags {
+            let term = TasteConcepts.canonical(raw)
+            if term.hasPrefix("artist:") {
+                result.insert("artist:" + String(term.dropFirst("artist:".count)))
+            } else if taxonomy?.artists.contains(term) == true {
+                result.insert("artist:" + term)
+            }
+        }
+        if let creator = post.creator?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           !creator.isEmpty {
+            result.insert("uploader:" + creator)
+        }
+        return result
+    }
+
+    private func fictionalWildlifeConfusion(_ post: Post) -> Bool {
+        let source = post.provider.lowercased()
+        guard sourcesWithRougeLikes.contains(source),
+              !sourcesWithWildlifeLikes.contains(source) else { return false }
+        let normalized = Set((post.tags + [post.category].compactMap { $0 }).map(TasteConcepts.canonical))
+        guard !normalized.isDisjoint(with: Self.wildlifeOnlyTerms) else { return false }
+        if !TasteConcepts.resolve(post.tags).characters.isEmpty { return false }
+        if !normalized.isDisjoint(with: ["anthro", "anthropomorphic", "furry", "sonic_the_hedgehog"]) { return false }
+        return true
+    }
+
+    func preferenceGuardPenalty(_ post: Post) -> Double {
+        let source = post.provider.lowercased()
+        guard VisualDomain.classify(post) == .threeD,
+              let trusted = trusted3DCredits[source], !trusted.isEmpty else { return 0 }
+        let credited = credits(for: post)
+        if !credited.isDisjoint(with: trusted) { return 16 }
+        // Explicitly different credits are stronger evidence than missing
+        // credits. Do not hard-blacklist an unidentified potentially good post.
+        return credited.isEmpty ? -18 : -36
+    }
 
     func configureFavorites(_ favorites: [Post]) {
+        currentFavorites = favorites
+        trusted3DCredits = [:]
+        trusted3DArtistTags = [:]
+        sourcesWithRougeLikes = []
+        sourcesWithWildlifeLikes = []
+        for post in favorites {
+            let source = post.provider.lowercased()
+            let normalized = Set(post.tags.map(TasteConcepts.canonical))
+            if normalized.contains("rouge_the_bat")
+                || TasteConcepts.resolve(post.tags).characters.contains("rouge_the_bat") {
+                sourcesWithRougeLikes.insert(source)
+            }
+            if !normalized.isDisjoint(with: Self.wildlifeOnlyTerms),
+               TasteConcepts.resolve(post.tags).characters.isEmpty,
+               (VisualDomain.classify(post) == .realLife || normalized.contains("wildlife")) {
+                sourcesWithWildlifeLikes.insert(source)
+            }
+            guard VisualDomain.classify(post) == .threeD else { continue }
+            let artistCredits = credits(for: post)
+            trusted3DCredits[source, default: []].formUnion(artistCredits)
+            trusted3DArtistTags[source, default: []].append(contentsOf: artistCredits.compactMap {
+                $0.hasPrefix("artist:") ? String($0.dropFirst("artist:".count)) : nil
+            })
+        }
+        trusted3DArtistTags = trusted3DArtistTags.mapValues { Array(Set($0)).sorted() }
         var counts: [String: [String: Int]] = [:]
         var totals: [String: Int] = [:]
         for post in favorites {
@@ -62,7 +139,10 @@ actor RecommendationEngine {
             $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
         }.prefix(limit).map { ($0.key, $0.value) }
     }
-    func configureTaxonomy(_ value: VisualTagTaxonomy?) { taxonomy = value }
+    func configureTaxonomy(_ value: VisualTagTaxonomy?) {
+        taxonomy = value
+        if !currentFavorites.isEmpty { configureFavorites(currentFavorites) }
+    }
     // Both models are metadata-only, so ranking stays safe on the scrolling path.
     func unseenRecommendations(_ posts: [Post]) -> [Post] {
         let offered = Set(state.novelty.offered)
@@ -162,7 +242,13 @@ actor RecommendationEngine {
         let learnedHistory = positiveTermEntries(source: provider.rawValue, taste: TasteChoice(), limit: 12)
             .filter { $0.1 >= 3 && !blocked.contains($0.0) && !explicit.contains($0.0) }
         let saved = savedFavoriteTerms(source: provider.rawValue, limit: 14)
-            .filter { !blocked.contains($0.0) && !explicit.contains($0.0) && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0)) }
+            .filter {
+                !blocked.contains($0.0) && !explicit.contains($0.0)
+                && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
+                && !(sourcesWithRougeLikes.contains(provider.rawValue)
+                    && !sourcesWithWildlifeLikes.contains(provider.rawValue)
+                    && Self.wildlifeOnlyTerms.contains(RecommendationTagRules.canonical($0.0)))
+            }
         // Both explicit feedback history and the entire current favorites library
         // contribute to acquisition, without re-training existing events.
         let learned = Array(Set((learnedHistory + saved).map(\.0))).sorted { a, b in
@@ -180,6 +266,12 @@ actor RecommendationEngine {
         if !focused { terms = [] }
         else if !explicit.isEmpty && (learned.isEmpty || round % 4 == 0) { terms = [explicit[(round / 4 + (learned.isEmpty ? round % 4 : 0)) % explicit.count]] }
         else { terms = [learned[(round / 4 * 2 + max(0, round % 4 - 1)) % learned.count]] }
+        // A subset of focused discoveries explicitly includes a previously
+        // liked 3D artist. Artist/medium context must survive candidate retrieval.
+        if focused, provider == .rule34, round % 6 == 4,
+           let artists = trusted3DArtistTags[provider.rawValue], !artists.isEmpty {
+            terms = [artists[(round / 6) % artists.count], "3d"]
+        }
         if focused, (explicit.isEmpty || round % 4 != 0) && round % 3 == 0 {
             let queries = state.contextualProfiles.filter { $0.key.hasPrefix(provider.rawValue + "|") }
                 .sorted { $0.key < $1.key }.flatMap { $0.value.discoveryQueries() }
@@ -418,7 +510,8 @@ actor RecommendationEngine {
 
     func isHardDisliked(_ post: Post, taste: TasteChoice) -> Bool {
         let source = post.provider.lowercased()
-        return RecommendationTagRules.rejects(post, exclusions: taste.notInto)
+        return fictionalWildlifeConfusion(post)
+            || RecommendationTagRules.rejects(post, exclusions: taste.notInto)
             || RecommendationTagRules.rejects(post, exclusions: repeatedlyRejectedTerms(source: source))
     }
 
@@ -442,6 +535,7 @@ actor RecommendationEngine {
             return sum + (savedWeights[term] ?? 0) * (generic ? 0.08 : 1)
         }
         score += min(3.0, log1p(savedScore) * 0.9)
+        score += preferenceGuardPenalty(post)
         // An instant swipe away is an explicitly reversible negative; unlike a
         // thumbs-down it does not change permanent term evidence or visual profiles.
         let candidateTerms = Set(postTerms.map(RecommendationTagRules.canonical))

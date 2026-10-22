@@ -18,7 +18,6 @@ struct ImmersiveFeedView: View {
     // SwiftUI's scroll target is a restoration request, not playback truth.
     // On some OS versions it remains on an offscreen page after paging.
     @State private var scrollTargetID: String?
-    @State private var dragOriginID: String?
     @State private var activeIndex = 0
     @State private var activeSince = Date.distantPast
     @State private var searchVisible = false
@@ -33,10 +32,13 @@ struct ImmersiveFeedView: View {
 
     var body: some View {
         GeometryReader { geo in
+          ScrollViewReader { scrollProxy in
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
                     ForEach(mediaPosts, id: \.stableID) { post in
-                        ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: presentationActive, playbackOwner: playbackOwner, collection: collectionTab != nil, previews: previews)
+                        ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: presentationActive, playbackOwner: playbackOwner, collection: collectionTab != nil, previews: previews) { origin, translation in
+                            pageSwipe(from: origin, translation: translation, viewportHeight: geo.size.height, scrollProxy: scrollProxy)
+                        }
                             .frame(width: geo.size.width, height: geo.size.height)
                             .contentShape(Rectangle())
                             .allowsHitTesting(activeID == post.stableID && presentationActive)
@@ -72,27 +74,6 @@ struct ImmersiveFeedView: View {
                 }
             }.scrollTargetBehavior(.paging)
                 .scrollPosition(id: $scrollTargetID, anchor: .top)
-                // A real upward swipe advances exactly one clip even when
-                // SwiftUI's scroll target lags the visual snap (notably after
-                // tapping the player). Keep native scrolling and gestures;
-                // the drag only reconciles the final page/rail ownership.
-                .simultaneousGesture(DragGesture(minimumDistance: 40)
-                    .onChanged { _ in
-                        if dragOriginID == nil { dragOriginID = activeID }
-                    }
-                    .onEnded { drag in
-                        defer { dragOriginID = nil }
-                        guard presentationActive, let origin = dragOriginID ?? activeID,
-                              let index = mediaPosts.firstIndex(where: { $0.stableID == origin }) else { return }
-                        let dy = drag.translation.height
-                        guard abs(dy) > max(55, geo.size.height * 0.12),
-                              abs(dy) > abs(drag.translation.width) * 1.25 else { return }
-                        let next = index + (dy < 0 ? 1 : -1)
-                        guard mediaPosts.indices.contains(next) else { return }
-                        let key = mediaPosts[next].stableID
-                        activeID = key
-                        withAnimation(.easeOut(duration: 0.22)) { scrollTargetID = key }
-                    })
                 // ScrollView's settled target is the source of truth after a
                 // page swipe. Geometry callbacks can omit the target while a
                 // lazy cell mounts, leaving the previous video's rail active.
@@ -105,7 +86,6 @@ struct ImmersiveFeedView: View {
                 .coordinateSpace(name: "immersive-viewport")
                 .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
                     guard presentationActive, store.isForeground else { return }
-                    if dragOriginID != nil { return }
                     let viewport = CGRect(origin: .zero, size: geo.size)
                     // The scroll target is authoritative while it remains on
                     // screen. An intermediate geometry callback must not
@@ -122,6 +102,7 @@ struct ImmersiveFeedView: View {
                 .scrollIndicators(.hidden)
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
+          }
         }
         .navigationTitle(offline ? "Offline Immersive" : "Immersive")
         .navigationBarTitleDisplayMode(.inline)
@@ -201,6 +182,17 @@ struct ImmersiveFeedView: View {
             else { Task { await store.selectFeedTab(0) } }
         }
     }
+    private func pageSwipe(from origin: String, translation: CGSize, viewportHeight: CGFloat, scrollProxy: ScrollViewProxy) {
+        guard presentationActive, abs(translation.height) > max(55, viewportHeight * 0.12),
+              abs(translation.height) > abs(translation.width) * 1.25,
+              let index = mediaPosts.firstIndex(where: { $0.stableID == origin }) else { return }
+        let next = index + (translation.height < 0 ? 1 : -1)
+        guard mediaPosts.indices.contains(next) else { return }
+        let key = mediaPosts[next].stableID
+        activeID = key
+        scrollTargetID = key
+        withAnimation(.easeOut(duration: 0.22)) { scrollProxy.scrollTo(key, anchor: .top) }
+    }
     private func prewarm() async {
         guard presentationActive, store.isForeground, !store.isManualVisualScanRunning, !Task.isCancelled else { return }
         guard offline || collectionTab != nil || store.feedMediaOnly else { return }
@@ -270,6 +262,7 @@ private struct ImmersiveItemView: View {
     let playbackOwner: String
     let collection: Bool
     @ObservedObject var previews: ImmersivePreviewCache
+    let onVerticalSwipe: (String, CGSize) -> Void
     @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
     @State private var ready = false
@@ -357,6 +350,11 @@ private struct ImmersiveItemView: View {
                 }
                 Color.clear.contentShape(Rectangle())
                     .accessibilityIdentifier("immersive-media-\(post.stableID)")
+                    // The hit-tested media surface owns a deliberate vertical
+                    // page swipe. Native ScrollView paging remains available
+                    // elsewhere, while a double tap stays a Like gesture.
+                    .highPriorityGesture(DragGesture(minimumDistance: 35)
+                        .onEnded { onVerticalSwipe(post.stableID, $0.translation) })
                     .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { gesture in
                         switch gesture {
                         case .first:

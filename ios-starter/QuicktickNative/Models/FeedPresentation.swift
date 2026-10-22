@@ -59,8 +59,11 @@ enum MediaSizing {
         let ratio = aspect.isFinite && aspect > 0 ? aspect : 4 / 3
         let wide = available.width > 600
         let maxHeight = min(wide ? 620 : 560, max(1, available.height * 0.72))
-        let width = max(1, min(available.width, 680))
-        return CGSize(width: width, height: max(1, min(width / ratio, maxHeight)))
+        // Preserve aspect ratio when height-limited. The previous calculation
+        // capped only height, stretching video frames and enlarging thumbnails.
+        let originalWidth = native.flatMap { $0.width > 0 && $0.width.isFinite ? $0.width : nil } ?? 680
+        let width = max(1, min(originalWidth, available.width, 680, maxHeight * ratio))
+        return CGSize(width: width, height: width / ratio)
     }
 }
 

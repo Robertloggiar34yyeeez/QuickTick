@@ -322,6 +322,10 @@ final class AppStore: ObservableObject {
     func selectFeedTab(_ tab: Int) async {
         guard (0...3).contains(tab) else { return }
         if tab == activeTab {
+            if tab == 0, feedSort != "recommended" {
+                // Re-tapping Home returns to the personalized default.
+                commitSearch(query: "", sort: "recommended")
+            }
             if tab < 2 { await refresh(immersive: tab == 1) }
             return
         }

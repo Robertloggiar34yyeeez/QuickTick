@@ -342,13 +342,13 @@ actor RecommendationEngine {
         let roundKey = context + "|round"
         let round = max(0, (state.candidatePages[roundKey] ?? 1) - 1)
         advanceCandidatePage(context: roundKey, nextPage: (round + 1) % 12_000 + 1)
-        // A third of pages is deliberately broad; otherwise narrow favorite
-        // searches cycle through the same creators and subjects indefinitely.
-        var focused = !forceBroad && (!explicit.isEmpty || !learned.isEmpty) && round % 3 != 2
+        // Three focused searches followed by one broad discovery page.
+        // Persisting this four-step rotation ensures exploration still occurs.
+        var focused = !forceBroad && (!explicit.isEmpty || !learned.isEmpty) && round % 4 != 3
         var terms: [String]
         if !focused { terms = [] }
         else if !explicit.isEmpty && (learned.isEmpty || round % 4 == 0) { terms = [explicit[(round / 4 + (learned.isEmpty ? round % 4 : 0)) % explicit.count]] }
-        else { terms = [learned[(round / 4 * 2 + max(0, round % 4 - 1)) % learned.count]] }
+        else { terms = [learned[round % learned.count]] }
         // A subset of focused discoveries explicitly includes a previously
         // liked 3D artist. Artist/medium context must survive candidate retrieval.
         if focused, provider == .rule34, round % 6 == 4,

@@ -50,9 +50,15 @@ struct VisualFeatures: Codable, Sendable, Equatable {
         guard let domain = VisualDomain.classify(post) else { return nil }
         var result = Self(domain: domain)
         let concepts = TasteConcepts.resolve(post.tags, taxonomy: taxonomy)
-        result.subjects = concepts.characters
-        result.franchises = concepts.franchises
-        result.conceptEvidence = concepts.evidence
+        // A video provider's loose keywords are not verified fictional
+        // identities. Keep taxonomy-based identity labels provider-scoped;
+        // otherwise unrelated real-world content can inherit a liked character
+        // or artist. Explicit typed identities remain available as metadata.
+        if post.providerKey == .rule34 || domain == .anime || domain == .threeD {
+            result.subjects = concepts.characters
+            result.franchises = concepts.franchises
+            result.conceptEvidence = concepts.evidence
+        }
         if let creator = post.creator?.trimmingCharacters(in: .whitespacesAndNewlines), !creator.isEmpty, creator.count <= 80 {
             result.creators = [(post.providerKey?.rawValue ?? post.provider.lowercased()) + ":" + creator.lowercased()]
         }
@@ -78,7 +84,9 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             // Identity is explicit provider metadata only, never inferred from a face.
             if tag.hasPrefix("character:") && domain != .realLife { result.subjects.append(TasteConcepts.canonical(String(tag.dropFirst(10)))) }
             if tag.hasPrefix("performer:") && domain == .realLife { result.subjects.append(tag) }
-            if tag.hasPrefix("artist:") { result.artists = (result.artists ?? []) + [String(tag.dropFirst(7))] }
+            if tag.hasPrefix("artist:"), post.providerKey == .rule34 || domain == .anime || domain == .threeD {
+                result.artists = (result.artists ?? []) + [String(tag.dropFirst(7))]
+            }
             if post.providerKey == .rule34 && domain != .realLife && domain != .mixed {
                 if taxonomy?.artists.contains(tag) == true { result.artists = (result.artists ?? []) + [tag] }
                 if taxonomy?.characters.contains(tag) == true { result.subjects.append(tag == "chun-li" ? "chun_li" : tag) }

@@ -82,6 +82,40 @@ struct TasteOnboardingView: View {
 
 /// A one-time native welcome flow. Credential secrets go to Keychain through
 /// AppStore; only the non-secret completion flag goes to UserDefaults.
+
+// Curated starter suggestions, not fabricated live-trending statistics.
+// One representative provider post is fetched only after the user focuses a
+// suggestion, so onboarding never launches a grid of network/image requests.
+private struct StarterTastePick: Identifiable {
+    let id: String
+    let title: String
+    let context: String
+    let query: String
+    let tags: [String]
+    let symbol: String
+    static let characters: [Self] = [
+        .init(id: "chun_li", title: "Chun-Li", context: "Street Fighter", query: "chun_li", tags: ["chun_li", "street_fighter"], symbol: "figure.martial.arts"),
+        .init(id: "cammy", title: "Cammy", context: "Street Fighter", query: "cammy_white", tags: ["cammy_white", "street_fighter"], symbol: "figure.martial.arts"),
+        .init(id: "juri", title: "Juri", context: "Street Fighter", query: "juri_han", tags: ["juri_han", "street_fighter"], symbol: "figure.martial.arts"),
+        .init(id: "tifa", title: "Tifa Lockhart", context: "Final Fantasy", query: "tifa_lockhart", tags: ["tifa_lockhart", "final_fantasy"], symbol: "star.circle"),
+        .init(id: "aerith", title: "Aerith Gainsborough", context: "Final Fantasy", query: "aerith_gainsborough", tags: ["aerith_gainsborough", "final_fantasy"], symbol: "star.circle"),
+        .init(id: "rouge", title: "Rouge the Bat", context: "Sonic", query: "rouge_the_bat", tags: ["rouge_the_bat", "sonic_the_hedgehog"], symbol: "gamecontroller"),
+        .init(id: "samus", title: "Samus Aran", context: "Metroid", query: "samus_aran", tags: ["samus_aran", "metroid"], symbol: "shield.lefthalf.filled"),
+        .init(id: "zelda", title: "Princess Zelda", context: "The Legend of Zelda", query: "princess_zelda", tags: ["princess_zelda", "legend_of_zelda"], symbol: "crown"),
+        .init(id: "lara", title: "Lara Croft", context: "Tomb Raider", query: "lara_croft", tags: ["lara_croft", "tomb_raider"], symbol: "mountain.2")
+    ]
+    static let keywords: [Self] = [
+        .init(id: "cosplay", title: "Cosplay", context: "Characters and costumes", query: "cosplay", tags: ["cosplay"], symbol: "theatermasks"),
+        .init(id: "animation", title: "Animation", context: "Animated videos", query: "animation", tags: ["animation"], symbol: "film"),
+        .init(id: "dance", title: "Dance", context: "Dance videos", query: "dance", tags: ["dance"], symbol: "figure.dance"),
+        .init(id: "roleplay", title: "Roleplay", context: "Themed scenes", query: "roleplay", tags: ["roleplay"], symbol: "sparkles.tv"),
+        .init(id: "fitness", title: "Fitness", context: "Sports and movement", query: "fitness", tags: ["fitness"], symbol: "figure.strengthtraining.traditional"),
+        .init(id: "lingerie", title: "Lingerie", context: "Style and outfits", query: "lingerie", tags: ["lingerie"], symbol: "hanger"),
+        .init(id: "gaming", title: "Gaming", context: "Game-related clips", query: "gaming", tags: ["gaming"], symbol: "gamecontroller"),
+        .init(id: "art", title: "Art", context: "Visual styles", query: "art", tags: ["art"], symbol: "paintpalette")
+    ]
+}
+
 struct FirstRunSetupView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -96,6 +130,20 @@ struct FirstRunSetupView: View {
     @State private var interests = ""
     @State private var avoid = ""
     @State private var saving = false
+    @State private var setupMode: SetupMode = .simple
+    @State private var selectedPicks: Set<String> = []
+    @State private var selectedAttributes: Set<String> = []
+    @State private var focusedPick: String?
+    @State private var examplePost: Post?
+    @State private var exampleLoading = false
+    @State private var exampleError: String?
+    private enum SetupMode: String, CaseIterable { case simple = "Simple", advanced = "Advanced" }
+    private var suggestions: [StarterTastePick] {
+        isRule34 ? StarterTastePick.characters : StarterTastePick.keywords
+    }
+    private var previewPick: StarterTastePick? {
+        suggestions.first(where: { $0.id == focusedPick })
+    }
 
     private var isRule34: Bool { provider == .rule34 }
     private let steps = 4
@@ -125,7 +173,7 @@ struct FirstRunSetupView: View {
                             switch step {
                             case 0: welcome
                             case 1: access
-                            case 2: interestsPage
+                            case 2: setupMode == .simple ? simpleInterests : interestsPage
                             default: finishPage
                             }
                         }
@@ -147,8 +195,17 @@ struct FirstRunSetupView: View {
                             .buttonStyle(.bordered)
                     }
                     Button {
-                        if step < steps - 1 { navigate(step + 1) }
-                        else { Task { await finish() } }
+                        if step < steps - 1 {
+                            if step == 1 && isRule34 && !rule34User.isEmpty && !rule34Key.isEmpty {
+                                Task {
+                                    saving = true
+                                    await store.saveCredentials(user: rule34User, key: rule34Key,
+                                                                session: "", remember: true)
+                                    saving = false
+                                    navigate(step + 1)
+                                }
+                            } else { navigate(step + 1) }
+                        } else { Task { await finish() } }
                     } label: {
                         HStack(spacing: 8) {
                             if saving { ProgressView().tint(.white) }
@@ -194,7 +251,19 @@ struct FirstRunSetupView: View {
             featureRow("sparkles", title: "Recommended", detail: "Learns characters, artist credits, style and what you avoid.")
             featureRow("play.rectangle.on.rectangle", title: "Immersive", detail: "Swipe through videos with previews and playback controls.")
             featureRow("heart.square", title: "Favorites", detail: "Save posts and shuffle your likes whenever you want.")
-            featureRow("hand.draw", title: "Your controls", detail: "Tap videos to expand. Use Less for strong dislikes; fast skips are reversible.")
+            featureRow("hand.draw", title: "Your controls", detail: "Tap videos to expand. Swipe down to close standard full screen; Immersive keeps vertical paging.")
+            Text("Choose how to start")
+                .font(.headline)
+                .padding(.top, 4)
+            Picker("Setup mode", selection: $setupMode) {
+                ForEach(SetupMode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("first-run-mode")
+            Text(setupMode == .simple
+                ? "Simple: choose examples you like. See the important tags behind each pick."
+                : "Advanced: enter characters, artists, attributes, interests and exclusions yourself.")
+                .font(.subheadline).foregroundStyle(.secondary)
         }
     }
 
@@ -249,6 +318,180 @@ struct FirstRunSetupView: View {
                 Label("This source uses keyword and title search. Rule34 credentials are not needed.", systemImage: "text.magnifyingglass")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var simpleInterests: some View {
+        VStack(alignment: .leading, spacing: 17) {
+            Text(isRule34 ? "Which characters do you like?" : "Which topics interest you?")
+                .font(.system(.largeTitle, design: .rounded, weight: .bold))
+            Text(isRule34
+                ? "Choose familiar characters. Their franchise helps discover related characters; styles and artists stay separate so one liked character doesn't imply liking every 3D artist."
+                : "Choose starter keywords for this source, or add your own words below.")
+                .foregroundStyle(.secondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 10)], spacing: 10) {
+                ForEach(suggestions) { pick in
+                    Button {
+                        if selectedPicks.contains(pick.id) { selectedPicks.remove(pick.id) }
+                        else { selectedPicks.insert(pick.id) }
+                        focusedPick = pick.id
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Image(systemName: pick.symbol)
+                                    .font(.title)
+                                    .frame(width: 46, height: 46)
+                                    .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 14))
+                                Spacer()
+                                Image(systemName: selectedPicks.contains(pick.id) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedPicks.contains(pick.id) ? AppTheme.accent : .secondary)
+                            }
+                            Text(pick.title).font(.headline).lineLimit(2)
+                            Text(pick.context).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: 126, alignment: .top)
+                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
+                        .overlay(RoundedRectangle(cornerRadius: 18)
+                            .stroke(selectedPicks.contains(pick.id) ? AppTheme.accent : AppTheme.border, lineWidth: 1.5))
+                    }
+                    .buttonStyle(QuicktickPressStyle())
+                    .accessibilityIdentifier("simple-pick-\(pick.id)")
+                }
+            }
+            if let focused = previewPick {
+                simpleExample(focused)
+                    .task(id: "\(provider.rawValue):\(focused.id)") {
+                        await loadExample(for: focused)
+                    }
+            }
+            if isRule34 {
+                if !selectedPicks.isEmpty {
+                    Text("Related characters from the same franchises")
+                        .font(.headline)
+                    let selectedContexts = Set(suggestions.filter { selectedPicks.contains($0.id) }.map(\.context))
+                    let related = suggestions.filter {
+                        selectedContexts.contains($0.context) && !selectedPicks.contains($0.id)
+                    }
+                    if related.isEmpty {
+                        Text("Choose more examples to see related characters.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        FlowLayout(spacing: 8) {
+                            ForEach(related) { pick in
+                                Button("+ " + pick.title) {
+                                    selectedPicks.insert(pick.id)
+                                    focusedPick = pick.id
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                    }
+                }
+                Text("Styles and attributes").font(.headline)
+                Text("Choose only styles you actually prefer.")
+                    .font(.caption).foregroundStyle(.secondary)
+                FlowLayout(spacing: 8) {
+                    ForEach(["2d", "3d", "sketch", "pixel_art", "cosplay", "qipao", "3d_animation"], id: \.self) { tag in
+                        Button {
+                            if selectedAttributes.contains(tag) { selectedAttributes.remove(tag) }
+                            else { selectedAttributes.insert(tag) }
+                        } label: {
+                            Label(tag.replacingOccurrences(of: "_", with: " "),
+                                  systemImage: selectedAttributes.contains(tag) ? "checkmark.circle.fill" : "circle")
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(selectedAttributes.contains(tag) ? AppTheme.accent : .gray)
+                    }
+                }
+            }
+            input("Your own " + (isRule34 ? "tags and interests" : "keywords"),
+                  subtitle: "Comma-separated; you can always change these later.",
+                  placeholder: isRule34 ? "artist:your_favorite, character, attribute" : "Additional keywords or phrases",
+                  text: $interests)
+            input("Not into", subtitle: "Always exclude these tags or keywords from Recommended.",
+                  placeholder: "Things to avoid", text: $avoid)
+        }
+    }
+
+    private func simpleExample(_ pick: StarterTastePick) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Example post", systemImage: "rectangle.stack")
+                    .font(.headline)
+                Spacer()
+                if exampleLoading { ProgressView().tint(AppTheme.accent) }
+            }
+            ZStack(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: 17).fill(AppTheme.gradient.opacity(0.30))
+                if let examplePost,
+                   let url = URL(string: examplePost.thumbUrl.isEmpty
+                        ? examplePost.cardPreviewURL : examplePost.thumbUrl) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                        case .failure:
+                            Image(systemName: pick.symbol).resizable().scaledToFit()
+                                .padding(55).foregroundStyle(.white.opacity(0.65))
+                        default:
+                            Image(systemName: pick.symbol).resizable().scaledToFit()
+                                .padding(55).foregroundStyle(.white.opacity(0.65))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 190)
+                    .clipped()
+                } else {
+                    Image(systemName: pick.symbol)
+                        .font(.system(size: 66, weight: .ultraLight))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                LinearGradient(colors: [.clear, .black.opacity(0.8)],
+                               startPoint: .center, endPoint: .bottom)
+                Text(pick.title).font(.headline).padding(14)
+            }
+            .frame(height: 190)
+            .clipShape(RoundedRectangle(cornerRadius: 17))
+            if let exampleError {
+                Text(exampleError).font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Important tags").font(.subheadline.weight(.semibold))
+            let observed = (examplePost?.tags ?? []).filter {
+                !["solo", "video", "highres", "2d_art", "3d_art"].contains($0)
+            }
+            let highlighted = (pick.tags + Array(observed.prefix(6))).uniqued()
+            Text(highlighted.prefix(8).map { "#"+$0 }.joined(separator: "  "))
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Selecting this example teaches QuickTick its identity and franchise or keyword. Extra image attributes are learned from your actual likes, not assumed from this preview.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 20))
+        .accessibilityIdentifier("simple-example-post")
+    }
+
+    private func loadExample(for pick: StarterTastePick) async {
+        examplePost = nil
+        exampleError = nil
+        exampleLoading = true
+        defer { exampleLoading = false }
+        do {
+            let result = try await store.api.posts(provider: provider,
+                query: ParsedQuery(included: [pick.query], excluded: []),
+                page: 1, sort: "popular")
+            guard !Task.isCancelled, focusedPick == pick.id else { return }
+            examplePost = result.items.first(where: {
+                !$0.thumbUrl.isEmpty || !$0.cardPreviewURL.isEmpty
+            })
+            if examplePost == nil { exampleError = "No live example available. The suggested tags can still be selected." }
+        } catch {
+            guard !Task.isCancelled, focusedPick == pick.id else { return }
+            exampleError = isRule34 && (rule34User.isEmpty || rule34Key.isEmpty)
+                ? "Add Rule34 credentials to see real post previews."
+                : "Preview unavailable. Your choices will still be saved."
         }
     }
 
@@ -313,8 +556,12 @@ struct FirstRunSetupView: View {
             await store.saveCredentials(user: rule34User, key: rule34Key,
                                         session: "", remember: true)
         }
-        let positive = (isRule34 ? values(characters) + values(artists) + values(attributes) : []) + values(interests)
-        store.setTaste(into: positive, notInto: values(avoid))
+        let picks = suggestions.filter { selectedPicks.contains($0.id) }.flatMap(\.tags)
+        let advanced = isRule34 ? values(characters) + values(artists) + values(attributes) : []
+        let positive = setupMode == .simple
+            ? (picks + (isRule34 ? Array(selectedAttributes) : []) + values(interests))
+            : (advanced + values(interests))
+        store.setTaste(into: positive.uniqued(), notInto: values(avoid))
         completed = true
         saving = false
     }

@@ -263,6 +263,30 @@ final class IntelligentRecommendationTests: XCTestCase {
         let request = await engine.candidateRequest(context: "aliases", provider: .rule34, taste: taste, excluded: [])
         XCTAssertTrue(request.query.excluded.contains("furry")); XCTAssertTrue(request.query.excluded.contains("anthro"))
     }
+    func testOfflineTagDatabaseTypesCharactersArtistsAndInterests() async {
+        let taxonomy = VisualTagTaxonomy(version: "fixture-v2",
+            artists: ["artist_known"], characters: ["fox_mccloud", "judy_hopps"],
+            general: ["qipao", "watercolor"])
+        XCTAssertEqual(taxonomy.kind(of: "fox_mccloud"), .character)
+        XCTAssertEqual(taxonomy.kind(of: "artist_known"), .artist)
+        XCTAssertEqual(taxonomy.kind(of: "qipao"), .interest)
+        XCTAssertEqual(taxonomy.kind(of: "unknownthing"), .unknown)
+        let features = VisualFeatures.metadata(
+            post("fiction", ["2d", "fox_mccloud", "artist_known", "qipao"]), taxonomy: taxonomy)
+        XCTAssertTrue(features?.subjects.contains("fox_mccloud") == true)
+        XCTAssertTrue(features?.artists?.contains("artist_known") == true)
+        XCTAssertNotNil(features?.attributes["interest:qipao"])
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await engine.configureTaxonomy(taxonomy)
+        await engine.configureFavorites([post("liked-fox", ["2d", "fox_mccloud", "artist_known"])])
+        let blocked = await engine.isHardDisliked(
+            post("literal-fox", ["photo", "fox", "wildlife"]), taste: TasteChoice())
+        let allowed = await engine.isHardDisliked(
+            post("other-character", ["2d", "judy_hopps"]), taste: TasteChoice())
+        XCTAssertTrue(blocked)
+        XCTAssertFalse(allowed)
+    }
+
     func testChunLi3DMatchesTrustedArtistsInsteadOfAny3DRender() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var one = post("liked-3d-a", ["3d", "chun_li", "artist:trusted_one"])

@@ -3,6 +3,8 @@ import Foundation
 /// Small, reviewed relationships; the larger credited-tag lookup stays optional.
 /// Sources and ambiguity policy are recorded in TAXONOMY-v0.9.md.
 enum TasteConcepts {
+    // Keep pixel-analysis cache versions stable; newly reviewed identity
+    // aliases are reconciled as metadata without forcing expensive rescans.
     static let version = "concepts-2026-10-20-v1"
     static let aliases: [String: String] = [
         "chunli": "chun_li", "chun_li_(street_fighter)": "chun_li",
@@ -10,12 +12,16 @@ enum TasteConcepts {
         "street_fighter_(series)": "street_fighter", "brawlstars": "brawl_stars",
         "brawl_stars_(game)": "brawl_stars", "fortnite_battle_royale": "fortnite",
         "shelly_(brawl_stars)": "shelly_brawl_stars", "colette_(brawl_stars)": "colette_brawl_stars",
-        "fishstick_(fortnite)": "fishstick_fortnite"
+        "fishstick_(fortnite)": "fishstick_fortnite",
+        "rouge_(sonic)": "rouge_the_bat", "rouge_the_bat_(sonic)": "rouge_the_bat",
+        "rouge_the_bat_(sonic_the_hedgehog)": "rouge_the_bat",
+        "sonic_the_hedgehog_(series)": "sonic_the_hedgehog"
     ]
-    static let franchises: Set<String> = ["street_fighter", "brawl_stars", "fortnite"]
+    static let franchises: Set<String> = ["street_fighter", "brawl_stars", "fortnite", "sonic_the_hedgehog"]
     static let characterFranchises: [String: Set<String>] = [
         "chun_li": ["street_fighter"], "shelly_brawl_stars": ["brawl_stars"],
-        "colette_brawl_stars": ["brawl_stars"], "fishstick_fortnite": ["fortnite"]
+        "colette_brawl_stars": ["brawl_stars"], "fishstick_fortnite": ["fortnite"],
+        "rouge_the_bat": ["sonic_the_hedgehog"]
     ]
     static func canonical(_ raw: String) -> String {
         let value = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -31,6 +37,7 @@ enum TasteConcepts {
             var character: String?
             if characterFranchises[tag] != nil { character = tag }
             else if found.contains("brawl_stars"), ["shelly", "colette"].contains(tag) { character = tag + "_brawl_stars" }
+            else if found.contains("sonic_the_hedgehog"), tag == "rouge" { character = "rouge_the_bat" }
             else if tag.hasPrefix("character:") { character = canonical(String(tag.dropFirst(10))) }
             guard let character, !character.isEmpty else { continue }
             characters.insert(character)

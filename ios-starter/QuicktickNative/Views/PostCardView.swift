@@ -221,7 +221,10 @@ private struct FullScreenVideoView: View {
     let postID: String
     let onClose: () -> Void
     var body: some View {
-        FullScreenPlayerController(player: player).ignoresSafeArea()
+        FullScreenPlayerController(player: player, onSwipeUp: {
+            store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
+            onClose()
+        }).ignoresSafeArea()
             .overlay(alignment: .topTrailing) {
                 Button {
                     store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
@@ -236,10 +239,6 @@ private struct FullScreenVideoView: View {
                 store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
                 onClose()
             }
-            .quicktickSwipeUpExit {
-                store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
-                onClose()
-            }
             .onReceive(player.publisher(for: \.timeControlStatus)) { status in
                 guard store.isForeground, store.fullScreenPlaybackID == postID else { return }
                 if status == .playing { store.pausedPlaybackID = nil }
@@ -251,18 +250,60 @@ private struct FullScreenVideoView: View {
     }
 }
 
+// Attach the gesture to the native UIKit player rather than an overlay:
+// AVPlayerViewController intercepts drags before SwiftUI's overlay sees them.
+private final class FullscreenSwipeUpHandler: NSObject, UIGestureRecognizerDelegate {
+    var onExit: () -> Void
+    init(onExit: @escaping () -> Void) { self.onExit = onExit }
+
+    func install(on view: UIView) {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(didPan(_:)))
+        pan.delegate = self
+        pan.cancelsTouchesInView = false
+        view.addGestureRecognizer(pan)
+    }
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+              let view = pan.view else { return false }
+        let velocity = pan.velocity(in: view)
+        let start = pan.location(in: view)
+        if view is ComicScrollView, start.y < view.bounds.height * 0.88 { return false }
+        // Allow a natural upward escape from the lower half of the screen;
+        // preserve native seeking controls and horizontal comic gestures.
+        return start.y >= view.bounds.height * 0.50
+            && velocity.y < -80 && abs(velocity.y) > abs(velocity.x) * 1.4
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        true
+    }
+    @objc private func didPan(_ gesture: UIPanGestureRecognizer) {
+        guard gesture.state == .ended, let view = gesture.view else { return }
+        let offset = gesture.translation(in: view)
+        guard offset.y < -85, abs(offset.x) < -offset.y * 0.65 else { return }
+        onExit()
+    }
+}
+
 private struct FullScreenPlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
+    let onSwipeUp: () -> Void
+    func makeCoordinator() -> FullscreenSwipeUpHandler { FullscreenSwipeUpHandler(onExit: onSwipeUp) }
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
-        controller.player = player; controller.showsPlaybackControls = true
+        controller.player = player
+        controller.showsPlaybackControls = true
         controller.videoGravity = .resizeAspect
+        context.coordinator.install(on: controller.view)
         return controller
     }
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== player { controller.player = player }
+        context.coordinator.onExit = onSwipeUp
     }
-    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: ()) { controller.player = nil }
+    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: FullscreenSwipeUpHandler) {
+        controller.player = nil
+    }
 }
 
 private struct FullComicView: View {
@@ -273,7 +314,7 @@ private struct FullComicView: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            if let image { ComicZoomSurface(image: image).ignoresSafeArea(edges: .bottom) }
+            if let image { ComicZoomSurface(image: image, onSwipeUp: { dismiss() }).ignoresSafeArea(edges: .bottom) }
             else if let error { Text(error).foregroundStyle(.white).padding() }
             else { ProgressView("Loading full image").tint(.white) }
         }.overlay(alignment: .topTrailing) {
@@ -283,7 +324,6 @@ private struct FullComicView: View {
             }.buttonStyle(.plain).padding(12).accessibilityLabel("Close full image")
         }
         .quicktickEdgeBack { dismiss() }
-        .quicktickSwipeUpExit { dismiss() }
         .task {
             do {
                 guard let location = (URL(string: url)?.isFileURL == true ? URL(string: url) : NativeProviderAPI.mediaURL(url)) else { throw URLError(.badURL) }
@@ -297,8 +337,16 @@ private struct FullComicView: View {
 
 private struct ComicZoomSurface: UIViewRepresentable {
     let image: UIImage
-    func makeUIView(context: Context) -> ComicScrollView { ComicScrollView(image: image) }
-    func updateUIView(_ view: ComicScrollView, context: Context) {}
+    let onSwipeUp: () -> Void
+    func makeCoordinator() -> FullscreenSwipeUpHandler { FullscreenSwipeUpHandler(onExit: onSwipeUp) }
+    func makeUIView(context: Context) -> ComicScrollView {
+        let view = ComicScrollView(image: image)
+        context.coordinator.install(on: view)
+        return view
+    }
+    func updateUIView(_ view: ComicScrollView, context: Context) {
+        context.coordinator.onExit = onSwipeUp
+    }
 }
 
 private final class ComicScrollView: UIScrollView, UIScrollViewDelegate {

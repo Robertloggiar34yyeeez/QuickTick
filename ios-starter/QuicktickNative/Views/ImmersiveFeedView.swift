@@ -74,9 +74,13 @@ struct ImmersiveFeedView: View {
                 .coordinateSpace(name: "immersive-viewport")
                 .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
                     guard presentationActive, store.isForeground else { return }
-                    let key = VisiblePostSelector.immersive(frames: frames, viewport: CGRect(origin: .zero, size: geo.size), current: activeID, keys: Set(mediaPosts.map(\.stableID)))
+                    // Geometry preference changes on every drag frame; publish
+                    // only when the visible page actually changes. The frame
+                    // keys already come exclusively from mediaPosts.
+                    let key = VisiblePostSelector.immersive(frames: frames,
+                        viewport: CGRect(origin: .zero, size: geo.size),
+                        current: activeID, keys: Set(frames.keys))
                     if key != activeID { activeID = key }
-                    store.protectImmersivePost(key)
                 }
                 .scrollIndicators(.hidden)
                 .frame(width: geo.size.width, height: geo.size.height)
@@ -171,7 +175,7 @@ struct ImmersiveFeedView: View {
         // Prioritize the immediate next clip instead of two competing downloads.
         // Retain the previous player for a quick reverse swipe.
         let playerRange = max(0, index - 1)...min(clips.count - 1, index + 1)
-        let previewRange = max(0, index - 1)...min(clips.count - 1, index + 2)
+        let previewRange = max(0, index - 1)...min(clips.count - 1, index + 1)
         store.players.retain(Set(playerRange.map { clips[$0].stableID }))
         previews.retain(Set(previewRange.map { clips[$0].stableID }))
         let offlineMode = offline
@@ -184,7 +188,9 @@ struct ImmersiveFeedView: View {
             // Fetch the visible poster first; decoding future posters must
             // not compete at the same priority with the current media startup.
             group.addTask(priority: .userInitiated) { await previewCache.load(clips[index]) }
-            for i in previewRange where i != index {
+            // Keep one upcoming thumbnail warm; decoding old posters and a
+            // second future poster during every page swipe caused CPU spikes.
+            for i in previewRange where i > index {
                 let post = clips[i]
                 group.addTask(priority: .utility) {
                     await previewCache.load(post)
@@ -201,13 +207,6 @@ struct ImmersiveFeedView: View {
                     let stillPresenting = await MainActor.run { feedStore.isForeground && !feedStore.isManualVisualScanRunning && feedStore.activeTab == presentingTab }
                     guard stillPresenting, !Task.isCancelled else { return }
                     if let url { await pool.prewarm(key: post.stableID, url: url) }
-                }
-            }
-            if index + 1 < clips.count, clips[index + 1].type.lowercased() == "gif" {
-                let next = clips[index + 1]
-                group.addTask(priority: .utility) {
-                    let url = offlineMode ? URL(string: next.mediaUrl) : (try? await resolver.resolve(next).mediaUrlURL)
-                    if let url, !Task.isCancelled { await MediaImagePipeline.shared.prefetchGIF(url: url) }
                 }
             }
             if !offline, collectionTab == nil, index >= clips.count - 8 {

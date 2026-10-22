@@ -522,10 +522,16 @@ final class AppStore: ObservableObject {
             context: context, provider: provider, taste: taste, excluded: exclusions)
         if first.context == second.context {
             let broadKey = context + "|query:"
+            let broadCursor = candidateCursors[broadKey] ??
+                (await recommendations.candidatePage(context: broadKey))
+            // With no learned interests, *both* plans may already be broad.
+            // Use consecutive pages rather than fetch identical URL twice.
+            let firstCursor = candidateCursors[first.context] ?? first.page
             second = RecommendationEngine.CandidateRequest(
                 context: broadKey,
                 query: ParsedQuery(included: [], excluded: first.query.excluded),
-                page: await recommendations.candidatePage(context: broadKey), focused: false)
+                page: first.context == broadKey ? max(broadCursor, firstCursor + 1) : broadCursor,
+                focused: false)
         }
         func prepared(_ request: RecommendationEngine.CandidateRequest)
             -> (key: String, query: ParsedQuery, page: Int) {
@@ -535,7 +541,11 @@ final class AppStore: ObservableObject {
                 query.excluded + exclusions + taste.notInto)
             return (request.context, query, cursor)
         }
-        let a = prepared(first), b = prepared(second)
+        let a = prepared(first)
+        var b = prepared(second)
+        if a.key == b.key && a.page == b.page {
+            b.page += 1
+        }
         let requestedGeneration = generation
         // async let keeps both requests structured and cancels outstanding
         // work when the parent refresh is cancelled.

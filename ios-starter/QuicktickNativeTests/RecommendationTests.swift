@@ -2,6 +2,26 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
+    func testSimpleOnboardingSeparatesFictionalCharactersFromBroadKeywords() {
+        let characters = StarterTastePick.characters
+        let keywords = StarterTastePick.keywords
+        XCTAssertFalse(characters.isEmpty)
+        XCTAssertFalse(keywords.isEmpty)
+        XCTAssertEqual(Set(characters.map(\.id)).count, characters.count)
+        XCTAssertEqual(Set(keywords.map(\.id)).count, keywords.count)
+        let chunLi = characters.first { $0.id == "chun_li" }
+        XCTAssertEqual(chunLi?.query, "chun_li")
+        XCTAssertTrue(chunLi?.tags.contains("street_fighter") == true,
+                      "A selected character also seeds related franchise discovery")
+        let rouge = characters.first { $0.id == "rouge" }
+        XCTAssertEqual(rouge?.tags.first, "rouge_the_bat")
+        XCTAssertFalse(rouge?.tags.contains("bat") == true,
+                      "A fictional character must not add bare animal keywords")
+        XCTAssertTrue(keywords.allSatisfy { $0.tags.count == 1 && $0.tags[0] == $0.query },
+                      "Keyword providers should not silently insert fictional identities")
+    }
+
+final class RecommendationTests: XCTestCase {
     func testDrainedInterestFallsBackToAdvancingBroadCursorWithoutResettingProfile() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var state = RecommendationState(); var profile = RecommendationProfile(); profile.terms = ["engineering": 20]

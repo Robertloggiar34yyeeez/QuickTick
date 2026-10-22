@@ -49,7 +49,7 @@ struct VisualFeatures: Codable, Sendable, Equatable {
     static func metadata(_ post: Post, taxonomy: VisualTagTaxonomy? = nil) -> Self? {
         guard let domain = VisualDomain.classify(post) else { return nil }
         var result = Self(domain: domain)
-        let concepts = TasteConcepts.resolve(post.tags)
+        let concepts = TasteConcepts.resolve(post.tags, taxonomy: taxonomy)
         result.subjects = concepts.characters
         result.franchises = concepts.franchises
         result.conceptEvidence = concepts.evidence
@@ -60,6 +60,14 @@ struct VisualFeatures: Codable, Sendable, Equatable {
         for raw in post.tags.prefix(128) {
             let tag = raw.lowercased().replacingOccurrences(of: " ", with: "_")
             for (axis, known) in vocabulary where known.contains(tag) { result.attributes[axis + ":" + tag] = 0.9 }
+            // Generic tags from the bundled typed provider taxonomy are
+            // interests, not identity/species evidence. Keep a small bounded
+            // feature budget for the on-device context model.
+            if (result.attributes.count < 36),
+               taxonomy?.kind(of: tag) == .interest,
+               !["solo", "2d", "3d", "video", "animated", "highres"].contains(tag) {
+                result.attributes["interest:" + TasteConcepts.canonical(tag)] = 0.75
+            }
             let canonical = RecommendationTagRules.canonical(tag)
             if canonical != tag, vocabulary["style"]?.contains(canonical) == true {
                 result.attributes["style:" + canonical] = 0.9
@@ -90,6 +98,29 @@ struct VisualTagTaxonomy: Decodable, Sendable {
     let version: String
     let artists: Set<String>
     let characters: Set<String>
+    // Decodes old v1 bundles too. No network or user data required.
+    let general: Set<String>?
+
+    // Keep the three-argument initializer used by existing tests and callers.
+    // The bundled v2 taxonomy can additionally supply typed general tags.
+    init(version: String, artists: Set<String>, characters: Set<String>,
+         general: Set<String>? = nil) {
+        self.version = version
+        self.artists = artists
+        self.characters = characters
+        self.general = general
+    }
+
+    enum Kind: Sendable, Equatable { case character, artist, interest, unknown }
+    func kind(of raw: String) -> Kind {
+        let canonical = TasteConcepts.canonical(raw)
+        let variants = [canonical, raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                        canonical.replacingOccurrences(of: "_", with: "-")]
+        if variants.contains(where: characters.contains) { return .character }
+        if variants.contains(where: artists.contains) { return .artist }
+        if variants.contains(where: { general?.contains($0) == true }) { return .interest }
+        return .unknown
+    }
 }
 
 struct VisualProfile: Codable, Sendable, Equatable {

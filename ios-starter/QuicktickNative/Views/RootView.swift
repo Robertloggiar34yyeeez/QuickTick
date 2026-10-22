@@ -6,6 +6,7 @@ struct RootView: View {
     @Namespace private var navigationSelection
     @State private var brieflyNamedTab: Int?
     @State private var tabNameTask: Task<Void, Never>?
+    @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @State private var showSettings = false
     @State private var homeAnchor: String?
     @State private var immersiveAnchor: String?
@@ -66,7 +67,18 @@ struct RootView: View {
         .onDisappear { tabNameTask?.cancel() }
         .tint(.white)
         .background(AppTheme.background)
-        .modifier(ProfileImportConfirmation(enabled: !showSettings))
+        .modifier(ProfileImportConfirmation(enabled: !showSettings && firstRunCompleted))
+        .fullScreenCover(isPresented: Binding(
+            get: {
+                store.bootstrapped && !firstRunCompleted
+                    && (!ProcessInfo.processInfo.arguments.contains("--ui-testing")
+                        || ProcessInfo.processInfo.arguments.contains("--ui-testing-first-run"))
+            },
+            set: { _ in }
+        )) {
+            FirstRunSetupView()
+                .environmentObject(store)
+        }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
                 SettingsView()

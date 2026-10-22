@@ -79,6 +79,247 @@ struct TasteOnboardingView: View {
     }
 }
 
+
+/// A one-time native welcome flow. Credential secrets go to Keychain through
+/// AppStore; only the non-secret completion flag goes to UserDefaults.
+struct FirstRunSetupView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("quicktick-first-run-completed-v2") private var completed = false
+    @State private var step = 0
+    @State private var provider: Provider = .rule34
+    @State private var rule34User = ""
+    @State private var rule34Key = ""
+    @State private var characters = ""
+    @State private var artists = ""
+    @State private var attributes = ""
+    @State private var interests = ""
+    @State private var avoid = ""
+    @State private var saving = false
+
+    private var isRule34: Bool { provider == .rule34 }
+    private let steps = 4
+    private let spring = Animation.spring(response: 0.38, dampingFraction: 0.84)
+
+    var body: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                HStack {
+                    Label("QuickTick", systemImage: "sparkles")
+                        .font(.system(.headline, design: .rounded, weight: .bold))
+                    Spacer()
+                    Text("\(step + 1) / \(steps)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }.padding(.horizontal, 24).padding(.top, 20)
+                HStack(spacing: 6) {
+                    ForEach(0..<steps, id: \.self) { index in
+                        Capsule()
+                            .fill(index <= step ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(Color.white.opacity(0.14)))
+                            .frame(height: 4)
+                    }
+                }.padding(.horizontal, 24).padding(.top, 14)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 22) {
+                        Group {
+                            switch step {
+                            case 0: welcome
+                            case 1: access
+                            case 2: interestsPage
+                            default: finishPage
+                            }
+                        }
+                        .id(step)
+                        .transition(reduceMotion ? .opacity : .asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .leading).combined(with: .opacity)))
+                    }
+                    .frame(maxWidth: 560, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 28)
+                    .padding(.bottom, 28)
+                }
+                HStack(spacing: 12) {
+                    if step > 0 {
+                        Button("Back") { navigate(step - 1) }
+                            .frame(minWidth: 88, minHeight: 52)
+                            .buttonStyle(.bordered)
+                    }
+                    Button {
+                        if step < steps - 1 { navigate(step + 1) }
+                        else { Task { await finish() } }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if saving { ProgressView().tint(.white) }
+                            Text(step == steps - 1 ? "Start QuickTick" : "Continue")
+                            Image(systemName: step == steps - 1 ? "checkmark" : "arrow.right")
+                        }
+                        .font(.system(.headline, design: .rounded))
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .foregroundStyle(.white)
+                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 18))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(saving)
+                    .accessibilityIdentifier("first-run-continue")
+                }.padding(.horizontal, 24).padding(.vertical, 14)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .background(AppTheme.canvas.ignoresSafeArea())
+        }
+        .interactiveDismissDisabled()
+        .preferredColorScheme(.dark)
+        .onAppear { provider = store.selectedProvider }
+    }
+
+    private func navigate(_ next: Int) {
+        withAnimation(reduceMotion ? nil : spring) { step = next }
+    }
+
+    private var welcome: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Image(systemName: "sparkles.tv")
+                .font(.system(size: 58, weight: .light))
+                .foregroundStyle(.white)
+                .frame(width: 104, height: 104)
+                .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 28))
+                .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
+                .accessibilityHidden(true)
+            Text("Your feed.\nYour taste.")
+                .font(.system(size: 42, weight: .bold, design: .rounded))
+                .tracking(-1.4)
+            Text("A fast, private way to discover, watch, and save content from the sources you choose.")
+                .foregroundStyle(.secondary)
+            featureRow("sparkles", title: "Recommended", detail: "Learns characters, artist credits, style and what you avoid.")
+            featureRow("play.rectangle.on.rectangle", title: "Immersive", detail: "Swipe through videos with previews and playback controls.")
+            featureRow("heart.square", title: "Favorites", detail: "Save posts and shuffle your likes whenever you want.")
+            featureRow("hand.draw", title: "Your controls", detail: "Tap videos to expand. Use Less for strong dislikes; fast skips are reversible.")
+        }
+    }
+
+    private func featureRow(_ icon: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon).font(.title3)
+                .frame(width: 44, height: 44)
+                .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline)
+                Text(detail).font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var access: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Choose your source")
+                .font(.system(.largeTitle, design: .rounded, weight: .bold))
+            Text("Each source uses its own search format. You can change this later.")
+                .foregroundStyle(.secondary)
+            Picker("Source", selection: $provider) {
+                ForEach(Provider.allCases) { source in
+                    Text(source.displayName).tag(source)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(.white)
+            .padding(12)
+            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 16))
+            if isRule34 {
+                VStack(alignment: .leading, spacing: 14) {
+                    Label("Rule34 access", systemImage: "key.horizontal").font(.headline)
+                    TextField("Rule34 user ID", text: $rule34User)
+                        .textContentType(.username).textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("first-run-rule34-user")
+                    SecureField("Rule34 API key", text: $rule34Key)
+                        .textContentType(.password)
+                        .accessibilityIdentifier("first-run-rule34-key")
+                    Text("Stored in iOS Keychain. Sent directly to Rule34 for API access, not to QuickTick recommendations.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if rule34User.isEmpty || rule34Key.isEmpty {
+                        Label("You can continue without a key, but Rule34 posts will not load until you add credentials in Settings.", systemImage: "info.circle")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                }
+                .textFieldStyle(.roundedBorder)
+                .padding(16)
+                .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 20))
+            } else {
+                Label("This source uses keyword and title search. Rule34 credentials are not needed.", systemImage: "text.magnifyingglass")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var interestsPage: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Teach QuickTick your taste")
+                .font(.system(.largeTitle, design: .rounded, weight: .bold))
+            Text("Separate entries with commas. You can edit everything in Settings later.")
+                .foregroundStyle(.secondary)
+            if isRule34 {
+                input("Characters", subtitle: "The fictional identities you like, not their animal names",
+                    placeholder: "chun_li, rouge_the_bat", text: $characters)
+                input("Artists", subtitle: "Especially artists you trust for 3D",
+                    placeholder: "artist_one, artist_two", text: $artists)
+                input("Attributes", subtitle: "Visual styles and details",
+                    placeholder: "2d, qipao, sketch", text: $attributes)
+            }
+            input("Interests and kinks", subtitle: isRule34 ? "Tag-based interests" : "Keywords, scenes and topics",
+                placeholder: isRule34 ? "Your preferred tags" : "Your preferred keywords or phrases", text: $interests)
+            input("Not into", subtitle: "Things you don't want recommended",
+                placeholder: "Unwanted tags or keywords", text: $avoid)
+        }
+    }
+
+    private func input(_ title: String, subtitle: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.headline)
+            Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            TextField(placeholder, text: text, axis: .vertical)
+                .lineLimit(2...4)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .padding(12)
+                .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private var finishPage: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 64)).foregroundStyle(AppTheme.accent)
+                .symbolEffect(.bounce, value: step)
+            Text("You're ready")
+                .font(.system(.largeTitle, design: .rounded, weight: .bold))
+            Text("QuickTick starts with the interests you entered and learns from your likes, explicit dislikes, and browsing. Visual analysis runs in the background while the device is idle.")
+                .foregroundStyle(.secondary)
+            featureRow("hand.point.up.left", title: "Find something new", detail: "Search tags on Rule34; search words and titles on other providers.")
+            featureRow("slider.horizontal.3", title: "Fine-tune", detail: "Change your interests, exclusions and provider access in Settings.")
+            featureRow("lock.shield", title: "Private by default", detail: "Your taste model stays on this device unless you enable optional Sync.")
+        }
+    }
+
+    private func values(_ input: String) -> [String] {
+        TasteChoice.normalized(input.components(separatedBy: CharacterSet(charactersIn: ",;\n")))
+    }
+
+    private func finish() async {
+        guard !saving else { return }
+        saving = true
+        store.selectedProvider = provider
+        if isRule34 && !rule34User.isEmpty && !rule34Key.isEmpty {
+            await store.saveCredentials(user: rule34User, key: rule34Key,
+                                        session: "", remember: true)
+        }
+        let positive = (isRule34 ? values(characters) + values(artists) + values(attributes) : []) + values(interests)
+        store.setTaste(into: positive, notInto: values(avoid))
+        completed = true
+        saving = false
+    }
+}
+
 struct FavoritesView: View {
     @EnvironmentObject private var store: AppStore
     @State private var immersive = false

@@ -272,15 +272,37 @@ private struct ImmersiveItemView: View {
                                            startPoint: .topLeading, endPoint: .bottomTrailing)
                         }
                         .ignoresSafeArea()
-                    if let image = previews.images[post.stableID] {
-                        Image(uiImage: image).resizable().scaledToFill()
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .blur(radius: ready ? 0 : 15)
-                            .opacity(ready ? 0 : 1)
-                            .clipped()
-                            .accessibilityHidden(true)
-                            .allowsHitTesting(false)
+                    if !ready {
+                        Group {
+                            if let image = previews.images[post.stableID] {
+                                Image(uiImage: image).resizable().scaledToFill()
+                            } else if active {
+                                // Keep the tinted surface visible rather than
+                                // flashing the image view's black placeholder.
+                                // The cache replaces this with a blurred still.
+                                Color.clear
+                            }
+                        }
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .blur(radius: 13)
+                        .clipped()
+                        .accessibilityHidden(true)
+                        .allowsHitTesting(false)
                     }
+                }
+                if post.type.lowercased() == "gif", active, !gifDecoded {
+                    ZStack {
+                        AppTheme.gradient.opacity(0.25)
+                        if let thumbnail = previews.images[post.stableID] {
+                            Image(uiImage: thumbnail)
+                                .resizable()
+                                .scaledToFill()
+                                .blur(radius: 12)
+                        }
+                    }
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .clipped()
+                    .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "image" {
                     CachedMediaImage(url: post.cardPreviewURL, pixels: 1440, comic: false)

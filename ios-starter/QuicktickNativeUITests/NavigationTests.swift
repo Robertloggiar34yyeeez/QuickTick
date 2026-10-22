@@ -215,7 +215,7 @@ final class NavigationTests: XCTestCase {
         surface.tap()
         let close = app.buttons["Close full screen video"]
         XCTAssertTrue(close.waitForExistence(timeout: 12))
-        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.96))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.72))
         let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.44))
         start.press(forDuration: 0.06, thenDragTo: finish)
         XCTAssertFalse(close.exists, "Swipe up from bottom should exit standard full screen")
@@ -223,6 +223,24 @@ final class NavigationTests: XCTestCase {
         // modifier, so its swipe-up gesture still advances within the feed.
         app.buttons["tab-Immersive"].tap()
         XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor func testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-first-run"]
+        app.launch()
+        let next = app.buttons["first-run-continue"]
+        XCTAssertTrue(next.waitForExistence(timeout: 12))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Your taste")).firstMatch.exists)
+        next.tap()
+        XCTAssertTrue(app.staticTexts["Choose your source"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.secureTextFields["first-run-rule34-key"].exists)
+        next.tap()
+        XCTAssertTrue(app.staticTexts["Teach QuickTick your taste"].waitForExistence(timeout: 5))
+        next.tap()
+        XCTAssertTrue(app.staticTexts["You're ready"].waitForExistence(timeout: 5))
+        next.tap()
+        XCTAssertTrue(app.buttons["tab-Home"].waitForExistence(timeout: 10))
     }
 
     @MainActor func testHomeInlinePlaybackAndComicClose() {

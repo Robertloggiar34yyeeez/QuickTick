@@ -254,24 +254,36 @@ private struct FullScreenVideoView: View {
 // AVPlayerViewController intercepts drags before SwiftUI's overlay sees them.
 private final class FullscreenSwipeUpHandler: NSObject, UIGestureRecognizerDelegate {
     var onExit: () -> Void
+    private var didExit = false
     init(onExit: @escaping () -> Void) { self.onExit = onExit }
 
-    func install(on view: UIView) {
+    func install(on view: UIView, addSwipe: Bool = false) {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(didPan(_:)))
         pan.delegate = self
         pan.cancelsTouchesInView = false
         view.addGestureRecognizer(pan)
+        if addSwipe {
+            // AVKit uses internal gesture recognizers and occasionally prevents
+            // our pan from ending. A simultaneous UIKit swipe is the fallback.
+            let swipe = UISwipeGestureRecognizer(target: self, action: #selector(didSwipe(_:)))
+            swipe.direction = .up
+            swipe.cancelsTouchesInView = false
+            swipe.delegate = self
+            view.addGestureRecognizer(swipe)
+        }
     }
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
-              let view = pan.view else { return false }
+        guard let view = gestureRecognizer.view else { return false }
+        if gestureRecognizer is UISwipeGestureRecognizer { return !(view is ComicScrollView) }
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
         let velocity = pan.velocity(in: view)
-        let start = pan.location(in: view)
-        if view is ComicScrollView, start.y < view.bounds.height * 0.88 { return false }
-        // Allow a natural upward escape from the lower half of the screen;
-        // preserve native seeking controls and horizontal comic gestures.
-        return start.y >= view.bounds.height * 0.50
-            && velocity.y < -80 && abs(velocity.y) > abs(velocity.x) * 1.4
+        let point = pan.location(in: view)
+        // A comic should keep its native vertical scroll except at the
+        // bottom-edge escape strip; videos allow a natural swipe from center.
+        let threshold: CGFloat = view is ComicScrollView ? 0.88 : 0.25
+        return point.y >= view.bounds.height * threshold
+            && velocity.y < -20
+            && abs(velocity.y) > abs(velocity.x) * 1.15
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -280,7 +292,16 @@ private final class FullscreenSwipeUpHandler: NSObject, UIGestureRecognizerDeleg
     @objc private func didPan(_ gesture: UIPanGestureRecognizer) {
         guard gesture.state == .ended, let view = gesture.view else { return }
         let offset = gesture.translation(in: view)
-        guard offset.y < -85, abs(offset.x) < -offset.y * 0.65 else { return }
+        guard offset.y < -75, abs(offset.x) < -offset.y * 0.72 else { return }
+        exitOnce()
+    }
+    @objc private func didSwipe(_ gesture: UISwipeGestureRecognizer) {
+        guard gesture.state == .ended else { return }
+        exitOnce()
+    }
+    private func exitOnce() {
+        guard !didExit else { return }
+        didExit = true
         onExit()
     }
 }
@@ -294,7 +315,8 @@ private struct FullScreenPlayerController: UIViewControllerRepresentable {
         controller.player = player
         controller.showsPlaybackControls = true
         controller.videoGravity = .resizeAspect
-        context.coordinator.install(on: controller.view)
+        context.coordinator.install(on: controller.view, addSwipe: true)
+        if let overlay = controller.contentOverlayView { context.coordinator.install(on: overlay, addSwipe: true) }
         return controller
     }
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {

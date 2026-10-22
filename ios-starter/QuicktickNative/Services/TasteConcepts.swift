@@ -28,7 +28,7 @@ enum TasteConcepts {
             .replacingOccurrences(of: "-", with: "_").replacingOccurrences(of: " ", with: "_")
         return aliases[value] ?? value
     }
-    static func resolve(_ tags: [String]) -> (characters: [String], franchises: [String], evidence: [String: ConceptEvidence]) {
+    static func resolve(_ tags: [String], taxonomy: VisualTagTaxonomy? = nil) -> (characters: [String], franchises: [String], evidence: [String: ConceptEvidence]) {
         let normalized = Set(tags.prefix(128).map(canonical))
         var characters = Set<String>(), found = normalized.intersection(franchises)
         found.formUnion(normalized.filter { $0.hasPrefix("franchise:") }.map { canonical(String($0.dropFirst(10))) }.filter { !$0.isEmpty })
@@ -36,6 +36,7 @@ enum TasteConcepts {
         for tag in normalized {
             var character: String?
             if characterFranchises[tag] != nil { character = tag }
+            else if taxonomy?.kind(of: tag) == .character { character = canonical(tag) }
             else if found.contains("brawl_stars"), ["shelly", "colette"].contains(tag) { character = tag + "_brawl_stars" }
             else if found.contains("sonic_the_hedgehog"), tag == "rouge" { character = "rouge_the_bat" }
             else if tag.hasPrefix("character:") { character = canonical(String(tag.dropFirst(10))) }

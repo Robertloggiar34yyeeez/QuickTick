@@ -70,6 +70,25 @@ private final class RateLimitProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class NativeProviderAPITests: XCTestCase {
+    func testKeywordProviderExclusionsMatchTitlesAndCreatorWithoutSubstringErrors() {
+        var unwanted = Post(key: "eporner:1", id: "1", provider: "Eporner",
+                            tags: ["other"], type: "video")
+        unwanted.caption = "Evening portrait outdoors"
+        var creatorHit = Post(key: "redgifs:2", id: "2", provider: "RedGIFs",
+                              tags: ["scene"], type: "video")
+        creatorHit.creator = "Blocked Studio"
+        var allowed = Post(key: "hanime:3", id: "3", provider: "Hanime",
+                           tags: ["battle", "fantasy"], type: "video")
+        allowed.caption = "A battle in the city"
+        let result = NativeProviderAPI.page([unwanted, creatorHit, allowed],
+            hasMore: false, query: ParsedQuery(included: ["portrait"],
+                excluded: ["outdoors", "blocked studio", "bat"]), immersive: false)
+        XCTAssertEqual(result.items.map(\.stableID), [allowed.stableID])
+        XCTAssertFalse(NativeProviderAPI.containsKeyword("bat", in: allowed),
+            "A negative keyword must not match inside 'battle'")
+    }
+
+
     func testPornhubFeed404TriesCanonicalRouteOnce() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let page = try await api.posts(provider: .pornhub, query: QueryParser.parse("route-fixture"), page: 1)

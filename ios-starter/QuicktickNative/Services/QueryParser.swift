@@ -83,4 +83,6 @@ struct SearchDraft: Sendable {
     var tags: [SearchTag] = []
     var filters = SearchFilters()
     var sort = "recommended"
+    // Do not reuse a tag-based draft after switching to a keyword provider.
+    var provider: Provider? = nil
 }

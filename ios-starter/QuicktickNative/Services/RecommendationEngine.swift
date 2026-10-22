@@ -41,6 +41,7 @@ actor RecommendationEngine {
     private var trusted3DCredits: [String: Set<String>] = [:]
     private var trusted3DArtistTags: [String: [String]] = [:]
     private var sourcesWithRougeLikes: Set<String> = []
+    private var sourcesWithFictionalCharacters: Set<String> = []
     private var sourcesWithWildlifeLikes: Set<String> = []
 
     private static let wildlifeOnlyTerms: Set<String> = [
@@ -68,12 +69,12 @@ actor RecommendationEngine {
 
     private func fictionalWildlifeConfusion(_ post: Post, taste: TasteChoice) -> Bool {
         let source = post.provider.lowercased()
-        guard sourcesWithRougeLikes.contains(source),
+        guard sourcesWithFictionalCharacters.contains(source),
               !sourcesWithWildlifeLikes.contains(source),
               Set(taste.into.map(TasteConcepts.canonical)).isDisjoint(with: Self.wildlifeOnlyTerms) else { return false }
         let normalized = Set((post.tags + [post.category].compactMap { $0 }).map(TasteConcepts.canonical))
         guard !normalized.isDisjoint(with: Self.wildlifeOnlyTerms) else { return false }
-        if !TasteConcepts.resolve(post.tags).characters.isEmpty { return false }
+        if !TasteConcepts.resolve(post.tags, taxonomy: taxonomy).characters.isEmpty { return false }
         if !normalized.isDisjoint(with: ["anthro", "anthropomorphic", "furry", "sonic_the_hedgehog"]) { return false }
         return true
     }
@@ -114,16 +115,16 @@ actor RecommendationEngine {
         trusted3DCredits = [:]
         trusted3DArtistTags = [:]
         sourcesWithRougeLikes = []
+        sourcesWithFictionalCharacters = []
         sourcesWithWildlifeLikes = []
         for post in favorites {
             let source = post.provider.lowercased()
             let normalized = Set(post.tags.map(TasteConcepts.canonical))
-            if normalized.contains("rouge_the_bat")
-                || TasteConcepts.resolve(post.tags).characters.contains("rouge_the_bat") {
-                sourcesWithRougeLikes.insert(source)
-            }
+            let characters = TasteConcepts.resolve(post.tags, taxonomy: taxonomy).characters
+            if !characters.isEmpty { sourcesWithFictionalCharacters.insert(source) }
+            if characters.contains("rouge_the_bat") { sourcesWithRougeLikes.insert(source) }
             if !normalized.isDisjoint(with: Self.wildlifeOnlyTerms),
-               TasteConcepts.resolve(post.tags).characters.isEmpty,
+               characters.isEmpty,
                (VisualDomain.classify(post) == .realLife || normalized.contains("wildlife")) {
                 sourcesWithWildlifeLikes.insert(source)
             }
@@ -269,7 +270,7 @@ actor RecommendationEngine {
                 // "3d" alone should never become a provider discovery query
                 // just because a few favorite artists work in that medium.
                 && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
-                && !(sourcesWithRougeLikes.contains(provider.rawValue)
+                && !(sourcesWithFictionalCharacters.contains(provider.rawValue)
                     && !sourcesWithWildlifeLikes.contains(provider.rawValue)
                     && Self.wildlifeOnlyTerms.contains(RecommendationTagRules.canonical($0.0)))
             }
@@ -277,7 +278,7 @@ actor RecommendationEngine {
             .filter {
                 !blocked.contains($0.0) && !explicit.contains($0.0)
                 && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
-                && !(sourcesWithRougeLikes.contains(provider.rawValue)
+                && !(sourcesWithFictionalCharacters.contains(provider.rawValue)
                     && !sourcesWithWildlifeLikes.contains(provider.rawValue)
                     && Self.wildlifeOnlyTerms.contains(RecommendationTagRules.canonical($0.0)))
             }
@@ -803,7 +804,7 @@ actor RecommendationEngine {
         // An old Rouge like may have trained bare "bat" before character
         // disambiguation. Never use that accidental association positively
         // unless the user explicitly asked for the animal itself.
-        if sourcesWithRougeLikes.contains(source), !sourcesWithWildlifeLikes.contains(source),
+        if sourcesWithFictionalCharacters.contains(source), !sourcesWithWildlifeLikes.contains(source),
            Self.wildlifeOnlyTerms.contains(RecommendationTagRules.canonical(term)),
            !taste.into.map(TasteConcepts.canonical).contains(RecommendationTagRules.canonical(term)) {
             return min(0, learned?.terms[term] ?? profile(for: source).terms[term] ?? 0)

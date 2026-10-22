@@ -15,6 +15,7 @@ struct PostCardView: View {
     @State private var comments = false
     @State private var tags = false
     @State private var fullImage = false
+    @State private var pendingVideoFullscreen = false
     @State private var player: AVPlayer?
     @State private var gifURL: URL?
     @State private var ready = false
@@ -90,6 +91,12 @@ struct PostCardView: View {
             }
             .onChange(of: comments) { _, shown in if shown { store.pausedPlaybackID = post.stableID; store.players.pause(post.stableID) } }
             .onChange(of: fullImage) { _, shown in if shown { store.players.pauseAll() } }
+            .onChange(of: player != nil) { _, exists in
+                guard exists, pendingVideoFullscreen, store.activeTab == playbackTab else { return }
+                pendingVideoFullscreen = false
+                store.fullScreenPlaybackID = post.stableID
+            }
+            .onDisappear { pendingVideoFullscreen = false }
             .onChange(of: store.muted) { _, value in player?.isMuted = value }
             .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
                 guard let item = note.object as? AVPlayerItem, item === player?.currentItem else { return }
@@ -118,19 +125,22 @@ struct PostCardView: View {
         .frame(width: mediaSize.width, height: mediaSize.height)
         .allowsHitTesting(false)
         .overlay {
-            if !post.isImmersiveMedia { Color.clear.contentShape(Rectangle()).onTapGesture { fullImage = true } }
-        }
-        .contentShape(Rectangle())
-        .overlay(alignment: .topTrailing) {
             if post.type.lowercased() == "video" {
-                Button { store.fullScreenPlaybackID = post.stableID } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
-                        .background(.ultraThinMaterial, in: Circle())
-                }.buttonStyle(.plain).padding(8).disabled(player == nil)
-                    .accessibilityLabel("Full screen video").accessibilityIdentifier("fullscreen-\(post.stableID)")
+                Color.clear.contentShape(Rectangle()).onTapGesture {
+                    if player != nil {
+                        store.fullScreenPlaybackID = post.stableID
+                    } else {
+                        pendingVideoFullscreen = true
+                        store.inlinePlaybackID = post.stableID
+                    }
+                }
+                .accessibilityLabel("Open full screen video")
+                .accessibilityIdentifier("fullscreen-\(post.stableID)")
+            } else if !post.isImmersiveMedia {
+                Color.clear.contentShape(Rectangle()).onTapGesture { fullImage = true }
             }
         }
+        .contentShape(Rectangle())
         .overlay(alignment: .bottomTrailing) {
             if post.isImmersiveMedia {
                 Button {
@@ -223,6 +233,10 @@ private struct FullScreenVideoView: View {
                 store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
                 onClose()
             }
+            .quicktickSwipeUpExit {
+                store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
+                onClose()
+            }
             .onReceive(player.publisher(for: \.timeControlStatus)) { status in
                 guard store.isForeground, store.fullScreenPlaybackID == postID else { return }
                 if status == .playing { store.pausedPlaybackID = nil }
@@ -266,6 +280,7 @@ private struct FullComicView: View {
             }.buttonStyle(.plain).padding(12).accessibilityLabel("Close full image")
         }
         .quicktickEdgeBack { dismiss() }
+        .quicktickSwipeUpExit { dismiss() }
         .task {
             do {
                 guard let location = (URL(string: url)?.isFileURL == true ? URL(string: url) : NativeProviderAPI.mediaURL(url)) else { throw URLError(.badURL) }

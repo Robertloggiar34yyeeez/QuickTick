@@ -53,11 +53,14 @@ enum MediaSizing {
     /// with a bounded crop; its full image remains available in full screen.
     static func feedCard(aspect: CGFloat, available: CGSize) -> CGSize {
         let ratio: CGFloat = aspect.isFinite && aspect > 0 ? aspect : CGFloat(4) / 3
-        let width = max(1, min(available.width, 680))
+        let fullWidth = max(1, min(available.width, 680))
         let heightCap = min(available.width > 600 ? CGFloat(620) : CGFloat(560),
                             max(1, available.height * 0.72))
-        // Landscape video and ordinary wide media keep their aspect ratio.
-        // Extremely tall artwork alone uses the bounded card-height crop.
+        // In a short landscape viewport an uncapped 16:9 card can be taller
+        // than the entire scrollable area. Fit wide media to the viewport
+        // without distorting it. In portrait we still use every phone point.
+        let width = ratio >= 1 ? min(fullWidth, heightCap * ratio) : fullWidth
+        // Only tall artwork uses a crop; the original is kept for full screen.
         let height = ratio >= 1 ? width / ratio : min(width / ratio, heightCap)
         return CGSize(width: width, height: max(1, height))
     }

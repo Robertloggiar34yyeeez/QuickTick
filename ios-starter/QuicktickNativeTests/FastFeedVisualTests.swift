@@ -193,7 +193,7 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertFalse(store.players.isPreparing("next"))
         store.players.releaseAll()
     }
-    @MainActor func testRecommendationTasteAffectsInitialAndPaginatedPosts() async {
+    @MainActor func testStrictRecommendationTasteExcludesUnrelatedInitialAndPaginatedPosts() async {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [FastFeedProtocol.self]
         let credentials = ProviderCredentials(rule34User: "fixture-user", rule34Key: "fixture-key")
@@ -201,9 +201,13 @@ final class FastFeedVisualTests: XCTestCase {
         let liked = Post(key: "rule34:liked", id: "liked", provider: "rule34", tags: ["sitting"])
         await store.recommendations.record(.like, post: liked)
         await store.refresh()
-        XCTAssertEqual(store.posts.map(\.id), ["2", "1"])
+        // The fixture alternates unrelated `standing` and liked `sitting`.
+        // Strict Recommended must not pad a sparse page with unrelated posts.
+        XCTAssertEqual(store.posts.map(\.id), ["2"])
+        XCTAssertFalse(store.posts.contains(where: { $0.tags.contains("standing") }))
         await store.loadMore()
-        XCTAssertEqual(store.posts.map(\.id), ["2", "1", "4", "3"])
+        XCTAssertEqual(store.posts.map(\.id), ["2", "4"])
+        XCTAssertFalse(store.posts.contains(where: { $0.tags.contains("standing") }))
         store.selectedProvider = .eporner
     }
 

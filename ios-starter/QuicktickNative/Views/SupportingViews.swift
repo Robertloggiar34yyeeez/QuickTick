@@ -472,6 +472,7 @@ struct FirstRunSetupView: View {
         }
         .padding(14)
         .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 20))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("simple-example-post")
     }
 

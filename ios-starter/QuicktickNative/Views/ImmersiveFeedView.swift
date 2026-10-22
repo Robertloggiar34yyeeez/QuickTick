@@ -18,6 +18,7 @@ struct ImmersiveFeedView: View {
     // SwiftUI's scroll target is a restoration request, not playback truth.
     // On some OS versions it remains on an offscreen page after paging.
     @State private var scrollTargetID: String?
+    @State private var dragOriginID: String?
     @State private var activeIndex = 0
     @State private var activeSince = Date.distantPast
     @State private var searchVisible = false
@@ -71,6 +72,27 @@ struct ImmersiveFeedView: View {
                 }
             }.scrollTargetBehavior(.paging)
                 .scrollPosition(id: $scrollTargetID, anchor: .top)
+                // A real upward swipe advances exactly one clip even when
+                // SwiftUI's scroll target lags the visual snap (notably after
+                // tapping the player). Keep native scrolling and gestures;
+                // the drag only reconciles the final page/rail ownership.
+                .simultaneousGesture(DragGesture(minimumDistance: 40)
+                    .onChanged { _ in
+                        if dragOriginID == nil { dragOriginID = activeID }
+                    }
+                    .onEnded { drag in
+                        defer { dragOriginID = nil }
+                        guard presentationActive, let origin = dragOriginID ?? activeID,
+                              let index = mediaPosts.firstIndex(where: { $0.stableID == origin }) else { return }
+                        let dy = drag.translation.height
+                        guard abs(dy) > max(55, geo.size.height * 0.12),
+                              abs(dy) > abs(drag.translation.width) * 1.25 else { return }
+                        let next = index + (dy < 0 ? 1 : -1)
+                        guard mediaPosts.indices.contains(next) else { return }
+                        let key = mediaPosts[next].stableID
+                        activeID = key
+                        withAnimation(.easeOut(duration: 0.22)) { scrollTargetID = key }
+                    })
                 // ScrollView's settled target is the source of truth after a
                 // page swipe. Geometry callbacks can omit the target while a
                 // lazy cell mounts, leaving the previous video's rail active.
@@ -83,13 +105,19 @@ struct ImmersiveFeedView: View {
                 .coordinateSpace(name: "immersive-viewport")
                 .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
                     guard presentationActive, store.isForeground else { return }
+                    if dragOriginID != nil { return }
+                    let viewport = CGRect(origin: .zero, size: geo.size)
+                    // The scroll target is authoritative while it remains on
+                    // screen. An intermediate geometry callback must not
+                    // revert a swipe to the outgoing, partially visible page.
+                    if let target = scrollTargetID, let rect = frames[target],
+                       rect.intersects(viewport) { return }
                     // Geometry preference changes on every drag frame; publish
-                    // only when the visible page actually changes. The frame
-                    // keys already come exclusively from mediaPosts.
+                    // only to rescue a truly offscreen/stale scroll target.
                     let key = VisiblePostSelector.immersive(frames: frames,
-                        viewport: CGRect(origin: .zero, size: geo.size),
+                        viewport: viewport,
                         current: activeID, keys: Set(frames.keys))
-                    if key != activeID { activeID = key }
+                    if let key, key != activeID { activeID = key; scrollTargetID = key }
                 }
                 .scrollIndicators(.hidden)
                 .frame(width: geo.size.width, height: geo.size.height)

@@ -230,6 +230,11 @@ final class FeedReliabilityTests: XCTestCase {
         let tablet = MediaSizing.feedCard(aspect: 16.0 / 9.0,
                                           available: CGSize(width: 1024, height: 1200))
         XCTAssertEqual(tablet.width, 680)
+        let landscape = MediaSizing.feedCard(aspect: 16.0 / 9.0,
+                                             available: CGSize(width: 874, height: 322))
+        XCTAssertLessThanOrEqual(landscape.height, 322 * 0.72)
+        XCTAssertEqual(landscape.width / landscape.height, 16.0 / 9.0, accuracy: 0.001)
+        XCTAssertLessThan(landscape.width, 680, "Short landscape screens must not clip wide video")
     }
 
     func testHomeFiltersExplicitKeywordBansFromCaptionsAndCreators() {

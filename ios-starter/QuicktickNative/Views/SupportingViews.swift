@@ -378,7 +378,7 @@ struct FirstRunSetupView: View {
                         Text("Choose more examples to see related characters.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
-                        FlowLayout(spacing: 8) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 8)], spacing: 8) {
                             ForEach(related) { pick in
                                 Button("+ " + pick.title) {
                                     selectedPicks.insert(pick.id)
@@ -392,7 +392,7 @@ struct FirstRunSetupView: View {
                 Text("Styles and attributes").font(.headline)
                 Text("Choose only styles you actually prefer.")
                     .font(.caption).foregroundStyle(.secondary)
-                FlowLayout(spacing: 8) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 8)], spacing: 8) {
                     ForEach(["2d", "3d", "sketch", "pixel_art", "cosplay", "qipao", "3d_animation"], id: \.self) { tag in
                         Button {
                             if selectedAttributes.contains(tag) { selectedAttributes.remove(tag) }
@@ -424,7 +424,7 @@ struct FirstRunSetupView: View {
                 if exampleLoading { ProgressView().tint(AppTheme.accent) }
             }
             ZStack(alignment: .bottomLeading) {
-                RoundedRectangle(cornerRadius: 17).fill(AppTheme.gradient.opacity(0.30))
+                RoundedRectangle(cornerRadius: 17).fill(AppTheme.gradient).opacity(0.30)
                 if let examplePost,
                    let url = URL(string: examplePost.thumbUrl.isEmpty
                         ? examplePost.cardPreviewURL : examplePost.thumbUrl) {

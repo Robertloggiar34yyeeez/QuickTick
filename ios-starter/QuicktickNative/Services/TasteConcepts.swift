@@ -3,7 +3,9 @@ import Foundation
 /// Small, reviewed relationships; the larger credited-tag lookup stays optional.
 /// Sources and ambiguity policy are recorded in TAXONOMY-v0.9.md.
 enum TasteConcepts {
-    static let version = "concepts-2026-10-22-v2"
+    // Keep pixel-analysis cache versions stable; newly reviewed identity
+    // aliases are reconciled as metadata without forcing expensive rescans.
+    static let version = "concepts-2026-10-20-v1"
     static let aliases: [String: String] = [
         "chunli": "chun_li", "chun_li_(street_fighter)": "chun_li",
         "chun_li_(street_fighter_series)": "chun_li", "streetfighter": "street_fighter",

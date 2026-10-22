@@ -546,18 +546,25 @@ final class AppStore: ObservableObject {
             return (request.context, query, cursor)
         }
         let a = prepared(first)
-        var b = prepared(second)
-        if a.key == b.key && a.page == b.page {
-            b.page += 1
+        var proposedB = prepared(second)
+        if a.key == proposedB.key && a.page == proposedB.page {
+            proposedB.page += 1
         }
+        // Structured concurrent child tasks capture immutable query snapshots
+        // rather than AppStore's mutable local, satisfying Swift 6 isolation.
+        let b = proposedB
+        let primaryQuery = a.query
+        let primaryPageNumber = a.page
+        let secondaryQuery = b.query
+        let secondaryPageNumber = b.page
         let requestedGeneration = generation
         // async let keeps both requests structured and cancels outstanding
         // work when the parent refresh is cancelled.
         async let primary: PostPage? = try? await api.posts(
-            provider: provider, query: a.query, page: a.page,
+            provider: provider, query: primaryQuery, page: primaryPageNumber,
             sort: sort, immersive: mediaOnly)
         async let secondary: PostPage? = try? await api.posts(
-            provider: provider, query: b.query, page: b.page,
+            provider: provider, query: secondaryQuery, page: secondaryPageNumber,
             sort: sort, immersive: mediaOnly)
         let (firstPage, secondPage) = await (primary, secondary)
         try Task.checkCancellation()

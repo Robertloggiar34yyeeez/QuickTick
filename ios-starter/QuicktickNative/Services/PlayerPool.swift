@@ -50,7 +50,7 @@ final class PlayerPool: ObservableObject {
         warming.remove(key)
         p.cancelPendingPrerolls()
         p.automaticallyWaitsToMinimizeStalling = !url.isFileURL
-        p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 6
+        p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 2.5
         activeKey = key; activeOwner = owner; p.isMuted = muted
         // An unbuffered remote item must enter normal waiting-to-play state.
         // playImmediately treats an empty buffer as a stall without notifying us.

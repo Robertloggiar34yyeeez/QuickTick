@@ -56,7 +56,10 @@ enum MediaSizing {
         let width = max(1, min(available.width, 680))
         let heightCap = min(available.width > 600 ? CGFloat(620) : CGFloat(560),
                             max(1, available.height * 0.72))
-        return CGSize(width: width, height: max(1, min(width / ratio, heightCap)))
+        // Landscape video and ordinary wide media keep their aspect ratio.
+        // Extremely tall artwork alone uses the bounded card-height crop.
+        let height = ratio >= 1 ? width / ratio : min(width / ratio, heightCap)
+        return CGSize(width: width, height: max(1, height))
     }
 
     // Full viewing canvas: deliberately separate from the bounded Home cards.

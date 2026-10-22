@@ -50,6 +50,48 @@ final class IntelligentRecommendationTests: XCTestCase {
         XCTAssertEqual(RecommendationQualityModel.combined(metadata: 3, visual: nil), 3)
     }
 
+    func testSessionIntentReactsToLikesButNotPassiveImpressions() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let liked = post("liked", ["qipao", "portrait"])
+        let similar = post("similar", ["qipao", "portrait"])
+        let other = post("different", ["landscape", "nature"])
+        let before = await engine.score(similar, taste: TasteChoice(), recent: [])
+        await engine.record(.impression, post: liked)
+        let passive = await engine.score(similar, taste: TasteChoice(), recent: [])
+        XCTAssertEqual(passive, before, accuracy: 0.001)
+        await engine.record(.like, post: liked)
+        let improved = await engine.score(similar, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(improved, passive)
+        let otherScore = await engine.score(other, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(improved, otherScore)
+        let ranked = await engine.rankFast([other, similar], taste: TasteChoice(), recent: [])
+        XCTAssertEqual(ranked.first?.stableID, similar.stableID)
+    }
+
+    func testWatchCreditDoesNotMultiplyPeriodicReports() {
+        var session = SessionPreferenceModel()
+        let item = Post(key: "rule34:watch", id: "watch", provider: "rule34", tags: ["qipao"])
+        session.record(.watched(seconds: 3, completion: 0.3), post: item, terms: item.tags)
+        XCTAssertEqual(session.score(provider: "rule34", terms: item.tags), 0)
+        session.record(.watched(seconds: 10, completion: 0.85), post: item, terms: item.tags)
+        let credited = session.score(provider: "rule34", terms: item.tags)
+        XCTAssertGreaterThan(credited, 0)
+        session.record(.watched(seconds: 10, completion: 0.85), post: item, terms: item.tags)
+        session.record(.impression, post: item, terms: item.tags)
+        session.record(.quickSkip, post: item, terms: item.tags)
+        XCTAssertEqual(session.score(provider: "rule34", terms: item.tags), credited)
+        XCTAssertEqual(session.score(provider: "eporner", terms: item.tags), 0)
+    }
+
+    func testSessionDeliberateLessReducesRecentSubjectAffinity() {
+        var session = SessionPreferenceModel()
+        let item = Post(key: "rule34:less", id: "less", provider: "rule34", tags: ["qipao", "portrait"])
+        session.record(.like, post: item, terms: item.tags)
+        let positive = session.score(provider: "rule34", terms: item.tags)
+        session.record(.less, post: item, terms: item.tags)
+        XCTAssertLessThan(session.score(provider: "rule34", terms: item.tags), positive)
+    }
+
     func testHistoricalFavoritesRemainAWeakSignalRatherThanOvertakingDiversity() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let favorites = (0..<100).map { post("saved-\($0)", ["chun_li", "qipao", "art"]) }

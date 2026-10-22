@@ -151,7 +151,11 @@ final class NativeProviderAPITests: XCTestCase {
             return
         }
         XCTAssertEqual(page.items.count, 1)
-        XCTAssertEqual(NativeProviderProtocol.log.snapshot().map { $0.url!.path }, ["/webmasters/search", "/webmasters/search/"])
+        let rawPaths = NativeProviderProtocol.log.snapshot().compactMap {
+            URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.percentEncodedPath
+        }
+        XCTAssertEqual(rawPaths, ["/webmasters/search", "/webmasters/search/"],
+                       "Fallback request should retain its trailing slash")
     }
     func testPornhubUsesCanonicalPageAndSurvivesRemovedMP4Definition() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }

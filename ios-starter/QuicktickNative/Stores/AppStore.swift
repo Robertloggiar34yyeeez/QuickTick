@@ -738,10 +738,21 @@ final class AppStore: ObservableObject {
     func adaptRecommendationTail(token: UUID) async {
         let tab = activeTab
         guard tab == 0 || tab == 1, feedSort == "recommended",
-              Date().timeIntervalSince(lastFeedMotion) >= 0.45,
-              let active = tab == 1 ? immersivePlaybackID : inlinePlaybackID else { return }
+              Date().timeIntervalSince(lastFeedMotion) >= 0.45 else { return }
         let source = posts
-        guard let activeIndex = source.firstIndex(where: { $0.stableID == active }) else { return }
+        let originalInlinePlaybackID = inlinePlaybackID
+        // Images have no inline AVPlayer. Use the last visible Home card as
+        // the protected anchor so feedback can adapt unseen posts there too.
+        let active: String?
+        if tab == 1 { active = immersivePlaybackID }
+        else {
+            active = inlinePlaybackID ?? source.last(where: {
+                protectedHomePostIDs.contains($0.stableID)
+            })?.stableID
+        }
+        guard let active, let activeIndex = source.firstIndex(where: {
+            $0.stableID == active
+        }) else { return }
         let protected = (tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs).union([active])
         let prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
         let prefix = Array(source.prefix(prefixCount))
@@ -750,7 +761,7 @@ final class AppStore: ObservableObject {
         let stillProtected = tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs
         guard !Task.isCancelled, generation == token, activeTab == tab, feedSort == "recommended",
               posts.map(\.stableID) == source.map(\.stableID),
-              (tab == 1 ? immersivePlaybackID : inlinePlaybackID) == active,
+              (tab == 1 ? immersivePlaybackID == active : inlinePlaybackID == originalInlinePlaybackID),
               stillProtected.isSubset(of: Set(prefix.map(\.stableID))) else { return }
         if ranked.map(\.stableID) != Array(source.dropFirst(prefixCount)).map(\.stableID) { posts = prefix + ranked }
     }
@@ -830,6 +841,19 @@ final class AppStore: ObservableObject {
         plannedAcquisition = nil
         await visual.stage(envelope, queueAnalysis: visualAnalysisEnabled)
         await applyFeedback(envelope)
+        if candidateContext != nil && feedSort == "recommended" {
+            switch event {
+            case .like, .unlike, .less, .download, .complete, .replay:
+                let token = generation
+                tailRankTask?.cancel()
+                tailRankTask = Task(priority: .utility) { [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+                    guard let self, !Task.isCancelled else { return }
+                    await self.adaptRecommendationTail(token: token)
+                }
+            case .impression, .quickSkip, .watched: break
+            }
+        }
         // A queued acquisition must not keep using the previous preference state.
         plannedAcquisition = nil
         persistenceTask?.cancel()

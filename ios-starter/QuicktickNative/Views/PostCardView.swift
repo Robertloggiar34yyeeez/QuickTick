@@ -376,6 +376,10 @@ private struct FullComicView: View {
         // A preview can appear immediately while the original loads separately.
         .task(id: previewURL) {
             guard !previewURL.isEmpty else { return }
+            if let warm = await MediaImagePipeline.shared.cachedPreview(raw: previewURL) {
+                if !Task.isCancelled, image == nil { preview = UIImage(cgImage: warm.image) }
+                return
+            }
             if let decoded = try? await MediaImagePipeline.shared.image(
                 raw: previewURL, pixels: 1024, comicPreview: true),
                !Task.isCancelled, image == nil {

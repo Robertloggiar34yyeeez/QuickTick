@@ -17,7 +17,9 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
     var isImmersiveMedia: Bool { ["video", "gif"].contains(type.lowercased()) }
     var cardPreviewURL: String {
         if type.lowercased() == "image" {
-            return !mediaUrl.isEmpty ? mediaUrl : (!previewUrl.isEmpty ? previewUrl : thumbUrl)
+            // Prefer the provider's bounded preview in scrolling feeds;
+            // full-screen still loads the actual original mediaUrl.
+            return !previewUrl.isEmpty ? previewUrl : (!thumbUrl.isEmpty ? thumbUrl : mediaUrl)
         }
         let candidates = [previewUrl, thumbUrl].filter { !$0.isEmpty }
         return candidates.first(where: { url in

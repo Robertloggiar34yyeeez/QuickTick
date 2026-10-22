@@ -64,11 +64,39 @@ actor MediaImagePipeline {
         return decoded
     }
     func fullImage(url: URL) async throws -> DecodedMediaImage {
-        let bytes = try await data(url:url);try Task.checkCancellation()
-        guard let source = CGImageSourceCreateWithData(bytes as CFData,[kCGImageSourceShouldCache:false] as CFDictionary),
-              let image = CGImageSourceCreateImageAtIndex(source,0,[kCGImageSourceShouldCache:false] as CFDictionary) else { throw URLError(.cannotDecodeContentData) }
-        return DecodedMediaImage(image:image,nativeSize:CGSize(width:image.width,height:image.height),
-            comic: Double(image.height) > Double(image.width) * 4)
+        let bytes = try await data(url: url)
+        try Task.checkCancellation()
+        guard let source = CGImageSourceCreateWithData(bytes as CFData,
+                    [kCGImageSourceShouldCache: false] as CFDictionary),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let originalWidth = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let originalHeight = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue,
+              originalWidth.isFinite, originalHeight.isFinite,
+              originalWidth > 0, originalHeight > 0 else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        // A gigantic original comic could otherwise allocate hundreds of MB
+        // on the main viewing surface and kill the app, especially on iPad.
+        // Decode at most 16 megapixels with a longest edge of 8192 points.
+        let maxEdge = min(8192.0, sqrt(16_000_000.0 / (originalWidth * originalHeight))
+            * max(originalWidth, originalHeight))
+        let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, Int(maxEdge)),
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary)
+        guard let image else { throw URLError(.cannotDecodeContentData) }
+        return DecodedMediaImage(image: image,
+            nativeSize: CGSize(width: originalWidth, height: originalHeight),
+            comic: originalHeight > originalWidth * 4)
+    }
+    /// Reuse a decoded card image immediately when a full-screen cover opens.
+    /// This lookup never makes a request or decodes new pixels.
+    func cachedPreview(raw: String) -> DecodedMediaImage? {
+        guard let url = URL(string: raw)?.isFileURL == true ? URL(string: raw) : NativeProviderAPI.mediaURL(raw),
+              let key = order.reversed().first(where: { $0.hasPrefix(url.absoluteString + ":") }) else { return nil }
+        return images[key]
     }
     func data(url: URL) async throws -> Data {
         if let cached = prefetchedGIF, cached.key == url.absoluteString { return cached.bytes }

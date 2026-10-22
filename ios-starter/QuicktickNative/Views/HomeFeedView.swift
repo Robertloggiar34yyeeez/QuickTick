@@ -4,6 +4,7 @@ struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
     @Binding var scrollAnchor: String?
+    @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @State private var showSearch = false
     @State private var onboarding = false
     @State private var immersive = false
@@ -204,7 +205,10 @@ struct HomeFeedView: View {
         .sheet(isPresented: $onboarding) { TasteOnboardingView() }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
         .onChange(of: store.posts) { _, posts in
-            if !posts.isEmpty && !store.tasteChoice(for: store.selectedProvider).done { onboarding = true }
+            // The first-run wizard owns initial taste setup. Do not queue a
+            // second modal underneath its full-screen presentation.
+            if firstRunCompleted && !posts.isEmpty
+                && !store.tasteChoice(for: store.selectedProvider).done { onboarding = true }
         }
         }
         }

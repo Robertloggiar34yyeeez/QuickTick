@@ -89,6 +89,28 @@ final class NativeProviderAPITests: XCTestCase {
     }
 
 
+    @MainActor func testUntouchedRecommendedFetchesTwoDifferentBroadPages() async throws {
+        let (api, session) = client()
+        defer { session.invalidateAndCancel() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+        store.selectedProvider = .eporner
+        await store.bootstrap()
+        await store.recommendations.load(RecommendationState())
+        NativeProviderProtocol.log.reset()
+        await store.refresh()
+        let requests = NativeProviderProtocol.log.snapshot()
+            .filter { $0.url?.path == "/api/v2/video/search/" }
+        let pages = requests.compactMap { request in
+            URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "page" })?.value
+        }
+        XCTAssertGreaterThanOrEqual(pages.count, 2)
+        XCTAssertGreaterThanOrEqual(Set(pages).count, 2,
+            "An empty taste profile must never download identical broad pages twice")
+    }
+
     @MainActor func testRecommendedUsesDifferentCandidateQueriesBeforeRanking() async throws {
         let (api, session) = client()
         defer { session.invalidateAndCancel() }

@@ -115,7 +115,7 @@ struct FirstRunSetupView: View {
                 HStack(spacing: 6) {
                     ForEach(0..<steps, id: \.self) { index in
                         Capsule()
-                            .fill(index <= step ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(.white.opacity(0.14)))
+                            .fill(index <= step ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(Color.white.opacity(0.14)))
                             .frame(height: 4)
                     }
                 }.padding(.horizontal, 24).padding(.top, 14)

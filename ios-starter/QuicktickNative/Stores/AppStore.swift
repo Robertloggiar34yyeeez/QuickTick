@@ -522,8 +522,12 @@ final class AppStore: ObservableObject {
             context: context, provider: provider, taste: taste, excluded: exclusions)
         if first.context == second.context {
             let broadKey = context + "|query:"
-            let broadCursor = candidateCursors[broadKey] ??
-                (await recommendations.candidatePage(context: broadKey))
+            let broadCursor: Int
+            if let existing = candidateCursors[broadKey] {
+                broadCursor = existing
+            } else {
+                broadCursor = await recommendations.candidatePage(context: broadKey)
+            }
             // With no learned interests, *both* plans may already be broad.
             // Use consecutive pages rather than fetch identical URL twice.
             let firstCursor = candidateCursors[first.context] ?? first.page

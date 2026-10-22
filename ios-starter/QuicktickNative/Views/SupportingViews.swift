@@ -173,7 +173,9 @@ struct FirstRunSetupView: View {
                             switch step {
                             case 0: welcome
                             case 1: access
-                            case 2: setupMode == .simple ? simpleInterests : interestsPage
+                            case 2:
+                                if setupMode == .simple { simpleInterests }
+                                else { interestsPage }
                             default: finishPage
                             }
                         }
@@ -461,7 +463,7 @@ struct FirstRunSetupView: View {
             let observed = (examplePost?.tags ?? []).filter {
                 !["solo", "video", "highres", "2d_art", "3d_art"].contains($0)
             }
-            let highlighted = (pick.tags + Array(observed.prefix(6))).uniqued()
+            let highlighted = Array(NSOrderedSet(array: pick.tags + Array(observed.prefix(6))).compactMap { $0 as? String })
             Text(highlighted.prefix(8).map { "#"+$0 }.joined(separator: "  "))
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -561,7 +563,7 @@ struct FirstRunSetupView: View {
         let positive = setupMode == .simple
             ? (picks + (isRule34 ? Array(selectedAttributes) : []) + values(interests))
             : (advanced + values(interests))
-        store.setTaste(into: positive.uniqued(), notInto: values(avoid))
+        store.setTaste(into: Array(NSOrderedSet(array: positive).compactMap { $0 as? String }), notInto: values(avoid))
         completed = true
         saving = false
     }

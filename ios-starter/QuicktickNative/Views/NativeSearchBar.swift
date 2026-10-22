@@ -51,12 +51,20 @@ struct NativeSearchBar: View {
                 .onAppear {
                     guard !loaded else { return }; loaded = true; focused = true
                     let split = SearchFilters.split(store.queryText)
-                    form = store.searchDrafts[tab] ?? SearchDraft(
-                        text: store.selectedProvider == .rule34 ? "" : split.tags,
-                        tags: store.selectedProvider == .rule34 ? SearchTag.parse(split.tags) : [],
-                        filters: split.filters, sort: store.feedSort)
+                    if let saved = store.searchDrafts[tab], saved.provider == store.selectedProvider {
+                        form = saved
+                    } else {
+                        form = SearchDraft(
+                            text: store.selectedProvider == .rule34 ? "" : split.tags,
+                            tags: store.selectedProvider == .rule34 ? SearchTag.parse(split.tags) : [],
+                            filters: split.filters, sort: store.feedSort,
+                            provider: store.selectedProvider)
+                    }
                 }
-                .onDisappear { store.searchDrafts[tab] = form }
+                .onDisappear {
+                    form.provider = store.selectedProvider
+                    store.searchDrafts[tab] = form
+                }
                 .task(id: store.selectedProvider.rawValue + ":" + form.text) {
                     suggestions = []
                     #if DEBUG
@@ -210,6 +218,7 @@ struct NativeSearchBar: View {
         let isTagProvider = store.selectedProvider == .rule34
         if isTagProvider { addTypedTags() }
         focused = false
+        form.provider = store.selectedProvider
         store.searchDrafts[tab] = form
         let query: String
         if isTagProvider {

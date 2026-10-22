@@ -206,7 +206,7 @@ final class NavigationTests: XCTestCase {
         close.tap(); XCTAssertTrue(app.navigationBars["Downloads"].exists)
     }
 
-    @MainActor func testFullscreenVideoSwipeUpDismissesOnlyStandardViewer() {
+    @MainActor func testFullscreenVideoSwipeDownDismissesOnlyStandardViewer() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing"]
         app.launch()
@@ -215,12 +215,14 @@ final class NavigationTests: XCTestCase {
         surface.tap()
         let close = app.buttons["Close full screen video"]
         XCTAssertTrue(close.waitForExistence(timeout: 12))
-        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.72))
-        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.44))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.32))
+        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.72))
         start.press(forDuration: 0.06, thenDragTo: finish)
-        XCTAssertFalse(close.exists, "Swipe up from bottom should exit standard full screen")
+        let disappeared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: close)
+        XCTAssertEqual(XCTWaiter.wait(for: [disappeared], timeout: 5), .completed,
+            "Swipe down should exit standard full screen")
         // Immersive vertical paging uses a different view without this dismiss
-        // modifier, so its swipe-up gesture still advances within the feed.
+        // modifier, so its vertical gesture still advances within the feed.
         app.buttons["tab-Immersive"].tap()
         XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 10))
     }
@@ -236,11 +238,29 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Choose your source"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.secureTextFields["first-run-rule34-key"].exists)
         next.tap()
-        XCTAssertTrue(app.staticTexts["Teach QuickTick your taste"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Which characters do you like?"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["simple-pick-chun_li"].exists)
+        app.buttons["simple-pick-chun_li"].tap()
+        XCTAssertTrue(app.otherElements["simple-example-post"].exists)
         next.tap()
         XCTAssertTrue(app.staticTexts["You're ready"].waitForExistence(timeout: 5))
         next.tap()
         XCTAssertTrue(app.buttons["tab-Home"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor func testFirstRunAdvancedModeShowsDetailedPreferences() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-first-run"]
+        app.launch()
+        let next = app.buttons["first-run-continue"]
+        XCTAssertTrue(next.waitForExistence(timeout: 12))
+        app.buttons["Advanced"].tap()
+        next.tap()
+        next.tap()
+        XCTAssertTrue(app.staticTexts["Teach QuickTick your taste"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Characters"].exists)
+        XCTAssertTrue(app.staticTexts["Artists"].exists)
+        XCTAssertTrue(app.staticTexts["Attributes"].exists)
     }
 
     @MainActor func testHomeInlinePlaybackAndComicClose() {

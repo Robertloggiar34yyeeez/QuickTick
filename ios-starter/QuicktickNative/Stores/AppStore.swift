@@ -395,9 +395,13 @@ final class AppStore: ObservableObject {
                 }
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
                 incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
-                filtered = personalized
-                    ? await recommendations.rankFast(incoming, taste: tasteChoice(for: provider), recent: [])
-                    : incoming
+                if personalized {
+                    // Metadata and cached appearance vectors only: no model
+                    // loading, network requests or pixel decoding on first paint.
+                    let cachedAppearance = await visual.scores(incoming)
+                    filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
+                        recent: [], visualScores: cachedAppearance)
+                } else { filtered = incoming }
                 if filtered.isEmpty, let acquisition, acquisition.focused {
                     broaden = true
                     if page.hasMore == false { Task { await recommendations.markCandidateDrained(context: acquisition.context) } }
@@ -462,9 +466,12 @@ final class AppStore: ObservableObject {
             if candidateContext != nil { candidates = await recommendations.unseenRecommendations(candidates) }
             candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
                 recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
-            let ranked = candidateContext != nil
-                ? await recommendations.rankFast(candidates, taste: tasteChoice(for: provider), recent: Array(posts.suffix(10)))
-                : candidates
+            let ranked: [Post]
+            if candidateContext != nil {
+                let cachedAppearance = await visual.scores(candidates)
+                ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
+                    recent: Array(posts.suffix(10)), visualScores: cachedAppearance)
+            } else { ranked = candidates }
             guard generation == token, !Task.isCancelled else { return }
             if ranked.isEmpty, let acquisition, acquisition.focused {
                 broaden = true

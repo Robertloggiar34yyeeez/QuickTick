@@ -83,7 +83,21 @@ struct FavoritesView: View {
     @EnvironmentObject private var store: AppStore
     @State private var immersive = false
     @State private var activeID: String?
-    private var saved: [Post] { store.favorites.values.sorted { $0.stableID < $1.stableID } }
+    @State private var shuffleLikes = false
+    @State private var randomizedIDs: [String] = []
+    private var orderedLikes: [Post] { store.favorites.values.sorted { $0.stableID < $1.stableID } }
+    private var saved: [Post] {
+        guard shuffleLikes else { return orderedLikes }
+        let byID = Dictionary(uniqueKeysWithValues: orderedLikes.map { ($0.stableID, $0) })
+        let shuffled = randomizedIDs.compactMap { byID[$0] }
+        let inserted = orderedLikes.filter { !randomizedIDs.contains($0.stableID) }
+        return shuffled + inserted
+    }
+    private func shuffleFavorites() {
+        randomizedIDs = orderedLikes.map(\.stableID).shuffled()
+        shuffleLikes = true
+        activeID = nil
+    }
     var body: some View {
         Group {
             if immersive {
@@ -116,10 +130,33 @@ struct FavoritesView: View {
                         }
                 }
             }
-        }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Favorites")
-            .toolbar {
-                Button(immersive ? "Feed" : "Immersive") { immersive.toggle() }
-                    .disabled(saved.isEmpty).accessibilityIdentifier("favorites-immersive")
+        }
+        .scrollContentBackground(.hidden)
+        .background(AppTheme.canvas)
+        .navigationTitle("Favorites")
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Button("Shuffle likes", systemImage: "shuffle") { shuffleFavorites() }
+                    Button("Original order", systemImage: "list.bullet") {
+                        shuffleLikes = false
+                        activeID = nil
+                    }
+                    .disabled(!shuffleLikes)
+                } label: {
+                    Image(systemName: shuffleLikes ? "shuffle.circle.fill" : "shuffle")
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .disabled(orderedLikes.isEmpty)
+                .accessibilityLabel("Browse likes randomly")
+                .accessibilityIdentifier("favorites-shuffle")
+                Button(immersive ? "Feed" : "Immersive") {
+                    activeID = nil
+                    immersive.toggle()
+                }
+                .disabled(saved.isEmpty)
+                .accessibilityIdentifier("favorites-immersive")
             }
+        }
     }
 }

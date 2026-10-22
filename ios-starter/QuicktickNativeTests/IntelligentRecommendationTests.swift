@@ -287,6 +287,26 @@ final class IntelligentRecommendationTests: XCTestCase {
         XCTAssertFalse(allowed)
     }
 
+    func testConditionalTasteModelKeepsCharactersArtistAndMediumSeparate() {
+        var model = ConditionalTasteModel()
+        let favorites = [
+            post("liked-a", ["2d", "chun_li", "artist:two_d_artist"]),
+            post("liked-b", ["3d", "chun_li", "artist:trusted_3d"])
+        ]
+        model.train(favorites, taxonomy: nil)
+        let trusted = post("trusted", ["3d", "chun_li", "artist:trusted_3d"])
+        let untrusted = post("untrusted", ["3d", "chun_li", "artist:unknown_3d"])
+        let falseMedium = post("false-medium", ["photo", "chun_li", "artist:trusted_3d"])
+        let otherCharacter = post("other", ["3d", "rouge_the_bat", "artist:trusted_3d"])
+        XCTAssertEqual(model.score(trusted, taxonomy: nil), 9, accuracy: 0.001)
+        XCTAssertEqual(model.score(untrusted, taxonomy: nil), 2, accuracy: 0.001)
+        XCTAssertEqual(model.score(falseMedium, taxonomy: nil), 0, accuracy: 0.001)
+        XCTAssertEqual(model.score(otherCharacter, taxonomy: nil), 3, accuracy: 0.001)
+        model.train([favorites[0]], taxonomy: nil)
+        XCTAssertEqual(model.score(trusted, taxonomy: nil), 0, accuracy: 0.001,
+            "Removing a favorite must clear that artist/medium pair")
+    }
+
     func testChunLi3DMatchesTrustedArtistsInsteadOfAny3DRender() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var one = post("liked-3d-a", ["3d", "chun_li", "artist:trusted_one"])

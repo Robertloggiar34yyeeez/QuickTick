@@ -86,7 +86,7 @@ struct TasteOnboardingView: View {
 // Curated starter suggestions, not fabricated live-trending statistics.
 // One representative provider post is fetched only after the user focuses a
 // suggestion, so onboarding never launches a grid of network/image requests.
-private struct StarterTastePick: Identifiable {
+struct StarterTastePick: Identifiable, Sendable {
     let id: String
     let title: String
     let context: String

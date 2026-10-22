@@ -276,7 +276,7 @@ private struct ImmersiveItemView: View {
                         Group {
                             if let image = previews.images[post.stableID] {
                                 Image(uiImage: image).resizable().scaledToFill()
-                            } else if active || presentationActive {
+                            } else if active {
                                 // Start painting the poster as the page mounts,
                                 // not only after the async prewarm task starts.
                                 // Shared pipeline caches any already seen thumbnail.
@@ -291,7 +291,7 @@ private struct ImmersiveItemView: View {
                         .allowsHitTesting(false)
                     }
                 }
-                if post.type.lowercased() == "gif", !gifDecoded {
+                if post.type.lowercased() == "gif", active, !gifDecoded {
                     CachedMediaImage(url: post.thumbUrl.isEmpty ? post.cardPreviewURL : post.thumbUrl,
                         preview: post.previewUrl, pixels: 320, fill: true)
                         .frame(width: geo.size.width, height: geo.size.height)

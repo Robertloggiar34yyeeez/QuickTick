@@ -266,6 +266,9 @@ actor RecommendationEngine {
         let learnedHistory = positiveTermEntries(source: provider.rawValue, taste: TasteChoice(), limit: 12)
             .filter {
                 $0.1 >= 3 && !blocked.contains($0.0) && !explicit.contains($0.0)
+                // "3d" alone should never become a provider discovery query
+                // just because a few favorite artists work in that medium.
+                && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
                 && !(sourcesWithRougeLikes.contains(provider.rawValue)
                     && !sourcesWithWildlifeLikes.contains(provider.rawValue)
                     && Self.wildlifeOnlyTerms.contains(RecommendationTagRules.canonical($0.0)))

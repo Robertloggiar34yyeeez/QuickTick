@@ -157,6 +157,9 @@ final class AppStore: ObservableObject {
     func bootstrap() async {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+            if ProcessInfo.processInfo.arguments.contains("--ui-testing-first-run") {
+                UserDefaults.standard.removeObject(forKey: "quicktick-first-run-completed-v2")
+            }
             pageFlight?.cancel(); hasMore = false; lastError = nil
             if ProcessInfo.processInfo.arguments.contains("--ui-testing-sync-login") { syncID = UITestSyncSupport.syncID; cloudSyncEnabled = true; await api.setCloudSyncEnabled(true) }
             tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true)

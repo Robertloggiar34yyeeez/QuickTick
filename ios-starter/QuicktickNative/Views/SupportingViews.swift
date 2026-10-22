@@ -137,7 +137,7 @@ struct FirstRunSetupView: View {
     @State private var examplePost: Post?
     @State private var exampleLoading = false
     @State private var exampleError: String?
-    private enum SetupMode: String, CaseIterable { case simple = "Simple", advanced = "Advanced" }
+    private enum SetupMode: String, CaseIterable, Hashable, Sendable { case simple = "Simple", advanced = "Advanced" }
     private var suggestions: [StarterTastePick] {
         isRule34 ? StarterTastePick.characters : StarterTastePick.keywords
     }

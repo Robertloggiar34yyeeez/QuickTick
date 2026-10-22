@@ -275,6 +275,11 @@ final class IntelligentRecommendationTests: XCTestCase {
         var unlikedArtist = post("bad", ["3d", "chun_li", "artist:untrusted"])
         unlikedArtist.creator = "shared_aggregator"
         let unknown = post("unknown", ["3d", "chun_li"])
+        let otherArtistExcluded = await engine.isHardDisliked(unlikedArtist, taste: TasteChoice())
+        XCTAssertTrue(otherArtistExcluded, "A known unliked 3D artist should not be served")
+        let override = TasteChoice(done: true, into: ["untrusted"], notInto: [])
+        let explicitlyAllowed = await engine.isHardDisliked(unlikedArtist, taste: override)
+        XCTAssertFalse(explicitlyAllowed, "User-selected artists override inferred restrictions")
         let good = await engine.score(favoriteArtist, taste: TasteChoice(), recent: [])
         let bad = await engine.score(unlikedArtist, taste: TasteChoice(), recent: [])
         let unknownScore = await engine.score(unknown, taste: TasteChoice(), recent: [])

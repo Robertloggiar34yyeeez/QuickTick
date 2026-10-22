@@ -89,6 +89,33 @@ final class NativeProviderAPITests: XCTestCase {
     }
 
 
+    @MainActor func testRecommendedUsesDifferentCandidateQueriesBeforeRanking() async throws {
+        let (api, session) = client()
+        defer { session.invalidateAndCancel() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+        store.selectedProvider = .eporner
+        await store.bootstrap()
+        // Supply distinct intentional interests without updating on-disk user
+        // preferences or depending on external network responses.
+        await store.recommendations.record(.like,
+            post: Post(key: "eporner:liked-a", id: "liked-a", provider: "Eporner",
+                       tags: ["engineering", "aerodynamics"]))
+        NativeProviderProtocol.log.reset()
+        await store.refresh()
+        let searches = NativeProviderProtocol.log.snapshot()
+            .filter { $0.url?.path == "/api/v2/video/search/" }
+            .compactMap { request in
+                URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "query" })?.value
+            }
+        XCTAssertGreaterThanOrEqual(searches.count, 2,
+            "Recommended must search at least two distinct interest/discovery pools")
+        XCTAssertGreaterThan(Set(searches).count, 1,
+            "Rearranging duplicate pages cannot improve candidate quality")
+    }
+
     func testPornhubFeed404TriesCanonicalRouteOnce() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let page = try await api.posts(provider: .pornhub, query: QueryParser.parse("route-fixture"), page: 1)

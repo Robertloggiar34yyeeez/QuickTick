@@ -619,11 +619,18 @@ final class AppStore: ObservableObject {
         if let key { protectedImmersiveIDs.insert(key) }
         let token = generation
         tailRankTask?.cancel()
-        tailRankTask = Task(priority: .utility) { await adaptRecommendationTail(token: token) }
+        // Do not sort and republish the full tail on every paging frame.
+        // Wait for the active page to settle, then rerank only unseen content.
+        tailRankTask = Task(priority: .utility) {
+            do { try await Task.sleep(for: .milliseconds(650)) } catch { return }
+            guard !Task.isCancelled else { return }
+            await adaptRecommendationTail(token: token)
+        }
     }
     func adaptRecommendationTail(token: UUID) async {
         let tab = activeTab
         guard tab == 0 || tab == 1, feedSort == "recommended",
+              Date().timeIntervalSince(lastFeedMotion) >= 0.45,
               let active = tab == 1 ? immersivePlaybackID : inlinePlaybackID else { return }
         let source = posts
         guard let activeIndex = source.firstIndex(where: { $0.stableID == active }) else { return }
@@ -780,7 +787,8 @@ final class AppStore: ObservableObject {
     }
 
     func noteFeedMotion() {
-        if Date().timeIntervalSince(lastFeedMotion) >= 0.2 { stopActiveLearning(); startActiveLearning() }
+        // Never tear down/restart model tasks on every scrolling frame.
+        // Ongoing workers check lastFeedMotion and defer expensive inference.
         lastFeedMotion = .now
         idleTask?.cancel()
         if visualScanStatus != nil, visualScanStatus != "Visual update paused while scrolling" { visualScanStatus = "Visual update paused while scrolling" }
@@ -790,7 +798,9 @@ final class AppStore: ObservableObject {
                 do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
                 guard let self else { return }
                 if Date().timeIntervalSince(lastFeedMotion) >= 1.5 {
-                    motionTask = nil; scheduleIdleIntelligence(); return
+                    motionTask = nil
+                    scheduleIdleIntelligence()
+                    return
                 }
             }
         }

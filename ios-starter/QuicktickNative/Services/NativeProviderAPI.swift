@@ -128,12 +128,33 @@ enum NativeProviderAPI {
         default: "image"
         }
     }
+    /// Booru providers use exact tags; video and keyword providers use title,
+    /// captions, categories and creator names. Avoid substring exclusions:
+    /// banning "bat" must not inadvertently ban "battle".
+    static func containsKeyword(_ phrase: String, in post: Post) -> Bool {
+        let text = ([post.caption, post.category, post.creator].compactMap { $0 } + post.tags)
+            .joined(separator: " ")
+            .lowercased()
+            .replacingOccurrences(of: "_", with: " ")
+        let tokens = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        let needle = phrase.lowercased().replacingOccurrences(of: "_", with: " ")
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        guard !needle.isEmpty else { return false }
+        guard needle.count <= tokens.count else { return false }
+        return (0...(tokens.count - needle.count)).contains { offset in
+            Array(tokens[offset..<(offset + needle.count)]) == needle
+        }
+    }
     static func page(_ rows: [Post], hasMore: Bool, query: ParsedQuery, immersive: Bool) -> PostPage {
         let banned = Set(query.excluded.map { $0.lowercased() })
         var seen = Set<String>()
-        return PostPage(items: rows.filter {
-            !$0.id.isEmpty && seen.insert($0.stableID).inserted && (!immersive || $0.isImmersiveMedia)
-                && banned.isDisjoint(with: Set($0.tags.map { $0.lowercased() }))
+        return PostPage(items: rows.filter { post in
+            guard !post.id.isEmpty, seen.insert(post.stableID).inserted,
+                  !immersive || post.isImmersiveMedia else { return false }
+            if post.providerKey == .rule34 {
+                return banned.isDisjoint(with: Set(post.tags.map { $0.lowercased() }))
+            }
+            return !query.excluded.contains { containsKeyword($0, in: post) }
         }, hasMore: hasMore)
     }
 

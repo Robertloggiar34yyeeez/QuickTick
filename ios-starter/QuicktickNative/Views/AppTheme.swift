@@ -62,37 +62,6 @@ extension View {
     }
 }
 
-// Only full-screen viewers presented by standard feeds use this gesture.
-// A small lower-edge activation area avoids stealing vertical comic zoom,
-// scrub controls, and Immersive's native vertical pager.
-struct QuicktickSwipeUpExit: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let onExit: () -> Void
-
-    func body(content: Content) -> some View {
-        content.overlay(alignment: .bottom) {
-            Color.clear
-                .frame(height: 34)
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 22).onEnded { gesture in
-                        guard gesture.translation.height < -90,
-                              abs(gesture.translation.width) < -gesture.translation.height * 0.65 else { return }
-                        onExit()
-                    }
-                )
-                .accessibilityHidden(true)
-        }
-    }
-}
-
-extension View {
-    func quicktickSwipeUpExit(_ action: @escaping () -> Void) -> some View {
-        modifier(QuicktickSwipeUpExit(onExit: action))
-    }
-}
-
 struct ActionIcon: View {
     let title: String
     let symbol: String

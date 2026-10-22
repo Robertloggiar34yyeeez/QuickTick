@@ -267,6 +267,7 @@ private final class FullscreenSwipeUpHandler: NSObject, UIGestureRecognizerDeleg
               let view = pan.view else { return false }
         let velocity = pan.velocity(in: view)
         let start = pan.location(in: view)
+        if view is ComicScrollView, start.y < view.bounds.height * 0.88 { return false }
         // Allow a natural upward escape from the lower half of the screen;
         // preserve native seeking controls and horizontal comic gestures.
         return start.y >= view.bounds.height * 0.50

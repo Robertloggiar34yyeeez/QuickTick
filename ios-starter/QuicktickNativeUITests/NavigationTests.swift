@@ -202,6 +202,12 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(full.isHittable); full.tap()
         let close = app.buttons["Close full image"]
         XCTAssertTrue(close.waitForExistence(timeout: 10))
+        let comic = app.scrollViews["full-comic-zoom"]
+        XCTAssertTrue(comic.waitForExistence(timeout: 10))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.35))
+        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.75))
+        start.press(forDuration: 0.06, thenDragTo: finish)
+        XCTAssertTrue(close.exists, "A downward reading scroll must never dismiss a long comic")
         let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Downloaded comic full view"; capture.lifetime = .keepAlways; add(capture)
         close.tap(); XCTAssertTrue(app.navigationBars["Downloads"].exists)
     }

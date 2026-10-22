@@ -65,7 +65,8 @@ struct PostCardView: View {
             .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
             .sheet(isPresented: $comments) { CommentsView(post: post) }
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
-            .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl) }
+            .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
+                previewURL: post.cardPreviewURL) }
             .fullScreenCover(isPresented: Binding(
                 get: { store.fullScreenPlaybackID == post.stableID },
                 set: { if !$0 { store.fullScreenPlaybackID = nil } }
@@ -277,12 +278,14 @@ private final class FullscreenSwipeDownHandler: NSObject, UIGestureRecognizerDel
         if gestureRecognizer is UISwipeGestureRecognizer { return !(view is ComicScrollView) }
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
         let velocity = pan.velocity(in: view)
-        let point = pan.location(in: view)
-        // Comics can be vertically scrolled; reserve the top edge for
-        // dismissal. Video has no vertical scroll, so downward swipes from
-        // most of its frame can dismiss, including over native AVKit controls.
-        let nearTop = !(view is ComicScrollView) || point.y <= view.bounds.height * 0.12
-        return nearTop && velocity.y > 20
+        // Do not interfere with AVKit's horizontal scrubbing or image zoom.
+        // Recognize only a clearly downward, one-finger dismissal pan.
+        // Videos may be dismissed from the center. A regular image uses the
+        // same gesture at its minimum zoom; zoomed images must remain pannable.
+        // Long comics never install this recognizer at all.
+        if let scroll = view as? ComicScrollView,
+           scroll.zoomScale > scroll.minimumZoomScale + 0.025 { return false }
+        return velocity.y > 20
             && abs(velocity.y) > abs(velocity.x) * 1.15
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
@@ -330,14 +333,27 @@ private struct FullScreenPlayerController: UIViewControllerRepresentable {
 
 private struct FullComicView: View {
     let url: String
+    let previewURL: String
     @Environment(\.dismiss) private var dismiss
     @State private var image: UIImage?
+    @State private var preview: UIImage?
+    @State private var comic = false
     @State private var error: String?
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            if let image { ComicZoomSurface(image: image, onSwipeDown: { dismiss() }).ignoresSafeArea(edges: .bottom) }
-            else if let error { Text(error).foregroundStyle(.white).padding() }
+            if let image {
+                ComicZoomSurface(image: image, isComic: comic, onSwipeDown: { dismiss() })
+                    .ignoresSafeArea(edges: .bottom)
+            } else if let preview {
+                Image(uiImage: preview).resizable().scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .bottom) {
+                        ProgressView("Loading full resolution").tint(.white)
+                            .padding(10).background(.black.opacity(0.65), in: Capsule())
+                            .padding(.bottom, 20)
+                    }
+            } else if let error { Text(error).foregroundStyle(.white).padding() }
             else { ProgressView("Loading full image").tint(.white) }
         }.overlay(alignment: .topTrailing) {
             Button { dismiss() } label: {
@@ -346,24 +362,39 @@ private struct FullComicView: View {
             }.buttonStyle(.plain).padding(12).accessibilityLabel("Close full image")
         }
         .quicktickEdgeBack { dismiss() }
-        .task {
+        // Reuse the card's bounded decoded thumbnail from MediaImagePipeline.
+        // A preview can appear immediately while the original loads separately.
+        .task(id: previewURL) {
+            guard !previewURL.isEmpty else { return }
+            if let decoded = try? await MediaImagePipeline.shared.image(
+                raw: previewURL, pixels: 1024, comicPreview: true),
+               !Task.isCancelled, image == nil {
+                preview = UIImage(cgImage: decoded.image)
+            }
+        }
+        .task(id: url) {
             do {
                 guard let location = (URL(string: url)?.isFileURL == true ? URL(string: url) : NativeProviderAPI.mediaURL(url)) else { throw URLError(.badURL) }
                 let full = try await MediaImagePipeline.shared.fullImage(url: location)
                 guard !Task.isCancelled else { return }
+                comic = full.comic
                 image = UIImage(cgImage: full.image)
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
+        .onDisappear { preview = nil; image = nil }
     }
 }
 
 private struct ComicZoomSurface: UIViewRepresentable {
     let image: UIImage
+    let isComic: Bool
     let onSwipeDown: () -> Void
     func makeCoordinator() -> FullscreenSwipeDownHandler { FullscreenSwipeDownHandler(onExit: onSwipeDown) }
     func makeUIView(context: Context) -> ComicScrollView {
         let view = ComicScrollView(image: image)
-        context.coordinator.install(on: view)
+        // Long comics keep their ordinary vertical scrolling gestures.
+        // Regular images can be dismissed with a downward drag from the middle.
+        if !isComic { context.coordinator.install(on: view) }
         return view
     }
     func updateUIView(_ view: ComicScrollView, context: Context) {

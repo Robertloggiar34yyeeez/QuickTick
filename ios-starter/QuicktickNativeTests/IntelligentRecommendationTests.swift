@@ -385,4 +385,48 @@ final class IntelligentRecommendationTests: XCTestCase {
         print("QUICKTICK_METRIC metadata_fixture_baseline_p5=\(precision(old)) current_p5=\(precision(new)) baseline_rank_ms=\(baselineMs) current_rank_ms=\(currentMs)")
         XCTAssertGreaterThanOrEqual(precision(new), precision(old)); XCTAssertEqual(precision(new), 1)
     }
+
+    func testFastRankingFindsStrongInterestBeyondOriginal128CandidateWindow() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let unrelated = (0..<230).map { post("unrelated-\($0)", ["background"]) }
+        let wanted = post("wanted", ["rare_interest"])
+        let taste = TasteChoice(done: true, into: ["rare_interest"], notInto: [])
+        let ranked = await engine.rankFast(unrelated + [wanted], taste: taste, recent: [])
+        XCTAssertEqual(ranked.first?.stableID, wanted.stableID,
+                       "Strong interests must not be stranded after the first 128 items")
+        XCTAssertEqual(ranked.count, unrelated.count + 1)
+    }
+
+    func testDeepRankingRescuesCachedVisualMatchBeyondMetadataShortlist() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let ordinary = (0..<180).map { post("ordinary-\($0)", ["jacket"]) }
+        let visualMatch = post("visually-matching", ["jacket"])
+        let taste = TasteChoice(done: true, into: ["jacket"], notInto: [])
+        let ranked = await engine.rank(ordinary + [visualMatch], taste: taste, recent: [],
+                                       visualScores: [visualMatch.stableID: 4], limit: 5)
+        XCTAssertEqual(ranked.first?.stableID, visualMatch.stableID,
+                       "A cached high-affinity image should reach the reranker even with sparse metadata")
+    }
+
+    func testFullImageUsesActualAspectRatioToDistinguishComics() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for (height, expectedComic) in [(120, false), (700, true)] {
+            let width = 120
+            let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.setFillColor(CGColor(red: 0.4, green: 0.5, blue: 0.6, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            let url = folder.appendingPathComponent("image-\(height).png")
+            let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
+                url as CFURL, "public.png" as CFString, 1, nil))
+            CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+            XCTAssertTrue(CGImageDestinationFinalize(destination))
+            let full = try await MediaImagePipeline.shared.fullImage(url: url)
+            XCTAssertEqual(full.comic, expectedComic)
+        }
+    }
 }

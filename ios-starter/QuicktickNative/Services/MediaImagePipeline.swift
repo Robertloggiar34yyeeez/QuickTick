@@ -67,7 +67,8 @@ actor MediaImagePipeline {
         let bytes = try await data(url:url);try Task.checkCancellation()
         guard let source = CGImageSourceCreateWithData(bytes as CFData,[kCGImageSourceShouldCache:false] as CFDictionary),
               let image = CGImageSourceCreateImageAtIndex(source,0,[kCGImageSourceShouldCache:false] as CFDictionary) else { throw URLError(.cannotDecodeContentData) }
-        return DecodedMediaImage(image:image,nativeSize:CGSize(width:image.width,height:image.height),comic:true)
+        return DecodedMediaImage(image:image,nativeSize:CGSize(width:image.width,height:image.height),
+            comic: Double(image.height) > Double(image.width) * 4)
     }
     func data(url: URL) async throws -> Data {
         if let cached = prefetchedGIF, cached.key == url.absoluteString { return cached.bytes }

@@ -687,14 +687,14 @@ actor RecommendationEngine {
     /// Cheap metadata ranking before publication: no ML, images, or network access.
     /// An untouched profile retains the provider's original order.
     func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post], visualScores: [String: Double] = [:]) -> [Post] {
-        let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(128, candidates.count)) }
+        let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(384, candidates.count)) }
         guard let first = candidates.first else { return [] }
         let p = profile(for: first.provider.lowercased())
         let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !savedFavoriteAffinity.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty
             || !p.terms.isEmpty || !p.negativeThemes.isEmpty || !p.termEvidence.isEmpty
         guard hasSignal || !state.reversibleSkips.evidence.isEmpty || !visualScores.isEmpty else { return candidates.filter { !isHardDisliked($0, taste: taste) } }
         var scored: [(post: Post, value: Double, offset: Int)] = []
-        for (offset, post) in candidates.prefix(128).enumerated() {
+        for (offset, post) in candidates.prefix(384).enumerated() {
             guard !isHardDisliked(post, taste: taste) else { continue }
             let metadata = score(post, taste: taste, recent: recent)
             let calibrated = RecommendationQualityModel.combined(metadata: metadata,
@@ -728,26 +728,41 @@ actor RecommendationEngine {
             termWindow.append(Set(terms(for: item.post)).subtracting(Self.genericTasteTerms))
         }
         output += scored.map(\.post)
-        return output + candidates.dropFirst(128).filter { !isHardDisliked($0, taste: taste) }
+        return output + candidates.dropFirst(384).filter { !isHardDisliked($0, taste: taste) }
     }
 
     func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], visualScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
         guard !Task.isCancelled else { return candidates }
         let start = Date(); defer { rankLatencyMs = Date().timeIntervalSince(start) * 1000 }
-        // Cheap bounded shortlist before quadratic diversity selection. Strong
-        // candidates beyond the first page still get a chance to surface.
-        var scored: [(offset: Int, post: Post, value: Double)] = []
+        // Query the existing on-device embedding cache BEFORE trimming the 512
+        // candidates to 128. Otherwise a semantically excellent match that had
+        // sparse metadata could never compete in the final reranker.
+        // scores() is cache-only; no network or Core ML inference runs here.
+        var scored: [(offset: Int, post: Post, metadata: Double)] = []
         for (offset, post) in candidates.prefix(512).enumerated() {
-            scored.append((offset, post, score(post, taste: taste, recent: recent)))
+            guard !isHardDisliked(post, taste: taste) else { continue }
+            scored.append((offset, post, score(post, taste: taste, recent: recent,
+                                               collaborativeScores: collaborativeScores)))
         }
-        scored.sort { a, b in a.value == b.value ? a.offset < b.offset : a.value > b.value }
-        let shortlist: [Post] = scored.prefix(128).map { $0.post }
+        let semanticScores = await semantic.scores(scored.map(\.post), taste: taste)
+        let weights = semantic.weights
+        // Compare features on the same scales used by the final reranker.
+        // Collaborative, semantic and cached appearance signals may all rescue
+        // a candidate previously discarded by metadata-only shortlisting.
+        let shortlistScores = scored.map { entry in
+            let tagScore = tanh(entry.metadata / 35) * weights.tag
+            let semanticScore = semanticScores[entry.post.stableID]?.total(weights) ?? 0
+            let visualScore = max(-4, min(4, visualScores[entry.post.stableID] ?? 0))
+            return (offset: entry.offset, post: entry.post,
+                    value: tagScore + semanticScore + visualScore)
+        }.sorted { a, b in
+            a.value == b.value ? a.offset < b.offset : a.value > b.value
+        }
+        let shortlist: [Post] = shortlistScores.prefix(128).map(\.post)
         let selected = Set(shortlist.map(\.stableID))
         let overflow = candidates.filter { !selected.contains($0.stableID) }
         let candidates = shortlist
-        let semanticScores = await semantic.scores(candidates, taste: taste)
         let vectors = await semantic.diversityVectors(candidates + recent)
-        let weights = semantic.weights
         debugScores = [:]
         let themes = Dictionary(uniqueKeysWithValues:Set(candidates.map { $0.provider.lowercased() }).map { source in
             (source,positiveTermEntries(source:source,taste:taste,limit:3).map { $0.0 })

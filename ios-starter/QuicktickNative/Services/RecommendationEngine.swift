@@ -161,6 +161,9 @@ actor RecommendationEngine {
         }.prefix(limit).map { ($0.key, $0.value) }
     }
     func configureTaxonomy(_ value: VisualTagTaxonomy?) {
+        // The idle worker can restart after foregrounding. Recompute large
+        // favorites snapshots only when the credited-artist taxonomy changes.
+        guard taxonomy?.version != value?.version else { return }
         taxonomy = value
         if !currentFavorites.isEmpty { configureFavorites(currentFavorites) }
     }

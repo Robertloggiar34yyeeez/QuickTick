@@ -263,6 +263,61 @@ final class IntelligentRecommendationTests: XCTestCase {
         let request = await engine.candidateRequest(context: "aliases", provider: .rule34, taste: taste, excluded: [])
         XCTAssertTrue(request.query.excluded.contains("furry")); XCTAssertTrue(request.query.excluded.contains("anthro"))
     }
+    func testChunLi3DMatchesTrustedArtistsInsteadOfAny3DRender() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        var one = post("liked-3d-a", ["3d", "chun_li", "artist:trusted_one"])
+        one.creator = "shared_aggregator"
+        var two = post("liked-3d-b", ["3d", "chun_li", "artist:trusted_two"])
+        two.creator = "shared_aggregator"
+        await engine.configureFavorites([one, two, post("2d", ["2d", "chun_li", "qipao"])])
+        var favoriteArtist = post("good", ["3d", "chun_li", "artist:trusted_two"])
+        favoriteArtist.creator = "shared_aggregator"
+        var unlikedArtist = post("bad", ["3d", "chun_li", "artist:untrusted"])
+        unlikedArtist.creator = "shared_aggregator"
+        let unknown = post("unknown", ["3d", "chun_li"])
+        let good = await engine.score(favoriteArtist, taste: TasteChoice(), recent: [])
+        let bad = await engine.score(unlikedArtist, taste: TasteChoice(), recent: [])
+        let unknownScore = await engine.score(unknown, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(good, bad + 30,
+            "A popular character or shared uploader must not override an untrusted 3D artist")
+        XCTAssertGreaterThan(good, unknownScore)
+        let ranked = await engine.rankFast([unlikedArtist, unknown, favoriteArtist],
+            taste: TasteChoice(), recent: [])
+        XCTAssertEqual(ranked.first?.stableID, favoriteArtist.stableID)
+    }
+
+    func testRougeTheBatLikesNeverPromoteLiteralWildlife() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let liked = post("rouge-like", ["2d", "rouge_the_bat", "sonic_the_hedgehog", "anthro"])
+        await engine.configureFavorites([liked])
+        let wildBat = post("wild-bat", ["photo", "bat", "wildlife"])
+        let wildFox = post("wild-fox", ["photo", "fox", "wildlife"])
+        let rouge = post("rouge-art", ["2d", "rouge_the_bat", "anthro"])
+        let otherFiction = post("fictional", ["2d", "character:fox_hero", "anthro"])
+        let wildBatBlocked = await engine.isHardDisliked(wildBat, taste: TasteChoice())
+        let wildFoxBlocked = await engine.isHardDisliked(wildFox, taste: TasteChoice())
+        let rougeBlocked = await engine.isHardDisliked(rouge, taste: TasteChoice())
+        let fictionBlocked = await engine.isHardDisliked(otherFiction, taste: TasteChoice())
+        XCTAssertTrue(wildBatBlocked)
+        XCTAssertTrue(wildFoxBlocked)
+        XCTAssertFalse(rougeBlocked)
+        XCTAssertFalse(fictionBlocked)
+        let feed = await engine.rankFast([wildBat, wildFox, rouge, otherFiction],
+            taste: TasteChoice(), recent: [])
+        XCTAssertEqual(Set(feed.map(\.stableID)), Set([rouge.stableID, otherFiction.stableID]))
+        let allowedAnimal = TasteChoice(done: true, into: ["bat"], notInto: [])
+        let explicitBlocked = await engine.isHardDisliked(wildBat, taste: allowedAnimal)
+        XCTAssertFalse(explicitBlocked,
+            "An explicit animal preference must override automatic fictional disambiguation")
+    }
+
+    func testSonicCharacterAliasDoesNotMapBareAnimalOrAmbiguousName() {
+        XCTAssertTrue(TasteConcepts.resolve(["rouge_the_bat"]).characters.contains("rouge_the_bat"))
+        XCTAssertTrue(TasteConcepts.resolve(["sonic_the_hedgehog", "rouge"]).characters.contains("rouge_the_bat"))
+        XCTAssertTrue(TasteConcepts.resolve(["bat"]).characters.isEmpty)
+        XCTAssertTrue(TasteConcepts.resolve(["rouge"]).characters.isEmpty)
+    }
+
     func testMetadataFixtureRelevanceAgainstLegacyScorer() async {
         let legacy = RecommendationEngine(semantic: SemanticRecommender(enabled: false), contextualRanking: false)
         let current = RecommendationEngine(semantic: SemanticRecommender(enabled: false))

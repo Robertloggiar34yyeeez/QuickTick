@@ -749,16 +749,23 @@ actor RecommendationEngine {
         // Compare features on the same scales used by the final reranker.
         // Collaborative, semantic and cached appearance signals may all rescue
         // a candidate previously discarded by metadata-only shortlisting.
-        let shortlistScores = scored.map { entry in
-            let tagScore = tanh(entry.metadata / 35) * weights.tag
-            let semanticScore = semanticScores[entry.post.stableID]?.total(weights) ?? 0
-            let visualScore = max(-4, min(4, visualScores[entry.post.stableID] ?? 0))
-            return (offset: entry.offset, post: entry.post,
-                    value: tagScore + semanticScore + visualScore)
-        }.sorted { a, b in
-            a.value == b.value ? a.offset < b.offset : a.value > b.value
+        // Explicit intermediate types avoid exponential Swift 6 inference cost
+        // on a heterogeneous numeric expression containing optional scores.
+        var shortlistScores: [(offset: Int, post: Post, value: Double)] = []
+        shortlistScores.reserveCapacity(scored.count)
+        for entry in scored {
+            let metadataValue: Double = tanh(entry.metadata / 35.0) * weights.tag
+            let semanticValue: Double = semanticScores[entry.post.stableID]?.total(weights) ?? 0.0
+            let cachedAppearance: Double = visualScores[entry.post.stableID] ?? 0.0
+            let visualValue: Double = max(-4.0, min(4.0, cachedAppearance))
+            let combined: Double = metadataValue + semanticValue + visualValue
+            shortlistScores.append((offset: entry.offset, post: entry.post, value: combined))
         }
-        let shortlist: [Post] = shortlistScores.prefix(128).map(\.post)
+        shortlistScores.sort { left, right in
+            if left.value == right.value { return left.offset < right.offset }
+            return left.value > right.value
+        }
+        let shortlist: [Post] = shortlistScores.prefix(128).map { entry in entry.post }
         let selected = Set(shortlist.map(\.stableID))
         let overflow = candidates.filter { !selected.contains($0.stableID) }
         let candidates = shortlist

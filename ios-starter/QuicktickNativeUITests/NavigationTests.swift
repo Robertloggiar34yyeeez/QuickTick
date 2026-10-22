@@ -212,6 +212,22 @@ final class NavigationTests: XCTestCase {
         close.tap(); XCTAssertTrue(app.navigationBars["Downloads"].exists)
     }
 
+    @MainActor func testBottomNavigationDockFillsAvailableWidth() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        let dock = app.otherElements["bottom-navigation-bar"]
+        let home = app.buttons["tab-Home"]
+        XCTAssertTrue(dock.waitForExistence(timeout: 12))
+        XCTAssertTrue(home.exists)
+        let screen = app.windows.firstMatch.frame
+        XCTAssertGreaterThan(dock.frame.width, screen.width * 0.95,
+                             "Bottom navigation should span the screen, not float as an inset capsule")
+        XCTAssertLessThanOrEqual(dock.frame.maxY, screen.maxY + 1)
+        XCTAssertGreaterThanOrEqual(dock.frame.maxY, screen.maxY - 50,
+                                    "Dock should sit directly above the system home indicator")
+    }
+
     @MainActor func testFullscreenVideoSwipeDownDismissesOnlyStandardViewer() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing"]

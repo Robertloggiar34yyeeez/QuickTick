@@ -71,7 +71,8 @@ struct RootView: View {
         .fullScreenCover(isPresented: Binding(
             get: {
                 store.bootstrapped && !firstRunCompleted
-                    && !ProcessInfo.processInfo.arguments.contains("--ui-testing")
+                    && (!ProcessInfo.processInfo.arguments.contains("--ui-testing")
+                        || ProcessInfo.processInfo.arguments.contains("--ui-testing-first-run"))
             },
             set: { _ in }
         )) {

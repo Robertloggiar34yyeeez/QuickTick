@@ -412,13 +412,26 @@ actor RecommendationEngine {
             }
         // Both explicit feedback history and the entire current favorites library
         // contribute to acquisition, without re-training existing events.
-        let learned = Array(Set((learnedHistory + saved + sessionInterests).map(\.0))).sorted { a, b in
-            let sa = (learnedHistory.first { $0.0 == a }?.1 ?? 0) + (saved.first { $0.0 == a }?.1 ?? 0) * 2
-                + (sessionInterests.first { $0.0 == a }?.1 ?? 0) * 3
-            let sb = (learnedHistory.first { $0.0 == b }?.1 ?? 0) + (saved.first { $0.0 == b }?.1 ?? 0) * 2
-                + (sessionInterests.first { $0.0 == b }?.1 ?? 0) * 3
-            return sa == sb ? a < b : sa > sb
-        }.prefix(16)
+        // Accumulate weighted scores once, then sort the small dictionary.
+        // Avoid a nested tuple/map/filter/sort expression: Swift's compiler
+        // can time out type-checking that expression on device archives.
+        var interestWeights: [String: Double] = [:]
+        for (term, weight) in learnedHistory {
+            interestWeights[term, default: 0] += weight
+        }
+        for (term, weight) in saved {
+            interestWeights[term, default: 0] += weight * 2
+        }
+        for (term, weight) in sessionInterests {
+            interestWeights[term, default: 0] += weight * 3
+        }
+        let sortedInterests: [String] = interestWeights.keys.sorted { left, right in
+            let a: Double = interestWeights[left] ?? 0
+            let b: Double = interestWeights[right] ?? 0
+            if a == b { return left < right }
+            return a > b
+        }
+        let learned: [String] = Array(sortedInterests.prefix(16))
         let roundKey = context + "|round"
         let round = max(0, (state.candidatePages[roundKey] ?? 1) - 1)
         advanceCandidatePage(context: roundKey, nextPage: (round + 1) % 12_000 + 1)

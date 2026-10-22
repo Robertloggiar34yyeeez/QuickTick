@@ -78,6 +78,21 @@ actor RecommendationEngine {
         return true
     }
 
+    private func explicitlyOther3DArtist(_ post: Post, taste: TasteChoice) -> Bool {
+        let source = post.provider.lowercased()
+        guard VisualDomain.classify(post) == .threeD,
+              let trusted = trusted3DCredits[source] else { return false }
+        let trustedArtists = trusted.filter { $0.hasPrefix("artist:") }
+        guard !trustedArtists.isEmpty else { return false }
+        let candidate = credits(for: post).filter { $0.hasPrefix("artist:") }
+        guard !candidate.isEmpty, candidate.isDisjoint(with: trustedArtists) else { return false }
+        let explicit = Set(taste.into.map(TasteConcepts.canonical))
+        // Never override a user-selected exception.
+        return candidate.allSatisfy {
+            !explicit.contains($0) && !explicit.contains(String($0.dropFirst("artist:".count)))
+        }
+    }
+
     func preferenceGuardPenalty(_ post: Post) -> Double {
         let source = post.provider.lowercased()
         guard VisualDomain.classify(post) == .threeD,
@@ -522,6 +537,7 @@ actor RecommendationEngine {
     func isHardDisliked(_ post: Post, taste: TasteChoice) -> Bool {
         let source = post.provider.lowercased()
         return fictionalWildlifeConfusion(post, taste: taste)
+            || explicitlyOther3DArtist(post, taste: taste)
             || RecommendationTagRules.rejects(post, exclusions: taste.notInto)
             || RecommendationTagRules.rejects(post, exclusions: repeatedlyRejectedTerms(source: source))
     }

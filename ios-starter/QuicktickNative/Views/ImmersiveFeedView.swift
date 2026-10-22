@@ -272,15 +272,32 @@ private struct ImmersiveItemView: View {
                                            startPoint: .topLeading, endPoint: .bottomTrailing)
                         }
                         .ignoresSafeArea()
-                    if let image = previews.images[post.stableID] {
-                        Image(uiImage: image).resizable().scaledToFill()
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .blur(radius: ready ? 0 : 15)
-                            .opacity(ready ? 0 : 1)
-                            .clipped()
-                            .accessibilityHidden(true)
-                            .allowsHitTesting(false)
+                    if !ready {
+                        Group {
+                            if let image = previews.images[post.stableID] {
+                                Image(uiImage: image).resizable().scaledToFill()
+                            } else if active || presentationActive {
+                                // Start painting the poster as the page mounts,
+                                // not only after the async prewarm task starts.
+                                // Shared pipeline caches any already seen thumbnail.
+                                CachedMediaImage(url: post.thumbUrl.isEmpty ? post.cardPreviewURL : post.thumbUrl,
+                                    preview: post.previewUrl, pixels: 320, fill: true)
+                            }
+                        }
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .blur(radius: 13)
+                        .clipped()
+                        .accessibilityHidden(true)
+                        .allowsHitTesting(false)
                     }
+                }
+                if post.type.lowercased() == "gif", !gifDecoded {
+                    CachedMediaImage(url: post.thumbUrl.isEmpty ? post.cardPreviewURL : post.thumbUrl,
+                        preview: post.previewUrl, pixels: 320, fill: true)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .blur(radius: 10)
+                        .clipped()
+                        .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "image" {
                     CachedMediaImage(url: post.cardPreviewURL, pixels: 1440, comic: false)

@@ -18,6 +18,9 @@ struct ImmersiveFeedView: View {
     // SwiftUI's scroll target is a restoration request, not playback truth.
     // On some OS versions it remains on an offscreen page after paging.
     @State private var scrollTargetID: String?
+    // A deliberate paging request must not be undone by interim geometry
+    // snapshots of the outgoing page while the scroll animation settles.
+    @State private var pageTransitionProtectedUntil = Date.distantPast
     @State private var activeIndex = 0
     @State private var activeSince = Date.distantPast
     @State private var searchVisible = false
@@ -81,12 +84,18 @@ struct ImmersiveFeedView: View {
                     guard presentationActive, store.isForeground, let target,
                           target != activeID,
                           mediaPosts.contains(where: { $0.stableID == target }) else { return }
+                    if Date() < pageTransitionProtectedUntil, let activeID,
+                       target != activeID {
+                        scrollTargetID = activeID
+                        return
+                    }
                     activeID = target
                 }
                 .coordinateSpace(name: "immersive-viewport")
                 .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
                     guard presentationActive, store.isForeground else { return }
                     let viewport = CGRect(origin: .zero, size: geo.size)
+                    if scrollTargetID == activeID && Date() < pageTransitionProtectedUntil { return }
                     // The scroll target is authoritative while it remains on
                     // screen. An intermediate geometry callback must not
                     // revert a swipe to the outgoing, partially visible page.
@@ -189,6 +198,7 @@ struct ImmersiveFeedView: View {
         let next = index + (translation.height < 0 ? 1 : -1)
         guard mediaPosts.indices.contains(next) else { return }
         let key = mediaPosts[next].stableID
+        pageTransitionProtectedUntil = Date().addingTimeInterval(1.2)
         activeID = key
         scrollTargetID = key
         withAnimation(.easeOut(duration: 0.22)) { scrollProxy.scrollTo(key, anchor: .top) }

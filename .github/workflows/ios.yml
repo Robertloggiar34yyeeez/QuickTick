@@ -12,7 +12,7 @@ permissions:
 jobs:
   ios:
     runs-on: macos-15-intel
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - name: Select Swift 6.2 toolchain for xtool
@@ -116,14 +116,38 @@ jobs:
           mkdir -p logs
           xcodebuild -version | tee logs/xcode-version.txt
           DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')
-          xcrun simctl boot "$DEVICE" || true
-          xcrun simctl bootstatus "$DEVICE" -b
-          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -resultBundlePath logs/QuicktickTests.xcresult test | tee logs/xcodebuild-test.txt
+          boot_clean_iphone() {
+            xcrun simctl shutdown "$DEVICE" || true
+            xcrun simctl erase "$DEVICE"
+            xcrun simctl boot "$DEVICE"
+            xcrun simctl bootstatus "$DEVICE" -b
+          }
+          run_iphone_tests() {
+            local bundle="$1" log="$2"
+            shift 2
+            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO "$@" -resultBundlePath "logs/$bundle.xcresult" test | tee "logs/$log.txt"
+          }
+          failures=0
+          boot_clean_iphone
+          run_iphone_tests QuicktickUnitTests xcodebuild-unit-test -only-testing:QuicktickNativeTests || failures=1
+          # XCTest's accessibility service can become unresponsive after a long
+          # series of UI cases. Run the sensitive end-to-end scenarios with
+          # fresh simulator state; do not skip or relax their assertions.
+          boot_clean_iphone
+          run_iphone_tests QuicktickOnboardingTests xcodebuild-onboarding-test -only-testing:QuicktickNativeUITests/NavigationTests/testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key || failures=1
+          boot_clean_iphone
+          run_iphone_tests QuicktickPreferencesTests xcodebuild-preferences-test -only-testing:QuicktickNativeUITests/NavigationTests/testPersonalPreferencesAndTabRefresh || failures=1
+          boot_clean_iphone
+          run_iphone_tests QuicktickImmersiveTests xcodebuild-immersive-test -only-testing:QuicktickNativeUITests/NavigationTests/testImmersiveRailSnapsAndDoubleTapLikes || failures=1
+          boot_clean_iphone
+          run_iphone_tests QuicktickTests xcodebuild-test -only-testing:QuicktickNativeUITests -skip-testing:QuicktickNativeUITests/NavigationTests/testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key -skip-testing:QuicktickNativeUITests/NavigationTests/testPersonalPreferencesAndTabRefresh -skip-testing:QuicktickNativeUITests/NavigationTests/testImmersiveRailSnapsAndDoubleTapLikes || failures=1
+          exit "$failures"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: iphone-test-log
-          path: logs/xcodebuild-test.txt
+          path: |
+            logs/xcodebuild-*.txt
           retention-days: 14
       - name: Check native iPad layouts and playback
         if: ${{ !cancelled() && steps.xtool-package.outcome == 'success' }}
@@ -139,14 +163,13 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if [ -d logs/QuicktickTests.xcresult ]; then
-            xcrun xcresulttool export attachments --path logs/QuicktickTests.xcresult --output-path logs/screenshots || true
-            xcrun xcresulttool export diagnostics --path logs/QuicktickTests.xcresult --output-path logs/diagnostics/iphone || true
-          fi
-          if [ -d logs/QuicktickIPadTests.xcresult ]; then
-            xcrun xcresulttool export attachments --path logs/QuicktickIPadTests.xcresult --output-path logs/ipad-screenshots || true
-            xcrun xcresulttool export diagnostics --path logs/QuicktickIPadTests.xcresult --output-path logs/diagnostics/ipad || true
-          fi
+          mkdir -p logs/screenshots logs/diagnostics
+          for suite in QuicktickOnboardingTests QuicktickPreferencesTests QuicktickImmersiveTests QuicktickTests QuicktickIPadTests; do
+            if [ -d "logs/$suite.xcresult" ]; then
+              xcrun xcresulttool export attachments --path "logs/$suite.xcresult" --output-path "logs/screenshots/$suite" || true
+              xcrun xcresulttool export diagnostics --path "logs/$suite.xcresult" --output-path "logs/diagnostics/$suite" || true
+            fi
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:

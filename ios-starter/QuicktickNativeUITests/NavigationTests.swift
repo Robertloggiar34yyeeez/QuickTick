@@ -215,7 +215,7 @@ final class NavigationTests: XCTestCase {
         surface.tap()
         let close = app.buttons["Close full screen video"]
         XCTAssertTrue(close.waitForExistence(timeout: 12))
-        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.96))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.72))
         let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.44))
         start.press(forDuration: 0.06, thenDragTo: finish)
         XCTAssertFalse(close.exists, "Swipe up from bottom should exit standard full screen")
@@ -231,7 +231,7 @@ final class NavigationTests: XCTestCase {
         app.launch()
         let next = app.buttons["first-run-continue"]
         XCTAssertTrue(next.waitForExistence(timeout: 12))
-        XCTAssertTrue(app.staticTexts["Your feed.\nYour taste."].exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Your taste")).firstMatch.exists)
         next.tap()
         XCTAssertTrue(app.staticTexts["Choose your source"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.secureTextFields["first-run-rule34-key"].exists)

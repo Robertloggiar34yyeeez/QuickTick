@@ -684,18 +684,44 @@ actor RecommendationEngine {
         return score
     }
 
-    /// Cheap metadata ranking before publication: no ML, images, or network access.
-    /// An untouched profile retains the provider's original order.
-    func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post], visualScores: [String: Double] = [:]) -> [Post] {
+    /// Serving gate: user-selected interests determine which broad discovery
+    /// candidates qualify to appear in Recommended. Retrieval itself can remain
+    /// broad for novelty and future preference exploration.
+    private func matchesExplicitInterest(_ post: Post, taste: TasteChoice, visual: Double?) -> Bool {
+        let source = post.provider.lowercased()
+        let selected = Set(tasteTokens(source: source, values: taste.into)
+            .map(RecommendationTagRules.canonical))
+        guard !selected.isEmpty else { return true }
+        let observed = Set(terms(for: post).map(RecommendationTagRules.canonical))
+        if !selected.isDisjoint(with: observed) { return true }
+        let favored = savedFavoriteAffinity[source] ?? [:]
+        if favored.contains(where: { term, strength in
+            strength >= 2.5 &&
+                !Self.genericTasteTerms.contains(RecommendationTagRules.canonical(term)) &&
+                observed.contains(RecommendationTagRules.canonical(term))
+        }) { return true }
+        return visual.map { $0.isFinite && $0 >= 3.0 } ?? false
+    }
+
+    /// Cheap metadata ranking before publication: no inference or network.
+    /// In strict serving mode the feed is not padded with unrelated items.
+    func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post], visualScores: [String: Double] = [:], strict: Bool = false) -> [Post] {
         let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(384, candidates.count)) }
         guard let first = candidates.first else { return [] }
         let p = profile(for: first.provider.lowercased())
         let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !savedFavoriteAffinity.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty
             || !p.terms.isEmpty || !p.negativeThemes.isEmpty || !p.termEvidence.isEmpty
-        guard hasSignal || !state.reversibleSkips.evidence.isEmpty || !visualScores.isEmpty else { return candidates.filter { !isHardDisliked($0, taste: taste) } }
+        guard hasSignal || !state.reversibleSkips.evidence.isEmpty || !visualScores.isEmpty else {
+            return candidates.filter { post in
+                !isHardDisliked(post, taste: taste) &&
+                (!strict || matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]))
+            }
+        }
         var scored: [(post: Post, value: Double, offset: Int)] = []
         for (offset, post) in candidates.prefix(384).enumerated() {
-            guard !isHardDisliked(post, taste: taste) else { continue }
+            guard !isHardDisliked(post, taste: taste),
+                  !strict || matchesExplicitInterest(post, taste: taste,
+                                                       visual: visualScores[post.stableID]) else { continue }
             let metadata = score(post, taste: taste, recent: recent)
             let calibrated = RecommendationQualityModel.combined(metadata: metadata,
                 visual: visualScores[post.stableID])
@@ -728,7 +754,10 @@ actor RecommendationEngine {
             termWindow.append(Set(terms(for: item.post)).subtracting(Self.genericTasteTerms))
         }
         output += scored.map(\.post)
-        return output + candidates.dropFirst(384).filter { !isHardDisliked($0, taste: taste) }
+        return output + candidates.dropFirst(384).filter { post in
+            !isHardDisliked(post, taste: taste) &&
+            (!strict || matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]))
+        }
     }
 
     func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], visualScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {

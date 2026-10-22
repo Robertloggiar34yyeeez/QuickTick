@@ -218,6 +218,30 @@ final class FeedReliabilityTests: XCTestCase {
         _ = pool.activate(key: "three",url: a,muted: false);store.isForeground = false;XCTAssertNil(pool.activeKey)
         XCTAssertLessThanOrEqual(pool.count,3)
     }
+    func testHomeFeedCardIsFullBleedOnPhoneAndCappedOnTablet() {
+        let phone = CGSize(width: 390, height: 800)
+        let video = MediaSizing.feedCard(aspect: 16.0 / 9.0, available: phone)
+        XCTAssertEqual(video.width, 390)
+        XCTAssertEqual(video.width / video.height, 16.0 / 9.0, accuracy: 0.001)
+        let tall = MediaSizing.feedCard(aspect: 0.125, available: phone)
+        XCTAssertEqual(tall.width, 390)
+        XCTAssertLessThanOrEqual(tall.height, 560)
+        let tablet = MediaSizing.feedCard(aspect: 16.0 / 9.0,
+                                          available: CGSize(width: 1024, height: 1200))
+        XCTAssertEqual(tablet.width, 680)
+    }
+
+    func testHomeFiltersExplicitKeywordBansFromCaptionsAndCreators() {
+        var caption = Post(key: "eporner:1", id: "1", provider: "Eporner", tags: ["misc"])
+        caption.caption = "Outdoor portrait"
+        var creator = Post(key: "redgifs:2", id: "2", provider: "RedGIFs", tags: ["misc"])
+        creator.creator = "Blocked Studio"
+        let battle = Post(key: "hanime:3", id: "3", provider: "Hanime", tags: ["battle"])
+        XCTAssertTrue(RecommendationTagRules.rejects(caption, exclusions: ["portrait"]))
+        XCTAssertTrue(RecommendationTagRules.rejects(creator, exclusions: ["blocked studio"]))
+        XCTAssertFalse(RecommendationTagRules.rejects(battle, exclusions: ["bat"]))
+    }
+
     func testSizingMatrixForPhoneTabletAndSplitWindows() {
         for available in [CGSize(width: 358,height: 750),CGSize(width: 810,height: 1080),CGSize(width: 1180,height: 720),CGSize(width: 480,height: 1024)] {
             for native in [CGSize(width: 240,height: 426),CGSize(width: 1920,height: 1080),CGSize(width: 3000,height: 5000),CGSize(width: 320,height: 320)] {

@@ -26,7 +26,17 @@ struct PostCardView: View {
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
     private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
-    private var mediaSize: CGSize { MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: (post.nativeSize.map { post.type.lowercased() == "image" && $0.height > $0.width * 4 ? 2 / 3 : $0.width / $0.height }) ?? mediaAspect, available: available) }
+    private var fullBleed: Bool { playbackTab == 0 && !offline }
+    private var cardRadius: CGFloat { fullBleed ? 0 : 22 }
+    private var mediaSize: CGSize {
+        let aspect = (post.nativeSize.map {
+            post.type.lowercased() == "image" && $0.height > $0.width * 4
+                ? CGFloat(2) / 3 : $0.width / $0.height
+        }) ?? mediaAspect
+        return fullBleed
+            ? MediaSizing.feedCard(aspect: aspect, available: available)
+            : MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: aspect, available: available)
+    }
     var body: some View {
         VStack(spacing: 0) {
             media.frame(width: mediaSize.width, height: mediaSize.height).clipped().contentShape(Rectangle())
@@ -59,9 +69,9 @@ struct PostCardView: View {
                     }
                 }
             }.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 4)
-        }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 22))
-            .clipShape(RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.07), lineWidth: 1))
+        }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: cardRadius))
+            .clipShape(RoundedRectangle(cornerRadius: cardRadius))
+            .overlay(RoundedRectangle(cornerRadius: cardRadius).stroke(.white.opacity(0.07), lineWidth: 1))
             .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
             .sheet(isPresented: $comments) { CommentsView(post: post) }
             .sheet(isPresented: $tags) { PostTagsView(post: post) }

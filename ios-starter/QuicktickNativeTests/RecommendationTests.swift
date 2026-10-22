@@ -126,6 +126,33 @@ final class RecommendationTests: XCTestCase {
         XCTAssertNotNil(store.profileTransferError)
         XCTAssertFalse(store.cloudSyncEnabled)
     }
+    func testRecommendedStrictModeFiltersUnrelatedDiscoveryWithoutBlockingRelatedMatches() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let unrelated = Post(key: "rule34:random", id: "random", provider: "rule34", tags: ["landscape", "jacket"])
+        let wanted = Post(key: "rule34:wanted", id: "wanted", provider: "rule34", tags: ["chun_li", "qipao"])
+        let blocked = Post(key: "rule34:blocked", id: "blocked", provider: "rule34", tags: ["chun_li", "furry_female"])
+        let taste = TasteChoice(done: true, into: ["chun_li"], notInto: ["furry"])
+        let served = await engine.rankFast([unrelated, blocked, wanted], taste: taste, recent: [], strict: true)
+        XCTAssertEqual(served.map(\.stableID), [wanted.stableID])
+        let broad = await engine.rankFast([unrelated, wanted], taste: taste, recent: [])
+        XCTAssertEqual(broad.count, 2)
+        let empty = await engine.rankFast([unrelated], taste: taste, recent: [], strict: true)
+        XCTAssertTrue(empty.isEmpty, "Never fill explicit interests with unrelated posts")
+    }
+
+    func testStrongFavoriteCanRescueRelatedContentWithoutExactSelectedTag() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let favorites = (0..<3).map {
+            Post(key: "rule34:fav-\($0)", id: "fav-\($0)", provider: "rule34",
+                 tags: ["chun_li", "qipao"])
+        }
+        await engine.configureFavorites(favorites)
+        let related = Post(key: "rule34:related", id: "related", provider: "rule34", tags: ["qipao"])
+        let taste = TasteChoice(done: true, into: ["chun_li"], notInto: [])
+        let result = await engine.rankFast([related], taste: taste, recent: [], strict: true)
+        XCTAssertEqual(result.map(\.stableID), [related.stableID])
+    }
+
     func testPositiveAndNegativeTagsGuideRatherThanReplaceLearnedProfile() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var state = RecommendationState(); var profile = RecommendationProfile()

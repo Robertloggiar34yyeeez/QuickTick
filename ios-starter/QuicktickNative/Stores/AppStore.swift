@@ -412,7 +412,7 @@ final class AppStore: ObservableObject {
                     // loading, network requests or pixel decoding on first paint.
                     let cachedAppearance = await visual.scores(incoming)
                     filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
-                        recent: [], visualScores: cachedAppearance)
+                        recent: [], visualScores: cachedAppearance, strict: true)
                 } else { filtered = incoming }
                 if filtered.isEmpty, let acquisition, acquisition.focused {
                     broaden = true
@@ -487,7 +487,7 @@ final class AppStore: ObservableObject {
             if candidateContext != nil {
                 let cachedAppearance = await visual.scores(candidates)
                 ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
-                    recent: Array(posts.suffix(10)), visualScores: cachedAppearance)
+                    recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: true)
             } else { ranked = candidates }
             guard generation == token, !Task.isCancelled else { return }
             if ranked.isEmpty, let acquisition, acquisition.focused {

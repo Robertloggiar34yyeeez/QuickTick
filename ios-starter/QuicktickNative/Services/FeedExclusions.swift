@@ -29,6 +29,11 @@ enum RecommendationTagRules {
         if post.providerKey != .rule34 {
             return exclusions.contains { NativeProviderAPI.containsKeyword($0, in: post) }
         }
+        // Semantically equivalent provider tags must share explicit blocks:
+        // e.g. blocking "leaning over" also excludes tagged "bent_over".
+        if !ActionSemantics.facets(post.tags).isDisjoint(with: ActionSemantics.facets(exclusions)) {
+            return true
+        }
         let blocked = Set(exclusions.map(canonical))
         return post.tags.contains { raw in
             let tag = canonical(raw)

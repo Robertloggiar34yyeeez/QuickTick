@@ -31,7 +31,15 @@ actor WDAnimeTagger {
                 let name = label.name.lowercased()
                 result.subjects.append(name.hasPrefix("chun-li") || name.hasPrefix("chun_li") ? "chun_li" : name)
             } else if label.category == 0, value >= 0.65 {
-                result.attributes[axis(label.name) + ":" + label.name] = Double(value) * 0.8
+                let confidence = Double(value) * 0.8
+                let raw = axis(label.name) + ":" + label.name
+                result.attributes[raw] = confidence
+                if let facet = ActionSemantics.facet(label.name) {
+                    // A visual tagger's `looking_at_viewer` and a provider's
+                    // `eye_contact` both mean gaze:at_viewer. Preserve the
+                    // original attribute as well for existing profiles.
+                    result.attributes[facet] = max(result.attributes[facet] ?? 0, confidence)
+                }
             }
         }
         result.attributes = Dictionary(uniqueKeysWithValues: result.attributes.sorted { $0.value > $1.value }.prefix(48).map { ($0.key,$0.value) })

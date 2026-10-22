@@ -178,8 +178,10 @@ actor VisualAnalysisService {
             let subjects = Array(Set(features.subjects + metadata.subjects)).sorted()
             let artists = Array(Set((features.artists ?? []) + (metadata.artists ?? []))).sorted()
             let franchises = Array(Set((features.franchises ?? []) + (metadata.franchises ?? []))).sorted()
+            let originalAttributes = features.attributes
+            features.attributes.merge(metadata.attributes, uniquingKeysWith: max)
             if features.subjects != subjects || (features.artists ?? []) != artists
-                || (features.franchises ?? []) != franchises {
+                || (features.franchises ?? []) != franchises || originalAttributes != features.attributes {
                 let previous = state.likedEvidence?[post.stableID] ?? features
                 features.subjects = subjects
                 features.artists = artists.isEmpty ? nil : artists
@@ -287,6 +289,7 @@ actor VisualAnalysisService {
             var updated = old
             updated.subjects = Array(Set(old.subjects + metadata.subjects)).sorted()
             updated.artists = Array(Set((old.artists ?? []) + (metadata.artists ?? []))).sorted()
+            updated.attributes.merge(metadata.attributes, uniquingKeysWith: max)
             if updated != old {
                 if state.liked.contains(post.stableID) {
                     state.profiles[profileKey(post), default: VisualProfile()].record(.unlike, features: old)

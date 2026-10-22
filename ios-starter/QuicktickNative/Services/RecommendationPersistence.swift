@@ -3,19 +3,21 @@ import Foundation
 actor RecommendationPersistence {
     private let url: URL
     private var blockedWrite = false
+    private(set) var loadedLegacyFile = false
     private(set) var lastError: String?
 
-    init() {
+    init(directory: URL? = nil) {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let directory = support.appendingPathComponent("Quicktick", isDirectory: true)
+        let directory = directory ?? support.appendingPathComponent("Quicktick", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        url = directory.appendingPathComponent("recommendations-v3.json")
+        url = directory.appendingPathComponent("recommendations-v4.json")
     }
 
     func load() -> RecommendationState? {
+        loadedLegacyFile = false
         var source = url
         if !FileManager.default.fileExists(atPath: source.path) {
-            for version in [2, 1] {
+            for version in [3, 2, 1] {
                 let legacy = url.deletingLastPathComponent().appendingPathComponent("recommendations-v\(version).json")
                 if FileManager.default.fileExists(atPath: legacy.path) { source = legacy; break }
             }
@@ -23,7 +25,8 @@ actor RecommendationPersistence {
         guard FileManager.default.fileExists(atPath: source.path) else { return nil }
         do {
             let state = try JSONDecoder().decode(RecommendationState.self, from: Data(contentsOf: source))
-            guard state.version <= 3 else { throw APIError.server("Unsupported recommendation state version") }
+            guard state.version <= RecommendationState.currentVersion else { throw APIError.server("Unsupported recommendation state version") }
+            loadedLegacyFile = source != url
             return state
         } catch {
             blockedWrite = true; lastError = "Recommendation storage could not be read. The original file is preserved."
@@ -41,7 +44,7 @@ actor RecommendationPersistence {
     }
 
     func clear() {
-        for version in [1, 2, 3] { try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent("recommendations-v\(version).json")) }
+        for version in [1, 2, 3, 4] { try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent("recommendations-v\(version).json")) }
         blockedWrite = false; lastError = nil
     }
 }

@@ -30,6 +30,20 @@ for name in ['BGEMicro.mlmodelc','bge-vocab.txt','bge-license.txt','WDTaggerV3.m
     ref=add('file:'+rel,'PBXFileReference',lastKnownFileType='folder' if name.endswith('.mlmodelc') else 'text',path=rel,sourceTree='SOURCE_ROOT')
     refs.append(ref);resource_ids[rel]=add('build:'+rel,'PBXBuildFile',fileRef=ref)
 products=[]; targets=[]
+package_specs=[
+    ('ml-stable-diffusion','https://github.com/apple-aiml-research/ml-stable-diffusion.git',
+     {'kind':'exactVersion','version':'1.1.1'},'StableDiffusion'),
+    ('ZIPFoundation','https://github.com/tuist/ZIPFoundation.git',
+     {'kind':'exactVersion','version':'0.9.21'},'ZIPFoundation'),
+]
+package_references=[]; package_products=[]; package_build_files=[]
+for identity,url,requirement,product_name in package_specs:
+    ref=add('package:'+identity,'XCRemoteSwiftPackageReference',repositoryURL=url,requirement=requirement)
+    dependency=add('package-product:'+identity,'XCSwiftPackageProductDependency',package=ref,productName=product_name)
+    build=add('package-build:'+identity,'PBXBuildFile',productRef=dependency)
+    package_references.append(ref)
+    package_products.append(dependency)
+    package_build_files.append(build)
 for name,kind in [('QuicktickNative','application'),('QuicktickNativeTests','bundle.unit-test'),('QuicktickNativeUITests','bundle.ui-testing')]:
     if not (ROOT/name).exists(): continue
     app=kind=='application'
@@ -37,13 +51,14 @@ for name,kind in [('QuicktickNative','application'),('QuicktickNativeTests','bun
     products.append(product)
     sources=add('sources:'+name,'PBXSourcesBuildPhase',buildActionMask='2147483647',files=[v for k,v in source_ids.items() if k.startswith(name+'/')],runOnlyForDeploymentPostprocessing='0')
     resources=add('resources:'+name,'PBXResourcesBuildPhase',buildActionMask='2147483647',files=[v for k,v in resource_ids.items() if k.startswith(name+'/')],runOnlyForDeploymentPostprocessing='0')
-    frameworks=add('frameworks:'+name,'PBXFrameworksBuildPhase',buildActionMask='2147483647',files=[],runOnlyForDeploymentPostprocessing='0')
+    frameworks=add('frameworks:'+name,'PBXFrameworksBuildPhase',buildActionMask='2147483647',
+        files=package_build_files if app else [],runOnlyForDeploymentPostprocessing='0')
     configs=[]
     for config in ('Debug','Release'):
         settings={'PRODUCT_BUNDLE_IDENTIFIER':'com.quicktick.'+name,'PRODUCT_NAME':'$(TARGET_NAME)','GENERATE_INFOPLIST_FILE':'YES','SWIFT_VERSION':'6.0','IPHONEOS_DEPLOYMENT_TARGET':'17.0','TARGETED_DEVICE_FAMILY':'1,2','CODE_SIGN_STYLE':'Automatic','SWIFT_EMIT_LOC_STRINGS':'YES'}
         extra={}
         if app:
-            settings.update({'MARKETING_VERSION':'0.9.5','CURRENT_PROJECT_VERSION':'25','INFOPLIST_KEY_QUICKTICK_API_BASE_URL':'$(QUICKTICK_API_BASE_URL)','INFOPLIST_KEY_UIApplicationSceneManifest_Generation':'YES','INFOPLIST_KEY_UILaunchScreen_Generation':'YES','INFOPLIST_KEY_UISupportedInterfaceOrientations':'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad':'UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_CFBundleDisplayName':'Quicktick','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
+            settings.update({'MARKETING_VERSION':'0.9.6','CURRENT_PROJECT_VERSION':'26','INFOPLIST_KEY_QUICKTICK_API_BASE_URL':'$(QUICKTICK_API_BASE_URL)','INFOPLIST_KEY_UIApplicationSceneManifest_Generation':'YES','INFOPLIST_KEY_UILaunchScreen_Generation':'YES','INFOPLIST_KEY_UISupportedInterfaceOrientations':'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad':'UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_CFBundleDisplayName':'Quicktick','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
             extra['baseConfigurationReference']=uid('file:Config/'+config+'.xcconfig')
             settings['ASSETCATALOG_COMPILER_APPICON_NAME']='AppIcon'
             settings['GENERATE_INFOPLIST_FILE']='NO'
@@ -57,7 +72,8 @@ for name,kind in [('QuicktickNative','application'),('QuicktickNativeTests','bun
     if not app:
         proxy=add('proxy:'+name,'PBXContainerItemProxy',containerPortal=uid('project'),proxyType='1',remoteGlobalIDString=uid('target:QuicktickNative'),remoteInfo='QuicktickNative')
         deps=[add('dep:'+name,'PBXTargetDependency',target=uid('target:QuicktickNative'),targetProxy=proxy)]
-    targets.append(add('target:'+name,'PBXNativeTarget',buildConfigurationList=cfg,buildPhases=[sources,frameworks,resources],buildRules=[],dependencies=deps,name=name,productName=name,productReference=product,productType='com.apple.product-type.'+kind))
+    targets.append(add('target:'+name,'PBXNativeTarget',buildConfigurationList=cfg,buildPhases=[sources,frameworks,resources],buildRules=[],dependencies=deps,name=name,productName=name,productReference=product,productType='com.apple.product-type.'+kind,
+        **({'packageProductDependencies':package_products} if app else {})))
 products_group=add('products','PBXGroup',children=products,name='Products',sourceTree='<group>')
 main_group=add('main','PBXGroup',children=refs+[products_group],sourceTree='<group>')
 project_configs=[]
@@ -70,7 +86,8 @@ for config in ('Debug','Release'):
         settings['COPY_PHASE_STRIP']='NO'
     project_configs.append(add('projectconfig:'+config,'XCBuildConfiguration',buildSettings=settings,name=config))
 config_list=add('projectconfigs','XCConfigurationList',buildConfigurations=project_configs,defaultConfigurationIsVisible='0',defaultConfigurationName='Release')
-project=add('project','PBXProject',attributes={'LastUpgradeCheck':'1600'},buildConfigurationList=config_list,compatibilityVersion='Xcode 14.0',developmentRegion='en',hasScannedForEncodings='0',knownRegions=['en','Base'],mainGroup=main_group,productRefGroup=products_group,projectDirPath='',projectRoot='',targets=targets)
+project=add('project','PBXProject',attributes={'LastUpgradeCheck':'1600'},buildConfigurationList=config_list,compatibilityVersion='Xcode 14.0',developmentRegion='en',hasScannedForEncodings='0',knownRegions=['en','Base'],mainGroup=main_group,productRefGroup=products_group,projectDirPath='',projectRoot='',targets=targets,
+    packageReferences=package_references)
 folder=ROOT/'QuicktickNative.xcodeproj'; folder.mkdir(exist_ok=True)
 (folder/'project.pbxproj').write_text('// !$*UTF8*$!\n'+serialize({'archiveVersion':'1','classes':{},'objectVersion':'56','objects':objects,'rootObject':project})+'\n',encoding='utf-8')
 scheme_dir=folder/'xcshareddata/xcschemes'; scheme_dir.mkdir(parents=True,exist_ok=True)

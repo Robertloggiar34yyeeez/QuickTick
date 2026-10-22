@@ -71,6 +71,7 @@ final class AppStore: ObservableObject {
     private var favoriteSyncTask: Task<Void, Never>?
     private var favoriteExclusionIDs: Set<String> = []
     @Published var exclusions: [String] = []
+    @Published var isStudioPresented = false
     @Published var tasteSetup = TasteSetup()
     @Published var lastError: String?
     @Published private(set) var providerCooldowns: [Provider: Date] = [:]
@@ -82,6 +83,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var syncID = ""
     @Published private(set) var cloudSyncEnabled = false
     @Published private(set) var recommendationMode = "On-device recommendations"
+    @Published private(set) var recommendationRescanStatus: String?
     @Published private(set) var isLoading = false
     @Published private(set) var hasMore = true
     @Published var learnedInterests: [String] = []
@@ -189,8 +191,14 @@ final class AppStore: ObservableObject {
             do { try KeychainStore.set(generated, account: "quicktick-sync-id"); syncID = generated }
             catch { lastError = "Keychain: \(error.localizedDescription)" }
         }
-        if let local = await recommendationPersistence.load() {
-            await restoreRecommendationState(local)
+        if let savedRecommendations = await recommendationPersistence.load() {
+            let migrated = savedRecommendations.upgradedForCurrentRanking()
+            await restoreRecommendationState(migrated)
+            let fromLegacyFile = await recommendationPersistence.loadedLegacyFile
+            if savedRecommendations.version < RecommendationState.currentVersion || fromLegacyFile {
+                // Persist once, rather than resetting cursors on every launch.
+                await recommendationPersistence.save(migrated)
+            }
         }
         await recommendations.configureFavorites(Array(favorites.values))
         await visual.reconcileFavorites(Array(favorites.values))
@@ -1095,9 +1103,10 @@ final class AppStore: ObservableObject {
     }
 
     func restoreRecommendationState(_ state: RecommendationState) async {
-        await recommendations.load(state)
-        feedExclusions.restore(state.profiles.values.flatMap(\.recentSeen))
-        candidateCursors = state.candidatePages
+        let migrated = state.upgradedForCurrentRanking()
+        await recommendations.load(migrated)
+        feedExclusions.restore(migrated.profiles.values.flatMap(\.recentSeen))
+        candidateCursors = migrated.candidatePages
     }
     func recommendationState() async -> RecommendationState {
         var state = await recommendations.snapshot()
@@ -1125,6 +1134,21 @@ final class AppStore: ObservableObject {
     func setExclusions(_ tags: [String]) {
         exclusions = tags; local.snapshot.exclusions.updatedAt = timestamp()
         persistLocal(); queueSync()
+    }
+
+    func rebuildRecommended() async {
+        recommendationRescanStatus = "Refreshing candidate pool…"
+        await recommendations.rebuildCandidateAcquisition()
+        candidateCursors = [:]
+        plannedAcquisition = nil
+        savedFeeds.removeAll()
+        await visual.reconcileFavorites(Array(favorites.values))
+        await persistRecommendations()
+        await refresh(immersive: activeTab == 1)
+        if visualAnalysisEnabled { scheduleIdleIntelligence() }
+        recommendationRescanStatus = lastError == nil
+            ? "Rebuilt using your saved likes, dislikes and exclusions."
+            : "Your preferences were preserved. Refresh will resume when the source is available."
     }
 
     func resumePosition(_ key: String) -> Double? { local.resumePositions[key] }

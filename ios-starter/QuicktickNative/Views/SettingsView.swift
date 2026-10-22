@@ -12,7 +12,6 @@ struct SettingsView: View {
     @State private var session = ""
     @State private var username = ""
     @State private var remember = true
-    @State private var exclusions = ""
     @State private var onboarding = false
     @State private var sharedProfile: RecommendationTransfer?
     @State private var importingProfile = false
@@ -77,6 +76,15 @@ struct SettingsView: View {
                 LabeledContent("Engine", value: store.recommendationMode)
                 Text(store.learnedInterests.isEmpty ? "Interact with posts or search to learn interests." : store.learnedInterests.joined(separator: " · "))
                 Button("Edit Into / Not Into") { onboarding = true }
+                Button {
+                    Task { await store.rebuildRecommended() }
+                } label: {
+                    Label("Rescan Recommended", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .accessibilityIdentifier("rescan-recommended")
+                Text("Ranking upgrades automatically rebuild the discovery queue. Rescan now to start fresh without losing favorites, dislikes, blocked tags or viewing history.")
+                    .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
+                if let status = store.recommendationRescanStatus { Text(status).font(.caption).foregroundStyle(AppTheme.accent) }
                 Button("Reset learned history", role: .destructive) { Task { await store.resetRecommendations() } }
                 if let resetStatus = store.resetStatus { Text(resetStatus).font(.caption) }
             }
@@ -92,8 +100,7 @@ struct SettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             SettingsGroup(title: "Persistent exclusions", icon: "line.3.horizontal.decrease.circle") {
-                TextField("Tags separated by spaces", text: $exclusions).textInputAutocapitalization(.never)
-                Button("Save exclusions") { store.setExclusions(exclusions.split(whereSeparator: \.isWhitespace).map(String.init)); Task { await store.refresh() } }
+                PersistentExclusionEditor()
             }
             SettingsGroup(title: "Visual intelligence", icon: "eye") {
                 Toggle("Learn visual taste while browsing", isOn: $store.visualAnalysisEnabled)
@@ -139,10 +146,105 @@ struct SettingsView: View {
             .onChange(of: store.isSyncing) { _, busy in if !busy { Task { await reloadAccessFields() } } }
     }
     private func reloadAccessFields() async {
-        exclusions = store.exclusions.joined(separator: " ")
         let credentials = await store.api.credentials
         user = credentials.rule34User; key = credentials.rule34Key; session = credentials.pornhubSession
         username = store.syncedPornhubUsername; remember = store.rememberedProviderAccess
+    }
+}
+
+/// The same removable orange capsules used for excluded search tags, except
+/// every edit persists immediately across sources and app upgrades.
+private struct PersistentExclusionEditor: View {
+    @EnvironmentObject private var store: AppStore
+    @State private var draft = ""
+    @State private var suggestions: [TagSuggestion] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Keep unwanted tags out of every feed. Tap × to allow a tag again.")
+                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 8)], spacing: 8) {
+                ForEach(store.exclusions, id: \.self) { tag in
+                    HStack(spacing: 6) {
+                        Image(systemName: "nosign").font(.caption.weight(.semibold))
+                        Text(tag.replacingOccurrences(of: "_", with: " "))
+                            .font(.caption).lineLimit(1)
+                        Spacer(minLength: 0)
+                        Button { update(store.exclusions.filter { $0 != tag }) } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 19, weight: .medium))
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(QuicktickPressStyle())
+                        .accessibilityLabel("Remove blocked tag \(tag)")
+                    }
+                    .foregroundStyle(.orange)
+                    .padding(.leading, 12)
+                    .padding(.trailing, 4)
+                    .frame(minHeight: 42)
+                    .background(.orange.opacity(0.14), in: Capsule())
+                    .overlay(Capsule().stroke(.orange.opacity(0.5)))
+                }
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(AppTheme.secondaryLabel)
+                TextField("Block a tag or phrase", text: $draft)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .submitLabel(.done).onSubmit(addDraft)
+                    .accessibilityIdentifier("persistent-block-tag-input")
+                Button(action: addDraft) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .bold))
+                        .frame(width: 40, height: 40)
+                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityLabel("Block tags")
+                .accessibilityIdentifier("persistent-block-tag-add")
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(7)
+            .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+            .overlay(RoundedRectangle(cornerRadius: 17).stroke(AppTheme.border))
+            if !suggestions.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(suggestions.prefix(8)) { suggestion in
+                            Button(suggestion.value) { update(store.exclusions + [suggestion.value]); draft = "" }
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 12).frame(minHeight: 36)
+                                .background(AppTheme.accent.opacity(0.13), in: Capsule())
+                                .overlay(Capsule().stroke(AppTheme.accent.opacity(0.3)))
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: "\(store.selectedProvider.rawValue):\(draft)") {
+            suggestions = []
+            guard store.selectedProvider == .rule34,
+                  let last = draft.split(whereSeparator: \.isWhitespace).last, last.count >= 2 else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(260))
+                let results = try await store.api.suggestions(provider: .rule34, query: String(last))
+                if !Task.isCancelled { suggestions = results }
+            } catch { suggestions = [] }
+        }
+    }
+
+    private func addDraft() {
+        // A phrase such as "looking at viewer" represents one booru tag.
+        // Commas permit deliberately entering several separate tags at once.
+        update(store.exclusions + draft.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) })
+        draft = ""; suggestions = []
+    }
+
+    private func update(_ tags: [String]) {
+        let normalized = Array(Set(tags.map(RecommendationTagRules.canonical)
+            .filter { !$0.isEmpty && $0.count <= 80 })).sorted().prefix(128)
+        store.setExclusions(Array(normalized))
+        Task { await store.refresh(immersive: store.activeTab == 1) }
     }
 }
 

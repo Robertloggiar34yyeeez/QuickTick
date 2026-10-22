@@ -50,12 +50,26 @@ struct PostCardView: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("post-media-\(post.stableID)")
             if let playbackError { Text(playbackError).font(.caption).foregroundStyle(.orange).padding(8) }
-            VStack(spacing: 8) {
-                HStack {
-                    Text(post.provider.uppercased()).font(.caption.weight(.bold)).tracking(1.5).foregroundStyle(.white.opacity(0.8))
+            VStack(spacing: 6) {
+                HStack(spacing: 8) {
+                    Circle().fill(AppTheme.accent).frame(width: 6, height: 6)
+                    Text(post.provider.uppercased())
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .tracking(1.4).foregroundStyle(.white.opacity(0.85))
+                    Text("·").foregroundStyle(AppTheme.secondaryLabel)
+                    Text(post.isImmersiveMedia ? "Motion" : "Image")
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
-                    Button("View tags") { tags = true }.font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.7))
-                        .frame(minHeight: 44)
+                    Button { tags = true } label: {
+                        Label("Tags", systemImage: "number")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.78))
+                            .padding(.horizontal, 11)
+                            .frame(minHeight: 44)
+                            .background(.white.opacity(0.07), in: Capsule())
+                    }
+                    .buttonStyle(QuicktickPressStyle())
+                    .accessibilityLabel("View tags")
                 }
                 HStack(spacing: 0) {
                     if offline {
@@ -68,7 +82,9 @@ struct PostCardView: View {
                     ActionIcon(title: "Comments", symbol: "bubble.left") { comments = true }
                     }
                 }
-            }.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 4)
+            }
+            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 7)
+            .background(AppTheme.navigationSurface)
         }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: cardRadius))
             .clipShape(RoundedRectangle(cornerRadius: cardRadius))
             .overlay(RoundedRectangle(cornerRadius: cardRadius).stroke(.white.opacity(0.07), lineWidth: 1))
@@ -85,9 +101,9 @@ struct PostCardView: View {
             }) {
                 if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning)") {
                 guard !Task.isCancelled else { return }
-                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isManualVisualScanRunning else { stopPlayback(); return }
+                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
                 await preparePlayback()
             }
             .onDisappear {

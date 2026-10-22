@@ -146,10 +146,10 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
     }
 
-    @MainActor func testFourTabsSettingsAndScrollToTop() {
+    @MainActor func testFiveTabsSettingsAndScrollToTop() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
-        let names = ["Home", "Immersive", "Favorites", "Downloads"]
+        let names = ["Home", "Immersive", "Create", "Favorites", "Downloads"]
         for name in names { XCTAssertTrue(app.buttons["tab-\(name)"].exists) }
         XCTAssertFalse(app.buttons["tab-Settings"].exists)
         app.swipeUp()
@@ -160,6 +160,19 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+    }
+    @MainActor func testCreateStudioFirstRunAndReturnToFeed() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))
+        app.buttons["tab-Create"].tap()
+        XCTAssertTrue(app.navigationBars["Create"].waitForExistence(timeout: 5))
+        if app.buttons["studio-intro-complete"].waitForExistence(timeout: 2) {
+            app.buttons["studio-intro-complete"].tap()
+        }
+        XCTAssertTrue(app.otherElements["studio-prompt"].exists || app.textViews["studio-prompt"].exists)
+        XCTAssertTrue(app.buttons["studio-generate"].exists)
+        app.buttons["Close"].tap()
+        XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 5))
     }
     @MainActor func testSearchAppearsOnceBeforeAndAfterSubmitting() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()

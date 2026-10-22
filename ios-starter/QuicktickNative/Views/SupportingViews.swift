@@ -39,7 +39,7 @@ struct TasteOnboardingView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("positive-interest-input")
                     Button("Add interests") { addDraft(positive: true) }.disabled(positiveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     ForEach(into.sorted(), id: \.self) { term in
-                        HStack { Text(term); Spacer(); Button("Remove") { into.remove(term) } }
+                        TasteChipRow(tag: term, preferred: true) { into.remove(term) }
                     }
                 }
                 Section("What would you rather avoid?") {
@@ -47,7 +47,7 @@ struct TasteOnboardingView: View {
                     TextField("Unwanted topics or keywords", text: $negativeDraft).textInputAutocapitalization(.never).autocorrectionDisabled()
                     Button("Add exclusions") { addDraft(positive: false) }.disabled(negativeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     ForEach(notInto.sorted(), id: \.self) { term in
-                        HStack { Text(term); Spacer(); Button("Remove") { notInto.remove(term) } }
+                        TasteChipRow(tag: term, preferred: false) { notInto.remove(term) }
                     }
                 }
                 Section("Which of these appeal to you?") {
@@ -76,6 +76,34 @@ struct TasteOnboardingView: View {
             else { into.remove(term); notInto.insert(term) }
         }
         if positive { positiveDraft = "" } else { negativeDraft = "" }
+    }
+}
+
+private struct TasteChipRow: View {
+    let tag: String
+    let preferred: Bool
+    let onRemove: () -> Void
+    private var hue: Color { preferred ? AppTheme.accent : .orange }
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: preferred ? "heart.fill" : "nosign")
+                .font(.caption)
+            Text(tag.replacingOccurrences(of: "_", with: " "))
+                .font(.subheadline.weight(.medium))
+            Spacer(minLength: 0)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(QuicktickPressStyle())
+            .accessibilityLabel("Remove \(tag)")
+        }
+        .foregroundStyle(hue)
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
+        .background(hue.opacity(0.13), in: Capsule())
+        .overlay(Capsule().stroke(hue.opacity(0.4)))
     }
 }
 
@@ -601,6 +629,27 @@ struct FavoritesView: View {
                 GeometryReader { geometry in
                     ScrollView {
                         LazyVStack(spacing: 18) {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Your collection")
+                                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                                        .tracking(-1)
+                                    Text("\(saved.count) posts you love")
+                                        .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
+                                }
+                                Spacer()
+                                Image(systemName: "heart.text.square.fill")
+                                    .font(.system(size: 23))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 48, height: 48)
+                                    .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16))
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 14)
+                            if saved.isEmpty {
+                                ContentUnavailableView("Save what you love", systemImage: "heart", description:
+                                    Text("Your liked posts will stay here and help personalize Recommended and Create."))
+                            }
                             ForEach(saved, id: \.stableID) { post in
                                 PostCardView(post: post, available: CGSize(width: min(680, geometry.size.width), height: geometry.size.height), playbackTab: 2)
                             }

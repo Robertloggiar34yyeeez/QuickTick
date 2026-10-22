@@ -7,7 +7,15 @@ let package = Package(
     name: "QuicktickNative",
     platforms: [.iOS(.v17)],
     products: [.library(name: "QuicktickNative", targets: ["QuicktickNative"])],
-    targets: [.target(name: "QuicktickNative", path: "QuicktickNative",
+    dependencies: [
+        .package(url: "https://github.com/apple-aiml-research/ml-stable-diffusion.git", exact: "1.1.1"),
+        .package(url: "https://github.com/tuist/ZIPFoundation.git", from: "0.9.21")
+    ],
+    targets: [.target(name: "QuicktickNative",
+                      dependencies: [
+                        .product(name: "StableDiffusion", package: "ml-stable-diffusion"),
+                        .product(name: "ZIPFoundation", package: "ZIPFoundation")
+                      ], path: "QuicktickNative",
                       exclude: ["Assets.xcassets", "SemanticAssets", "TestsSupport"],
                       swiftSettings: [.swiftLanguageMode(.v6)])]
 )

@@ -395,9 +395,13 @@ final class AppStore: ObservableObject {
                 }
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
                 incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
-                filtered = personalized
-                    ? await recommendations.rankFast(incoming, taste: tasteChoice(for: provider), recent: [])
-                    : incoming
+                if personalized {
+                    // Metadata and cached appearance vectors only: no model
+                    // loading, network requests or pixel decoding on first paint.
+                    let cachedAppearance = await visual.scores(incoming)
+                    filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
+                        recent: [], visualScores: cachedAppearance)
+                } else { filtered = incoming }
                 if filtered.isEmpty, let acquisition, acquisition.focused {
                     broaden = true
                     if page.hasMore == false { Task { await recommendations.markCandidateDrained(context: acquisition.context) } }
@@ -462,9 +466,12 @@ final class AppStore: ObservableObject {
             if candidateContext != nil { candidates = await recommendations.unseenRecommendations(candidates) }
             candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
                 recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
-            let ranked = candidateContext != nil
-                ? await recommendations.rankFast(candidates, taste: tasteChoice(for: provider), recent: Array(posts.suffix(10)))
-                : candidates
+            let ranked: [Post]
+            if candidateContext != nil {
+                let cachedAppearance = await visual.scores(candidates)
+                ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
+                    recent: Array(posts.suffix(10)), visualScores: cachedAppearance)
+            } else { ranked = candidates }
             guard generation == token, !Task.isCancelled else { return }
             if ranked.isEmpty, let acquisition, acquisition.focused {
                 broaden = true
@@ -619,11 +626,18 @@ final class AppStore: ObservableObject {
         if let key { protectedImmersiveIDs.insert(key) }
         let token = generation
         tailRankTask?.cancel()
-        tailRankTask = Task(priority: .utility) { await adaptRecommendationTail(token: token) }
+        // Do not sort and republish the full tail on every paging frame.
+        // Wait for the active page to settle, then rerank only unseen content.
+        tailRankTask = Task(priority: .utility) {
+            do { try await Task.sleep(for: .milliseconds(650)) } catch { return }
+            guard !Task.isCancelled else { return }
+            await adaptRecommendationTail(token: token)
+        }
     }
     func adaptRecommendationTail(token: UUID) async {
         let tab = activeTab
         guard tab == 0 || tab == 1, feedSort == "recommended",
+              Date().timeIntervalSince(lastFeedMotion) >= 0.45,
               let active = tab == 1 ? immersivePlaybackID : inlinePlaybackID else { return }
         let source = posts
         guard let activeIndex = source.firstIndex(where: { $0.stableID == active }) else { return }
@@ -780,7 +794,8 @@ final class AppStore: ObservableObject {
     }
 
     func noteFeedMotion() {
-        if Date().timeIntervalSince(lastFeedMotion) >= 0.2 { stopActiveLearning(); startActiveLearning() }
+        // Never tear down/restart model tasks on every scrolling frame.
+        // Ongoing workers check lastFeedMotion and defer expensive inference.
         lastFeedMotion = .now
         idleTask?.cancel()
         if visualScanStatus != nil, visualScanStatus != "Visual update paused while scrolling" { visualScanStatus = "Visual update paused while scrolling" }
@@ -790,7 +805,9 @@ final class AppStore: ObservableObject {
                 do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
                 guard let self else { return }
                 if Date().timeIntervalSince(lastFeedMotion) >= 1.5 {
-                    motionTask = nil; scheduleIdleIntelligence(); return
+                    motionTask = nil
+                    scheduleIdleIntelligence()
+                    return
                 }
             }
         }

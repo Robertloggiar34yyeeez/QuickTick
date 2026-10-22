@@ -1,5 +1,18 @@
 import Foundation
 
+/// Cheap calibration of cached on-device appearance affinity. The visual
+/// model is evaluated in its background worker; this policy only combines
+/// scores that are already available, never runs Core ML while scrolling.
+struct RecommendationQualityModel: Sendable {
+    static func combined(metadata: Double, visual: Double?) -> Double {
+        guard let visual, visual.isFinite else { return metadata }
+        // Stronger negative evidence than positive evidence. The visual
+        // pipeline's bounded [-4,4] scale must not drown out explicit likes.
+        let appearance = visual < 0 ? max(-12, visual * 2.7) : min(6, visual * 1.5)
+        return metadata + appearance
+    }
+}
+
 actor RecommendationEngine {
     private(set) var state = RecommendationState()
     let semantic: SemanticRecommender
@@ -494,17 +507,20 @@ actor RecommendationEngine {
 
     /// Cheap metadata ranking before publication: no ML, images, or network access.
     /// An untouched profile retains the provider's original order.
-    func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post]) -> [Post] {
+    func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post], visualScores: [String: Double] = [:]) -> [Post] {
         let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(128, candidates.count)) }
         guard let first = candidates.first else { return [] }
         let p = profile(for: first.provider.lowercased())
         let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !savedFavoriteAffinity.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty
             || !p.terms.isEmpty || !p.negativeThemes.isEmpty || !p.termEvidence.isEmpty
-        guard hasSignal || !state.reversibleSkips.evidence.isEmpty else { return candidates }
+        guard hasSignal || !state.reversibleSkips.evidence.isEmpty || !visualScores.isEmpty else { return candidates.filter { !isHardDisliked($0, taste: taste) } }
         var scored: [(post: Post, value: Double, offset: Int)] = []
         for (offset, post) in candidates.prefix(128).enumerated() {
             guard !isHardDisliked(post, taste: taste) else { continue }
-            scored.append((post: post, value: score(post, taste: taste, recent: recent), offset: offset))
+            let metadata = score(post, taste: taste, recent: recent)
+            let calibrated = RecommendationQualityModel.combined(metadata: metadata,
+                visual: visualScores[post.stableID])
+            scored.append((post: post, value: calibrated, offset: offset))
         }
         scored.sort { $0.value == $1.value ? $0.offset < $1.offset : $0.value > $1.value }
         // Lightweight, bounded diversification without model inference:

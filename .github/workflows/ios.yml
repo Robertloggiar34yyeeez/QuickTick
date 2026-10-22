@@ -94,8 +94,11 @@ jobs:
           path: build/export/
           if-no-files-found: error
           retention-days: 14
-      - name: Wait for private Drive IPA upload before testing
+      - name: Optional private Drive IPA upload confirmation
         id: drive-upload
+        # Previously this 20-minute private upload gate prevented *all* device
+        # tests despite a successful IPA archive. Opt in explicitly when needed.
+        if: ${{ vars.REQUIRE_PRIVATE_DRIVE_UPLOAD == 'true' }}
         shell: bash
         env:
           SOURCE_SHA: ${{ github.sha }}
@@ -123,7 +126,7 @@ jobs:
           path: logs/xcodebuild-test.txt
           retention-days: 14
       - name: Check native iPad layouts and playback
-        if: ${{ !cancelled() && steps.drive-upload.outcome == 'success' && steps.xtool-package.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.xtool-package.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail

@@ -35,6 +35,21 @@ final class IntelligentRecommendationTests: XCTestCase {
         var changed = old; changed.tags.append("portrait")
         let invalidated = await restored.historicalQueue([changed]); XCTAssertEqual(invalidated, [changed])
     }
+    func testCachedVisualAvoidanceDominatesNeutralMetadataWithoutLoadingModels() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let unwanted = post("unwanted", ["portrait", "jacket"])
+        let desired = post("desired", ["portrait", "jacket"])
+        let noScores = await engine.rankFast([unwanted, desired], taste: TasteChoice(), recent: [])
+        XCTAssertEqual(noScores.count, 2)
+        let appearance = [unwanted.stableID: -4.0, desired.stableID: 3.5]
+        let ranked = await engine.rankFast([unwanted, desired], taste: TasteChoice(),
+            recent: [], visualScores: appearance)
+        XCTAssertEqual(ranked.first?.stableID, desired.stableID)
+        XCTAssertLessThan(RecommendationQualityModel.combined(metadata: 0, visual: -4), 0)
+        XCTAssertGreaterThan(RecommendationQualityModel.combined(metadata: 0, visual: 4), 0)
+        XCTAssertEqual(RecommendationQualityModel.combined(metadata: 3, visual: nil), 3)
+    }
+
     func testHistoricalFavoritesRemainAWeakSignalRatherThanOvertakingDiversity() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let favorites = (0..<100).map { post("saved-\($0)", ["chun_li", "qipao", "art"]) }

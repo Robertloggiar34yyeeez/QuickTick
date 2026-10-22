@@ -71,6 +71,15 @@ struct ImmersiveFeedView: View {
                 }
             }.scrollTargetBehavior(.paging)
                 .scrollPosition(id: $scrollTargetID, anchor: .top)
+                // ScrollView's settled target is the source of truth after a
+                // page swipe. Geometry callbacks can omit the target while a
+                // lazy cell mounts, leaving the previous video's rail active.
+                .onChange(of: scrollTargetID) { _, target in
+                    guard presentationActive, store.isForeground, let target,
+                          target != activeID,
+                          mediaPosts.contains(where: { $0.stableID == target }) else { return }
+                    activeID = target
+                }
                 .coordinateSpace(name: "immersive-viewport")
                 .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
                     guard presentationActive, store.isForeground else { return }

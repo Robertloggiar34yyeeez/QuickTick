@@ -463,8 +463,12 @@ final class NavigationTests: XCTestCase {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         app.buttons["feed-popular"].tap()
         app.buttons["tab-Home"].tap()
-        expectation(for: NSPredicate(format: "selected == YES"), evaluatedWith: app.buttons["feed-recommended"])
+        // Reselecting Home refreshes the current mode instead of silently
+        // discarding an explicit Popular selection or search.
+        expectation(for: NSPredicate(format: "selected == YES"), evaluatedWith: app.buttons["feed-popular"])
         waitForExpectations(timeout: 10)
+        app.buttons["feed-recommended"].tap()
+        XCTAssertTrue(app.buttons["feed-recommended"].isSelected)
         app.buttons["personalize-feed"].tap()
         let input = app.textFields["positive-interest-input"]
         XCTAssertTrue(input.waitForExistence(timeout: 10)); input.tap()

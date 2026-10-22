@@ -101,6 +101,16 @@ struct VisualTagTaxonomy: Decodable, Sendable {
     // Decodes old v1 bundles too. No network or user data required.
     let general: Set<String>?
 
+    // Keep the three-argument initializer used by existing tests and callers.
+    // The bundled v2 taxonomy can additionally supply typed general tags.
+    init(version: String, artists: Set<String>, characters: Set<String>,
+         general: Set<String>? = nil) {
+        self.version = version
+        self.artists = artists
+        self.characters = characters
+        self.general = general
+    }
+
     enum Kind: Sendable, Equatable { case character, artist, interest, unknown }
     func kind(of raw: String) -> Kind {
         let canonical = TasteConcepts.canonical(raw)

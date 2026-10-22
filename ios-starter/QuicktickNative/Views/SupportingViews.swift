@@ -101,7 +101,7 @@ private struct StarterTastePick: Identifiable {
         .init(id: "aerith", title: "Aerith Gainsborough", context: "Final Fantasy", query: "aerith_gainsborough", tags: ["aerith_gainsborough", "final_fantasy"], symbol: "star.circle"),
         .init(id: "rouge", title: "Rouge the Bat", context: "Sonic", query: "rouge_the_bat", tags: ["rouge_the_bat", "sonic_the_hedgehog"], symbol: "gamecontroller"),
         .init(id: "samus", title: "Samus Aran", context: "Metroid", query: "samus_aran", tags: ["samus_aran", "metroid"], symbol: "shield.lefthalf.filled"),
-        .init(id: "zelda", title: "Princess Zelda", context: "The Legend of Zelda", query: "princess_zelda", tags: ["princess_zelda", "legend_of_zelda"], symbol: "crown"),
+        .init(id: "bayonetta", title: "Bayonetta", context: "Bayonetta", query: "bayonetta", tags: ["bayonetta"], symbol: "crown"),
         .init(id: "lara", title: "Lara Croft", context: "Tomb Raider", query: "lara_croft", tags: ["lara_croft", "tomb_raider"], symbol: "mountain.2")
     ]
     static let keywords: [Self] = [
@@ -344,7 +344,7 @@ struct FirstRunSetupView: View {
                                     .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 14))
                                 Spacer()
                                 Image(systemName: selectedPicks.contains(pick.id) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(selectedPicks.contains(pick.id) ? AppTheme.accent : .secondary)
+                                    .foregroundStyle(selectedPicks.contains(pick.id) ? AppTheme.accent : Color.white.opacity(0.55))
                             }
                             Text(pick.title).font(.headline).lineLimit(2)
                             Text(pick.context).font(.caption).foregroundStyle(.secondary).lineLimit(2)

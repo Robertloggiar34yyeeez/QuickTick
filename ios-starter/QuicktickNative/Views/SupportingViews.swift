@@ -558,7 +558,10 @@ struct FirstRunSetupView: View {
             await store.saveCredentials(user: rule34User, key: rule34Key,
                                         session: "", remember: true)
         }
-        let picks = suggestions.filter { selectedPicks.contains($0.id) }.flatMap(\.tags)
+        // A chosen character is an explicit character preference, not consent
+        // to recommend every item from its franchise. Keep the parent tags
+        // solely as contextual previews and optional related suggestions.
+        let picks = suggestions.filter { selectedPicks.contains($0.id) }.map(\.query)
         let advanced = isRule34 ? values(characters) + values(artists) + values(attributes) : []
         let positive = setupMode == .simple
             ? (picks + (isRule34 ? Array(selectedAttributes) : []) + values(interests))

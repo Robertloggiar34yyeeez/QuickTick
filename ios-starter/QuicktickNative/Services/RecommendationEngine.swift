@@ -689,17 +689,28 @@ actor RecommendationEngine {
     /// broad for novelty and future preference exploration.
     private func matchesExplicitInterest(_ post: Post, taste: TasteChoice, visual: Double?) -> Bool {
         let source = post.provider.lowercased()
-        let selected = Set(tasteTokens(source: source, values: taste.into)
+        let chosen = Set(tasteTokens(source: source, values: taste.into)
             .map(RecommendationTagRules.canonical))
-        guard !selected.isEmpty else { return true }
+        // Legacy Simple onboarding saved a chosen character AND its parent
+        // franchise as two equally strong explicit preferences. Treat that
+        // inherited franchise as context, not an open-ended recommendation.
+        let inherited = Set(chosen.flatMap { TasteConcepts.characterFranchises[$0] ?? [] })
+        let selected = chosen.subtracting(inherited)
         let observed = Set(terms(for: post).map(RecommendationTagRules.canonical))
-        if !selected.isDisjoint(with: observed) { return true }
+        if !selected.isEmpty && !selected.isDisjoint(with: observed) { return true }
+
+        // For profiles built from real Likes/Favorites, demand repeated,
+        // independently saved evidence before narrowing an otherwise empty
+        // explicit profile. One favorite must not overfit the entire feed.
         let favored = savedFavoriteAffinity[source] ?? [:]
-        if favored.contains(where: { term, strength in
-            strength >= 2.5 &&
-                !Self.genericTasteTerms.contains(RecommendationTagRules.canonical(term)) &&
-                observed.contains(RecommendationTagRules.canonical(term))
-        }) { return true }
+        let reinforced = Set(favored.compactMap { term, strength -> String? in
+            let canonical = RecommendationTagRules.canonical(term)
+            guard strength >= 2.5, !Self.genericTasteTerms.contains(canonical),
+                  !inherited.contains(canonical) else { return nil }
+            return canonical
+        })
+        guard !selected.isEmpty || !reinforced.isEmpty else { return true }
+        if !reinforced.isDisjoint(with: observed) { return true }
         return visual.map { $0.isFinite && $0 >= 3.0 } ?? false
     }
 

@@ -263,7 +263,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Which characters do you like?"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["simple-pick-chun_li"].exists)
         app.buttons["simple-pick-chun_li"].tap()
-        XCTAssertTrue(app.otherElements["simple-example-post"].exists)
+        XCTAssertTrue(app.otherElements["simple-example-post"].waitForExistence(timeout: 5))
         next.tap()
         XCTAssertTrue(app.staticTexts["You're ready"].waitForExistence(timeout: 5))
         next.tap()

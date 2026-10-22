@@ -153,6 +153,38 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(result.map(\.stableID), [related.stableID])
     }
 
+    func testLegacyCharacterPlusFranchiseDoesNotCauseUnrelatedFranchiseRecommendations() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let wanted = Post(key: "rule34:character", id: "character", provider: "rule34",
+                          tags: ["chun_li", "street_fighter"])
+        let unrelated = Post(key: "rule34:franchise", id: "franchise", provider: "rule34",
+                             tags: ["street_fighter", "juri_han"])
+        let taste = TasteChoice(done: true, into: ["chun_li", "street_fighter"], notInto: [])
+        let ranked = await engine.rankFast([unrelated, wanted], taste: taste,
+                                           recent: [], strict: true)
+        XCTAssertEqual(ranked.map(\.stableID), [wanted.stableID])
+    }
+
+    func testLearnedFavoritesRequireRepeatedSupportBeforeStrictGating() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let unrelated = Post(key: "rule34:landscape", id: "landscape", provider: "rule34",
+                             tags: ["landscape"])
+        let related = Post(key: "rule34:qipao", id: "qipao", provider: "rule34", tags: ["qipao"])
+        await engine.configureFavorites([Post(key: "rule34:single", id: "single",
+                                            provider: "rule34", tags: ["qipao"])])
+        let early = await engine.rankFast([unrelated, related], taste: TasteChoice(),
+                                         recent: [], strict: true)
+        XCTAssertEqual(early.count, 2, "One favorite is not enough to hard-filter a cold-start feed")
+        let favorites = (0..<3).map { index in
+            Post(key: "rule34:favorite-\(index)", id: "favorite-\(index)",
+                 provider: "rule34", tags: ["qipao"])
+        }
+        await engine.configureFavorites(favorites)
+        let later = await engine.rankFast([unrelated, related], taste: TasteChoice(),
+                                         recent: [], strict: true)
+        XCTAssertEqual(later.map(\.stableID), [related.stableID])
+    }
+
     func testPositiveAndNegativeTagsGuideRatherThanReplaceLearnedProfile() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var state = RecommendationState(); var profile = RecommendationProfile()
@@ -164,8 +196,8 @@ final class RecommendationTests: XCTestCase {
         for _ in 0..<4 { requests.append(await engine.candidateRequest(context: "rule34|test", provider: .rule34, taste: taste, excluded: [])) }
         XCTAssertTrue(requests[0].query.included.first?.hasPrefix("new_topic_") == true)
         XCTAssertEqual(requests[1].query.included, ["engineering"])
-        XCTAssertFalse(requests[2].focused, "One of three requests should explore broadly")
-        XCTAssertTrue(requests[3].focused)
+        XCTAssertTrue(requests[2].focused, "The first three acquisition attempts are interest-focused")
+        XCTAssertFalse(requests[3].focused, "Every fourth request explores broadly")
         XCTAssertTrue(requests.allSatisfy { $0.query.excluded.contains("blocked") })
         let after = await engine.snapshot()
         XCTAssertEqual(after.profiles, before.profiles)

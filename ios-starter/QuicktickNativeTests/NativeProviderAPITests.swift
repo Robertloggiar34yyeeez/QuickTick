@@ -15,7 +15,10 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.log.append(request)
-        let url = request.url!, host = url.host ?? "", path = url.path
+        let url = request.url!, host = url.host ?? ""
+        // Foundation URL.path drops a trailing slash; the canonical-route
+        // fallback fixture must distinguish /search from /search/.
+        let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? url.path
         let payload: String
         if path == "/v2/auth/temporary" { payload = #"{"token":"synthetic-provider-token"}"# }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }

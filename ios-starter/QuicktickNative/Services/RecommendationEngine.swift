@@ -13,6 +13,54 @@ struct RecommendationQualityModel: Sendable {
     }
 }
 
+// Native metadata-only interaction model learned from the FULL current
+// Favorites collection. A loved subject doesn't imply every presentation:
+// source + subject + medium must match, with credited artist modeled
+// separately. The model never loads pixels or Core ML during paging.
+struct ConditionalTasteModel: Sendable {
+    private var subjectsByMedium: [String: Set<String>] = [:]
+    private var artistsByMedium: [String: Set<String>] = [:]
+    private var approvedPairs: [String: Set<String>] = [:]
+
+    private static func mediumKey(_ post: Post) -> String {
+        post.provider.lowercased() + "|" + (VisualDomain.classify(post)?.rawValue ?? "uncertain")
+    }
+
+    mutating func train(_ favorites: [Post], taxonomy: VisualTagTaxonomy?) {
+        subjectsByMedium.removeAll(keepingCapacity: true)
+        artistsByMedium.removeAll(keepingCapacity: true)
+        approvedPairs.removeAll(keepingCapacity: true)
+        for post in favorites {
+            let key = Self.mediumKey(post)
+            guard !key.hasSuffix("|uncertain"), !key.hasSuffix("|mixed"),
+                  let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { continue }
+            let subjects = Set(features.subjects)
+            let artists = Set(features.artists ?? [])
+            subjectsByMedium[key, default: []].formUnion(subjects)
+            artistsByMedium[key, default: []].formUnion(artists)
+            for subject in subjects where !artists.isEmpty {
+                approvedPairs[key + "|" + subject, default: []].formUnion(artists)
+            }
+        }
+    }
+
+    func score(_ post: Post, taxonomy: VisualTagTaxonomy?) -> Double {
+        let key = Self.mediumKey(post)
+        guard !key.hasSuffix("|uncertain"), !key.hasSuffix("|mixed"),
+              let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { return 0 }
+        let subjects = Set(features.subjects)
+        let artists = Set(features.artists ?? [])
+        let exactSubject = !subjects.isDisjoint(with: subjectsByMedium[key] ?? [])
+        let exactArtist = !artists.isDisjoint(with: artistsByMedium[key] ?? [])
+        let approvedPair = subjects.contains { subject in
+            !artists.isDisjoint(with: approvedPairs[key + "|" + subject] ?? [])
+        }
+        // One matched character alone cannot outweigh an unapproved credited
+        // artist. Confident pairs win; unknown creators get no artist boost.
+        return (exactSubject ? 2.0 : 0) + (exactArtist ? 3.0 : 0) + (approvedPair ? 4.0 : 0)
+    }
+}
+
 actor RecommendationEngine {
     private(set) var state = RecommendationState()
     let semantic: SemanticRecommender
@@ -35,6 +83,7 @@ actor RecommendationEngine {
     // Non-persisted, deduplicated affinity from every CURRENT saved favorite.
     // Rebuilding on changes avoids replaying old likes into the event ledger.
     private var savedFavoriteAffinity: [String: [String: Double]] = [:]
+    private var conditionalTaste = ConditionalTasteModel()
     private var currentFavorites: [Post] = []
     // Unlike generic tag weights, these preserve *which* 3D artists were
     // liked. Unknown 3D creators never inherit a character's positive score.
@@ -112,6 +161,7 @@ actor RecommendationEngine {
 
     func configureFavorites(_ favorites: [Post]) {
         currentFavorites = favorites
+        conditionalTaste.train(favorites, taxonomy: taxonomy)
         trusted3DCredits = [:]
         trusted3DArtistTags = [:]
         sourcesWithRougeLikes = []
@@ -570,6 +620,7 @@ actor RecommendationEngine {
         }
         score += min(3.0, log1p(savedScore) * 0.9)
         score += preferenceGuardPenalty(post)
+        score += conditionalTaste.score(post, taxonomy: taxonomy)
         // An instant swipe away is an explicitly reversible negative; unlike a
         // thumbs-down it does not change permanent term evidence or visual profiles.
         let candidateTerms = Set(postTerms.map(RecommendationTagRules.canonical))

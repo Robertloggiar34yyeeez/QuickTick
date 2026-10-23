@@ -21,6 +21,7 @@ struct ImmersiveFeedView: View {
     // A deliberate paging request must not be undone by interim geometry
     // snapshots of the outgoing page while the scroll animation settles.
     @State private var pageTransitionProtectedUntil = Date.distantPast
+    @State private var dragOriginID: String?
     @State private var activeIndex = 0
     @State private var activeSince = Date.distantPast
     @State private var searchVisible = false
@@ -39,9 +40,7 @@ struct ImmersiveFeedView: View {
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
                     ForEach(mediaPosts, id: \.stableID) { post in
-                        ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: presentationActive, playbackOwner: playbackOwner, collection: collectionTab != nil, previews: previews) { origin, translation in
-                            pageSwipe(from: origin, translation: translation, viewportHeight: geo.size.height, scrollProxy: scrollProxy)
-                        }
+                        ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: presentationActive, playbackOwner: playbackOwner, collection: collectionTab != nil, previews: previews)
                             .frame(width: geo.size.width, height: geo.size.height)
                             .contentShape(Rectangle())
                             .allowsHitTesting(activeID == post.stableID && presentationActive)
@@ -76,6 +75,18 @@ struct ImmersiveFeedView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
             }.scrollTargetBehavior(.paging)
+                // Handle paging on the scroll container. Media and controls
+                // may intercept drags before a cell-only gesture sees them.
+                .highPriorityGesture(DragGesture(minimumDistance: 28)
+                    .onChanged { _ in
+                        if dragOriginID == nil { dragOriginID = activeID }
+                    }
+                    .onEnded { drag in
+                        defer { dragOriginID = nil }
+                        guard let origin = dragOriginID ?? activeID else { return }
+                        pageSwipe(from: origin, translation: drag.translation,
+                                  viewportHeight: geo.size.height, scrollProxy: scrollProxy)
+                    }, including: .subviews)
                 .scrollPosition(id: $scrollTargetID, anchor: .top)
                 // ScrollView's settled target is the source of truth after a
                 // page swipe. Geometry callbacks can omit the target while a
@@ -272,7 +283,6 @@ private struct ImmersiveItemView: View {
     let playbackOwner: String
     let collection: Bool
     @ObservedObject var previews: ImmersivePreviewCache
-    let onVerticalSwipe: (String, CGSize) -> Void
     @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
     @State private var ready = false
@@ -360,11 +370,6 @@ private struct ImmersiveItemView: View {
                 }
                 Color.clear.contentShape(Rectangle())
                     .accessibilityIdentifier("immersive-media-\(post.stableID)")
-                    // The hit-tested media surface owns a deliberate vertical
-                    // page swipe. Native ScrollView paging remains available
-                    // elsewhere, while a double tap stays a Like gesture.
-                    .highPriorityGesture(DragGesture(minimumDistance: 35)
-                        .onEnded { onVerticalSwipe(post.stableID, $0.translation) })
                     .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { gesture in
                         switch gesture {
                         case .first:

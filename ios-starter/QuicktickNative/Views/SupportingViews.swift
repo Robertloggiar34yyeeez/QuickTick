@@ -30,13 +30,19 @@ struct TasteOnboardingView: View {
     @State private var notInto = Set<String>()
     @State private var positiveDraft = ""
     @State private var negativeDraft = ""
+    @FocusState private var positiveDraftFocused: Bool
+    @FocusState private var negativeDraftFocused: Bool
     var body: some View {
         NavigationStack {
             List {
                 Section("What would you like more of?") {
                     Text("Guide your existing learned profile with topics, tags or phrases. Separate interests with commas. Your history is kept.").font(.caption).foregroundStyle(.secondary)
                     TextField("Topics or keywords", text: $positiveDraft)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("positive-interest-input")
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textContentType(.none)
+                        .focused($positiveDraftFocused)
+                        .accessibilityIdentifier("positive-interest-input")
                     Button("Add interests") { addDraft(positive: true) }.disabled(positiveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     ForEach(into.sorted(), id: \.self) { term in
                         HStack { Text(term); Spacer(); Button("Remove") { into.remove(term) } }
@@ -44,7 +50,11 @@ struct TasteOnboardingView: View {
                 }
                 Section("What would you rather avoid?") {
                     Text("Reduces unwanted recommendations while keeping your other learned interests. Exact unwanted tags are excluded.").font(.caption).foregroundStyle(.secondary)
-                    TextField("Unwanted topics or keywords", text: $negativeDraft).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField("Unwanted topics or keywords", text: $negativeDraft)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textContentType(.none)
+                        .focused($negativeDraftFocused)
                     Button("Add exclusions") { addDraft(positive: false) }.disabled(negativeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     ForEach(notInto.sorted(), id: \.self) { term in
                         HStack { Text(term); Spacer(); Button("Remove") { notInto.remove(term) } }

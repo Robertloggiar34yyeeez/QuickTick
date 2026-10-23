@@ -116,11 +116,13 @@ jobs:
           mkdir -p logs
           xcodebuild -version | tee logs/xcode-version.txt
           DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')
-          boot_clean_iphone() {
+          reboot_iphone() {
             xcrun simctl shutdown "$DEVICE" || true
-            xcrun simctl erase "$DEVICE"
             xcrun simctl boot "$DEVICE"
             xcrun simctl bootstatus "$DEVICE" -b
+            # SpringBoard being ready does not guarantee that the simulator's
+            # accessibility daemon has finished initializing.
+            sleep 3
           }
           run_iphone_tests() {
             local bundle="$1" log="$2"
@@ -128,18 +130,18 @@ jobs:
             xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO "$@" -resultBundlePath "logs/$bundle.xcresult" test | tee "logs/$log.txt"
           }
           failures=0
-          boot_clean_iphone
+          reboot_iphone
           run_iphone_tests QuicktickUnitTests xcodebuild-unit-test -only-testing:QuicktickNativeTests || failures=1
           # XCTest's accessibility service can become unresponsive after a long
           # series of UI cases. Run the sensitive end-to-end scenarios with
           # fresh simulator state; do not skip or relax their assertions.
-          boot_clean_iphone
+          reboot_iphone
           run_iphone_tests QuicktickOnboardingTests xcodebuild-onboarding-test -only-testing:QuicktickNativeUITests/NavigationTests/testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key || failures=1
-          boot_clean_iphone
+          reboot_iphone
           run_iphone_tests QuicktickPreferencesTests xcodebuild-preferences-test -only-testing:QuicktickNativeUITests/NavigationTests/testPersonalPreferencesAndTabRefresh || failures=1
-          boot_clean_iphone
+          reboot_iphone
           run_iphone_tests QuicktickImmersiveTests xcodebuild-immersive-test -only-testing:QuicktickNativeUITests/NavigationTests/testImmersiveRailSnapsAndDoubleTapLikes || failures=1
-          boot_clean_iphone
+          reboot_iphone
           run_iphone_tests QuicktickTests xcodebuild-test -only-testing:QuicktickNativeUITests -skip-testing:QuicktickNativeUITests/NavigationTests/testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key -skip-testing:QuicktickNativeUITests/NavigationTests/testPersonalPreferencesAndTabRefresh -skip-testing:QuicktickNativeUITests/NavigationTests/testImmersiveRailSnapsAndDoubleTapLikes || failures=1
           exit "$failures"
       - uses: actions/upload-artifact@v4

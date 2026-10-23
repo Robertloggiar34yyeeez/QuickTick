@@ -23,6 +23,7 @@ struct PostCardView: View {
     @State private var preparing = false
     @State private var mediaAspect: CGFloat = 4 / 3
     @State private var playbackError: String?
+    @State private var retainedAcrossBackground = false
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
     private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
@@ -87,7 +88,24 @@ struct PostCardView: View {
             }
             .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning)") {
                 guard !Task.isCancelled else { return }
-                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isManualVisualScanRunning else { stopPlayback(); return }
+                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab,
+                      !store.isManualVisualScanRunning else { stopPlayback(); return }
+                // AppStore suspends and retains the AVPlayer on backgrounding.
+                // Keep this view's reference too, so foreground restoration
+                // doesn't wait for another resolution and track metadata load.
+                guard store.isForeground else {
+                    retainedAcrossBackground = true
+                    player?.pause()
+                    return
+                }
+                if retainedAcrossBackground, let player, player.currentItem != nil,
+                   player.currentItem?.status != .failed {
+                    retainedAcrossBackground = false
+                    if store.pausedPlaybackID == post.stableID { player.pause() }
+                    else { player.play() }
+                    return
+                }
+                retainedAcrossBackground = false
                 await preparePlayback()
             }
             .onDisappear {
@@ -109,6 +127,12 @@ struct PostCardView: View {
             }
             .onDisappear { pendingVideoFullscreen = false }
             .onChange(of: store.muted) { _, value in player?.isMuted = value }
+            .onChange(of: store.isForeground) { _, foreground in
+                guard foreground, store.activeTab == playbackTab,
+                      store.inlinePlaybackID == post.stableID,
+                      store.pausedPlaybackID != post.stableID else { return }
+                player?.play()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
                 guard let item = note.object as? AVPlayerItem, item === player?.currentItem else { return }
                 if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground { store.recordComplete(post); store.recordReplay(post); player?.seek(to: .zero); if store.pausedPlaybackID != post.stableID { player?.play() } }
@@ -223,7 +247,7 @@ struct PostCardView: View {
         if watchSeconds >= 2 { store.recordWatch(post, seconds: watchSeconds, completion: completion) }
         watchSeconds = 0
     }
-    private func stopPlayback() { store.players.pause(post.stableID, owner: playbackOwner); player = nil; gifURL = nil; ready = false; playing = false }
+    private func stopPlayback() { retainedAcrossBackground = false; store.players.pause(post.stableID, owner: playbackOwner); player = nil; gifURL = nil; ready = false; playing = false }
 }
 
 private struct FullScreenVideoView: View {

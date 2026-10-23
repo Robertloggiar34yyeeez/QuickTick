@@ -11,6 +11,7 @@ struct ImageStudioView: View {
     @AppStorage("quicktick-studio-anima-checkpoint-v1") private var savedAnimaCheckpointName = ""
     @AppStorage("quicktick-studio-lora-strengths-v1") private var savedLoRAStrengthsJSON = "{}"
     @AppStorage("quicktick-studio-coreml-safety-v1") private var coreMLSafetyCheck = true
+    @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @State private var showIntro = false
     @State private var showSetupLoRAChoice = false
     @State private var showImport = false
@@ -122,12 +123,6 @@ struct ImageStudioView: View {
                     status = "Ready to generate on this device."
                 }
             } else if case .failure(let error) = result { status = error.localizedDescription }
-        }
-        .fileImporter(isPresented: $showAnimaImport, allowedContentTypes: [.item]) { result in
-            importAsset(result, type: "checkpoint")
-        }
-        .fileImporter(isPresented: $showLoRAImport, allowedContentTypes: [.item]) { result in
-            importAsset(result, type: "lora")
         }
         .task {
             await reloadModels()
@@ -661,6 +656,20 @@ struct ImageStudioView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if modernUI {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("YOUR MODELS").font(.caption2.weight(.semibold)).tracking(1.8).foregroundStyle(AppTheme.accent)
+                                Text("Model library").font(.system(.largeTitle, design: .default, weight: .bold))
+                            }
+                            Spacer()
+                            Image(systemName: "square.stack.3d.up.fill")
+                                .font(.title2).foregroundStyle(AppTheme.accent)
+                                .frame(width: 46, height: 46)
+                                .background(AppTheme.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 15))
+                        }
+                        .padding(.top, 8)
+                    }
                     Picker("Explore", selection: $catalogKind) {
                         ForEach(StudioCatalogKind.allCases) { kind in
                             Text(kind.title).tag(kind)
@@ -689,30 +698,25 @@ struct ImageStudioView: View {
                     }
                     HStack(spacing: 8) {
                         Button { showAnimaImport = true } label: {
-                            Label("Import checkpoint", systemImage: "square.and.arrow.down")
+                            Label("Checkpoint", systemImage: "square.and.arrow.down")
                         }
                         Button { showLoRAImport = true } label: {
-                            Label("Import LoRA", systemImage: "plus.circle")
+                            Label("Import LoRA", systemImage: "plus.circle.fill")
                         }
                     }
-                    .font(.caption.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .buttonStyle(.bordered)
+                    .controlSize(.large)
                     Text("Suggested from your favorites")
                         .font(.subheadline.weight(.semibold))
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
-                            Button { catalogKind = .checkpoint; searchQuery = "Anima"; searchCatalog() } label: {
-                                Label("Anima", systemImage: "sparkles")
-                            }
+                            catalogChip("Anima", icon: "sparkles", kind: .checkpoint, query: "Anima")
                             ForEach(inspiration.characters.prefix(3), id: \.self) { character in
-                                Button { catalogKind = .lora; searchQuery = character; searchCatalog() } label: {
-                                    Label(character.replacingOccurrences(of: "_", with: " "), systemImage: "heart")
-                                }
+                                catalogChip(character.replacingOccurrences(of: "_", with: " "), icon: "heart.fill", kind: .lora, query: character)
                             }
                             ForEach(inspiration.artists.prefix(2), id: \.self) { artist in
-                                Button { catalogKind = .lora; searchQuery = artist; searchCatalog() } label: {
-                                    Label(artist.replacingOccurrences(of: "_", with: " "), systemImage: "paintpalette")
-                                }
+                                catalogChip(artist.replacingOccurrences(of: "_", with: " "), icon: "paintpalette.fill", kind: .lora, query: artist)
                             }
                         }
                         .font(.caption.weight(.medium))
@@ -726,7 +730,7 @@ struct ImageStudioView: View {
                         Text("Search for a character, artist or model to see available downloads.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("CivitAI Anima checkpoints can be selected for native Metal generation. LoRAs can be saved and configured, but cannot yet be applied: the packaged native runtime has no LoRA API. Core ML requires converted models.")
+                    Label("LoRAs can be downloaded now. Rendering with them needs a Metal engine update.", systemImage: "info.circle")
                         .font(.caption).foregroundStyle(.orange.opacity(0.9))
                     if let status { Text(status).font(.caption).foregroundStyle(AppTheme.secondaryLabel) }
                     if !downloadedAssets.isEmpty { downloadedAssetsPanel }
@@ -739,18 +743,49 @@ struct ImageStudioView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { showCatalog = false } }
             }
+            // Present the document picker from the model-library sheet itself.
+            // A picker attached to the covered parent view fails on some iOS releases.
+            .fileImporter(isPresented: $showAnimaImport, allowedContentTypes: [.item]) { importAsset($0, type: "checkpoint") }
+            .fileImporter(isPresented: $showLoRAImport, allowedContentTypes: [.item]) { importAsset($0, type: "lora") }
         }
         .preferredColorScheme(.dark)
     }
 
+    private func catalogChip(_ title: String, icon: String, kind: StudioCatalogKind, query: String) -> some View {
+        Button {
+            catalogKind = kind
+            searchQuery = query
+            searchCatalog()
+        } label: {
+            Label(title, systemImage: icon)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 13).padding(.vertical, 10)
+                .background(AppTheme.accent.opacity(0.16), in: Capsule())
+                .overlay(Capsule().stroke(AppTheme.accent.opacity(0.34)))
+        }
+        .buttonStyle(QuicktickPressStyle())
+    }
+
     private func modelRow(_ model: CivitaiStudioModel) -> some View {
         HStack(spacing: 12) {
+            if modernUI {
+                Image(systemName: model.type == "LORA" ? "wand.and.stars" : "square.stack.3d.up.fill")
+                    .font(.title3).foregroundStyle(AppTheme.accent)
+                    .frame(width: 42, height: 42)
+                    .background(AppTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
+            }
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.name).font(.subheadline.weight(.medium)).lineLimit(2)
-                Text([model.type, model.latest?.baseModel].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
-                if let size = model.latest?.displaySize {
-                    Text(size).font(.caption2).foregroundStyle(.white.opacity(0.60))
+                if modernUI {
+                    HStack(spacing: 5) {
+                        modelBadge(model.type == "LORA" ? "LoRA" : "Checkpoint")
+                        if let base = model.latest?.baseModel { modelBadge(base) }
+                        if let size = model.latest?.displaySize { modelBadge(size) }
+                    }
+                } else {
+                    Text([model.type, model.latest?.baseModel, model.latest?.displaySize].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                 }
                 if let words = model.latest?.trainedWords, !words.isEmpty {
                     Text(words.prefix(2).joined(separator: ", ")).font(.caption2).foregroundStyle(AppTheme.accent)
@@ -758,14 +793,26 @@ struct ImageStudioView: View {
             }
             Spacer(minLength: 6)
             Button { beginAssetDownload(model) } label: {
-                Image(systemName: downloadBusyID == model.id ? "hourglass" : "arrow.down.circle.fill")
+                Image(systemName: downloadBusyID == model.id ? "hourglass" : "arrow.down.to.line.compact")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 42, height: 42)
+                    .background(AppTheme.accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 13))
             }
                 .buttonStyle(QuicktickPressStyle()).font(.title3)
                 .disabled(transferStatus.isActive || downloadBusyID != nil)
                 .accessibilityLabel("Download \(model.name)")
         }
         .padding(12)
-        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+        .background(modernUI ? AppTheme.elevatedSurface : AppTheme.surface, in: RoundedRectangle(cornerRadius: modernUI ? 20 : 14))
+        .overlay(RoundedRectangle(cornerRadius: modernUI ? 20 : 14).stroke(AppTheme.border))
+    }
+
+    private func modelBadge(_ value: String) -> some View {
+        Text(value).font(.system(size: 10, weight: .medium))
+            .lineLimit(1)
+            .padding(.horizontal, 7).padding(.vertical, 4)
+            .background(Color.white.opacity(0.08), in: Capsule())
+            .foregroundStyle(AppTheme.secondaryLabel)
     }
 
     private var downloadedAssetsPanel: some View {
@@ -856,29 +903,50 @@ struct ImageStudioView: View {
             Image(systemName: "sparkles.rectangle.stack.fill")
                 .font(.system(size: 45)).foregroundStyle(AppTheme.accent)
             Text("Create with QuickTick")
-                .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                .font(.system(.largeTitle, design: .default, weight: .bold))
             ForEach([
-                ("1", "Start with your taste", "Use your favorites to build a prompt from the characters, artists, actions and scenes you like."),
-                ("2", "Install Anima", "Download Anima Turbo from civitai.red with its two supporting files, then choose a LoRA."),
-                ("3", "Make it yours", "Render privately on your device, save your images, and discover related CivitAI LoRAs.")
+                ("1", "Your taste", "Prompts inspired by favorites"),
+                ("2", "Install Anima", "Checkpoint + Qwen3 + VAE"),
+                ("3", "Add LoRAs", "Choose characters and styles")
             ], id: \.0) { item in
                 HStack(alignment: .top, spacing: 12) {
                     Text(item.0).font(.headline).foregroundStyle(.white)
                         .frame(width: 36, height: 36).background(AppTheme.gradient, in: Circle())
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.1).font(.headline)
-                        Text(item.2).font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
+                        Text(item.2).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     }
                 }
             }
-            Spacer(minLength: 4)
-            Button("Set up Anima") {
-                introCompleted = true
-                showIntro = false
-                if animaReady { selectedEngine = .anima; showSetupLoRAChoice = true }
-                else if selectedAnimaCheckpoint != nil { beginAnimaDownload(useExistingCheckpoint: true) }
-                else { beginCivitaiAnimaSetup() }
+            if transferStatus.isActive {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        ProgressView().tint(AppTheme.accent)
+                        Text(status ?? "Installing Anima…").font(.subheadline).lineLimit(2)
+                    }
+                    if let fraction = transferStatus.fraction {
+                        ProgressView(value: fraction).tint(AppTheme.accent)
+                    }
+                    Text(transferStatus.progressLabel).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("anima-setup-progress")
+            } else if let status, status.contains("failed") || status.contains("stopped") {
+                Label(status, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .accessibilityIdentifier("anima-setup-error")
             }
+            Spacer(minLength: 4)
+            Button(transferStatus.isActive ? "Installing Anima…" : animaReady ? "Continue" : "Set up Anima") {
+                if animaReady {
+                    introCompleted = true
+                    showIntro = false
+                    selectedEngine = .anima
+                    showSetupLoRAChoice = true
+                } else if selectedAnimaCheckpoint != nil {
+                    beginAnimaDownload(useExistingCheckpoint: true)
+                } else { beginCivitaiAnimaSetup() }
+            }
+                .disabled(transferStatus.isActive)
                 .font(.headline).foregroundStyle(.white)
                 .frame(maxWidth: .infinity, minHeight: 52)
                 .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16))
@@ -906,7 +974,7 @@ struct ImageStudioView: View {
                     }
                 }
             }
-        }.presentationDetents([.medium])
+        }.padding(24).presentationDetents([.large])
     }
 
     private func searchCatalog() {
@@ -1039,6 +1107,8 @@ struct ImageStudioView: View {
                 guard animaReady else { throw StudioError.unavailableModel }
                 selectedEngine = .anima
                 status = "Anima installed and selected. Choose a LoRA if you like."
+                introCompleted = true
+                showIntro = false
                 showSetupLoRAChoice = true
             } catch is CancellationError {
                 status = "Setup stopped. Downloaded components are kept."
@@ -1067,7 +1137,11 @@ struct ImageStudioView: View {
                 if animaReady {
                     selectedEngine = .anima
                     status = useExistingCheckpoint ? "Anima supporting files installed. Try generating with your CivitAI checkpoint." : "Anima Q4 installed! Select Generate to render with Metal."
-                    if useExistingCheckpoint { showSetupLoRAChoice = true }
+                    if useExistingCheckpoint {
+                        introCompleted = true
+                        showIntro = false
+                        showSetupLoRAChoice = true
+                    }
                 }
             } catch is CancellationError {
                 status = "Anima download stopped; completed model components are kept."

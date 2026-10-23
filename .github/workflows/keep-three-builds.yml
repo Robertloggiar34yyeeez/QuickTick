@@ -30,6 +30,7 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
+            // Repeatable: each pass only touches obsolete build artifacts.
             const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
               owner, repo, per_page: 100
             });

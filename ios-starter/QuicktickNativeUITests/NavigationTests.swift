@@ -181,6 +181,18 @@ final class NavigationTests: XCTestCase {
         app.buttons["Close"].tap()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 5))
     }
+    @MainActor func testStudioCanContinueWithoutDownloadingAnima() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "-quicktick-studio-intro-v1", "NO"]
+        app.launch()
+        XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))
+        app.buttons["tab-Create"].tap()
+        let continueButton = app.buttons["studio-intro-complete"]
+        XCTAssertTrue(continueButton.waitForExistence(timeout: 5))
+        XCTAssertTrue(continueButton.isEnabled)
+        continueButton.tap()
+        XCTAssertTrue(app.buttons["studio-generate"].waitForExistence(timeout: 5))
+    }
     @MainActor func testHideAITabKeepsFourNavigationTabs() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))

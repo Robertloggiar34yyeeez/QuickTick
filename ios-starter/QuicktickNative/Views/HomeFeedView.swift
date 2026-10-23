@@ -180,6 +180,15 @@ struct HomeFeedView: View {
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
             selectVisiblePlayback(viewport: viewport.size)
         }
+        .onAppear {
+            // Switching back from Immersive remounts Home. Frame preferences
+            // can arrive before the resumed feed is fully laid out, so retry
+            // selection once after the first layout pass.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(180))
+                selectVisiblePlayback(viewport: viewport.size)
+            }
+        }
         .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)

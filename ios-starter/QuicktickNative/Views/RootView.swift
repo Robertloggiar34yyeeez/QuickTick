@@ -6,6 +6,7 @@ struct RootView: View {
     @Namespace private var navigationSelection
     @State private var brieflyNamedTab: Int?
     @State private var tabNameTask: Task<Void, Never>?
+    @State private var refreshingTab: Int?
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
@@ -59,6 +60,7 @@ struct RootView: View {
                         }
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("bottom-navigation-bar")
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -70,8 +72,10 @@ struct RootView: View {
                         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
                         .shadow(color: .black.opacity(0.4), radius: 18, y: 4)
                         .padding(.leading, 16)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
                 }
             }
+            .animation(reduceMotion ? nil : .spring(response: 0.48, dampingFraction: 0.84), value: sideNavigation)
         }
         .onChange(of: store.activeTab) { _, tab in
             tabNameTask?.cancel()
@@ -82,6 +86,11 @@ struct RootView: View {
                 guard !Task.isCancelled else { return }
                 withAnimation(.easeOut(duration: 0.14)) { brieflyNamedTab = nil }
             }
+        }
+        .onChange(of: showAITab) { _, _ in
+            // AppStorage can update while Settings is still being dismissed.
+            // Keep the dock transaction in sync across both layouts.
+            brieflyNamedTab = nil
         }
         .onDisappear { tabNameTask?.cancel() }
         .tint(.white)
@@ -141,10 +150,24 @@ struct RootView: View {
             } else {
                 let tabID = index < 2 ? index : index - 1
                 Button {
-                    Task { await store.selectFeedTab(tabID) }
+                    let isRefresh = tabID < 2 && store.activeTab == tabID
+                    if isRefresh { withAnimation(.easeIn(duration: 0.15)) { refreshingTab = tabID } }
+                    Task {
+                        await store.selectFeedTab(tabID)
+                        if isRefresh {
+                            try? await Task.sleep(for: .milliseconds(450))
+                            if refreshingTab == tabID {
+                                withAnimation(.easeOut(duration: 0.24)) { refreshingTab = nil }
+                            }
+                        }
+                    }
                 } label: {
                     Group {
-                        if store.activeTab == tabID && brieflyNamedTab == tabID {
+                        if refreshingTab == tabID {
+                            ProgressView()
+                                .tint(.white)
+                                .transition(.opacity.combined(with: .scale(scale: 0.82)))
+                        } else if store.activeTab == tabID && brieflyNamedTab == tabID {
                             Text(tabs[index].0)
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                                 .lineLimit(1).minimumScaleFactor(0.8)
@@ -169,6 +192,7 @@ struct RootView: View {
                 }
                 .buttonStyle(QuicktickPressStyle())
                 .animation(reduceMotion ? nil : AppTheme.spring, value: store.activeTab)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: refreshingTab)
                 .accessibilityLabel(tabs[index].0)
                 .accessibilityIdentifier("tab-\(tabs[index].0)")
                 .accessibilityAddTraits(store.activeTab == tabID ? .isSelected : [])

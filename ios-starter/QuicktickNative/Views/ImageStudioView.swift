@@ -25,7 +25,7 @@ struct ImageStudioView: View {
     @State private var stepCount = 8.0
     @State private var guidance = 2.0
     @State private var aspect: StudioAspectRatio = .square
-    @State private var animaLongestEdge = 640.0
+    @State private var animaLongestEdge = 512.0
     @State private var scheduler: StudioScheduler = .dpm
     @State private var highResolution = false
     @State private var animeUpscalerReady = false
@@ -471,8 +471,8 @@ struct ImageStudioView: View {
                 HStack(spacing: 8) {
                     Text("Preset").font(.caption.weight(.semibold))
                     Spacer()
-                    Button("Fast") { stepCount = 16; animaLongestEdge = 512 }
-                        .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 16 && animaLongestEdge == 512))
+                    Button("Fast") { stepCount = 8; animaLongestEdge = 512 }
+                        .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 8 && animaLongestEdge == 512))
                         .accessibilityIdentifier("studio-preset-fast")
                     Button("Quality") { stepCount = 30; animaLongestEdge = 640 }
                         .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 30 && animaLongestEdge == 640))

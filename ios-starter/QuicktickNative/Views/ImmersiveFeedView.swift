@@ -389,7 +389,15 @@ private struct ImmersiveItemView: View {
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
             .overlay(alignment: .bottomTrailing) {
-                if active && presentationActive { actionRail.padding(.trailing, geo.size.width > 600 ? 24 : 12).padding(.bottom, 100) }
+                if active && presentationActive {
+                    // Keep the action rail reachable on small iPhones, while
+                    // giving the iPad canvas appropriately sized controls.
+                    let scale = min(1.16, max(0.82, geo.size.width / 430))
+                    actionRail
+                        .scaleEffect(scale, anchor: .bottomTrailing)
+                        .padding(.trailing, geo.size.width > 600 ? 30 : 12)
+                        .padding(.bottom, min(110, max(76, geo.size.height * 0.12)))
+                }
             }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 0) {

@@ -8,6 +8,7 @@ struct RootView: View {
     @State private var tabNameTask: Task<Void, Never>?
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
+    @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @State private var showSettings = false
     @State private var showStudio = false
     @State private var homeAnchor: String?
@@ -39,14 +40,22 @@ struct RootView: View {
                     // Full-width dock with a raised, high-contrast creation
                     // action in the center. Preserve safe-area touch targets.
                     HStack(spacing: 0) { tabButtons(vertical: false) }
-                        .padding(.horizontal, 4)
-                        .padding(.top, 4)
+                        .padding(.horizontal, modernUI ? 8 : 4)
+                        .padding(.top, modernUI ? 8 : 4)
                         .padding(.bottom, 0)
                         .background {
-                            AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
+                            if modernUI {
+                                Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(edges: .bottom)
+                            } else {
+                                AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
+                            }
                         }
                         .overlay(alignment: .top) {
-                            AppTheme.gradient.frame(height: 1).opacity(0.55)
+                            if modernUI {
+                                Rectangle().fill(.white.opacity(0.15)).frame(height: 0.5)
+                            } else {
+                                AppTheme.gradient.frame(height: 1).opacity(0.55)
+                            }
                         }
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("bottom-navigation-bar")
@@ -121,9 +130,9 @@ struct RootView: View {
                         .font(.system(size: 24, weight: .bold))
                         .foregroundStyle(.white)
                         .frame(width: vertical ? 46 : 54, height: vertical ? 46 : 52)
-                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: modernUI ? 20 : 17, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 17).stroke(.white.opacity(0.25)))
-                        .shadow(color: AppTheme.accent.opacity(0.28), radius: 13, y: 3)
+                        .shadow(color: AppTheme.accent.opacity(modernUI ? 0.36 : 0.28), radius: modernUI ? 18 : 13, y: 3)
                         .frame(maxWidth: vertical ? nil : .infinity)
                 }
                 .buttonStyle(QuicktickPressStyle())
@@ -152,7 +161,7 @@ struct RootView: View {
                     .contentShape(Rectangle())
                     .background {
                         if store.activeTab == tabID {
-                            RoundedRectangle(cornerRadius: vertical ? 18 : 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: vertical ? 18 : (modernUI ? 18 : 12), style: .continuous)
                                 .fill(AppTheme.gradient)
                                 .matchedGeometryEffect(id: "selected-tab", in: navigationSelection)
                         }

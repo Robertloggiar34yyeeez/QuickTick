@@ -81,6 +81,12 @@ final class RecommendationTests: XCTestCase {
     }
 
     func testActionTagsHaveMeaningAndRejectOpposingPoseOrGaze() async {
+        XCTAssertEqual(ActionSemantics.facet("oral_sex"), "act:oral")
+        XCTAssertEqual(ActionSemantics.facet("fellatio"), "act:oral")
+        XCTAssertEqual(ActionSemantics.facet("vaginal_sex"), "act:intercourse")
+        XCTAssertEqual(ActionSemantics.facet("cowgirl_position"), "position:riding")
+        XCTAssertNil(ActionSemantics.facet("artist:oral_sex"))
+        XCTAssertNil(ActionSemantics.facet("not_oral_sex"))
         XCTAssertEqual(ActionSemantics.facet("leaning over"), "pose:leaning_forward")
         XCTAssertEqual(ActionSemantics.facet("bent_over"), "pose:leaning_forward")
         XCTAssertEqual(ActionSemantics.facet("looking at viewer"), "gaze:at_viewer")

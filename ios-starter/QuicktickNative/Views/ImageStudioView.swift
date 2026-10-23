@@ -112,7 +112,7 @@ struct ImageStudioView: View {
             }
             Button("Not now", role: .cancel) { }
         } message: {
-            Text("Anima is selected. Pick a character or artist LoRA to download, or add one later. This Metal build can download LoRAs but cannot apply them during generation yet.")
+            Text("Anima is selected. Add a character or artist LoRA, or continue without one. Selected LoRAs are applied during generation.")
         }
         .fileImporter(isPresented: $showImport, allowedContentTypes: [.zip, .folder]) { result in
             if case .success(let url) = result {
@@ -730,8 +730,8 @@ struct ImageStudioView: View {
                         Text("Search for a character, artist or model to see available downloads.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Label("LoRAs can be downloaded now. Rendering with them needs a Metal engine update.", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.orange.opacity(0.9))
+                    Label("Choose up to four Anima-compatible LoRAs. Their strengths are applied during generation.", systemImage: "checkmark.seal")
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     if let status { Text(status).font(.caption).foregroundStyle(AppTheme.secondaryLabel) }
                     if !downloadedAssets.isEmpty { downloadedAssetsPanel }
                 }
@@ -817,7 +817,7 @@ struct ImageStudioView: View {
 
     private var downloadedAssetsPanel: some View {
         StudioPanel(title: "Downloaded CivitAI assets", icon: "externaldrive") {
-            Text("Select an Anima checkpoint. You may preconfigure up to four LoRAs, but the current Metal engine cannot apply them yet. Other model families are not guaranteed compatible.")
+            Text("Select an Anima checkpoint and up to four compatible LoRAs. Other model families may not work with Anima.")
                 .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             ForEach(downloadedAssets, id: \.path) { file in
                 VStack(alignment: .leading, spacing: 9) {
@@ -1232,10 +1232,6 @@ struct ImageStudioView: View {
         }
         if selectedEngine == .anima && !animaReady {
             status = "Download the Anima Q4 bundle (diffusion weights, Qwen3 and VAE) first."
-            return
-        }
-        if selectedEngine == .anima && !selectedLoRAStrengths.isEmpty {
-            status = StudioError.unsupportedLoRA.localizedDescription
             return
         }
         guard !(promptOverride ?? prompt).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

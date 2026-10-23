@@ -1,0 +1,54 @@
+name: Keep three recent QuickTick builds
+
+on:
+  workflow_run:
+    workflows: ["Native iOS build and IPA"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: quicktick-artifact-retention
+  cancel-in-progress: false
+
+jobs:
+  prune-old-build-artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Deliberately do not checkout or execute code from the triggering PR:
+      # workflow_run has write access, so its script must remain trusted.
+      - name: Preserve newest three IPA builds and remove older build files
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              owner, repo, per_page: 100
+            });
+            const ipaName = /^QuickTick-.*-unsigned-IPA$/;
+            const ipas = artifacts.filter(a => !a.expired && ipaName.test(a.name))
+              .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+            if (ipas.length < 3) {
+              core.info(`Only ${ipas.length} IPA builds available. Retaining all artifacts.`);
+              return;
+            }
+            const kept = ipas.slice(0, 3);
+            const keepRunIDs = new Set(kept.map(a => a.workflow_run?.id));
+            const oldestKeptAt = Date.parse(kept[2].created_at);
+            const buildArtifact = a => ipaName.test(a.name) ||
+              a.name === 'iphone-test-log' || a.name === 'native-test-results';
+            // Never touch artifacts produced by the latest three build runs,
+            // nor anything newer (including a build still in progress).
+            const obsolete = artifacts.filter(a => !a.expired && buildArtifact(a) &&
+              !keepRunIDs.has(a.workflow_run?.id) &&
+              Date.parse(a.created_at) < oldestKeptAt);
+            const bytes = obsolete.reduce((total, a) => total + a.size_in_bytes, 0);
+            core.info(`Keeping IPAs: ${kept.map(a => a.id).join(', ')}`);
+            core.info(`Removing ${obsolete.length} older artifacts (${(bytes / 1e9).toFixed(2)} GB).`);
+            for (const artifact of obsolete) {
+              await github.rest.actions.deleteArtifact({owner, repo, artifact_id: artifact.id});
+              core.info(`Deleted ${artifact.name} #${artifact.id}`);
+            }

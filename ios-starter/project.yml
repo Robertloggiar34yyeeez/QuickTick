@@ -21,6 +21,9 @@ packages:
     exactVersion: 0.9.21
   QuicktickMirageRuntime:
     path: MirageRuntime
+  DrawThings:
+    url: https://github.com/drawthingsai/draw-things-community.git
+    revision: 0621d8198f3ed505bb7cefc71b84f8f0e1ce5936
 targets:
   QuicktickNative:
     type: application
@@ -34,6 +37,8 @@ targets:
         product: ZIPFoundation
       - package: QuicktickMirageRuntime
         product: Mirage
+      - package: DrawThings
+        product: _MediaGenerationKit
     configFiles:
       Debug: Config/Debug.xcconfig
       Release: Config/Release.xcconfig

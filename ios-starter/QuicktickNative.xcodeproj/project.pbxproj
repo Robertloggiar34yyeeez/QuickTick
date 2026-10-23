@@ -15,6 +15,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "A1B2C3D4E5F6012345678901";
 		};
+		"A1B2C3D4E5F6012345678921" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/DrawThingsAnimaBridge.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"A1B2C3D4E5F6012345678922" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "A1B2C3D4E5F6012345678921";
+		};
 		"A1B2C3D4E5F6012345678911" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -75,6 +85,20 @@
 		"A1B2C3D4E5F6012345678915" = {
 			"isa" = "PBXBuildFile";
 			"productRef" = "A1B2C3D4E5F6012345678914";
+		};
+		"A1B2C3D4E5F6012345678923" = {
+			"isa" = "XCRemoteSwiftPackageReference";
+			"repositoryURL" = "https://github.com/drawthingsai/draw-things-community.git";
+			"requirement" = { "kind" = "revision"; "revision" = "0621d8198f3ed505bb7cefc71b84f8f0e1ce5936"; };
+		};
+		"A1B2C3D4E5F6012345678924" = {
+			"isa" = "XCSwiftPackageProductDependency";
+			"package" = "A1B2C3D4E5F6012345678923";
+			"productName" = "_MediaGenerationKit";
+		};
+		"A1B2C3D4E5F6012345678925" = {
+			"isa" = "PBXBuildFile";
+			"productRef" = "A1B2C3D4E5F6012345678924";
 		};
 		"734399CC5ADF15F31FBB8FDF" = {
 			"isa" = "PBXFileReference";
@@ -912,6 +936,7 @@
 			"buildActionMask" = "2147483647";
 			"files" = (
 				"A1B2C3D4E5F6012345678902",
+				"A1B2C3D4E5F6012345678922",
 				"A1B2C3D4E5F6012345678912",
 				"A1B2C3D4E5F6012345678904",
 				"D4FD1C87D8933489852E04A7",
@@ -987,6 +1012,7 @@
 				"A1B2C3D4E5F6012345678909",
 				"A1B2C3D4E5F601234567890A",
 				"A1B2C3D4E5F6012345678915",
+				"A1B2C3D4E5F6012345678925",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -1075,6 +1101,7 @@
 				"A1B2C3D4E5F6012345678907",
 				"A1B2C3D4E5F6012345678908",
 				"A1B2C3D4E5F6012345678914",
+				"A1B2C3D4E5F6012345678924",
 			);
 		};
 		"4CB2C25FF89E59DDC261D6C0" = {
@@ -1313,6 +1340,7 @@
 			"isa" = "PBXGroup";
 			"children" = (
 				"A1B2C3D4E5F6012345678901",
+				"A1B2C3D4E5F6012345678921",
 				"A1B2C3D4E5F6012345678911",
 				"A1B2C3D4E5F6012345678903",
 				"734399CC5ADF15F31FBB8FDF",
@@ -1461,6 +1489,7 @@
 				"A1B2C3D4E5F6012345678905",
 				"A1B2C3D4E5F6012345678906",
 				"A1B2C3D4E5F6012345678913",
+				"A1B2C3D4E5F6012345678923",
 			);
 			"projectDirPath" = "";
 			"projectRoot" = "";

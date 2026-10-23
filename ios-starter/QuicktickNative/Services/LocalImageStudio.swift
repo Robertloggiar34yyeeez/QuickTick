@@ -474,7 +474,6 @@ actor LocalImageStudio {
         guard !renderInProgress else { throw StudioError.renderBusy }
         renderInProgress = true
         defer { renderInProgress = false }
-        guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
         guard !upscale || hasAnimeUpscaler() else { throw StudioError.unavailableModel }
         // Pass LoRAs through the patched native bridge's structured API.
         // Reject paths outside our managed assets folder and invalid strengths.
@@ -496,6 +495,28 @@ actor LocalImageStudio {
             guard hasAnimaBundle() else { throw StudioError.unavailableModel }
             diffusionURL = anima.appendingPathComponent(StudioAnimaBundle.components[0].file)
         }
+        let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
+#if canImport(_MediaGenerationKit) && canImport(ModelOp) && canImport(ModelZoo) && canImport(DataModels)
+        if UserDefaults.standard.bool(forKey: "quicktick-drawthings-experimental-v1") {
+            do {
+                let bridge = DrawThingsAnimaBridge.shared
+                guard await bridge.isReady(checkpoint: checkpoint) else { throw DrawThingsAnimaBridge.Error.missingConvertedModel }
+                let rendered = try await bridge.generate(
+                    prompt: String(prompt.prefix(1000)), negative: String(negative.prefix(1200)),
+                    steps: max(4, min(40, steps)), guidance: guidance, seed: seed,
+                    width: width, height: height, checkpoint: checkpoint, loras: loras, onProgress: onProgress)
+                try Task.checkCancellation()
+                NSLog("[QuickTick Anima] backend=drawthings success")
+                return try finishImage(rendered, upscale: upscale, onPreview: onPreview)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                NSLog("[QuickTick Anima] Draw Things failed; attempting Mirage fallback: %@", error.localizedDescription)
+                onProgress(0, max(4, min(40, steps)))
+            }
+        }
+#endif
+        guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
         // Check the remaining *process* memory before every render. A new
         // context is required while Mirage cannot reliably reuse one across
         // generations on all iPhones. Leave room for Metal activations and
@@ -511,7 +532,6 @@ actor LocalImageStudio {
         let available = Int64(os_proc_available_memory())
         try StudioAnimaMemoryBudget.check(available: available, required: memoryRequired)
         let parts = StudioAnimaBundle.components
-        let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
         let result = try await Self.renderWithFreshAnimaEngine(
             models: ModelFiles(diffusionModel: diffusionURL,
                                vae: anima.appendingPathComponent(parts[2].file),

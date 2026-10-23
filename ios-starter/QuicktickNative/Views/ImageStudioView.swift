@@ -12,6 +12,7 @@ struct ImageStudioView: View {
     @AppStorage("quicktick-studio-lora-strengths-v1") private var savedLoRAStrengthsJSON = "{}"
     @AppStorage("quicktick-studio-coreml-safety-v1") private var coreMLSafetyCheck = true
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
+    @AppStorage("quicktick-drawthings-experimental-v1") private var useDrawThings = false
     @State private var showIntro = false
     @State private var showSetupLoRAChoice = false
     @State private var showImport = false
@@ -34,6 +35,8 @@ struct ImageStudioView: View {
     @State private var selectedModel: URL?
     @State private var selectedEngine: StudioGenerationEngine = .coreML
     @State private var animaReady = false
+    @State private var drawThingsReady = false
+    @State private var drawThingsConversion = 0.0
     @State private var selectedAnimaCheckpoint: URL?
     @State private var selectedLoRAStrengths: [String: Double] = [:]
     @State private var showGenerationFocus = false
@@ -137,6 +140,9 @@ struct ImageStudioView: View {
             let fullAnimaReady = await LocalImageStudio.shared.hasAnimaBundle()
             let animaAuxiliaryReady = await LocalImageStudio.shared.hasAnimaAuxiliaryFiles()
             animaReady = fullAnimaReady || (selectedAnimaCheckpoint != nil && animaAuxiliaryReady)
+#if canImport(_MediaGenerationKit) && canImport(ModelOp) && canImport(ModelZoo) && canImport(DataModels)
+            drawThingsReady = await DrawThingsAnimaBridge.shared.isReady(checkpoint: selectedAnimaCheckpoint)
+#endif
             if animaReady && (selectedAnimaCheckpoint != nil || installedModels.isEmpty) {
                 selectedEngine = .anima
             }
@@ -151,6 +157,12 @@ struct ImageStudioView: View {
             if let data = try? JSONEncoder().encode(newSelection), let encoded = String(data: data, encoding: .utf8) {
                 savedLoRAStrengthsJSON = encoded
             }
+        }
+        .onChange(of: selectedAnimaCheckpoint) { _, checkpoint in
+            useDrawThings = false
+#if canImport(_MediaGenerationKit) && canImport(ModelOp) && canImport(ModelZoo) && canImport(DataModels)
+            Task { drawThingsReady = await DrawThingsAnimaBridge.shared.isReady(checkpoint: checkpoint) }
+#endif
         }
         .onDisappear {
             renderTask?.cancel()
@@ -418,6 +430,48 @@ struct ImageStudioView: View {
                         }
                     }
                 }
+#if canImport(_MediaGenerationKit) && canImport(ModelOp) && canImport(ModelZoo) && canImport(DataModels)
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Label("Draw Things · Turbo v1.1", systemImage: "bolt.fill")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        if drawThingsReady {
+                            Toggle("Use Draw Things", isOn: $useDrawThings)
+                                .labelsHidden()
+                        } else {
+                            Text("Experimental").font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                        }
+                    }
+                    if !drawThingsReady {
+                        Button {
+                            guard let checkpoint = selectedAnimaCheckpoint else { return }
+                            perform("Preparing the optimized engine…") {
+                                try await DrawThingsAnimaBridge.shared.prepare(checkpoint: checkpoint) { fraction in
+                                    Task { @MainActor in drawThingsConversion = fraction }
+                                }
+                                drawThingsReady = true
+                                useDrawThings = true
+                                status = "Draw Things is ready. Mirage remains available as fallback."
+                            }
+                        } label: {
+                            Label("Convert Turbo v1.1 for faster generation", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .disabled(busy || selectedAnimaCheckpoint?.lastPathComponent != "checkpoint-3263843.safetensors")
+                        if busy && drawThingsConversion > 0 && drawThingsConversion < 1 {
+                            ProgressView(value: drawThingsConversion)
+                        }
+                        Text("Download the verified Turbo v1.1 checkpoint from Civitai setup first. Conversion needs ~7 GB free; Mirage keeps the original file.")
+                            .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                    } else {
+                        Text(useDrawThings ? "Optimized engine active · Mirage fallback" : "Mirage active · optimized engine available")
+                            .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                }
+                .padding(11)
+                .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 15))
+#endif
             }
             if !installedModels.isEmpty && selectedEngine == .coreML {
                 Menu {

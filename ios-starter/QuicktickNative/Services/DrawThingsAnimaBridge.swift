@@ -27,7 +27,7 @@ actor DrawThingsAnimaBridge {
     ]
 
     enum Error: LocalizedError {
-        case checkpointFormat, checkpointProvenance, checkpointVersion, insufficientDisk, missingConvertedModel, imageDecode
+        case checkpointFormat, checkpointProvenance, checkpointVersion, insufficientDisk, missingConvertedModel, imageDecode, incompatibleLoRA
 
         var errorDescription: String? {
             switch self {
@@ -37,6 +37,7 @@ actor DrawThingsAnimaBridge {
             case .insufficientDisk: "Free at least 7 GB before converting Anima; the original checkpoint is retained for Mirage."
             case .missingConvertedModel: "Convert the exact Anima Turbo v1.1 checkpoint before selecting the Draw Things engine."
             case .imageDecode: "Draw Things rendered an image but its output could not be decoded."
+            case .incompatibleLoRA: "This LoRA is not an Anima/Cosmos 2.5 2B LoRA. Choose an Anima-compatible LoRA; other model families cannot alter this checkpoint."
             }
         }
     }
@@ -96,15 +97,34 @@ actor DrawThingsAnimaBridge {
         onProgress(1)
     }
 
-    /// LoRAs are converted once; individual strengths remain adjustable.
-    private func convertedLoRA(_ source: URL) throws -> URL {
+    /// Register *both* the converted tensor file and its version specification.
+    /// Without a LoRAZoo entry the local pipeline can silently skip a LoRA,
+    /// even though the file exists and the UI says it is selected.
+    private func convertedLoRA(_ source: URL) async throws -> URL {
         // Include the file size so different revisions do not silently share a converted LoRA.
         let size = (try? source.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         let key = source.deletingPathExtension().lastPathComponent + "_\(size)"
         let destination = URL(fileURLWithPath: ModelZoo.filePathForModelDownloaded("quicktick_\(key)_lora_f16.ckpt"))
-        if !FileManager.default.fileExists(atPath: destination.path) {
+        if let registered = LoRAZoo.specificationForModel(destination.lastPathComponent),
+           FileManager.default.fileExists(atPath: destination.path) {
+            guard registered.version == .cosmos2_5_2b else { throw Error.incompatibleLoRA }
+            return destination
+        }
+        do {
             var importer = _MediaGenerationKit.LoRAImporter(file: source)
             try importer.import(to: destination)
+            guard let version = importer.version, version == .cosmos2_5_2b else {
+                try? FileManager.default.removeItem(at: destination)
+                throw Error.incompatibleLoRA
+            }
+            let specification = LoRAZoo.Specification(
+                name: source.deletingPathExtension().lastPathComponent,
+                file: destination.lastPathComponent, prefix: "", version: version)
+            await MainActor.run { LoRAZoo.appendCustomSpecification(specification) }
+        } catch {
+            // Do not allow a missing/invalid conversion to proceed as a
+            // mysteriously ineffective selected style.
+            throw error
         }
         return destination
     }
@@ -116,14 +136,33 @@ actor DrawThingsAnimaBridge {
         var pipeline = try await MediaGenerationPipeline.fromPretrained(Self.modelID, backend: .local)
         pipeline.configuration.width = width
         pipeline.configuration.height = height
+        // A 9:16 canvas must be one continuous diffusion region. Inherited
+        // tiled-diffusion defaults can generate the same square independently
+        // in adjacent tiles (a repeated four-panel image).
+        pipeline.configuration.tiledDiffusion = false
+        pipeline.configuration.hiresFix = false
+        pipeline.configuration.batchCount = 1
+        pipeline.configuration.batchSize = 1
+        // VAE tiling only reconstructs one latent; reserve it for large
+        // canvases to reduce the iPhone's peak decoder memory.
+        pipeline.configuration.tiledDecoding = width * height > 768 * 768
+        if pipeline.configuration.tiledDecoding {
+            pipeline.configuration.decodingTileWidth = 512
+            pipeline.configuration.decodingTileHeight = 512
+            pipeline.configuration.decodingTileOverlap = 64
+        }
         pipeline.configuration.steps = steps
         pipeline.configuration.guidanceScale = guidance
         pipeline.configuration.seed = seed
         pipeline.configuration.sampler = .eulerASubstep
-        pipeline.configuration.loras = try loras.map { item in
-            let converted = try convertedLoRA(item.file)
-            return LoRA(file: converted.lastPathComponent, weight: item.strength, mode: .all)
+        var configuredLoRAs: [LoRA] = []
+        for item in loras {
+            let converted = try await convertedLoRA(item.file)
+            configuredLoRAs.append(LoRA(file: converted.lastPathComponent, weight: item.strength, mode: .all))
         }
+        pipeline.configuration.loras = configuredLoRAs
+        NSLog("[QuickTick Anima] canvas=%dx%d tiledDiffusion=off tiledDecoding=%@ loras=%d",
+              width, height, pipeline.configuration.tiledDecoding ? "on" : "off", configuredLoRAs.count)
         let results = try await pipeline.generate(prompt: prompt, negativePrompt: negative) { state, _ in
             switch state {
             case .generating(let step, let total):

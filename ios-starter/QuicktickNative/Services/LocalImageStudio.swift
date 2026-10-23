@@ -96,6 +96,36 @@ enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum StudioCanvasSize: String, CaseIterable, Identifiable, Sendable {
+    case small, medium, large
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+    var longestEdge: Int {
+        switch self {
+        case .small: 512
+        case .medium: 768
+        case .large: 1024
+        }
+    }
+    static func closest(to pixels: Int) -> StudioCanvasSize {
+        allCases.min { abs($0.longestEdge - pixels) < abs($1.longestEdge - pixels) } ?? .small
+    }
+}
+
+enum StudioLoRATriggers {
+    static func applying(_ triggerWords: [String], to prompt: String) -> String {
+        var unique = Set<String>()
+        let alreadyWritten = prompt.lowercased()
+        let additional = triggerWords.flatMap { $0.split(separator: ",").map(String.init) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { word in
+                let key = word.lowercased()
+                return !key.isEmpty && !alreadyWritten.contains(key) && unique.insert(key).inserted
+            }
+        return (additional + [prompt]).joined(separator: ", ")
+    }
+}
+
 enum StudioScheduler: String, CaseIterable, Identifiable, Sendable {
     case dpm, pndm
     var id: String { rawValue }

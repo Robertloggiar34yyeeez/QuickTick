@@ -22,6 +22,9 @@ final class VisualTasteTests: XCTestCase {
     }
 
     func testStudioAnimaResolutionsAreNativeAndAligned() {
+        XCTAssertEqual(StudioCanvasSize.allCases.map(\.label), ["Small", "Medium", "Large"])
+        XCTAssertEqual(StudioCanvasSize.allCases.map(\.longestEdge), [512, 768, 1024])
+        XCTAssertEqual(StudioCanvasSize.closest(to: 896), .medium)
         for ratio in StudioAspectRatio.allCases {
             let size = ratio.nativePixelDimensions(longestEdge: 896)
             XCTAssertEqual(max(size.width, size.height), 896)
@@ -32,6 +35,16 @@ final class VisualTasteTests: XCTestCase {
         XCTAssertEqual(StudioAspectRatio.story.nativePixelDimensions(longestEdge: 512).width, 320)
         XCTAssertEqual(StudioAspectRatio.tall.nativePixelDimensions(longestEdge: 1024).width, 512)
         XCTAssertEqual(StudioAspectRatio.tall.nativePixelDimensions(longestEdge: 1024).height, 1024)
+        let portrait = StudioAspectRatio.story.nativePixelDimensions(longestEdge: StudioCanvasSize.medium.longestEdge)
+        XCTAssertEqual(portrait.width, 448)
+        XCTAssertEqual(portrait.height, 768)
+    }
+
+    func testStyleLoRATriggerWordsDoNotDuplicatePromptTags() {
+        let result = StudioLoRATriggers.applying(["watercolor, painterly", "watercolor", "Painterly"],
+            to: "portrait of a character, painterly background")
+        XCTAssertEqual(result, "watercolor, portrait of a character, painterly background")
+        XCTAssertEqual(StudioLoRATriggers.applying([], to: "portrait"), "portrait")
     }
 
     func testArtistsCharactersAndAttributesLearnIndependently() throws {

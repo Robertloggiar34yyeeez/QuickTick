@@ -11,6 +11,8 @@ struct ImageStudioView: View {
     @AppStorage("quicktick-studio-intro-v1") private var introCompleted = false
     @AppStorage("quicktick-studio-anima-checkpoint-v1") private var savedAnimaCheckpointName = ""
     @AppStorage("quicktick-studio-lora-strengths-v1") private var savedLoRAStrengthsJSON = "{}"
+    @AppStorage("quicktick-studio-lora-triggers-v1") private var savedLoRATriggersJSON = "{}"
+    @AppStorage("quicktick-studio-lora-names-v1") private var savedLoRANamesJSON = "{}"
     @AppStorage("quicktick-studio-coreml-safety-v1") private var coreMLSafetyCheck = true
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @AppStorage("quicktick-drawthings-experimental-v1") private var useDrawThings = false
@@ -40,6 +42,8 @@ struct ImageStudioView: View {
     @State private var drawThingsConversion = 0.0
     @State private var selectedAnimaCheckpoint: URL?
     @State private var selectedLoRAStrengths: [String: Double] = [:]
+    @State private var loRATriggerWords: [String: String] = [:]
+    @State private var loRANames: [String: String] = [:]
     @State private var showGenerationFocus = false
     @State private var renderPreview: URL?
     @State private var renderSequence = UUID()
@@ -142,6 +146,8 @@ struct ImageStudioView: View {
             let savedLoRAs = (try? JSONDecoder().decode([String: Double].self, from: Data(savedLoRAStrengthsJSON.utf8))) ?? [:]
             let availableNames = Set(downloadedAssets.map(\.lastPathComponent))
             selectedLoRAStrengths = savedLoRAs.filter { availableNames.contains($0.key) }
+            loRATriggerWords = (try? JSONDecoder().decode([String: String].self, from: Data(savedLoRATriggersJSON.utf8))) ?? [:]
+            loRANames = (try? JSONDecoder().decode([String: String].self, from: Data(savedLoRANamesJSON.utf8))) ?? [:]
             selectedAnimaCheckpoint = downloadedAssets.first { $0.lastPathComponent == savedAnimaCheckpointName }
             animeUpscalerReady = await LocalImageStudio.shared.hasAnimeUpscaler()
             let fullAnimaReady = await LocalImageStudio.shared.hasAnimaBundle()
@@ -163,6 +169,16 @@ struct ImageStudioView: View {
         .onChange(of: selectedLoRAStrengths) { _, newSelection in
             if let data = try? JSONEncoder().encode(newSelection), let encoded = String(data: data, encoding: .utf8) {
                 savedLoRAStrengthsJSON = encoded
+            }
+        }
+        .onChange(of: loRATriggerWords) { _, values in
+            if let data = try? JSONEncoder().encode(values), let encoded = String(data: data, encoding: .utf8) {
+                savedLoRATriggersJSON = encoded
+            }
+        }
+        .onChange(of: loRANames) { _, values in
+            if let data = try? JSONEncoder().encode(values), let encoded = String(data: data, encoding: .utf8) {
+                savedLoRANamesJSON = encoded
             }
         }
         .onChange(of: selectedAnimaCheckpoint) { previous, checkpoint in
@@ -441,7 +457,7 @@ struct ImageStudioView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(selectedLoRAStrengths.keys.sorted(), id: \.self) { name in
-                                Text(name.replacingOccurrences(of: "lora-", with: ""))
+                                Text(loRADisplayName(name))
                                     .lineLimit(1)
                                     .font(.caption2.weight(.medium))
                                     .padding(.horizontal, 10).padding(.vertical, 6)
@@ -514,9 +530,10 @@ struct ImageStudioView: View {
             }
             if selectedEngine == .anima {
                 HStack(spacing: 6) {
-                    ForEach([512, 640, 768, 896, 1024], id: \.self) { pixels in
-                        Button("\(pixels)") { animaLongestEdge = Double(pixels) }
-                            .buttonStyle(StudioCompactChipStyle(isSelected: Int(animaLongestEdge) == pixels))
+                    ForEach(StudioCanvasSize.allCases) { size in
+                        Button(size.label) { animaLongestEdge = Double(size.longestEdge) }
+                            .buttonStyle(StudioCompactChipStyle(isSelected: Int(animaLongestEdge) == size.longestEdge))
+                            .accessibilityIdentifier("studio-canvas-\(size.rawValue)")
                     }
                 }
                 .accessibilityIdentifier("studio-anima-resolution")
@@ -617,7 +634,7 @@ struct ImageStudioView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(selectedLoRAStrengths.keys.sorted(), id: \.self) { name in
-                                Label(name.replacingOccurrences(of: "lora-", with: ""), systemImage: "square.stack.3d.up")
+                                Label(loRADisplayName(name), systemImage: "square.stack.3d.up")
                                     .font(.caption2.weight(.medium))
                                     .padding(.horizontal, 10).padding(.vertical, 7)
                                     .background(AppTheme.accent.opacity(0.25), in: Capsule())
@@ -729,8 +746,8 @@ struct ImageStudioView: View {
                     Button("Fast") { stepCount = 8; animaLongestEdge = 512 }
                         .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 8 && animaLongestEdge == 512))
                         .accessibilityIdentifier("studio-preset-fast")
-                    Button("Quality") { stepCount = 30; animaLongestEdge = 640 }
-                        .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 30 && animaLongestEdge == 640))
+                    Button("Quality") { stepCount = 8; animaLongestEdge = 768 }
+                        .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 8 && animaLongestEdge == 768))
                         .accessibilityIdentifier("studio-preset-quality")
                 }
             }
@@ -747,13 +764,15 @@ struct ImageStudioView: View {
             Text("Output resolution").font(.caption.weight(.semibold))
             if selectedEngine == .anima {
                 let pixels = aspect.nativePixelDimensions(longestEdge: Int(animaLongestEdge))
-                HStack(spacing: 8) {
-                    Text("Native size").font(.caption)
-                    Slider(value: $animaLongestEdge, in: 512...1024, step: 128)
-                        .accessibilityIdentifier("studio-anima-resolution")
+                HStack(spacing: 7) {
+                    ForEach(StudioCanvasSize.allCases) { size in
+                        Button(size.label) { animaLongestEdge = Double(size.longestEdge) }
+                            .buttonStyle(StudioCompactChipStyle(isSelected: Int(animaLongestEdge) == size.longestEdge))
+                    }
                     Text("\(pixels.width) × \(pixels.height)")
-                        .font(.caption2.monospacedDigit()).frame(minWidth: 70)
+                        .font(.caption2.monospacedDigit()).foregroundStyle(AppTheme.secondaryLabel)
                 }
+                .accessibilityIdentifier("studio-anima-resolution")
             }
             HStack(spacing: 7) {
                 Button { highResolution = false } label: {
@@ -1160,7 +1179,7 @@ struct ImageStudioView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "doc.zipper").foregroundStyle(AppTheme.accent)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(studioAssetDisplayName(file))
+                        Text(loRANames[file.lastPathComponent] ?? studioAssetDisplayName(file))
                             .font(.caption.weight(.medium)).lineLimit(1)
                         Text(file.pathExtension.uppercased())
                             .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
@@ -1180,6 +1199,8 @@ struct ImageStudioView: View {
                                 try await LocalImageStudio.shared.deleteDownloadedAsset(file)
                                 downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
                                 selectedLoRAStrengths.removeValue(forKey: file.lastPathComponent)
+                                loRATriggerWords.removeValue(forKey: file.lastPathComponent)
+                                loRANames.removeValue(forKey: file.lastPathComponent)
                                 if selectedAnimaCheckpoint == file {
                                     selectedAnimaCheckpoint = nil
                                     savedAnimaCheckpointName = ""
@@ -1213,6 +1234,20 @@ struct ImageStudioView: View {
                                 .font(.caption.monospacedDigit())
                         }
                     }
+                    if selectedLoRAStrengths[file.lastPathComponent] != nil {
+                        HStack(spacing: 8) {
+                            Image(systemName: "text.quote").foregroundStyle(AppTheme.accent)
+                            TextField("Style trigger words (optional)", text: Binding(
+                                get: { loRATriggerWords[file.lastPathComponent] ?? "" },
+                                set: { loRATriggerWords[file.lastPathComponent] = $0 }
+                            ))
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.caption)
+                        }
+                        .padding(10)
+                        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                    }
                 }
                 }
             }
@@ -1230,6 +1265,10 @@ struct ImageStudioView: View {
         if basename.hasPrefix("lora-") { return "LoRA · \(basename.dropFirst(5))" }
         if basename.hasPrefix("checkpoint-") { return "Checkpoint · \(basename.dropFirst(11))" }
         return basename
+    }
+
+    private func loRADisplayName(_ filename: String) -> String {
+        loRANames[filename] ?? studioAssetDisplayName(URL(fileURLWithPath: filename))
     }
 
     private var galleryPanel: some View {
@@ -1293,7 +1332,7 @@ struct ImageStudioView: View {
         guidance = metadata.guidance
         seed = metadata.seed
         if let savedAspect = StudioAspectRatio(rawValue: metadata.aspect) { aspect = savedAspect }
-        animaLongestEdge = Double(metadata.longestEdge)
+        animaLongestEdge = Double(StudioCanvasSize.closest(to: metadata.longestEdge).longestEdge)
         viewingImage = nil
         status = "Prompt restored. Edit it or generate again."
         promptFocused = true
@@ -1504,7 +1543,13 @@ struct ImageStudioView: View {
                         ? "Anima checkpoint imported and selected."
                         : "Checkpoint imported. Select Anima to install its text encoder and VAE."
                 } else {
-                    status = "LoRA imported. Enable it and choose its strength in the model library."
+                    loRANames[file.lastPathComponent] = pickedURL.deletingPathExtension().lastPathComponent
+                    if selectedLoRAStrengths.count < 4 {
+                        selectedLoRAStrengths[file.lastPathComponent] = 1.0
+                        status = "LoRA imported and enabled. Add its trigger words if needed."
+                    } else {
+                        status = "LoRA imported. Disable one of your four active LoRAs before enabling it."
+                    }
                 }
             }
         }
@@ -1649,10 +1694,19 @@ struct ImageStudioView: View {
                     })
                 try Task.checkCancellation()
                 downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
+                if model.type == "LORA" { loRANames[file.lastPathComponent] = model.name }
+                if model.type == "LORA", let triggers = version.trainedWords, !triggers.isEmpty {
+                    loRATriggerWords[file.lastPathComponent] = triggers.prefix(3).joined(separator: ", ")
+                }
+                if model.type == "LORA", selectedLoRAStrengths.count < 4 {
+                    selectedLoRAStrengths[file.lastPathComponent] = 1.0
+                }
                 if model.type == "Checkpoint" && model.name.localizedCaseInsensitiveContains("Anima") {
                     activateAnimaCheckpoint(file)
                 } else {
-                    status = "Saved \(model.name). You can select it in your downloaded assets."
+                    status = model.type == "LORA" && selectedLoRAStrengths[file.lastPathComponent] != nil
+                        ? "Downloaded and enabled \(model.name)."
+                        : "Saved \(model.name). You can select it in your downloaded assets."
                 }
             } catch is CancellationError {
                 status = "Download stopped."
@@ -1688,7 +1742,12 @@ struct ImageStudioView: View {
             status = "Download Real-ESRGAN X4+ Anime before selecting 4× resolution."
             return
         }
-        let inputPrompt = promptOverride ?? prompt, inputNegative = negativePrompt
+        let basePrompt = promptOverride ?? prompt, inputNegative = negativePrompt
+        let activeTriggers: [String] = selectedEngine == .anima ? downloadedAssets.compactMap { file -> String? in
+            guard selectedLoRAStrengths[file.lastPathComponent] != nil else { return nil }
+            return loRATriggerWords[file.lastPathComponent]
+        } : []
+        let inputPrompt = StudioLoRATriggers.applying(activeTriggers, to: basePrompt)
         busy = true
         renderPhase = .rendering
         renderPreview = nil

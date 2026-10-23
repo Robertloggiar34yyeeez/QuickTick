@@ -146,6 +146,16 @@ final class VisualTasteTests: XCTestCase {
         XCTAssertNotNil(result.attributes["pose:leaning_forward"])
         XCTAssertNil(result.attributes["gaze:away"])
     }
+    func testWDV3SexualActionInferenceRequiresHighConfidence() {
+        let labels = [WDAnimeTagger.Label(name: "fellatio", category: 0),
+            WDAnimeTagger.Label(name: "oral_sex", category: 0),
+            WDAnimeTagger.Label(name: "kissing", category: 0),
+            WDAnimeTagger.Label(name: "oral_sex", category: 9)]
+        let result = WDAnimeTagger.signals(labels: labels, probabilities: [0.7, 0.92, 0.9, 0.99])
+        XCTAssertEqual(result.attributes["act:oral"] ?? -1, Double(Float(0.92)) * 0.8, accuracy: 0.0001)
+        XCTAssertNotNil(result.attributes["act:kissing"])
+        XCTAssertFalse(result.subjects.contains("oral_sex"))
+    }
     func testBundledWDV3RunsOnlyForAnimeAndReleasesModel() async throws {
         let tagger = WDAnimeTagger(), sample = image(red: 0.7, green: 0.4, blue: 0.2)
         let real = await tagger.analyze(sample, domain: .realLife)

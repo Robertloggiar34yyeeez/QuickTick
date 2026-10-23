@@ -15,6 +15,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "A1B2C3D4E5F6012345678901";
 		};
+		"A1B2C3D4E5F6012345678911" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/StudioAnimeUpscaler.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"A1B2C3D4E5F6012345678912" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "A1B2C3D4E5F6012345678911";
+		};
 		"A1B2C3D4E5F6012345678903" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -52,6 +62,19 @@
 		"A1B2C3D4E5F601234567890A" = {
 			"isa" = "PBXBuildFile";
 			"productRef" = "A1B2C3D4E5F6012345678908";
+		};
+		"A1B2C3D4E5F6012345678913" = {
+			"isa" = "XCLocalSwiftPackageReference";
+			"relativePath" = "MirageRuntime";
+		};
+		"A1B2C3D4E5F6012345678914" = {
+			"isa" = "XCSwiftPackageProductDependency";
+			"package" = "A1B2C3D4E5F6012345678913";
+			"productName" = "Mirage";
+		};
+		"A1B2C3D4E5F6012345678915" = {
+			"isa" = "PBXBuildFile";
+			"productRef" = "A1B2C3D4E5F6012345678914";
 		};
 		"734399CC5ADF15F31FBB8FDF" = {
 			"isa" = "PBXFileReference";
@@ -889,6 +912,7 @@
 			"buildActionMask" = "2147483647";
 			"files" = (
 				"A1B2C3D4E5F6012345678902",
+				"A1B2C3D4E5F6012345678912",
 				"A1B2C3D4E5F6012345678904",
 				"D4FD1C87D8933489852E04A7",
 				"2DEC5046A9C8EEFAC629537C",
@@ -962,6 +986,7 @@
 			"files" = (
 				"A1B2C3D4E5F6012345678909",
 				"A1B2C3D4E5F601234567890A",
+				"A1B2C3D4E5F6012345678915",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -976,8 +1001,8 @@
 				"TARGETED_DEVICE_FAMILY" = "1,2";
 				"CODE_SIGN_STYLE" = "Automatic";
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
-				"MARKETING_VERSION" = "0.9.6";
-				"CURRENT_PROJECT_VERSION" = "26";
+				"MARKETING_VERSION" = "0.9.7";
+				"CURRENT_PROJECT_VERSION" = "27";
 				"INFOPLIST_KEY_QUICKTICK_API_BASE_URL" = "$(QUICKTICK_API_BASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation" = "YES";
 				"INFOPLIST_KEY_UILaunchScreen_Generation" = "YES";
@@ -1003,8 +1028,8 @@
 				"TARGETED_DEVICE_FAMILY" = "1,2";
 				"CODE_SIGN_STYLE" = "Automatic";
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
-				"MARKETING_VERSION" = "0.9.6";
-				"CURRENT_PROJECT_VERSION" = "26";
+				"MARKETING_VERSION" = "0.9.7";
+				"CURRENT_PROJECT_VERSION" = "27";
 				"INFOPLIST_KEY_QUICKTICK_API_BASE_URL" = "$(QUICKTICK_API_BASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation" = "YES";
 				"INFOPLIST_KEY_UILaunchScreen_Generation" = "YES";
@@ -1047,6 +1072,7 @@
 			"packageProductDependencies" = (
 				"A1B2C3D4E5F6012345678907",
 				"A1B2C3D4E5F6012345678908",
+				"A1B2C3D4E5F6012345678914",
 			);
 		};
 		"4CB2C25FF89E59DDC261D6C0" = {
@@ -1285,6 +1311,7 @@
 			"isa" = "PBXGroup";
 			"children" = (
 				"A1B2C3D4E5F6012345678901",
+				"A1B2C3D4E5F6012345678911",
 				"A1B2C3D4E5F6012345678903",
 				"734399CC5ADF15F31FBB8FDF",
 				"B4686A9D30CDA7DE4C3F2F33",
@@ -1431,6 +1458,7 @@
 			"packageReferences" = (
 				"A1B2C3D4E5F6012345678905",
 				"A1B2C3D4E5F6012345678906",
+				"A1B2C3D4E5F6012345678913",
 			);
 			"projectDirPath" = "";
 			"projectRoot" = "";

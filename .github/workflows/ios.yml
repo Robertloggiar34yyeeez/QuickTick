@@ -14,17 +14,17 @@ jobs:
     runs-on: macos-15-intel
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Select Swift 6.2 toolchain for xtool
         run: sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ~/.cache/huggingface
           key: bge-micro-3edf6d7-v1
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: semantic-model-cache
         with:
           path: ios-starter/QuicktickNative/SemanticAssets
@@ -37,14 +37,14 @@ jobs:
           # 2.2.2 is the last PyTorch release with Intel macOS wheels.
           python -m pip install 'torch==2.2.2' 'transformers==4.46.3' 'coremltools==8.3.0' 'numpy==1.26.4'
           python scripts/prepare-semantic-model.py
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: steps.semantic-model-cache.outputs.cache-hit != 'true'
         with:
           path: ios-starter/QuicktickNative/SemanticAssets
           key: bge-coreml-macos15-intel-${{ hashFiles('scripts/prepare-semantic-model.py') }}
       - name: Prepare pinned offline artist and character taxonomy
         run: python scripts/prepare-visual-taxonomy.py
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: wd-cache
         with:
           path: |
@@ -60,7 +60,7 @@ jobs:
           set -euo pipefail
           python -m pip install 'torch==2.2.2' 'torchvision==0.17.2' 'timm==1.0.12' 'transformers==4.46.3' 'coremltools==8.3.0' 'numpy==1.26.4'
           python scripts/prepare-wd-tagger.py
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: steps.wd-cache.outputs.cache-hit != 'true' && steps.wd-model.outcome == 'success'
         with:
           path: |
@@ -74,7 +74,7 @@ jobs:
           set -euo pipefail
           mkdir -p logs
           xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination 'generic/platform=iOS' -archivePath build/QuicktickNative.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive | tee logs/xcodebuild-archive.txt
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: xtool-cache
         with:
           path: tools/xtool-source/.build
@@ -83,14 +83,14 @@ jobs:
         id: xtool-package
         shell: bash
         run: bash scripts/package-with-xtool.sh
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: steps.xtool-cache.outputs.cache-hit != 'true'
         with:
           path: tools/xtool-source/.build
           key: xtool-d802c719-macos15-intel-xcode26.3-v1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
-          name: QuickTick-0.9.6-unsigned-IPA
+          name: QuickTick-0.9.7-unsigned-IPA
           path: build/export/
           if-no-files-found: error
           retention-days: 14
@@ -142,7 +142,7 @@ jobs:
           boot_clean_iphone
           run_iphone_tests QuicktickTests xcodebuild-test -only-testing:QuicktickNativeUITests -skip-testing:QuicktickNativeUITests/NavigationTests/testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key -skip-testing:QuicktickNativeUITests/NavigationTests/testPersonalPreferencesAndTabRefresh -skip-testing:QuicktickNativeUITests/NavigationTests/testImmersiveRailSnapsAndDoubleTapLikes || failures=1
           exit "$failures"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: iphone-test-log
@@ -170,7 +170,7 @@ jobs:
               xcrun xcresulttool export diagnostics --path "logs/$suite.xcresult" --output-path "logs/diagnostics/$suite" || true
             fi
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: native-test-results

@@ -8,8 +8,11 @@ stored in app preferences, so an IPA upgrade does not show onboarding again.
 1. Install the app on iOS 17 or later. Generation is intended for a physical
    iPhone or iPad with enough available memory and disk space; a simulator is
    useful for UI tests but is not a representative inference device.
-2. Open **Create → On-device engine → Apple SD 1.5**. The Apple Stable
-   Diffusion 1.5 6-bit Core ML ZIP is approximately 1.57 GB compressed.
+2. Open **Create → On-device engine**, then choose **Apple SD 1.5** or
+   **Anima Metal**. Apple's Stable Diffusion 1.5 6-bit Core ML ZIP is
+   approximately 1.57 GB compressed. The recommended mobile-ready Anima Q4
+   bundle is approximately 2.07 GB total: Anima diffusion GGUF (~1.42 GB),
+   Qwen3-0.6B GGUF (~397 MB), and Qwen-Image VAE (~254 MB).
    Unpacking temporarily requires additional space. The compact transfer
    panel shows real transferred bytes and progress (when the host provides a
    length), and offers **Pause / Resume / Stop**. Pausing suspends the current
@@ -23,13 +26,15 @@ stored in app preferences, so an IPA upgrade does not show onboarding again.
    actions/attributes, and scenes and start rendering if a model is installed.
 5. Pick an output **aspect ratio** (1:1, 3:4, 4:3, or 9:16). Apple's compiled
    model has a fixed native canvas, so non-square output is a **center crop**,
-   not a wider or taller diffusion render. Select **Native** resolution or
+   not a wider or taller diffusion render. Anima Metal generates directly at
+   those aspect ratios (up to 512px long edge by default). Select **Native** or
    download the approximately 8.5 MB **Real-ESRGAN X4+ Anime** Core ML
    upscaler, then choose **Anime 4×** for offline enhancement after generation.
    The 522px fixed-input conversion handles native Core ML generations up to
    512px per side; it is not a generic unlimited-size photo upscaler.
-6. Tap **Advanced render settings** to choose DPM++ or PNDM scheduler, steps,
-   guidance, seed, and negative prompt, then tap the glowing **Generate** button. Generation,
+6. Tap **Advanced render settings** to choose DPM++ or PNDM scheduler for Core ML,
+   steps, guidance, seed, and negative prompt. Anima currently uses the native
+   sampler exposed by its Metal engine. Tap the glowing **Generate** button. Generation,
    progress reporting, and PNG encoding happen locally. Generated PNG files
    remain in Application Support and are exportable through the share sheet.
 
@@ -50,12 +55,24 @@ favorite characters and credited artists. Assets must be explicitly downloaded;
 they may be exported or deleted in the studio.
 
 **Anima checkpoints use a different architecture from SD 1.5** (Qwen3 text
-encoder and Qwen-Image VAE). Raw `.safetensors`, `.ckpt`, `.pt`, and LoRA files
-are not directly compatible with Apple's compiled Core ML pipeline. Downloading
-an Anima file does not activate it. A separate native engine (for example
-stable-diffusion.cpp/Mirage) plus the matching Anima model components, device
-memory gating, and real-device tests are required; these are not bundled here.
-The Create model chips mark the distinction explicitly.
+encoder and Qwen-Image VAE). The Anima chip uses an embedded Mirage/
+stable-diffusion.cpp Metal engine with its own three-model bundle. It is a
+*separate renderer*: Apple Core ML cannot load raw Anima checkpoints.
+
+If you already downloaded an Anima `.safetensors` checkpoint from CivitAI,
+open the model library, find that checkpoint in **Downloaded CivitAI assets**,
+and select **Try Anima**. QuickTick fetches just the Qwen3/VAE support files
+and attempts to load your existing checkpoint; compatibility depends on the
+checkpoint's actual internal architecture. If the checkpoint cannot load,
+choose the pretested quantized Anima GGUF bundle instead. Ordinary LoRA files
+are not yet surfaced by the native engine's Swift adapter and cannot be
+applied. Large models require substantial physical RAM and free memory; the
+engine checks available memory before loading to avoid predictable jetsam.
+
+Mirage Swift adapter and its embedded binary distribution are pinned to the
+maintainer's August 2026 release. The adapter's MIT license and third-party
+notices are under `MirageRuntime/LICENSE`. Full Anima generation and output
+quality still require real-device verification.
 
 ## Recommendation updates and user data
 

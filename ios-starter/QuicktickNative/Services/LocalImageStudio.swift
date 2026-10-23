@@ -5,9 +5,12 @@ import ImageIO
 import UniformTypeIdentifiers
 import ZIPFoundation
 import StableDiffusion
+import Mirage
+import Darwin
 
 enum StudioError: LocalizedError {
     case unsupportedModel, invalidArchive, invalidResponse, unavailableModel, noImage, invalidFile, downloadBusy
+    case insufficientMemory(required: Int64, available: Int64)
     var errorDescription: String? {
         switch self {
         case .unsupportedModel: "The archive does not contain a compiled Core ML Stable Diffusion pipeline. CivitAI .safetensors checkpoints and LoRAs need conversion before they can run here."
@@ -17,6 +20,8 @@ enum StudioError: LocalizedError {
         case .noImage: "The diffusion pipeline did not return an image."
         case .invalidFile: "This download is not a supported model or LoRA file."
         case .downloadBusy: "Another model download is already running. Pause, finish or stop it first."
+        case .insufficientMemory(let needed, let available):
+            "Anima needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .memory)) free memory; only \(ByteCountFormatter.string(fromByteCount: available, countStyle: .memory)) is available. Close other apps or use a lighter device model."
         }
     }
 }
@@ -58,6 +63,32 @@ enum StudioScheduler: String, CaseIterable, Identifiable, Sendable {
     case dpm, pndm
     var id: String { rawValue }
     var label: String { self == .dpm ? "DPM++" : "PNDM" }
+}
+
+enum StudioGenerationEngine: String, Sendable {
+    case coreML, anima
+}
+
+/// Mobile-size, fixed-download Anima Q4 bundle. Anima is a Qwen-Image-family
+/// diffusion model, not a compatible Core ML Stable Diffusion checkpoint.
+enum StudioAnimaBundle {
+    struct Component: Sendable {
+        let file: String
+        let url: URL
+        let bytes: Int64
+    }
+    static let components: [Component] = [
+        .init(file: "anima-preview-Q4_K_M.gguf",
+              url: URL(string: "https://huggingface.co/Bedovyy/Anima-GGUF/resolve/main/anima-preview-Q4_K_M.gguf")!,
+              bytes: 1_421_648_000),
+        .init(file: "Qwen3-0.6B-Base.Q4_K_M.gguf",
+              url: URL(string: "https://huggingface.co/mradermacher/Qwen3-0.6B-Base-GGUF/resolve/main/Qwen3-0.6B-Base.Q4_K_M.gguf")!,
+              bytes: 396_704_960),
+        .init(file: "qwen_image_vae.safetensors",
+              url: URL(string: "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/vae/qwen_image_vae.safetensors")!,
+              bytes: 253_806_246)
+    ]
+    static let totalBytes = components.reduce(Int64(0)) { $0 + $1.bytes }
 }
 
 /// A foreground URLSession transfer. `suspend` and `resume` keep its existing
@@ -260,8 +291,11 @@ actor LocalImageStudio {
     private let models: URL
     private let assets: URL
     private let upscalers: URL
+    private let anima: URL
     private let gallery: URL
     private var activeTransfer: StudioDownloadTransfer?
+    private var animaEngine: Engine?
+    private var animaLoadedFile: URL?
     private let starterURL = URL(string: "https://huggingface.co/apple/coreml-stable-diffusion-v1-5-palettized/resolve/main/coreml-stable-diffusion-v1-5-palettized_split_einsum_v2_compiled.zip")!
 
     init(directory: URL? = nil) {
@@ -270,6 +304,7 @@ actor LocalImageStudio {
         models = root.appendingPathComponent("Models", isDirectory: true)
         assets = root.appendingPathComponent("CivitaiAssets", isDirectory: true)
         upscalers = root.appendingPathComponent("Upscalers", isDirectory: true)
+        anima = root.appendingPathComponent("Anima", isDirectory: true)
         gallery = root.appendingPathComponent("Images", isDirectory: true)
     }
 
@@ -303,6 +338,105 @@ actor LocalImageStudio {
 
     func hasAnimeUpscaler() -> Bool {
         FileManager.default.fileExists(atPath: animeUpscalerURL.path)
+    }
+
+    func hasAnimaBundle() -> Bool {
+        hasAnimaFiles(StudioAnimaBundle.components)
+    }
+
+    func hasAnimaAuxiliaryFiles() -> Bool {
+        hasAnimaFiles(Array(StudioAnimaBundle.components.dropFirst()))
+    }
+
+    private func hasAnimaFiles(_ components: [StudioAnimaBundle.Component]) -> Bool {
+        components.allSatisfy { component in
+            let path = anima.appendingPathComponent(component.file)
+            let size = (try? FileManager.default.attributesOfItem(atPath: path.path)[.size] as? NSNumber)?.int64Value ?? 0
+            return size == component.bytes
+        }
+    }
+
+    func downloadAnimaBundle(useExistingCheckpoint: Bool = false,
+                             onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }) async throws {
+        try FileManager.default.createDirectory(at: anima, withIntermediateDirectories: true)
+        let components = useExistingCheckpoint ? Array(StudioAnimaBundle.components.dropFirst()) : StudioAnimaBundle.components
+        let totalBytes = components.reduce(Int64(0)) { $0 + $1.bytes }
+        var completed: Int64 = 0
+        for component in components {
+            try Task.checkCancellation()
+            let destination = anima.appendingPathComponent(component.file)
+            let priorSize = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value ?? 0
+            if priorSize == component.bytes {
+                completed += component.bytes
+                onProgress(completed, totalBytes)
+                continue
+            }
+            let preceding = completed
+            let (download, response) = try await fetchDownload(URLRequest(url: component.url), onProgress: { received, _ in
+                onProgress(preceding + received, totalBytes)
+            })
+            defer { try? FileManager.default.removeItem(at: download) }
+            try Task.checkCancellation()
+            let actual = (try FileManager.default.attributesOfItem(atPath: download.path)[.size] as? NSNumber)?.int64Value ?? 0
+            guard response.statusCode == 200, actual == component.bytes else { throw StudioError.invalidResponse }
+            if FileManager.default.fileExists(atPath: destination.path) {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: download)
+            } else {
+                try FileManager.default.moveItem(at: download, to: destination)
+            }
+            completed += component.bytes
+            onProgress(completed, totalBytes)
+        }
+    }
+
+    func generateAnima(prompt: String, negative: String, steps: Int, guidance: Float, seed: UInt32,
+                       aspect: StudioAspectRatio, upscale: Bool, checkpoint: URL? = nil,
+                       onProgress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL {
+        guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
+        guard !upscale || hasAnimeUpscaler() else { throw StudioError.unavailableModel }
+        let diffusionURL: URL
+        if let checkpoint {
+            let resolved = checkpoint.standardizedFileURL.resolvingSymlinksInPath()
+            guard resolved.deletingLastPathComponent() == assets.standardizedFileURL.resolvingSymlinksInPath(),
+                  resolved.pathExtension.lowercased() == "safetensors",
+                  FileManager.default.fileExists(atPath: resolved.path) else { throw StudioError.invalidFile }
+            diffusionURL = resolved
+        } else {
+            guard hasAnimaBundle() else { throw StudioError.unavailableModel }
+            diffusionURL = anima.appendingPathComponent(StudioAnimaBundle.components[0].file)
+        }
+        // The native engine maps all weights; a per-process memory check
+        // prevents a predictable jetsam crash on RAM-constrained devices.
+        if animaEngine == nil || animaLoadedFile != diffusionURL {
+            let diffusionBytes = (try? FileManager.default.attributesOfItem(atPath: diffusionURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            let auxiliaryBytes = StudioAnimaBundle.components.dropFirst().reduce(Int64(0)) { $0 + $1.bytes }
+            let memoryRequired = diffusionBytes + auxiliaryBytes + 850_000_000
+            let available = Int64(os_proc_available_memory())
+            guard available == 0 || available >= memoryRequired else {
+                throw StudioError.insufficientMemory(required: memoryRequired, available: available)
+            }
+            let parts = StudioAnimaBundle.components
+            animaEngine = nil
+            animaEngine = try Engine(models: ModelFiles(
+                diffusionModel: diffusionURL,
+                vae: anima.appendingPathComponent(parts[2].file),
+                textEncoder: anima.appendingPathComponent(parts[1].file)))
+            animaLoadedFile = diffusionURL
+        }
+        guard let engine = animaEngine else { throw StudioError.unavailableModel }
+        Mirage.setProgressCallback { step, total, _ in onProgress(step, total) }
+        defer { Mirage.setProgressCallback(nil) }
+        let (widthUnits, heightUnits) = aspect.dimensions
+        let maxAxis = max(widthUnits, heightUnits)
+        let width = (512 * widthUnits / maxAxis / 16) * 16
+        let height = (512 * heightUnits / maxAxis / 16) * 16
+        let result = try await engine.generate(GenerationRequest(
+            prompt: String(prompt.prefix(1200)), negativePrompt: String(negative.prefix(1200)),
+            width: width, height: height, steps: max(4, min(40, steps)),
+            cfgScale: guidance, seed: Int64(seed)))
+        try Task.checkCancellation()
+        let output = upscale ? try StudioAnimeUpscaler.upscale(result, using: animeUpscalerURL) : result
+        return try saveImage(output)
     }
 
     private var animeUpscalerURL: URL {
@@ -455,6 +589,10 @@ actor LocalImageStudio {
         } else {
             result = cropped
         }
+        return try saveImage(result)
+    }
+
+    private func saveImage(_ result: CGImage) throws -> URL {
         let buffer = NSMutableData()
         guard let imageDestination = CGImageDestinationCreateWithData(buffer as CFMutableData, UTType.png.identifier as CFString, 1, nil) else {
             throw StudioError.noImage

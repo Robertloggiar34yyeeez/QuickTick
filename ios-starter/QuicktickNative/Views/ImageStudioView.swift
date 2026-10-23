@@ -25,6 +25,9 @@ struct ImageStudioView: View {
     @State private var seed = UInt32.random(in: 1...UInt32.max)
     @State private var installedModels: [URL] = []
     @State private var selectedModel: URL?
+    @State private var selectedEngine: StudioGenerationEngine = .coreML
+    @State private var animaReady = false
+    @State private var selectedAnimaCheckpoint: URL?
     @State private var savedImages: [URL] = []
     @State private var downloadedAssets: [URL] = []
     @State private var checkpoints: [CivitaiStudioModel] = []
@@ -93,6 +96,7 @@ struct ImageStudioView: View {
             savedImages = await LocalImageStudio.shared.savedImages()
             downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
             animeUpscalerReady = await LocalImageStudio.shared.hasAnimeUpscaler()
+            animaReady = await LocalImageStudio.shared.hasAnimaBundle()
             taxonomy = await store.visual.metadataTaxonomy()
             inspiration = StudioPromptSeed.build(favorites: favorites, taxonomy: taxonomy)
             if !introCompleted { showIntro = true }
@@ -224,19 +228,17 @@ struct ImageStudioView: View {
                 HStack(spacing: 9) {
                     Button {
                         if installedModels.isEmpty { beginStarterDownload() }
-                        else { status = "Apple Core ML is the active generation engine." }
+                        else { selectedEngine = .coreML; status = "Apple Core ML selected." }
                     } label: {
                         engineChip("Apple SD 1.5", detail: installedModels.isEmpty ? "1.57 GB · Get" : "Ready to create",
-                                   icon: "cpu.fill", active: !installedModels.isEmpty)
+                                   icon: "cpu.fill", active: selectedEngine == .coreML && !installedModels.isEmpty)
                     }
                     Button {
-                        showCatalog = true
-                        catalogKind = .checkpoint
-                        searchQuery = "Anima"
-                        status = "Anima checkpoint files are stored, but need an Anima-compatible Metal engine plus text encoder and VAE. Apple Core ML cannot load them."
+                        if animaReady { selectedEngine = .anima; status = "Anima Q4 Metal engine selected." }
+                        else { beginAnimaDownload(useExistingCheckpoint: selectedAnimaCheckpoint != nil) }
                     } label: {
-                        engineChip("Anima", detail: downloadedAssets.contains { $0.lastPathComponent.hasPrefix("checkpoint-") } ? "Raw file stored" : "Explore model",
-                                   icon: "sparkle.magnifyingglass", active: false)
+                        engineChip("Anima Metal", detail: animaReady ? "Ready · Private" : (selectedAnimaCheckpoint == nil ? "2.07 GB · Get" : "650 MB · Setup"),
+                                   icon: "sparkles.rectangle.stack", active: selectedEngine == .anima && animaReady)
                     }
                     Button {
                         if !animeUpscalerReady { beginAnimeUpscalerDownload() }
@@ -248,9 +250,9 @@ struct ImageStudioView: View {
                 }
                 .buttonStyle(QuicktickPressStyle())
             }
-            Text("Core ML runs compatible converted models. Downloaded Anima safetensors and LoRAs cannot run in this engine yet.")
+            Text("Choose Core ML or Anima Metal. Anima downloads its Q4 model, Qwen3 and VAE; a raw CivitAI Anima checkpoint can instead be selected below for a compatibility attempt.")
                 .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
-            if !installedModels.isEmpty {
+            if !installedModels.isEmpty && selectedEngine == .coreML {
                 Menu {
                     ForEach(installedModels, id: \.path) { url in
                         Button(url.deletingLastPathComponent().lastPathComponent) { selectedModel = url }
@@ -329,7 +331,9 @@ struct ImageStudioView: View {
                 .buttonStyle(StudioOptionChipStyle(isSelected: highResolution))
                 .accessibilityIdentifier("studio-anime-upscaler")
             }
-            Text("Core ML renders at its native size. Other aspect ratios center-crop the output; Anime 4× enlarges it with Real-ESRGAN.")
+            Text(selectedEngine == .anima
+                 ? "Anima renders these ratios directly at up to 512px. Anime 4× enhances the result."
+                 : "Core ML renders at native size. Other ratios center-crop the output; Anime 4× enhances it.")
                 .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
         }
     }
@@ -410,12 +414,17 @@ struct ImageStudioView: View {
 
     private var generationPanel: some View {
         VStack(spacing: 10) {
-            HStack(spacing: 8) {
+            if selectedEngine == .anima {
+                Text("Anima uses its native Metal sampler; DPM++ and PNDM are Core ML-only.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            } else {
+                HStack(spacing: 8) {
                 Text("Scheduler").font(.caption.weight(.semibold))
                 Spacer()
                 ForEach(StudioScheduler.allCases) { candidate in
                     Button(candidate.label) { scheduler = candidate }
                         .buttonStyle(StudioOptionChipStyle(isSelected: scheduler == candidate))
+                }
                 }
             }
             HStack {
@@ -568,6 +577,23 @@ struct ImageStudioView: View {
                             .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                     }
                     Spacer(minLength: 4)
+                    if file.lastPathComponent.hasPrefix("checkpoint-") && file.pathExtension.lowercased() == "safetensors" {
+                        Button {
+                            selectedAnimaCheckpoint = file
+                            Task {
+                                let ready = await LocalImageStudio.shared.hasAnimaAuxiliaryFiles()
+                                animaReady = ready
+                                if ready {
+                                    selectedEngine = .anima
+                                    status = "Selected \(file.lastPathComponent) for the Anima Metal engine. It must contain compatible Anima diffusion weights."
+                                } else {
+                                    beginAnimaDownload(useExistingCheckpoint: true)
+                                }
+                                showCatalog = false
+                            }
+                        } label: { Label("Try Anima", systemImage: "sparkles") }
+                            .font(.caption2).accessibilityIdentifier("studio-use-downloaded-anima")
+                    }
                     ShareLink(item: file) { Image(systemName: "square.and.arrow.up") }
                         .accessibilityLabel("Export \(file.lastPathComponent)")
                     Button(role: .destructive) {
@@ -682,8 +708,9 @@ struct ImageStudioView: View {
         }
         let lovedPrompt = inspiration.prompt
         prompt = lovedPrompt
-        if selectedModel != nil { render(promptOverride: lovedPrompt) }
-        else { status = "Your idea is ready. Download or import a Core ML model to generate it." }
+        if selectedEngine == .anima && animaReady || selectedEngine == .coreML && selectedModel != nil {
+            render(promptOverride: lovedPrompt)
+        } else { status = "Your idea is ready. Download Anima or an Apple Core ML model to generate it." }
     }
 
     private func beginStarterDownload() {
@@ -700,12 +727,41 @@ struct ImageStudioView: View {
                 try Task.checkCancellation()
                 await reloadModels()
                 selectedModel = model
+                selectedEngine = .coreML
                 status = "Model installed. Ready to create offline."
             } catch is CancellationError {
                 status = "Download stopped."
             } catch let error as URLError where error.code == .cancelled {
                 status = "Download stopped."
             } catch { status = "Model download failed: \(error.localizedDescription)" }
+        }
+    }
+
+    private func beginAnimaDownload(useExistingCheckpoint: Bool = false) {
+        guard !animaReady, !transferStatus.isActive, !busy else { return }
+        let estimate = useExistingCheckpoint ? StudioAnimaBundle.components.dropFirst().reduce(Int64(0)) { $0 + $1.bytes } : StudioAnimaBundle.totalBytes
+        let identity = transferStatus.begin(useExistingCheckpoint ? "Anima Qwen3 + VAE" : "Anima Q4 · Qwen3 · VAE", estimatedBytes: estimate)
+        let progress = transferStatus
+        status = useExistingCheckpoint ? "Preparing your Anima checkpoint with Qwen3 and VAE (650 MB)…" : "Installing Anima's Metal-ready model bundle (2.07 GB)…"
+        downloadTask = Task {
+            defer { progress.finish(identity); downloadTask = nil }
+            do {
+                try await LocalImageStudio.shared.downloadAnimaBundle(useExistingCheckpoint: useExistingCheckpoint, onProgress: { received, expected in
+                    Task { @MainActor in progress.update(identity, received: received, expected: expected) }
+                })
+                try Task.checkCancellation()
+                animaReady = useExistingCheckpoint
+                    ? await LocalImageStudio.shared.hasAnimaAuxiliaryFiles()
+                    : await LocalImageStudio.shared.hasAnimaBundle()
+                if animaReady {
+                    selectedEngine = .anima
+                    status = useExistingCheckpoint ? "Anima supporting files installed. Try generating with your CivitAI checkpoint." : "Anima Q4 installed! Select Generate to render with Metal."
+                }
+            } catch is CancellationError {
+                status = "Anima download stopped; completed model components are kept."
+            } catch let error as URLError where error.code == .cancelled {
+                status = "Anima download stopped; completed components are kept."
+            } catch { status = "Anima download failed: \(error.localizedDescription)" }
         }
     }
 
@@ -769,8 +825,12 @@ struct ImageStudioView: View {
     private func render(promptOverride: String? = nil) {
         promptFocused = false
         guard !busy else { return }
-        guard let model = selectedModel else {
-            status = "Download the local model below or import a compatible Core ML model first."
+        if selectedEngine == .coreML && selectedModel == nil {
+            status = "Download the Apple Core ML model, or select Anima Metal."
+            return
+        }
+        if selectedEngine == .anima && !animaReady {
+            status = "Download the Anima Q4 bundle (diffusion weights, Qwen3 and VAE) first."
             return
         }
         guard !(promptOverride ?? prompt).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -787,21 +847,33 @@ struct ImageStudioView: View {
         let inputPrompt = promptOverride ?? prompt, inputNegative = negativePrompt
         let steps = Int(stepCount), scale = Float(guidance), inputSeed = seed
         let selectedAspect = aspect, selectedScheduler = scheduler, shouldUpscale = highResolution
+        let engineChoice = selectedEngine, coreMLModel = selectedModel
+        let existingAnimaFile = selectedAnimaCheckpoint
         let progress = renderStatus
         renderTask = Task {
             defer { busy = false; renderTask = nil }
             do {
-                let result = try await LocalImageStudio.shared.generate(prompt: inputPrompt,
-                    negative: inputNegative, modelURL: model, steps: steps, guidance: scale,
-                    seed: inputSeed, aspect: selectedAspect, scheduler: selectedScheduler,
-                    upscale: shouldUpscale, onProgress: { finished, total in
+                let callback: @Sendable (Int, Int) -> Void = { finished, total in
                         Task { @MainActor in
                             progress.fraction = Double(finished) / Double(max(1, total))
                             if shouldUpscale && finished >= total {
                                 status = "Diffusion finished · applying Anime 4× enhancement…"
                             }
                         }
-                    })
+                    }
+                let result: URL
+                if engineChoice == .anima {
+                    result = try await LocalImageStudio.shared.generateAnima(
+                        prompt: inputPrompt, negative: inputNegative, steps: steps,
+                        guidance: scale, seed: inputSeed, aspect: selectedAspect,
+                        upscale: shouldUpscale, checkpoint: existingAnimaFile,
+                        onProgress: callback)
+                } else if let coreMLModel {
+                    result = try await LocalImageStudio.shared.generate(
+                        prompt: inputPrompt, negative: inputNegative, modelURL: coreMLModel,
+                        steps: steps, guidance: scale, seed: inputSeed, aspect: selectedAspect,
+                        scheduler: selectedScheduler, upscale: shouldUpscale, onProgress: callback)
+                } else { throw StudioError.unavailableModel }
                 try Task.checkCancellation()
                 latestImage = result
                 savedImages = await LocalImageStudio.shared.savedImages()

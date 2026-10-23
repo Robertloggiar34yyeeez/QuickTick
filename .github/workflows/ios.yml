@@ -1,6 +1,7 @@
 name: Native iOS build and IPA
 on:
   push:
+    paths-ignore: ['.github/workflows/keep-three-builds.yml']
   pull_request:
   workflow_dispatch:
 permissions:

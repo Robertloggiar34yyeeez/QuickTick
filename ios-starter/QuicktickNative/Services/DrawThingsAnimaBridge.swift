@@ -127,14 +127,25 @@ actor DrawThingsAnimaBridge {
             return LoRA(file: converted.lastPathComponent, weight: item.strength, mode: .all)
         }
         let results = try await pipeline.generate(prompt: prompt, negativePrompt: negative) { state, _ in
-            if case .generating(let step, let total) = state { onProgress(step, total) }
+            switch state {
+            case .generating(let step, let total):
+                onProgress(step, total)
+            case .decoding:
+                NSLog("[QuickTick Anima] backend=drawthings stage=vae-decoding")
+            case .postprocessing:
+                NSLog("[QuickTick Anima] backend=drawthings stage=postprocessing")
+            default:
+                break
+            }
         }
         guard let first = results.first else { throw Error.imageDecode }
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("quicktick-drawthings-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: destination) }
+        NSLog("[QuickTick Anima] backend=drawthings stage=encoding-image")
         try first.write(to: destination, type: .png)
         guard let source = CGImageSourceCreateWithURL(destination as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Error.imageDecode }
+        NSLog("[QuickTick Anima] backend=drawthings stage=image-ready")
         return image
     }
 }

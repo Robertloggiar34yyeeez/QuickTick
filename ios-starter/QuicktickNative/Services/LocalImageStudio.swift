@@ -11,6 +11,7 @@ import Darwin
 enum StudioError: LocalizedError {
     case unsupportedModel, invalidArchive, invalidResponse, unavailableModel, noImage, imageFiltered, invalidFile, downloadBusy, renderBusy
     case insufficientMemory(required: Int64, available: Int64)
+    case optimizedRenderFailed(String)
     var errorDescription: String? {
         switch self {
         case .unsupportedModel: "The archive does not contain a compiled Core ML Stable Diffusion pipeline. CivitAI .safetensors checkpoints and LoRAs need conversion before they can run here."
@@ -24,6 +25,8 @@ enum StudioError: LocalizedError {
         case .renderBusy: "Another on-device image render is still running. Wait for it to finish before creating the next image."
         case .insufficientMemory(let needed, let available):
             "Anima needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .memory)) free memory; only \(ByteCountFormatter.string(fromByteCount: available, countStyle: .memory)) is available. Close other apps or use a lighter device model."
+        case .optimizedRenderFailed(let reason):
+            "Draw Things failed: \(reason). Mirage was not started automatically, to avoid another heavy render. You can retry or switch off Draw Things to use Mirage."
         }
     }
 }
@@ -498,22 +501,30 @@ actor LocalImageStudio {
         let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
 #if canImport(_MediaGenerationKit) && canImport(ModelOp) && canImport(ModelZoo) && canImport(DataModels)
         if UserDefaults.standard.bool(forKey: "quicktick-drawthings-experimental-v1") {
+            // The optimized engine owns the whole attempt. Its last sampler
+            // callback can fire before VAE decoding or image encoding fails.
+            // Silently retrying a multi-GB Mirage render here masks the real
+            // error, exhausts the iOS jetsam budget and poisons later retries.
+            // Mirage remains selectable explicitly in the model panel.
+            let rendered: CGImage
             do {
                 let bridge = DrawThingsAnimaBridge.shared
                 guard await bridge.isReady(checkpoint: checkpoint) else { throw DrawThingsAnimaBridge.Error.missingConvertedModel }
-                let rendered = try await bridge.generate(
+                rendered = try await bridge.generate(
                     prompt: String(prompt.prefix(1000)), negative: String(negative.prefix(1200)),
                     steps: max(4, min(40, steps)), guidance: guidance, seed: seed,
                     width: width, height: height, checkpoint: checkpoint, loras: loras, onProgress: onProgress)
-                try Task.checkCancellation()
-                NSLog("[QuickTick Anima] backend=drawthings success")
-                return try finishImage(rendered, upscale: upscale, onPreview: onPreview)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                NSLog("[QuickTick Anima] Draw Things failed; attempting Mirage fallback: %@", error.localizedDescription)
-                onProgress(0, max(4, min(40, steps)))
+                NSLog("[QuickTick Anima] backend=drawthings failed: %@", String(reflecting: error))
+                throw StudioError.optimizedRenderFailed(error.localizedDescription)
             }
+            try Task.checkCancellation()
+            NSLog("[QuickTick Anima] backend=drawthings success; saving image")
+            // Keep final image saving outside the inference catch as well: an
+            // image-output error is not a reason to rerun the diffusion model.
+            return try finishImage(rendered, upscale: upscale, onPreview: onPreview)
         }
 #endif
         guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }

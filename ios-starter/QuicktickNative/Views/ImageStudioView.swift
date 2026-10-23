@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 import ImageIO
 
@@ -158,10 +159,17 @@ struct ImageStudioView: View {
                 savedLoRAStrengthsJSON = encoded
             }
         }
-        .onChange(of: selectedAnimaCheckpoint) { _, checkpoint in
-            useDrawThings = false
+        .onChange(of: selectedAnimaCheckpoint) { previous, checkpoint in
+            // Restoring the saved checkpoint (nil -> file) during .task is not
+            // a user model switch. Keep their persisted optimized-engine
+            // preference so a fresh launch doesn't silently use Mirage.
+            if previous != nil && previous != checkpoint { useDrawThings = false }
 #if canImport(_MediaGenerationKit) && canImport(ModelOp) && canImport(ModelZoo) && canImport(DataModels)
-            Task { drawThingsReady = await DrawThingsAnimaBridge.shared.isReady(checkpoint: checkpoint) }
+            Task {
+                let ready = await DrawThingsAnimaBridge.shared.isReady(checkpoint: checkpoint)
+                drawThingsReady = ready
+                if !ready { useDrawThings = false }
+            }
 #endif
         }
         .onDisappear {
@@ -245,7 +253,9 @@ struct ImageStudioView: View {
                             Spacer()
                         }
                         Group {
-                            if renderProgressHasExactSteps || !busy {
+                            if renderPhase == .failed || renderPhase == .cancelled {
+                                EmptyView()
+                            } else if renderProgressHasExactSteps || !busy {
                                 ProgressView(value: renderStatus.fraction)
                             } else {
                                 // The native bridge emits internal operations, not
@@ -255,7 +265,7 @@ struct ImageStudioView: View {
                         }
                         .tint(AppTheme.accent)
                         .accessibilityIdentifier("studio-focus-progress")
-                        if renderProgressHasExactSteps || !busy {
+                        if renderPhase != .failed && renderPhase != .cancelled && (renderProgressHasExactSteps || !busy) {
                             Text("\(Int(renderStatus.fraction * 100))%")
                                 .frame(maxWidth: .infinity, alignment: .trailing)
                                 .monospacedDigit()
@@ -281,6 +291,15 @@ struct ImageStudioView: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(AppTheme.accent)
+                            if renderPhase == .failed, let status {
+                                Button {
+                                    UIPasteboard.general.string = status
+                                } label: {
+                                    Label("Copy error details", systemImage: "doc.on.doc")
+                                }
+                                .font(.caption.weight(.medium))
+                                .buttonStyle(.plain)
+                            }
                             if let image = renderPreview ?? (renderPhase == .completed ? latestImage : nil) {
                                 ShareLink(item: image) { Label("Save or share", systemImage: "square.and.arrow.up") }
                                     .buttonStyle(.bordered)

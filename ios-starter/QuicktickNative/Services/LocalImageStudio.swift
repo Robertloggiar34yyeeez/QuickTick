@@ -617,9 +617,7 @@ actor LocalImageStudio {
     }
 
     private func installLocalZip(_ zip: URL, name: String) throws -> URL {
-        let archive: Archive
-        do { archive = try Archive(url: zip, accessMode: .read) }
-        catch { throw StudioError.invalidArchive }
+        guard let archive = try? Archive(url: zip, accessMode: .read) else { throw StudioError.invalidArchive }
         var expanded: UInt64 = 0, entries = 0
         for entry in archive {
             entries += 1

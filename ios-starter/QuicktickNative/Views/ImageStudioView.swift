@@ -22,8 +22,8 @@ struct ImageStudioView: View {
     @State private var showAdvanced = false
     @State private var prompt = ""
     @State private var negativePrompt = "low quality, blurry, distorted anatomy, watermark"
-    @State private var stepCount = 20.0
-    @State private var guidance = 7.0
+    @State private var stepCount = 8.0
+    @State private var guidance = 2.0
     @State private var aspect: StudioAspectRatio = .square
     @State private var animaLongestEdge = 640.0
     @State private var scheduler: StudioScheduler = .dpm
@@ -42,6 +42,7 @@ struct ImageStudioView: View {
     @State private var activeRenderPrompt = ""
     @State private var renderStage = "Preparing the canvas"
     @State private var renderPhase: StudioRenderPhase = .idle
+    @State private var renderProgressHasExactSteps = false
     @State private var savedImages: [URL] = []
     @State private var downloadedAssets: [URL] = []
     @State private var checkpoints: [CivitaiStudioModel] = []
@@ -225,14 +226,24 @@ struct ImageStudioView: View {
                                 .tracking(1.3)
                             Spacer()
                         }
-                        ProgressView(value: renderStatus.fraction)
-                            .tint(AppTheme.accent)
-                            .accessibilityIdentifier("studio-focus-progress")
-                        Text("\(Int(renderStatus.fraction * 100))%")
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .monospacedDigit()
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.8))
+                        Group {
+                            if renderProgressHasExactSteps || !busy {
+                                ProgressView(value: renderStatus.fraction)
+                            } else {
+                                // The native bridge emits internal operations, not
+                                // sampler steps. A numeric percent is misleading.
+                                ProgressView()
+                            }
+                        }
+                        .tint(AppTheme.accent)
+                        .accessibilityIdentifier("studio-focus-progress")
+                        if renderProgressHasExactSteps || !busy {
+                            Text("\(Int(renderStatus.fraction * 100))%")
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                                .monospacedDigit()
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.white.opacity(0.8))
+                        }
                         if let status {
                             Text(status).font(.caption).multilineTextAlignment(.center)
                                 .foregroundStyle(.white.opacity(0.84))
@@ -600,15 +611,31 @@ struct ImageStudioView: View {
                     .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
             }
             HStack {
-                Text("Steps").font(.subheadline)
-                Slider(value: $stepCount, in: 4...40, step: 1)
-                Text("\(Int(stepCount))").font(.caption.monospacedDigit()).frame(width: 26)
+                Text("Steps").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(Int(stepCount))").font(.subheadline.monospacedDigit()).foregroundStyle(AppTheme.secondaryLabel)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach([4, 6, 8, 12, 16, 24, 32], id: \.self) { count in
+                        Button("\(count)") { stepCount = Double(count) }
+                            .buttonStyle(StudioOptionChipStyle(isSelected: Int(stepCount) == count))
+                    }
+                }
             }
             HStack {
-                Text("Guidance").font(.subheadline)
-                Slider(value: $guidance, in: 1...15, step: 0.5)
+                Text("Guidance").font(.subheadline.weight(.semibold))
+                Spacer()
                 Text(guidance.formatted(.number.precision(.fractionLength(1))))
-                    .font(.caption.monospacedDigit()).frame(width: 30)
+                    .font(.subheadline.monospacedDigit()).foregroundStyle(AppTheme.secondaryLabel)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach([1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0], id: \.self) { scale in
+                        Button(scale.formatted(.number.precision(.fractionLength(1)))) { guidance = scale }
+                            .buttonStyle(StudioOptionChipStyle(isSelected: guidance == scale))
+                    }
+                }
             }
             HStack {
                 Label("Seed \(seed)", systemImage: "dice")
@@ -1251,6 +1278,7 @@ struct ImageStudioView: View {
         renderStage = "Preparing the canvas"
         status = "Rendering on device…"
         renderStatus.fraction = 0
+        renderProgressHasExactSteps = false
         withAnimation(.easeInOut(duration: 0.3)) { showGenerationFocus = true }
         let steps = Int(stepCount), scale = Float(guidance), inputSeed = seed
         let selectedAspect = aspect, selectedScheduler = scheduler, shouldUpscale = highResolution
@@ -1271,9 +1299,18 @@ struct ImageStudioView: View {
                 let callback: @Sendable (Int, Int) -> Void = { finished, total in
                     Task { @MainActor in
                         guard renderPhase == .rendering else { return }
-                        let share = shouldUpscale ? 0.90 : 0.98
-                        progress.fraction = max(progress.fraction, min(share, Double(finished) / Double(max(1, total)) * share))
-                        renderStage = "Diffusing · step \(min(finished, total)) of \(total)"
+                        let exactSteps = total == steps
+                        renderProgressHasExactSteps = exactSteps
+                        if exactSteps {
+                            let share = shouldUpscale ? 0.90 : 0.98
+                            progress.fraction = max(progress.fraction, min(share, Double(finished) / Double(max(1, total)) * share))
+                        }
+                        // Mirage can report hundreds of internal operations, not
+                        // the user's requested diffusion steps. Never label those
+                        // operations as sampler steps (e.g. "685 of 685").
+                        renderStage = total == steps
+                            ? "Diffusing · step \(min(finished, steps)) of \(steps)"
+                            : "Generating · \(steps) diffusion steps"
                     }
                 }
                 let previewCallback: @Sendable (URL) -> Void = { file in

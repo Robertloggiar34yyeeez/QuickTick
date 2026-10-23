@@ -936,20 +936,31 @@ struct ImageStudioView: View {
                     .accessibilityIdentifier("anima-setup-error")
             }
             Spacer(minLength: 4)
-            Button(transferStatus.isActive ? "Installing Anima…" : animaReady ? "Continue" : "Set up Anima") {
-                if animaReady {
-                    introCompleted = true
-                    showIntro = false
-                    selectedEngine = .anima
-                    showSetupLoRAChoice = true
-                } else if selectedAnimaCheckpoint != nil {
-                    beginAnimaDownload(useExistingCheckpoint: true)
-                } else { beginCivitaiAnimaSetup() }
-            }
+            if !animaReady {
+                Button(transferStatus.isActive ? "Installing Anima…" : "Set up Anima") {
+                    if selectedAnimaCheckpoint != nil {
+                        beginAnimaDownload(useExistingCheckpoint: true)
+                    } else {
+                        beginCivitaiAnimaSetup()
+                    }
+                }
                 .disabled(transferStatus.isActive)
                 .font(.headline).foregroundStyle(.white)
                 .frame(maxWidth: .infinity, minHeight: 52)
                 .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16))
+                .accessibilityIdentifier("studio-anima-install")
+            }
+            // Continue is deliberately independent of model installation.
+            // Even a stalled/failed download must never trap users in onboarding.
+            Button("Continue to Studio") {
+                introCompleted = true
+                showIntro = false
+                if animaReady { selectedEngine = .anima }
+                if animaReady { showSetupLoRAChoice = true }
+            }
+                .font(.headline).foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(animaReady ? AppTheme.gradient : LinearGradient(colors: [AppTheme.surface, AppTheme.elevatedSurface], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 16))
                 .accessibilityIdentifier("studio-intro-complete")
         }
         .padding(26).frame(maxWidth: 560)

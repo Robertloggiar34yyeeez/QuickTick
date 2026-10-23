@@ -10,6 +10,9 @@ struct HomeFeedView: View {
     @State private var immersive = false
     @State private var immersivePostID: String?
     @State private var visibleFrames: [String: CGRect] = [:]
+    // Video eligibility changes only when the feed changes, not on every
+    // scroll/layout pass. Avoid rebuilding a Set from the whole feed per frame.
+    @State private var playableIDs: Set<String> = []
     @State private var lastVisibleTop: String?
     @State private var visibleTopSince = Date.distantPast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -166,6 +169,7 @@ struct HomeFeedView: View {
         .coordinateSpace(name: "home-viewport")
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
             guard store.feedRevision == revision else { return }
+            guard frames != visibleFrames else { return }
             visibleFrames = frames
             let bounds = CGRect(origin: .zero, size: viewport.size)
             let top = frames.filter { $0.value.intersects(bounds) }.min { $0.value.minY < $1.value.minY }?.key
@@ -190,6 +194,7 @@ struct HomeFeedView: View {
             selectVisiblePlayback(viewport: viewport.size)
         }
         .onAppear {
+            playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
             // Switching back from Immersive remounts Home. Frame preferences
             // can arrive before the resumed feed is fully laid out, so retry
             // selection once after the first layout pass.
@@ -251,6 +256,7 @@ struct HomeFeedView: View {
         .sheet(isPresented: $onboarding) { TasteOnboardingView() }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
         .onChange(of: store.posts) { _, posts in
+            playableIDs = Set(posts.filter(\.isImmersiveMedia).map(\.stableID))
             // The first-run wizard owns initial taste setup. Do not queue a
             // second modal underneath its full-screen presentation.
             if firstRunCompleted && !posts.isEmpty
@@ -268,8 +274,7 @@ struct HomeFeedView: View {
     private func visibleCandidate(viewport: CGSize) -> String? {
         guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented else { return nil }
         if let fullScreen = store.fullScreenPlaybackID { return fullScreen }
-        let playable = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
-        return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playable)
+        return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playableIDs)
     }
     private func warmNext(after key: String?) async {
         guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented, !Task.isCancelled else { return }

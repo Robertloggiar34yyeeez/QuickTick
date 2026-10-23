@@ -833,7 +833,8 @@ actor RecommendationEngine {
     }
 
     func score(_ post: Post, taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:],
-               cachedTerms: [String]? = nil) -> Double {
+               cachedTerms: [String]? = nil, cachedRecentTerms: Set<String>? = nil,
+               alreadyApproved: Bool = false) -> Double {
         let source = post.provider.lowercased()
         let scopedKey = contextualRanking ? TasteConcepts.profileKey(post) : source
         let general = profile(for: source)
@@ -841,7 +842,7 @@ actor RecommendationEngine {
         let postTerms = cachedTerms ?? terms(for: post)
         let into = Set(tasteTokens(source: source, values: taste.into))
         let notInto = Set(tasteTokens(source: source, values: taste.notInto))
-        if isHardDisliked(post, taste: taste) { return -1_000 }
+        if !alreadyApproved && isHardDisliked(post, taste: taste) { return -1_000 }
         var score = log1p(max(0, post.score)) * 0.07
         let collaborative = max(0, min(1, collaborativeScores[gorseItemID(post)] ?? 0))
         score += collaborative * 18
@@ -892,7 +893,7 @@ actor RecommendationEngine {
         let styles: Set<String> = ["2d", "3d", "2d_art", "3d_art", "3dcg",
             "3d_animation", "animation", "animated", "watercolor", "sketch", "pixel_art"]
         let matched = Set(postTerms)
-        for anchor in positiveTermEntries(source: source, taste: taste, limit: 8, learned: p).map(\.0) where matched.contains(anchor) {
+        for anchor in topPositive.map(\.0) where matched.contains(anchor) {
             if let edges = p.related[anchor] {
                 let strength = edges.filter {
                     matched.contains($0.key) && styles.contains(anchor) != styles.contains($0.key)
@@ -910,7 +911,7 @@ actor RecommendationEngine {
             effectiveTermScore(source: source, term: $0, taste: taste, learned: general) < -0.5
         }.count
         score -= Double(negativeHits) * 24
-        let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
+        let recentTerms = cachedRecentTerms ?? Set(recent.suffix(10).flatMap { terms(for: $0) })
         score -= min(6, Double(postTerms.filter(recentTerms.contains).count) * 0.42)
         if contextualRanking, let context = state.contextualProfiles[scopedKey], let features = VisualFeatures.metadata(post, taxonomy: taxonomy) {
             score += context.score(features) * 4
@@ -922,7 +923,7 @@ actor RecommendationEngine {
     /// Serving gate: user-selected interests determine which broad discovery
     /// candidates qualify to appear in Recommended. Retrieval itself can remain
     /// broad for novelty and future preference exploration.
-    private func matchesExplicitInterest(_ post: Post, taste: TasteChoice, visual: Double?) -> Bool {
+    private func matchesExplicitInterest(_ post: Post, taste: TasteChoice, visual: Double?, cachedTerms: [String]? = nil) -> Bool {
         let source = post.provider.lowercased()
         let chosen = Set(tasteTokens(source: source, values: taste.into)
             .map(RecommendationTagRules.canonical))
@@ -931,7 +932,20 @@ actor RecommendationEngine {
         // inherited franchise as context, not an open-ended recommendation.
         let inherited = Set(chosen.flatMap { TasteConcepts.characterFranchises[$0] ?? [] })
         let selected = chosen.subtracting(inherited)
-        let observed = Set(terms(for: post).map(RecommendationTagRules.canonical))
+        let observed = Set((cachedTerms ?? terms(for: post)).map(RecommendationTagRules.canonical))
+        // A matching pose must not override a clearly different *identified*
+        // character, even before the user has collected enough favorites for
+        // the learned-identity rejection model to activate. Unknown subjects
+        // remain eligible through explicitly chosen actions and styling.
+        let selectedCharacters = selected.filter {
+            TasteConcepts.characterFranchises[$0] != nil || taxonomy?.kind(of: $0) == .character
+        }
+        if !selectedCharacters.isEmpty {
+            let candidateCharacters = Set(TasteConcepts.resolve(post.tags, taxonomy: taxonomy).characters)
+            if !candidateCharacters.isEmpty && candidateCharacters.isDisjoint(with: selectedCharacters) {
+                return false
+            }
+        }
         // Broad format preferences such as "2d" must not open the gate for
         // *every* 2D post when a character, action or artist was selected too.
         // This was the source of many apparently unrelated recommendations.
@@ -966,6 +980,11 @@ actor RecommendationEngine {
 
     /// Cheap metadata ranking before publication: no inference or network.
     /// In strict serving mode the feed is not padded with unrelated items.
+    private static let broadDiversityTags: Set<String> = [
+        "looking_at_viewer", "long_hair", "short_hair", "1girl", "1boy", "female", "male", "solo",
+        "smile", "open_mouth", "blush", "high_resolution", "masterpiece", "best_quality"
+    ]
+
     func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post], visualScores: [String: Double] = [:], strict: Bool = false) -> [Post] {
         let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(384, candidates.count)) }
         guard let first = candidates.first else { return [] }
@@ -978,17 +997,20 @@ actor RecommendationEngine {
                 (!strict || matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]))
             }
         }
+        let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
         var scored: [(post: Post, value: Double, offset: Int, topics: Set<String>)] = []
         for (offset, post) in candidates.prefix(384).enumerated() {
-            guard !isHardDisliked(post, taste: taste),
-                  !strict || matchesExplicitInterest(post, taste: taste,
-                                                       visual: visualScores[post.stableID]) else { continue }
-            // Tokenize once for the metadata score and the diversity pass.
+            guard !isHardDisliked(post, taste: taste) else { continue }
+            // Tokenize once for strict matching, metadata and diversification.
             let postTerms = terms(for: post)
-            let metadata = score(post, taste: taste, recent: recent, cachedTerms: postTerms)
+            if strict && !matchesExplicitInterest(post, taste: taste,
+                    visual: visualScores[post.stableID], cachedTerms: postTerms) { continue }
+            let metadata = score(post, taste: taste, recent: recent, cachedTerms: postTerms,
+                                 cachedRecentTerms: recentTerms, alreadyApproved: true)
             let calibrated = RecommendationQualityModel.combined(metadata: metadata,
                 visual: visualScores[post.stableID])
-            let topics = Set(postTerms).subtracting(Self.genericTasteTerms)
+            let topics = Set(postTerms.map(RecommendationTagRules.canonical))
+                .subtracting(Self.genericTasteTerms).subtracting(Self.broadDiversityTags)
             scored.append((post: post, value: calibrated, offset: offset, topics: topics))
         }
         scored.sort { $0.value == $1.value ? $0.offset < $1.offset : $0.value > $1.value }
@@ -997,7 +1019,10 @@ actor RecommendationEngine {
         // adjacent cards do not repeat the same near-identical subjects.
         var output: [Post] = []
         var termWindow: [Set<String>] = []
-        let previous = recent.suffix(5).map { Set(terms(for: $0)).subtracting(Self.genericTasteTerms) }
+        let previous = recent.suffix(5).map {
+            Set(terms(for: $0).map(RecommendationTagRules.canonical))
+                .subtracting(Self.genericTasteTerms).subtracting(Self.broadDiversityTags)
+        }
         let maxDiversified = min(48, scored.count)
         while output.count < maxDiversified {
             let count = min(20, scored.count)
@@ -1031,11 +1056,13 @@ actor RecommendationEngine {
         // candidates to 128. Otherwise a semantically excellent match that had
         // sparse metadata could never compete in the final reranker.
         // scores() is cache-only; no network or Core ML inference runs here.
+        let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
         var scored: [(offset: Int, post: Post, metadata: Double)] = []
         for (offset, post) in candidates.prefix(512).enumerated() {
             guard !isHardDisliked(post, taste: taste) else { continue }
             scored.append((offset, post, score(post, taste: taste, recent: recent,
-                                               collaborativeScores: collaborativeScores)))
+                                               collaborativeScores: collaborativeScores,
+                                               cachedRecentTerms: recentTerms, alreadyApproved: true)))
         }
         let semanticScores = await semantic.scores(scored.map(\.post), taste: taste)
         let weights = semantic.weights
@@ -1059,6 +1086,7 @@ actor RecommendationEngine {
             return left.value > right.value
         }
         let shortlist: [Post] = shortlistScores.prefix(128).map { entry in entry.post }
+        let metadataByID = Dictionary(scored.map { ($0.post.stableID, $0.metadata) }, uniquingKeysWith: { first, _ in first })
         let selected = Set(shortlist.map(\.stableID))
         let overflow = candidates.filter { !selected.contains($0.stableID) }
         let candidates = shortlist
@@ -1073,7 +1101,9 @@ actor RecommendationEngine {
         var pool: [(post: Post, base: Double, tags: Double, seen: Double)] = []
         for (offset, post) in candidates.enumerated() {
             guard unique.insert(post.stableID).inserted, !isHardDisliked(post, taste: taste) else { continue }
-            let raw = score(post, taste: taste, recent: recent, collaborativeScores: collaborativeScores)
+            let raw = metadataByID[post.stableID] ?? score(post, taste: taste, recent: recent,
+                            collaborativeScores: collaborativeScores, cachedRecentTerms: recentTerms,
+                            alreadyApproved: true)
             let seen: Double = profile(for: post.provider.lowercased()).recentSeen.contains(post.stableID) ? -weights.seen : 0
             let tagScore = tanh((raw - (seen == 0 ? 0 : -1000)) / 35) * weights.tag
             let semanticScore = semanticScores[post.stableID] ?? SemanticScore()

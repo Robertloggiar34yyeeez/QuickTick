@@ -795,6 +795,7 @@ final class AppStore: ObservableObject {
     private var protectedHomePostIDs: Set<String> = []
     func protectVisibleHomePosts(_ keys: Set<String>) {
         guard activeTab == 0 else { return }
+        guard keys != protectedHomePostIDs else { return }
         protectedHomePostIDs = keys
     }
 

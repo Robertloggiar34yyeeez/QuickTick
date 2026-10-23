@@ -96,7 +96,9 @@ struct RootView: View {
         }
         .onDisappear { tabNameTask?.cancel() }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: accentPalette)
-        .tint(.white)
+        // A single environment tint reaches NavigationStacks, toolbars,
+        // menus and all presented settings/model-library sheets.
+        .tint(AppTheme.accent)
         .background(AppTheme.background)
         .modifier(ProfileImportConfirmation(enabled: !showSettings && firstRunCompleted))
         .fullScreenCover(isPresented: Binding(
@@ -109,12 +111,14 @@ struct RootView: View {
         )) {
             FirstRunSetupView()
                 .environmentObject(store)
+                .tint(AppTheme.accent)
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
                 SettingsView()
                     .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showSettings = false } } }
             }
+            .tint(AppTheme.accent)
         }
         .fullScreenCover(isPresented: $showStudio, onDismiss: { store.isStudioPresented = false }) {
             NavigationStack {
@@ -126,6 +130,7 @@ struct RootView: View {
                     }
             }
             .environmentObject(store)
+            .tint(AppTheme.accent)
         }
     }
 

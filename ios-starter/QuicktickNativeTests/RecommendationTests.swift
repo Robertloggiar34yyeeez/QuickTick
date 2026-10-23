@@ -360,6 +360,22 @@ final class RecommendationTests: XCTestCase {
                       "Unlabeled subjects can still match a loved action or outfit")
     }
 
+    func testChosenCharacterRejectsConflictingIdentifiedCharacterEvenWithoutFavorites() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let taste = TasteChoice(done: true, into: ["chun_li", "looking_at_viewer"], notInto: [])
+        let unrelated = Post(key: "rule34:other-character", id: "other-character", provider: "rule34",
+                             tags: ["juri_han", "looking_at_viewer"])
+        let selected = Post(key: "rule34:selected-character", id: "selected-character", provider: "rule34",
+                            tags: ["chun_li", "looking_at_viewer"])
+        let unknown = Post(key: "rule34:unknown-character", id: "unknown-character", provider: "rule34",
+                           tags: ["looking_at_viewer", "qipao"])
+        let result = await engine.rankFast([unrelated, selected, unknown], taste: taste,
+                                           recent: [], strict: true)
+        XCTAssertFalse(result.contains { $0.stableID == unrelated.stableID })
+        XCTAssertTrue(result.contains { $0.stableID == selected.stableID })
+        XCTAssertTrue(result.contains { $0.stableID == unknown.stableID })
+    }
+
     func testIdentityLedRetrievalNeverSearchesGenericPoseAlone() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let favorites = (0..<5).map { index in

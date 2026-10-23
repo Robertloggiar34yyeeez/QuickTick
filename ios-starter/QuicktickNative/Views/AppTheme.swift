@@ -2,7 +2,7 @@ import SwiftUI
 
 enum AppTheme {
     enum AccentPalette: String, CaseIterable, Identifiable {
-        case violet, ocean, sunset, mint, rose
+        case violet, ocean, sunset, mint, rose, cobalt, amber, cherry, teal, lime, indigo, coral
         var id: String { rawValue }
         var name: String { rawValue.capitalized }
         var primary: Color {
@@ -12,6 +12,13 @@ enum AppTheme {
             case .sunset: Color(red: 1.00, green: 0.46, blue: 0.30)
             case .mint: Color(red: 0.21, green: 0.83, blue: 0.65)
             case .rose: Color(red: 0.98, green: 0.39, blue: 0.69)
+            case .cobalt: Color(red: 0.27, green: 0.43, blue: 1.00)
+            case .amber: Color(red: 1.00, green: 0.68, blue: 0.20)
+            case .cherry: Color(red: 0.93, green: 0.25, blue: 0.43)
+            case .teal: Color(red: 0.05, green: 0.76, blue: 0.74)
+            case .lime: Color(red: 0.63, green: 0.84, blue: 0.28)
+            case .indigo: Color(red: 0.44, green: 0.38, blue: 0.94)
+            case .coral: Color(red: 0.99, green: 0.40, blue: 0.42)
             }
         }
         var secondary: Color {
@@ -21,6 +28,13 @@ enum AppTheme {
             case .sunset: Color(red: 1.00, green: 0.72, blue: 0.36)
             case .mint: Color(red: 0.20, green: 0.60, blue: 0.98)
             case .rose: Color(red: 0.65, green: 0.38, blue: 0.98)
+            case .cobalt: Color(red: 0.44, green: 0.77, blue: 1.00)
+            case .amber: Color(red: 1.00, green: 0.36, blue: 0.31)
+            case .cherry: Color(red: 0.83, green: 0.31, blue: 0.74)
+            case .teal: Color(red: 0.26, green: 0.55, blue: 0.99)
+            case .lime: Color(red: 0.10, green: 0.74, blue: 0.59)
+            case .indigo: Color(red: 0.77, green: 0.40, blue: 1.00)
+            case .coral: Color(red: 1.00, green: 0.66, blue: 0.36)
             }
         }
     }

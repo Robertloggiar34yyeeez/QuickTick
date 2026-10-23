@@ -20,60 +20,56 @@ struct SettingsView: View {
     @State private var sharedProfile: RecommendationTransfer?
     @State private var importingProfile = false
     @State private var preparingProfile = false
+    @State private var activeSection: SettingsDestination = .appearance
+
     var body: some View {
+        settingsPage
+    }
+
+    private var settingsPage: some View {
+        ScrollViewReader { scroll in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 12) {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 21, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 46, height: 46)
-                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 15))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Make QuickTick yours")
-                            .font(.system(.title3, design: .rounded).weight(.bold))
-                        Text("Preferences, privacy and visual recommendations")
-                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                settingsHero
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 9) {
+                        ForEach(SettingsDestination.allCases) { destination in
+                            Button {
+                                activeSection = destination
+                                withAnimation(.smooth(duration: 0.36)) { scroll.scrollTo(destination.rawValue, anchor: .top) }
+                            } label: {
+                                Label(destination.title, systemImage: destination.symbol)
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(activeSection == destination ? .white : .white.opacity(0.76))
+                                    .padding(.horizontal, 14)
+                                    .frame(height: 37)
+                                    .background(activeSection == destination ? AppTheme.gradient : LinearGradient(colors: [AppTheme.elevatedSurface, AppTheme.elevatedSurface], startPoint: .leading, endPoint: .trailing), in: Capsule())
+                                    .overlay(Capsule().stroke(.white.opacity(activeSection == destination ? 0.28 : 0.10)))
+                            }
+                            .buttonStyle(QuicktickPressStyle())
+                        }
                     }
+                    .padding(.vertical, 3)
                 }
-                .padding(.top, 12)
+                .accessibilityIdentifier("settings-category-chips")
             if let storageWarning = store.storageWarning { SettingsGroup(title: "Storage needs attention", icon: "exclamationmark.triangle") { Text(storageWarning).foregroundStyle(.orange) } }
             SettingsGroup(title: "Navigation", icon: "square.grid.2x2") {
                 Toggle("Show AI tab", isOn: $showAITab)
                     .accessibilityIdentifier("show-ai-tab-toggle")
                 Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
                     .font(.footnote).foregroundStyle(.secondary)
-            }
+            }.id(SettingsDestination.navigation.rawValue)
             SettingsGroup(title: "Appearance", icon: "paintbrush.pointed") {
                 Toggle("Modern interface", isOn: $modernUI)
                     .accessibilityIdentifier("modern-ui-toggle")
                 Text(modernUI ? "Rounded surfaces, compact chips and animated navigation." : "Previous QuickTick interface restored.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Text("Accent gradient").font(.subheadline.weight(.semibold))
-                HStack(spacing: 7) {
-                    ForEach(AppTheme.AccentPalette.allCases) { palette in
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.25)) { accentPalette = palette.rawValue }
-                        } label: {
-                            VStack(spacing: 6) {
-                                Circle().fill(LinearGradient(colors: [palette.primary, palette.secondary],
-                                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                                    .frame(width: 35, height: 35)
-                                    .overlay(Circle().stroke(.white.opacity(accentPalette == palette.rawValue ? 0.9 : 0.18), lineWidth: 2))
-                                    .overlay {
-                                        if accentPalette == palette.rawValue {
-                                            Image(systemName: "checkmark").font(.caption.weight(.bold)).foregroundStyle(.white)
-                                        }
-                                    }
-                                Text(palette.name).font(.system(size: 10, weight: .medium)).lineLimit(1)
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(QuicktickPressStyle())
-                        .accessibilityIdentifier("accent-\(palette.rawValue)")
-                    }
-                }
-            }
+                Label("Accent gradient", systemImage: "paintpalette.fill")
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
+                SettingsPaletteSelector(selected: $accentPalette)
+                Text("Your accent follows you through tabs, buttons, menus and sheets.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            }.id(SettingsDestination.appearance.rawValue)
             SettingsGroup(title: "Website Sync", icon: "arrow.triangle.2.circlepath") {
                 Toggle("Enable website Sync", isOn: Binding(get: { store.cloudSyncEnabled }, set: { enabled in
                     Task { do { try await store.setCloudSyncEnabled(enabled) } catch { status = error.localizedDescription } }
@@ -87,6 +83,7 @@ struct SettingsView: View {
                 }.buttonStyle(.plain)
                 SecureField("Paste Sync ID from another device", text: $syncID)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                    .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("sync-id-input").focused($syncFieldFocused).submitLabel(.done)
                 HStack {
                     Button("Paste ID") { syncID = UIPasteboard.general.string ?? "" }
@@ -99,22 +96,41 @@ struct SettingsView: View {
                 if store.isSyncing { ProgressView("Syncing profile…") }
                 Text(status.isEmpty ? store.syncStatus : status).accessibilityIdentifier("sync-status").font(.footnote).foregroundStyle(store.syncFailed ? .orange : .secondary)
                 Text("Your Sync ID is the key to your profile. Downloads stay on this device.").font(.caption).foregroundStyle(.secondary)
-            }
+            }.id(SettingsDestination.sync.rawValue)
             SettingsGroup(title: "Provider access", icon: "lock.shield") {
                 TextField("Rule34 user ID", text: $user).textInputAutocapitalization(.never)
+                    .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("rule34-user-input").accessibilityLabel("Rule34 user ID")
                 SecureField("Rule34 API key", text: $key)
+                    .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("rule34-key-input").accessibilityLabel("Rule34 API key")
                 Toggle("Remember Rule34 credentials", isOn: $remember)
                 TextField("Pornhub username", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("pornhub-user-input").accessibilityLabel("Pornhub username")
                 SecureField("Supported Pornhub session", text: $session)
+                    .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("pornhub-session-input").accessibilityLabel("Supported Pornhub session")
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
-            }.disabled(store.isSyncing)
+            }.disabled(store.isSyncing).id(SettingsDestination.access.rawValue)
             SettingsGroup(title: "Learned interests · \(store.selectedProvider.displayName)", icon: "sparkles") {
                 LabeledContent("Engine", value: store.recommendationMode)
-                Text(store.learnedInterests.isEmpty ? "Interact with posts or search to learn interests." : store.learnedInterests.joined(separator: " · "))
+                if store.learnedInterests.isEmpty {
+                    Text("Interact with posts or search to learn interests.")
+                        .foregroundStyle(AppTheme.secondaryLabel)
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 115), spacing: 7)], spacing: 7) {
+                        ForEach(Array(store.learnedInterests.prefix(24)), id: \.self) { interest in
+                            Text(interest.replacingOccurrences(of: "_", with: " "))
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                                .padding(.horizontal, 11)
+                                .frame(maxWidth: .infinity, minHeight: 34)
+                                .background(AppTheme.accent.opacity(0.14), in: Capsule())
+                                .overlay(Capsule().stroke(AppTheme.accent.opacity(0.24)))
+                        }
+                    }
+                }
                 Button("Edit Into / Not Into") { onboarding = true }
                 Button {
                     Task { await store.rebuildRecommended() }
@@ -127,7 +143,7 @@ struct SettingsView: View {
                 if let status = store.recommendationRescanStatus { Text(status).font(.caption).foregroundStyle(AppTheme.accent) }
                 Button("Reset learned history", role: .destructive) { Task { await store.resetRecommendations() } }
                 if let resetStatus = store.resetStatus { Text(resetStatus).font(.caption) }
-            }
+            }.id(SettingsDestination.recommendations.rawValue)
             SettingsGroup(title: "Transfer recommendations", icon: "square.and.arrow.up") {
                 Button { preparingProfile = true; Task {
                     defer { preparingProfile = false }
@@ -154,10 +170,13 @@ struct SettingsView: View {
                     .accessibilityIdentifier("skip-video-intros-toggle")
                 Text("Pornhub videos longer than 12 seconds start at 0:10. All other sources start at 0:00.")
                     .font(.footnote).foregroundStyle(.secondary)
+            }.id(SettingsDestination.playback.rawValue)
             }
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 30)
+            .frame(maxWidth: 780)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 18)
+            .padding(.bottom, 44)
+        }
         }
         .scrollDismissesKeyboard(.interactively)
         .background(AppTheme.canvas)
@@ -165,6 +184,7 @@ struct SettingsView: View {
         .toolbarBackground(AppTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .preferredColorScheme(.dark)
+        .tint(AppTheme.accent)
             .sheet(isPresented: $onboarding) { TasteOnboardingView() }
             .sheet(item: $sharedProfile) { profile in
                 NavigationStack {
@@ -189,10 +209,125 @@ struct SettingsView: View {
             .onDisappear { store.cancelManualVisualRefresh() }
             .onChange(of: store.isSyncing) { _, busy in if !busy { Task { await reloadAccessFields() } } }
     }
+
+    private var settingsHero: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("YOUR QUICKTICK")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(2.1)
+                    .foregroundStyle(AppTheme.accent)
+                Text("Your space.")
+                    .font(.system(size: 33, weight: .bold, design: .rounded))
+                    .tracking(-1.0)
+                Text("One look, everywhere.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.secondaryLabel)
+                HStack(spacing: 8) {
+                    Label("Private by default", systemImage: "lock.shield")
+                    Label("Made for you", systemImage: "sparkles")
+                }
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.82))
+                .padding(.top, 5)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 27, weight: .light))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.white)
+                .frame(width: 76, height: 76)
+                .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+                .shadow(color: AppTheme.accent.opacity(0.28), radius: 20, y: 7)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 26).stroke(AppTheme.accent.opacity(0.18)))
+        .padding(.top, 12)
+    }
+
     private func reloadAccessFields() async {
         let credentials = await store.api.credentials
         user = credentials.rule34User; key = credentials.rule34Key; session = credentials.pornhubSession
         username = store.syncedPornhubUsername; remember = store.rememberedProviderAccess
+    }
+}
+
+private enum SettingsDestination: String, CaseIterable, Identifiable {
+    case appearance, navigation, recommendations, playback, sync, access
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .appearance: "Appearance"
+        case .navigation: "Navigation"
+        case .recommendations: "For you"
+        case .playback: "Playback"
+        case .sync: "Sync"
+        case .access: "Access"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .appearance: "paintpalette"
+        case .navigation: "square.grid.2x2"
+        case .recommendations: "sparkles"
+        case .playback: "play.rectangle"
+        case .sync: "arrow.triangle.2.circlepath"
+        case .access: "lock.shield"
+        }
+    }
+}
+
+private struct SettingsPaletteSelector: View {
+    @Binding var selected: String
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 86), spacing: 10)], spacing: 10) {
+            ForEach(AppTheme.AccentPalette.allCases) { palette in
+                let chosen = selected == palette.rawValue
+                Button {
+                    withAnimation(.smooth(duration: 0.26)) { selected = palette.rawValue }
+                } label: {
+                    VStack(spacing: 7) {
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .fill(LinearGradient(colors: [palette.primary, palette.secondary],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(height: 49)
+                            .overlay {
+                                if chosen {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 22, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .shadow(color: .black.opacity(0.4), radius: 4)
+                                }
+                            }
+                            .overlay(RoundedRectangle(cornerRadius: 13).stroke(.white.opacity(chosen ? 0.9 : 0.14), lineWidth: chosen ? 2 : 1))
+                        Text(palette.name)
+                            .font(.system(size: 11, weight: chosen ? .bold : .medium, design: .rounded))
+                            .foregroundStyle(chosen ? .white : AppTheme.secondaryLabel)
+                            .lineLimit(1)
+                    }
+                    .padding(5)
+                    .background(chosen ? AppTheme.accent.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 16))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityLabel("\(palette.name) accent")
+                .accessibilityAddTraits(chosen ? .isSelected : [])
+                .accessibilityIdentifier("accent-\(palette.rawValue)")
+            }
+        }
+    }
+}
+
+private struct SettingsTextFieldSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.plain)
+            .font(.subheadline)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background(AppTheme.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 13))
+            .overlay(RoundedRectangle(cornerRadius: 13).stroke(AppTheme.border))
     }
 }
 
@@ -304,23 +439,31 @@ private struct SettingsGroup<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Label(title, systemImage: icon)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.88))
-                .padding(.leading, 3)
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 11) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
+                    .frame(width: 36, height: 36)
+                    .background(AppTheme.accent.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 0)
+            }
+            VStack(alignment: .leading, spacing: 14) {
                 content
             }
             .font(.subheadline)
-            .textFieldStyle(.roundedBorder)
             .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
             .tint(AppTheme.accent)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
         }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
     }
 }
 

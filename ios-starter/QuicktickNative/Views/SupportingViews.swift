@@ -321,7 +321,7 @@ struct FirstRunSetupView: View {
                 }
             }
             .pickerStyle(.menu)
-            .tint(.white)
+            .tint(AppTheme.accent)
             .padding(12)
             .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 16))
             if isRule34 {

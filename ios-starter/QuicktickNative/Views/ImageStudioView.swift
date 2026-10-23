@@ -75,6 +75,13 @@ struct ImageStudioView: View {
     private var favorites: [Post] { Array(store.favorites.values) }
 
     var body: some View {
+        studioLifecycle
+    }
+
+    // Keeping lifecycle, presentation and layout in separately inferred view
+    // expressions prevents Xcode's Swift type checker from timing out while
+    // archiving this feature-rich screen in Release configuration.
+    private var studioSurface: some View {
         ZStack {
             if showGenerationFocus {
                 focusedGenerationView
@@ -111,6 +118,10 @@ struct ImageStudioView: View {
                 Button("Done") { promptFocused = false }
             }
         }
+    }
+
+    private var studioPresentations: some View {
+        studioSurface
         .sheet(isPresented: $showIntro) { introSheet }
         .sheet(isPresented: $showToken) { tokenSheet }
         .sheet(isPresented: $showCatalog) { catalogSheet }
@@ -138,6 +149,10 @@ struct ImageStudioView: View {
                 }
             } else if case .failure(let error) = result { status = error.localizedDescription }
         }
+    }
+
+    private var studioObservers: some View {
+        studioPresentations
         .task {
             await reloadModels()
             savedImages = await LocalImageStudio.shared.savedImages()
@@ -166,6 +181,10 @@ struct ImageStudioView: View {
         .onChange(of: store.favorites) { _, newFavorites in
             inspiration = StudioPromptSeed.build(favorites: Array(newFavorites.values), taxonomy: taxonomy)
         }
+    }
+
+    private var studioLifecycle: some View {
+        studioObservers
         .onChange(of: selectedLoRAStrengths) { _, newSelection in
             if let data = try? JSONEncoder().encode(newSelection), let encoded = String(data: data, encoding: .utf8) {
                 savedLoRAStrengthsJSON = encoded
@@ -982,12 +1001,29 @@ struct ImageStudioView: View {
                         }
                     }
                     .padding(.top, 8)
-                    Picker("Explore", selection: $catalogKind) {
+                    HStack(spacing: 8) {
                         ForEach(StudioCatalogKind.allCases) { kind in
-                            Text(kind.title).tag(kind)
+                            Button {
+                                withAnimation(AppTheme.spring) { catalogKind = kind }
+                            } label: {
+                                Text(kind.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .frame(maxWidth: .infinity, minHeight: 42)
+                                    .foregroundStyle(catalogKind == kind ? .white : AppTheme.secondaryLabel)
+                                    .background {
+                                        if catalogKind == kind {
+                                            Capsule().fill(AppTheme.gradient)
+                                        } else {
+                                            Capsule().fill(AppTheme.elevatedSurface)
+                                        }
+                                    }
+                                    .overlay(Capsule().stroke(.white.opacity(catalogKind == kind ? 0.20 : 0.10)))
+                            }
+                            .buttonStyle(QuicktickPressStyle())
+                            .accessibilityAddTraits(catalogKind == kind ? .isSelected : [])
+                            .accessibilityIdentifier("studio-catalog-kind-\(kind.rawValue)")
                         }
                     }
-                    .pickerStyle(.segmented)
                     .accessibilityIdentifier("studio-catalog-kind")
                     HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass")

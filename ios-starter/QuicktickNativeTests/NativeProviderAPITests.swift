@@ -73,6 +73,35 @@ private final class RateLimitProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class NativeProviderAPITests: XCTestCase {
+    func testKeywordSearchRoutesToEveryNonRule34Provider() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let phrase = "cosplay scene"
+        let parsed = QueryParser.parse("\"cosplay scene\" -\"unwanted intro\"")
+        for provider in [Provider.eporner, .redgifs, .hanime, .pornhub] {
+            NativeProviderProtocol.log.reset()
+            _ = try await api.posts(provider: provider, query: parsed, page: 1)
+            let requests = NativeProviderProtocol.log.snapshot()
+            let search = requests.first { request in
+                switch provider {
+                case .eporner: request.url?.host == "www.eporner.com"
+                case .redgifs: request.url?.host == "api.redgifs.com" && request.url?.path.contains("search") == true
+                case .hanime: request.url?.host == "search.htv-services.com"
+                case .pornhub: request.url?.host == "www.pornhub.com"
+                default: false
+                }
+            }
+            let actual = try XCTUnwrap(search, "No keyword search request for \(provider.rawValue)")
+            if provider == .hanime {
+                let body = try XCTUnwrap(actual.httpBody)
+                let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+                XCTAssertEqual(json["search_text"] as? String, phrase)
+            } else {
+                let items = URLComponents(url: try XCTUnwrap(actual.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+                let parameter = provider == .eporner ? "query" : provider == .redgifs ? "search_text" : "search"
+                XCTAssertEqual(items.first(where: { $0.name == parameter })?.value, phrase)
+            }
+        }
+    }
     func testKeywordProviderExclusionsMatchTitlesAndCreatorWithoutSubstringErrors() {
         var unwanted = Post(key: "eporner:1", id: "1", provider: "Eporner",
                             tags: ["other"], type: "video")

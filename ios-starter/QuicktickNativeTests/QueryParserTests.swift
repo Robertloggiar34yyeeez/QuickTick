@@ -5,6 +5,17 @@ final class QueryParserTests: XCTestCase {
     func testPositiveAndNegativeTerms() {
         XCTAssertEqual(QueryParser.parse("tag1 tag2 -excluded"), ParsedQuery(included: ["tag1","tag2"], excluded: ["excluded"]))
     }
+    func testQuotedKeywordPhrasesAndMultiwordExclusions() {
+        XCTAssertEqual(QueryParser.parse("\"cosplay scene\" -\"unwanted intro\" fantasy"),
+                       ParsedQuery(included: ["cosplay scene", "fantasy"], excluded: ["unwanted intro"]))
+        XCTAssertEqual(QueryParser.parse("\"unfinished phrase"), ParsedQuery(included: ["unfinished phrase"], excluded: []))
+    }
+    func testVideoIntroPolicySkipsOnlyLongClipsWhenEnabled() {
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true), 10)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true), 0)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: false), 0)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: .nan, enabled: true), 0)
+    }
 
     func testTagIdentityAndIndependentExclusion() {
         var tags = SearchTag.parse("Chun_Li ARTIST -chun_li artist")

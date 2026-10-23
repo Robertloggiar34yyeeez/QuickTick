@@ -502,7 +502,8 @@ private struct ImmersiveItemView: View {
             let pool = store.players
             let key = post.stableID
             let owner = playbackOwner
-            player.seek(to: .zero) { finished in
+            let start = VideoIntroPolicy.startTime(duration: length, enabled: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"))
+            player.seek(to: CMTime(seconds: start, preferredTimescale: 600)) { finished in
                 Task { @MainActor in
                     guard finished, playing, store.isForeground, pool.activeKey == key, pool.activeOwner == owner else { return }
                     player.play()

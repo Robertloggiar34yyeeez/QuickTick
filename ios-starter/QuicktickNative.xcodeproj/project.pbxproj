@@ -50,28 +50,14 @@
 			"repositoryURL" = "https://github.com/apple-aiml-research/ml-stable-diffusion.git";
 			"requirement" = { "kind" = "exactVersion"; "version" = "1.1.1"; };
 		};
-		"A1B2C3D4E5F6012345678906" = {
-			"isa" = "XCRemoteSwiftPackageReference";
-			"repositoryURL" = "https://github.com/tuist/ZIPFoundation.git";
-			"requirement" = { "kind" = "exactVersion"; "version" = "0.9.21"; };
-		};
 		"A1B2C3D4E5F6012345678907" = {
 			"isa" = "XCSwiftPackageProductDependency";
 			"package" = "A1B2C3D4E5F6012345678905";
 			"productName" = "StableDiffusion";
 		};
-		"A1B2C3D4E5F6012345678908" = {
-			"isa" = "XCSwiftPackageProductDependency";
-			"package" = "A1B2C3D4E5F6012345678906";
-			"productName" = "ZIPFoundation";
-		};
 		"A1B2C3D4E5F6012345678909" = {
 			"isa" = "PBXBuildFile";
 			"productRef" = "A1B2C3D4E5F6012345678907";
-		};
-		"A1B2C3D4E5F601234567890A" = {
-			"isa" = "PBXBuildFile";
-			"productRef" = "A1B2C3D4E5F6012345678908";
 		};
 		"A1B2C3D4E5F6012345678913" = {
 			"isa" = "XCLocalSwiftPackageReference";
@@ -1010,7 +996,6 @@
 			"buildActionMask" = "2147483647";
 			"files" = (
 				"A1B2C3D4E5F6012345678909",
-				"A1B2C3D4E5F601234567890A",
 				"A1B2C3D4E5F6012345678915",
 				"A1B2C3D4E5F6012345678925",
 			);
@@ -1099,7 +1084,6 @@
 			"productType" = "com.apple.product-type.application";
 			"packageProductDependencies" = (
 				"A1B2C3D4E5F6012345678907",
-				"A1B2C3D4E5F6012345678908",
 				"A1B2C3D4E5F6012345678914",
 				"A1B2C3D4E5F6012345678924",
 			);
@@ -1487,7 +1471,6 @@
 			"productRefGroup" = "0A3E27B8CA818264D75C8D81";
 			"packageReferences" = (
 				"A1B2C3D4E5F6012345678905",
-				"A1B2C3D4E5F6012345678906",
 				"A1B2C3D4E5F6012345678913",
 				"A1B2C3D4E5F6012345678923",
 			);

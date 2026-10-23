@@ -127,7 +127,13 @@ struct PostCardView: View {
             .onChange(of: store.muted) { _, value in player?.isMuted = value }
             .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
                 guard let item = note.object as? AVPlayerItem, item === player?.currentItem else { return }
-                if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground { store.recordComplete(post); store.recordReplay(post); player?.seek(to: .zero); if store.pausedPlaybackID != post.stableID { player?.play() } }
+                if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground {
+                    store.recordComplete(post); store.recordReplay(post)
+                    let length = player?.currentItem?.duration.seconds ?? 0
+                    let start = VideoIntroPolicy.startTime(duration: length, enabled: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"))
+                    player?.seek(to: CMTime(seconds: start, preferredTimescale: 600))
+                    if store.pausedPlaybackID != post.stableID { player?.play() }
+                }
             }
     }
 

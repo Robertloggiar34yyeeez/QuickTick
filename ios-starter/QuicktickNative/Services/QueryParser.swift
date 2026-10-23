@@ -53,7 +53,7 @@ struct SearchFilters: Equatable, Sendable {
 enum QueryParser {
     static func parse(_ text: String) -> ParsedQuery {
         var included: [String] = [], excluded: [String] = []
-        for raw in text.split(whereSeparator: { $0.isWhitespace }).map(String.init) {
+        for raw in tokens(text) {
             let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !t.isEmpty else { continue }
             if t.hasPrefix("-") && t.count > 1 { excluded.append(String(t.dropFirst())) }
@@ -61,6 +61,22 @@ enum QueryParser {
         }
         let blocked = Set(excluded.map { $0.lowercased() })
         return ParsedQuery(included: uniqued(included).filter { !blocked.contains($0.lowercased()) }, excluded: uniqued(excluded))
+    }
+
+    /// Keep quoted phrases intact for free-text providers, including `-"phrase"`
+    /// exclusions. An unclosed quote still produces a usable final term.
+    private static func tokens(_ text: String) -> [String] {
+        var parts: [String] = []
+        var current = ""
+        var quoted = false
+        for character in text {
+            if character == "\"" { quoted.toggle(); continue }
+            if character.isWhitespace && !quoted {
+                if !current.isEmpty { parts.append(current); current = "" }
+            } else { current.append(character) }
+        }
+        if !current.isEmpty { parts.append(current) }
+        return parts
     }
 
     private static func uniqued(_ values: [String]) -> [String] {

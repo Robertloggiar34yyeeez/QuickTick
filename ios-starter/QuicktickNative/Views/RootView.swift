@@ -154,9 +154,9 @@ struct RootView: View {
                     let isRefresh = tabID < 2 && store.activeTab == tabID
                     if isRefresh {
                         refreshSpinDegrees = 0
-                        withAnimation(.easeIn(duration: 0.15)) { refreshingTab = tabID }
+                        withAnimation(.smooth(duration: 0.18)) { refreshingTab = tabID }
                         if !reduceMotion {
-                            withAnimation(.linear(duration: 0.72).repeatForever(autoreverses: false)) {
+                            withAnimation(.linear(duration: 1.05).repeatForever(autoreverses: false)) {
                                 refreshSpinDegrees = 360
                             }
                         }
@@ -166,7 +166,7 @@ struct RootView: View {
                         if isRefresh {
                             try? await Task.sleep(for: .milliseconds(450))
                             if refreshingTab == tabID {
-                                withAnimation(.easeOut(duration: 0.24)) { refreshingTab = nil }
+                                withAnimation(.smooth(duration: 0.28)) { refreshingTab = nil }
                                 refreshSpinDegrees = 0
                             }
                         }
@@ -174,11 +174,18 @@ struct RootView: View {
                 } label: {
                     Group {
                         if refreshingTab == tabID {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 19, weight: .semibold, design: .rounded))
-                                .symbolRenderingMode(.hierarchical)
-                                .rotationEffect(.degrees(refreshSpinDegrees))
-                                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                            ZStack {
+                                Circle().stroke(.white.opacity(0.16), lineWidth: 2.5)
+                                Circle()
+                                    .trim(from: 0.04, to: 0.73)
+                                    .stroke(AngularGradient(colors: [.white.opacity(0.07), .white.opacity(0.45), .white], center: .center),
+                                            style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
+                                    .rotationEffect(.degrees(refreshSpinDegrees))
+                                Circle().fill(.white).frame(width: 3.5, height: 3.5)
+                            }
+                            .frame(width: 23, height: 23)
+                            .accessibilityLabel("Refreshing feed")
+                            .transition(.opacity.combined(with: .scale(scale: 0.65)))
                         } else if store.activeTab == tabID && brieflyNamedTab == tabID {
                             Text(tabs[index].0)
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -204,7 +211,7 @@ struct RootView: View {
                 }
                 .buttonStyle(QuicktickPressStyle())
                 .animation(reduceMotion ? nil : AppTheme.spring, value: store.activeTab)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: refreshingTab)
+                .animation(reduceMotion ? nil : .smooth(duration: 0.26), value: refreshingTab)
                 .accessibilityLabel(tabs[index].0)
                 .accessibilityIdentifier("tab-\(tabs[index].0)")
                 .accessibilityAddTraits(store.activeTab == tabID ? .isSelected : [])

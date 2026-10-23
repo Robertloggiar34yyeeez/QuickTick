@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
+    @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @FocusState private var syncFieldFocused: Bool
     @State private var syncID = ""
     @State private var status = ""
@@ -124,6 +125,10 @@ struct SettingsView: View {
             SettingsGroup(title: "Playback", icon: "play.rectangle") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
                 Toggle("Mute", isOn: $store.muted)
+                Toggle("Skip first 10 seconds of videos", isOn: $skipVideoIntros)
+                    .accessibilityIdentifier("skip-video-intros-toggle")
+                Text("Optional. Starts videos longer than 12 seconds at 0:10, including Pornhub. Short clips and GIFs play from the beginning.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             }
             .padding(.horizontal, 16)

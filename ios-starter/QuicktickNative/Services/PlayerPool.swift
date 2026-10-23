@@ -2,10 +2,18 @@ import Foundation
 import AVFoundation
 import Combine
 
+enum VideoIntroPolicy {
+    static func startTime(duration: Double, enabled: Bool) -> Double {
+        enabled && duration.isFinite && duration > 12 ? 10 : 0
+    }
+}
+
 @MainActor
 final class PlayerPool: ObservableObject {
     private var players: [String: AVPlayer] = [:]
     private var warmObservers: [String: NSKeyValueObservation] = [:]
+    private var introObservers: [String: NSKeyValueObservation] = [:]
+    private var introSkipped = Set<String>()
     private var order: [String] = []
     private var urls: [String: URL] = [:]
     private var warming = Set<String>()
@@ -52,10 +60,33 @@ final class PlayerPool: ObservableObject {
         p.automaticallyWaitsToMinimizeStalling = !url.isFileURL
         p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 2.5
         activeKey = key; activeOwner = owner; p.isMuted = muted
+        scheduleIntroSkip(key: key, player: p)
         // An unbuffered remote item must enter normal waiting-to-play state.
         // playImmediately treats an empty buffer as a stall without notifying us.
         p.play()
         return p
+    }
+    private func scheduleIntroSkip(key: String, player: AVPlayer) {
+        guard UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
+              !introSkipped.contains(key), let item = player.currentItem else { return }
+        introObservers[key] = item.observe(\.status, options: [.initial, .new]) { [weak self, weak player] item, _ in
+            Task { @MainActor in
+                guard let self, let player, self.players[key] === player,
+                      self.activeKey == key, player.currentItem === item,
+                      item.status == .readyToPlay else { return }
+                self.introObservers.removeValue(forKey: key)
+                let duration = (try? await item.asset.load(.duration))?.seconds ?? 0
+                let current = player.currentTime().seconds
+                guard self.players[key] === player, self.activeKey == key,
+                      current.isFinite,
+                      current < 9.5,
+                      VideoIntroPolicy.startTime(duration: duration, enabled: true) > 0 else { return }
+                self.introSkipped.insert(key)
+                player.seek(to: CMTime(seconds: 10, preferredTimescale: 600),
+                            toleranceBefore: CMTime(seconds: 0.15, preferredTimescale: 600),
+                            toleranceAfter: CMTime(seconds: 0.15, preferredTimescale: 600))
+            }
+        }
     }
     func pauseAll() { suspendedPlayback = nil; warmAttempts.removeAll(); prerollStarted.removeAll(); players.values.forEach { $0.pause(); $0.cancelPendingPrerolls() }; warming.removeAll(); warmObservers.removeAll(); activeKey = nil; activeOwner = nil }
     func suspendActivePlayback() {
@@ -103,8 +134,8 @@ final class PlayerPool: ObservableObject {
             }
         }
     }
-    func release(_ key: String) { warmAttempts.removeValue(forKey: key); prerollStarted.remove(key); players[key]?.cancelPendingPrerolls(); if suspendedPlayback?.key == key { suspendedPlayback = nil }; if activeKey == key { activeKey = nil; activeOwner = nil }; warming.remove(key); urls.removeValue(forKey: key); warmObservers.removeValue(forKey: key); players.removeValue(forKey: key)?.pause(); order.removeAll { $0 == key } }
-    func releaseAll() { pauseAll(); urls.removeAll(); players.removeAll(); order.removeAll() }
+    func release(_ key: String) { introObservers.removeValue(forKey: key); introSkipped.remove(key); warmAttempts.removeValue(forKey: key); prerollStarted.remove(key); players[key]?.cancelPendingPrerolls(); if suspendedPlayback?.key == key { suspendedPlayback = nil }; if activeKey == key { activeKey = nil; activeOwner = nil }; warming.remove(key); urls.removeValue(forKey: key); warmObservers.removeValue(forKey: key); players.removeValue(forKey: key)?.pause(); order.removeAll { $0 == key } }
+    func releaseAll() { pauseAll(); introObservers.removeAll(); introSkipped.removeAll(); urls.removeAll(); players.removeAll(); order.removeAll() }
     func retain(_ keys: Set<String>) {
         for key in Array(players.keys) where !keys.contains(key) {
             warmAttempts.removeValue(forKey: key); prerollStarted.remove(key); players[key]?.cancelPendingPrerolls(); release(key)

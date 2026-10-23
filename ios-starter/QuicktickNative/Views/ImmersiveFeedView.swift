@@ -18,6 +18,10 @@ struct ImmersiveFeedView: View {
     // SwiftUI's scroll target is a restoration request, not playback truth.
     // On some OS versions it remains on an offscreen page after paging.
     @State private var scrollTargetID: String?
+    // A deliberate paging request must not be undone by interim geometry
+    // snapshots of the outgoing page while the scroll animation settles.
+    @State private var pageTransitionProtectedUntil = Date.distantPast
+    @State private var dragOriginID: String?
     @State private var activeIndex = 0
     @State private var activeSince = Date.distantPast
     @State private var searchVisible = false
@@ -32,6 +36,7 @@ struct ImmersiveFeedView: View {
 
     var body: some View {
         GeometryReader { geo in
+          ScrollViewReader { scrollProxy in
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
                     ForEach(mediaPosts, id: \.stableID) { post in
@@ -70,21 +75,54 @@ struct ImmersiveFeedView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
             }.scrollTargetBehavior(.paging)
+                // Handle paging on the scroll container. Media and controls
+                // may intercept drags before a cell-only gesture sees them.
+                .highPriorityGesture(DragGesture(minimumDistance: 28)
+                    .onChanged { _ in
+                        if dragOriginID == nil { dragOriginID = activeID }
+                    }
+                    .onEnded { drag in
+                        defer { dragOriginID = nil }
+                        guard let origin = dragOriginID ?? activeID else { return }
+                        pageSwipe(from: origin, translation: drag.translation,
+                                  viewportHeight: geo.size.height, scrollProxy: scrollProxy)
+                    }, including: .subviews)
                 .scrollPosition(id: $scrollTargetID, anchor: .top)
+                // ScrollView's settled target is the source of truth after a
+                // page swipe. Geometry callbacks can omit the target while a
+                // lazy cell mounts, leaving the previous video's rail active.
+                .onChange(of: scrollTargetID) { _, target in
+                    guard presentationActive, store.isForeground, let target,
+                          target != activeID,
+                          mediaPosts.contains(where: { $0.stableID == target }) else { return }
+                    if Date() < pageTransitionProtectedUntil, let activeID,
+                       target != activeID {
+                        scrollTargetID = activeID
+                        return
+                    }
+                    activeID = target
+                }
                 .coordinateSpace(name: "immersive-viewport")
                 .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
                     guard presentationActive, store.isForeground else { return }
+                    let viewport = CGRect(origin: .zero, size: geo.size)
+                    if scrollTargetID == activeID && Date() < pageTransitionProtectedUntil { return }
+                    // The scroll target is authoritative while it remains on
+                    // screen. An intermediate geometry callback must not
+                    // revert a swipe to the outgoing, partially visible page.
+                    if let target = scrollTargetID, let rect = frames[target],
+                       rect.intersects(viewport) { return }
                     // Geometry preference changes on every drag frame; publish
-                    // only when the visible page actually changes. The frame
-                    // keys already come exclusively from mediaPosts.
+                    // only to rescue a truly offscreen/stale scroll target.
                     let key = VisiblePostSelector.immersive(frames: frames,
-                        viewport: CGRect(origin: .zero, size: geo.size),
+                        viewport: viewport,
                         current: activeID, keys: Set(frames.keys))
-                    if key != activeID { activeID = key }
+                    if let key, key != activeID { activeID = key; scrollTargetID = key }
                 }
                 .scrollIndicators(.hidden)
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
+          }
         }
         .navigationTitle(offline ? "Offline Immersive" : "Immersive")
         .navigationBarTitleDisplayMode(.inline)
@@ -163,6 +201,18 @@ struct ImmersiveFeedView: View {
             if let onClose { onClose() }
             else { Task { await store.selectFeedTab(0) } }
         }
+    }
+    private func pageSwipe(from origin: String, translation: CGSize, viewportHeight: CGFloat, scrollProxy: ScrollViewProxy) {
+        guard presentationActive, abs(translation.height) > max(55, viewportHeight * 0.12),
+              abs(translation.height) > abs(translation.width) * 1.25,
+              let index = mediaPosts.firstIndex(where: { $0.stableID == origin }) else { return }
+        let next = index + (translation.height < 0 ? 1 : -1)
+        guard mediaPosts.indices.contains(next) else { return }
+        let key = mediaPosts[next].stableID
+        pageTransitionProtectedUntil = Date().addingTimeInterval(1.2)
+        activeID = key
+        scrollTargetID = key
+        withAnimation(.easeOut(duration: 0.22)) { scrollProxy.scrollTo(key, anchor: .top) }
     }
     private func prewarm() async {
         guard presentationActive, store.isForeground, !store.isManualVisualScanRunning, !Task.isCancelled else { return }

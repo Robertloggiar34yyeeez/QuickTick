@@ -29,6 +29,7 @@ struct HomeFeedView: View {
                 }
                 .id("home-top")
                 .padding(.top, 8)
+                .padding(.horizontal, 16)
                 HStack(spacing: 10) {
                     HStack(spacing: 3) {
                         ForEach([("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
@@ -70,6 +71,7 @@ struct HomeFeedView: View {
                     .accessibilityLabel("Search")
                     .accessibilityIdentifier("home-search-button")
                 }
+                .padding(.horizontal, 16)
                 Button { onboarding = true } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "sparkles")
@@ -89,13 +91,14 @@ struct HomeFeedView: View {
                 }
                 .buttonStyle(QuicktickPressStyle())
                 .accessibilityIdentifier("personalize-feed")
+                .padding(.horizontal, 16)
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
                 } else if store.posts.isEmpty && !store.isLoading {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))
                 }
                 ForEach(store.posts, id: \.stableID) { post in
-                    PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width - 32), height: viewport.size.height))
+                    PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width), height: viewport.size.height))
                         .frame(maxWidth: .infinity)
                         .id(post.stableID)
                         .onAppear {
@@ -106,9 +109,10 @@ struct HomeFeedView: View {
                 if store.hasMore {
                     Button("Load more") { Task { await store.loadMore() } }
                         .frame(maxWidth: .infinity, minHeight: 44)
+                        .padding(.horizontal, 16)
                         .onAppear { if store.activeTab == 0 && !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
                 }
-            }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.horizontal, 16).padding(.bottom, 18)
+            }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.bottom, 18)
         }
         // A regular feed must keep free scroll offsets through rotation and
         // keyboard changes. Restore its anchor only when this host mounts;
@@ -199,6 +203,13 @@ struct HomeFeedView: View {
             }
         }
 
+        .onChange(of: store.feedRevision) { _, _ in
+            // Keep the search sheet alive while new results are committed.
+            // Scroll, rather than replacing the whole NavigationStack subtree.
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                proxy.scrollTo("home-top", anchor: .top)
+            }
+        }
         .refreshable { await store.refresh() }
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }

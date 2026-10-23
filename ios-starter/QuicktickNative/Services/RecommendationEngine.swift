@@ -13,6 +13,125 @@ struct RecommendationQualityModel: Sendable {
     }
 }
 
+// Native metadata-only interaction model learned from the FULL current
+// Favorites collection. A loved subject doesn't imply every presentation:
+// source + subject + medium must match, with credited artist modeled
+// separately. The model never loads pixels or Core ML during paging.
+struct ConditionalTasteModel: Sendable {
+    private var subjectsByMedium: [String: Set<String>] = [:]
+    private var artistsByMedium: [String: Set<String>] = [:]
+    private var approvedPairs: [String: Set<String>] = [:]
+
+    private static func mediumKey(_ post: Post) -> String {
+        post.provider.lowercased() + "|" + (VisualDomain.classify(post)?.rawValue ?? "uncertain")
+    }
+
+    mutating func train(_ favorites: [Post], taxonomy: VisualTagTaxonomy?) {
+        subjectsByMedium.removeAll(keepingCapacity: true)
+        artistsByMedium.removeAll(keepingCapacity: true)
+        approvedPairs.removeAll(keepingCapacity: true)
+        for post in favorites {
+            let key = Self.mediumKey(post)
+            guard !key.hasSuffix("|uncertain"), !key.hasSuffix("|mixed"),
+                  let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { continue }
+            let subjects = Set(features.subjects)
+            let artists = Set(features.artists ?? [])
+            subjectsByMedium[key, default: []].formUnion(subjects)
+            artistsByMedium[key, default: []].formUnion(artists)
+            for subject in subjects where !artists.isEmpty {
+                approvedPairs[key + "|" + subject, default: []].formUnion(artists)
+            }
+        }
+    }
+
+    func score(_ post: Post, taxonomy: VisualTagTaxonomy?) -> Double {
+        let key = Self.mediumKey(post)
+        guard !key.hasSuffix("|uncertain"), !key.hasSuffix("|mixed"),
+              let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { return 0 }
+        let subjects = Set(features.subjects)
+        let artists = Set(features.artists ?? [])
+        let exactSubject = !subjects.isDisjoint(with: subjectsByMedium[key] ?? [])
+        let exactArtist = !artists.isDisjoint(with: artistsByMedium[key] ?? [])
+        let approvedPair = subjects.contains { subject in
+            !artists.isDisjoint(with: approvedPairs[key + "|" + subject] ?? [])
+        }
+        // One matched character alone cannot outweigh an unapproved credited
+        // artist. Confident pairs win; unknown creators get no artist boost.
+        return (exactSubject ? 2.0 : 0) + (exactArtist ? 3.0 : 0) + (approvedPair ? 4.0 : 0)
+    }
+}
+
+
+/// Session-scale intent weights: cheap, private, bounded online updates.
+/// These are deliberately not persisted; long-term preference history is
+/// separately stored in RecommendationState.
+struct SessionPreferenceModel: Sendable {
+    private var termsByProvider: [String: [String: Double]] = [:]
+    private var lastWatchCredit: [String: Double] = [:]
+    private static let generic: Set<String> = [
+        "solo", "video", "image", "photo", "highres", "2d", "3d",
+        "animated", "animation", "rating:safe", "rating:explicit"
+    ]
+
+    mutating func record(_ event: RecommendationEvent, post: Post, terms: [String]) {
+        let reward: Double
+        switch event {
+        case .like: reward = 2.8
+        case .download: reward = 3.2
+        case .less: reward = -4.4
+        case .unlike: reward = -2.2
+        case .complete: reward = 1.2
+        case .replay: reward = 1.4
+        case .watched(let seconds, let completion):
+            guard seconds.isFinite, seconds > 0, completion.isFinite else { return }
+            let qualified = max(0, (min(1, max(0, completion)) - 0.55) / 0.45)
+            let previous = lastWatchCredit[post.stableID] ?? 0
+            guard qualified > previous else { return }
+            lastWatchCredit[post.stableID] = qualified
+            if lastWatchCredit.count > 160 { lastWatchCredit.removeAll() }
+            reward = (qualified - previous) * 1.0
+        case .impression, .quickSkip:
+            // Exposure is not approval. Quick skips remain separately reversible.
+            return
+        }
+        let topics = Array(Set(terms.map(RecommendationTagRules.canonical)
+            .filter { !$0.isEmpty && !Self.generic.contains($0) })).sorted().prefix(12)
+        guard reward != 0, !topics.isEmpty else { return }
+        let provider = post.provider.lowercased()
+        var weights = termsByProvider[provider] ?? [:]
+        for key in Array(weights.keys) {
+            let faded = (weights[key] ?? 0) * 0.94
+            if abs(faded) < 0.05 { weights.removeValue(forKey: key) }
+            else { weights[key] = faded }
+        }
+        let share = reward / sqrt(Double(topics.count))
+        for topic in topics {
+            weights[topic] = max(-5.5, min(5.5, (weights[topic] ?? 0) + share))
+        }
+        if weights.count > 80 {
+            let best = weights.sorted {
+                let a = abs($0.value), b = abs($1.value)
+                return a == b ? $0.key < $1.key : a > b
+            }.prefix(80)
+            weights = Dictionary(uniqueKeysWithValues: best.map { ($0.key, $0.value) })
+        }
+        termsByProvider[provider] = weights
+    }
+
+    func score(provider: String, terms: [String]) -> Double {
+        let weights = termsByProvider[provider] ?? [:]
+        let sum = Set(terms.map(RecommendationTagRules.canonical))
+            .reduce(0.0) { $0 + (weights[$1] ?? 0) }
+        return max(-11, min(9, sum * 1.6))
+    }
+
+    func strongInterests(provider: String, limit: Int = 8) -> [(String, Double)] {
+        (termsByProvider[provider] ?? [:]).filter { $0.value >= 1.5 }
+            .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+            .prefix(limit).map { ($0.key, $0.value) }
+    }
+}
+
 actor RecommendationEngine {
     private(set) var state = RecommendationState()
     let semantic: SemanticRecommender
@@ -35,6 +154,8 @@ actor RecommendationEngine {
     // Non-persisted, deduplicated affinity from every CURRENT saved favorite.
     // Rebuilding on changes avoids replaying old likes into the event ledger.
     private var savedFavoriteAffinity: [String: [String: Double]] = [:]
+    private var conditionalTaste = ConditionalTasteModel()
+    private var sessionTaste = SessionPreferenceModel()
     private var currentFavorites: [Post] = []
     // Unlike generic tag weights, these preserve *which* 3D artists were
     // liked. Unknown 3D creators never inherit a character's positive score.
@@ -112,6 +233,7 @@ actor RecommendationEngine {
 
     func configureFavorites(_ favorites: [Post]) {
         currentFavorites = favorites
+        conditionalTaste.train(favorites, taxonomy: taxonomy)
         trusted3DCredits = [:]
         trusted3DArtistTags = [:]
         sourcesWithRougeLikes = []
@@ -234,6 +356,7 @@ actor RecommendationEngine {
 
     func load(_ value: RecommendationState) {
         drainedCandidateQueries.removeAll()
+        sessionTaste = SessionPreferenceModel()
         state = value
         if state.version < 3 { state.version = 3 }
         for key in state.profiles.keys { state.profiles[key] = normalized(state.profiles[key] ?? RecommendationProfile()) }
@@ -274,6 +397,11 @@ actor RecommendationEngine {
                     && !sourcesWithWildlifeLikes.contains(provider.rawValue)
                     && Self.wildlifeOnlyTerms.contains(RecommendationTagRules.canonical($0.0)))
             }
+        let sessionInterests = sessionTaste.strongInterests(provider: provider.rawValue)
+            .filter {
+                !blocked.contains($0.0) && !explicit.contains($0.0)
+                && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
+            }
         let saved = savedFavoriteTerms(source: provider.rawValue, limit: 14)
             .filter {
                 !blocked.contains($0.0) && !explicit.contains($0.0)
@@ -284,21 +412,36 @@ actor RecommendationEngine {
             }
         // Both explicit feedback history and the entire current favorites library
         // contribute to acquisition, without re-training existing events.
-        let learned = Array(Set((learnedHistory + saved).map(\.0))).sorted { a, b in
-            let sa = (learnedHistory.first { $0.0 == a }?.1 ?? 0) + (saved.first { $0.0 == a }?.1 ?? 0) * 2
-            let sb = (learnedHistory.first { $0.0 == b }?.1 ?? 0) + (saved.first { $0.0 == b }?.1 ?? 0) * 2
-            return sa == sb ? a < b : sa > sb
-        }.prefix(16)
+        // Accumulate weighted scores once, then sort the small dictionary.
+        // Avoid a nested tuple/map/filter/sort expression: Swift's compiler
+        // can time out type-checking that expression on device archives.
+        var interestWeights: [String: Double] = [:]
+        for (term, weight) in learnedHistory {
+            interestWeights[term, default: 0] += weight
+        }
+        for (term, weight) in saved {
+            interestWeights[term, default: 0] += weight * 2
+        }
+        for (term, weight) in sessionInterests {
+            interestWeights[term, default: 0] += weight * 3
+        }
+        let sortedInterests: [String] = interestWeights.keys.sorted { left, right in
+            let a: Double = interestWeights[left] ?? 0
+            let b: Double = interestWeights[right] ?? 0
+            if a == b { return left < right }
+            return a > b
+        }
+        let learned: [String] = Array(sortedInterests.prefix(16))
         let roundKey = context + "|round"
         let round = max(0, (state.candidatePages[roundKey] ?? 1) - 1)
         advanceCandidatePage(context: roundKey, nextPage: (round + 1) % 12_000 + 1)
-        // A third of pages is deliberately broad; otherwise narrow favorite
-        // searches cycle through the same creators and subjects indefinitely.
-        var focused = !forceBroad && (!explicit.isEmpty || !learned.isEmpty) && round % 3 != 2
+        // Three focused searches followed by one broad discovery page.
+        // Persisting this four-step rotation ensures exploration still occurs.
+        var focused = !forceBroad && (!explicit.isEmpty || !learned.isEmpty) && round % 4 != 3
         var terms: [String]
         if !focused { terms = [] }
         else if !explicit.isEmpty && (learned.isEmpty || round % 4 == 0) { terms = [explicit[(round / 4 + (learned.isEmpty ? round % 4 : 0)) % explicit.count]] }
-        else { terms = [learned[(round / 4 * 2 + max(0, round % 4 - 1)) % learned.count]] }
+        else { terms = [learned[round % learned.count]] }
         // A subset of focused discoveries explicitly includes a previously
         // liked 3D artist. Artist/medium context must survive candidate retrieval.
         if focused, provider == .rule34, round % 6 == 4,
@@ -341,6 +484,7 @@ actor RecommendationEngine {
 
     func reset(provider: Provider? = nil) async {
         drainedCandidateQueries.removeAll()
+        sessionTaste = SessionPreferenceModel()
         await semantic.reset()
         if let provider {
             state.profiles[provider.rawValue] = RecommendationProfile()
@@ -460,6 +604,7 @@ actor RecommendationEngine {
         }
         let source = post.provider.lowercased()
         let signalTerms = terms(for: evidencePost)
+        sessionTaste.record(event, post: post, terms: signalTerms)
         var profile = profile(for: source)
         let negativeShare = 1 / sqrt(Double(max(1, min(signalTerms.count, 12))))
         var delta = 0.0
@@ -549,12 +694,13 @@ actor RecommendationEngine {
             || RecommendationTagRules.rejects(post, exclusions: repeatedlyRejectedTerms(source: source))
     }
 
-    func score(_ post: Post, taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:]) -> Double {
+    func score(_ post: Post, taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:],
+               cachedTerms: [String]? = nil) -> Double {
         let source = post.provider.lowercased()
         let scopedKey = contextualRanking ? TasteConcepts.profileKey(post) : source
         let general = profile(for: source)
         let p = contextualRanking ? (state.scopedProfiles[scopedKey] ?? RecommendationProfile()) : general
-        let postTerms = terms(for: post)
+        let postTerms = cachedTerms ?? terms(for: post)
         let into = Set(tasteTokens(source: source, values: taste.into))
         let notInto = Set(tasteTokens(source: source, values: taste.notInto))
         if isHardDisliked(post, taste: taste) { return -1_000 }
@@ -570,6 +716,7 @@ actor RecommendationEngine {
         }
         score += min(3.0, log1p(savedScore) * 0.9)
         score += preferenceGuardPenalty(post)
+        score += conditionalTaste.score(post, taxonomy: taxonomy)
         // An instant swipe away is an explicitly reversible negative; unlike a
         // thumbs-down it does not change permanent term evidence or visual profiles.
         let candidateTerms = Set(postTerms.map(RecommendationTagRules.canonical))
@@ -630,25 +777,68 @@ actor RecommendationEngine {
         if contextualRanking, let context = state.contextualProfiles[scopedKey], let features = VisualFeatures.metadata(post, taxonomy: taxonomy) {
             score += context.score(features) * 4
         }
+        score += sessionTaste.score(provider: source, terms: postTerms)
         return score
     }
 
-    /// Cheap metadata ranking before publication: no ML, images, or network access.
-    /// An untouched profile retains the provider's original order.
-    func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post], visualScores: [String: Double] = [:]) -> [Post] {
-        let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(128, candidates.count)) }
+    /// Serving gate: user-selected interests determine which broad discovery
+    /// candidates qualify to appear in Recommended. Retrieval itself can remain
+    /// broad for novelty and future preference exploration.
+    private func matchesExplicitInterest(_ post: Post, taste: TasteChoice, visual: Double?) -> Bool {
+        let source = post.provider.lowercased()
+        let chosen = Set(tasteTokens(source: source, values: taste.into)
+            .map(RecommendationTagRules.canonical))
+        // Legacy Simple onboarding saved a chosen character AND its parent
+        // franchise as two equally strong explicit preferences. Treat that
+        // inherited franchise as context, not an open-ended recommendation.
+        let inherited = Set(chosen.flatMap { TasteConcepts.characterFranchises[$0] ?? [] })
+        let selected = chosen.subtracting(inherited)
+        let observed = Set(terms(for: post).map(RecommendationTagRules.canonical))
+        if !selected.isEmpty && !selected.isDisjoint(with: observed) { return true }
+
+        // For profiles built from real Likes/Favorites, demand repeated,
+        // independently saved evidence before narrowing an otherwise empty
+        // explicit profile. One favorite must not overfit the entire feed.
+        let favored = savedFavoriteAffinity[source] ?? [:]
+        let reinforced = Set(favored.compactMap { term, strength -> String? in
+            let canonical = RecommendationTagRules.canonical(term)
+            guard strength >= 2.5, !Self.genericTasteTerms.contains(canonical),
+                  !inherited.contains(canonical) else { return nil }
+            return canonical
+        })
+        let recent = Set(sessionTaste.strongInterests(provider: source, limit: 12)
+            .filter { $0.1 >= 2.7 }.map { $0.0 })
+        guard !selected.isEmpty || !reinforced.isEmpty || !recent.isEmpty else { return true }
+        if !reinforced.isDisjoint(with: observed) || !recent.isDisjoint(with: observed) { return true }
+        return visual.map { $0.isFinite && $0 >= 3.0 } ?? false
+    }
+
+    /// Cheap metadata ranking before publication: no inference or network.
+    /// In strict serving mode the feed is not padded with unrelated items.
+    func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post], visualScores: [String: Double] = [:], strict: Bool = false) -> [Post] {
+        let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(384, candidates.count)) }
         guard let first = candidates.first else { return [] }
         let p = profile(for: first.provider.lowercased())
         let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !savedFavoriteAffinity.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty
             || !p.terms.isEmpty || !p.negativeThemes.isEmpty || !p.termEvidence.isEmpty
-        guard hasSignal || !state.reversibleSkips.evidence.isEmpty || !visualScores.isEmpty else { return candidates.filter { !isHardDisliked($0, taste: taste) } }
-        var scored: [(post: Post, value: Double, offset: Int)] = []
-        for (offset, post) in candidates.prefix(128).enumerated() {
-            guard !isHardDisliked(post, taste: taste) else { continue }
-            let metadata = score(post, taste: taste, recent: recent)
+        guard hasSignal || !state.reversibleSkips.evidence.isEmpty || !visualScores.isEmpty else {
+            return candidates.filter { post in
+                !isHardDisliked(post, taste: taste) &&
+                (!strict || matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]))
+            }
+        }
+        var scored: [(post: Post, value: Double, offset: Int, topics: Set<String>)] = []
+        for (offset, post) in candidates.prefix(384).enumerated() {
+            guard !isHardDisliked(post, taste: taste),
+                  !strict || matchesExplicitInterest(post, taste: taste,
+                                                       visual: visualScores[post.stableID]) else { continue }
+            // Tokenize once for the metadata score and the diversity pass.
+            let postTerms = terms(for: post)
+            let metadata = score(post, taste: taste, recent: recent, cachedTerms: postTerms)
             let calibrated = RecommendationQualityModel.combined(metadata: metadata,
                 visual: visualScores[post.stableID])
-            scored.append((post: post, value: calibrated, offset: offset))
+            let topics = Set(postTerms).subtracting(Self.genericTasteTerms)
+            scored.append((post: post, value: calibrated, offset: offset, topics: topics))
         }
         scored.sort { $0.value == $1.value ? $0.offset < $1.offset : $0.value > $1.value }
         // Lightweight, bounded diversification without model inference:
@@ -664,39 +854,64 @@ actor RecommendationEngine {
             var best = 0
             var bestScore = -Double.infinity
             for index in 0..<count {
-                let terms = Set(self.terms(for: scored[index].post)).subtracting(Self.genericTasteTerms)
+                let topics = scored[index].topics
                 let overlap = context.map { seen -> Double in
-                    guard !terms.isEmpty, !seen.isEmpty else { return 0 }
-                    return Double(terms.intersection(seen).count) / Double(max(1, min(terms.count, seen.count)))
+                    guard !topics.isEmpty, !seen.isEmpty else { return 0 }
+                    return Double(topics.intersection(seen).count) / Double(max(1, min(topics.count, seen.count)))
                 }.max() ?? 0
                 let adjusted = scored[index].value - overlap * 6.5
                 if adjusted > bestScore { best = index; bestScore = adjusted }
             }
             let item = scored.remove(at: best)
             output.append(item.post)
-            termWindow.append(Set(terms(for: item.post)).subtracting(Self.genericTasteTerms))
+            termWindow.append(item.topics)
         }
         output += scored.map(\.post)
-        return output + candidates.dropFirst(128).filter { !isHardDisliked($0, taste: taste) }
+        return output + candidates.dropFirst(384).filter { post in
+            !isHardDisliked(post, taste: taste) &&
+            (!strict || matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]))
+        }
     }
 
     func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], visualScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
         guard !Task.isCancelled else { return candidates }
         let start = Date(); defer { rankLatencyMs = Date().timeIntervalSince(start) * 1000 }
-        // Cheap bounded shortlist before quadratic diversity selection. Strong
-        // candidates beyond the first page still get a chance to surface.
-        var scored: [(offset: Int, post: Post, value: Double)] = []
+        // Query the existing on-device embedding cache BEFORE trimming the 512
+        // candidates to 128. Otherwise a semantically excellent match that had
+        // sparse metadata could never compete in the final reranker.
+        // scores() is cache-only; no network or Core ML inference runs here.
+        var scored: [(offset: Int, post: Post, metadata: Double)] = []
         for (offset, post) in candidates.prefix(512).enumerated() {
-            scored.append((offset, post, score(post, taste: taste, recent: recent)))
+            guard !isHardDisliked(post, taste: taste) else { continue }
+            scored.append((offset, post, score(post, taste: taste, recent: recent,
+                                               collaborativeScores: collaborativeScores)))
         }
-        scored.sort { a, b in a.value == b.value ? a.offset < b.offset : a.value > b.value }
-        let shortlist: [Post] = scored.prefix(128).map { $0.post }
+        let semanticScores = await semantic.scores(scored.map(\.post), taste: taste)
+        let weights = semantic.weights
+        // Compare features on the same scales used by the final reranker.
+        // Collaborative, semantic and cached appearance signals may all rescue
+        // a candidate previously discarded by metadata-only shortlisting.
+        // Explicit intermediate types avoid exponential Swift 6 inference cost
+        // on a heterogeneous numeric expression containing optional scores.
+        var shortlistScores: [(offset: Int, post: Post, value: Double)] = []
+        shortlistScores.reserveCapacity(scored.count)
+        for entry in scored {
+            let metadataValue: Double = tanh(entry.metadata / 35.0) * weights.tag
+            let semanticValue: Double = semanticScores[entry.post.stableID]?.total(weights) ?? 0.0
+            let cachedAppearance: Double = visualScores[entry.post.stableID] ?? 0.0
+            let visualValue: Double = max(-4.0, min(4.0, cachedAppearance))
+            let combined: Double = metadataValue + semanticValue + visualValue
+            shortlistScores.append((offset: entry.offset, post: entry.post, value: combined))
+        }
+        shortlistScores.sort { left, right in
+            if left.value == right.value { return left.offset < right.offset }
+            return left.value > right.value
+        }
+        let shortlist: [Post] = shortlistScores.prefix(128).map { entry in entry.post }
         let selected = Set(shortlist.map(\.stableID))
         let overflow = candidates.filter { !selected.contains($0.stableID) }
         let candidates = shortlist
-        let semanticScores = await semantic.scores(candidates, taste: taste)
         let vectors = await semantic.diversityVectors(candidates + recent)
-        let weights = semantic.weights
         debugScores = [:]
         let themes = Dictionary(uniqueKeysWithValues:Set(candidates.map { $0.provider.lowercased() }).map { source in
             (source,positiveTermEntries(source:source,taste:taste,limit:3).map { $0.0 })

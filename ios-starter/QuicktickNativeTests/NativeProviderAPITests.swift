@@ -15,7 +15,10 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.log.append(request)
-        let url = request.url!, host = url.host ?? "", path = url.path
+        let url = request.url!, host = url.host ?? ""
+        // Foundation URL.path drops a trailing slash; the canonical-route
+        // fallback fixture must distinguish /search from /search/.
+        let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? url.path
         let payload: String
         if path == "/v2/auth/temporary" { payload = #"{"token":"synthetic-provider-token"}"# }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
@@ -89,11 +92,70 @@ final class NativeProviderAPITests: XCTestCase {
     }
 
 
+    @MainActor func testUntouchedRecommendedFetchesTwoDifferentBroadPages() async throws {
+        let (api, session) = client()
+        defer { session.invalidateAndCancel() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+        await store.bootstrap()
+        store.selectedProvider = .eporner
+        await store.recommendations.load(RecommendationState())
+        NativeProviderProtocol.log.reset()
+        await store.refresh()
+        let requests = NativeProviderProtocol.log.snapshot()
+            .filter { $0.url?.path.hasPrefix("/api/v2/video/search") == true }
+        let pages = requests.compactMap { request in
+            URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "page" })?.value
+        }
+        XCTAssertGreaterThanOrEqual(pages.count, 2)
+        XCTAssertGreaterThanOrEqual(Set(pages).count, 2,
+            "An empty taste profile must never download identical broad pages twice")
+    }
+
+    @MainActor func testRecommendedUsesDifferentCandidateQueriesBeforeRanking() async throws {
+        let (api, session) = client()
+        defer { session.invalidateAndCancel() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+        await store.bootstrap()
+        store.selectedProvider = .eporner
+        // Supply distinct intentional interests without updating on-disk user
+        // preferences or depending on external network responses.
+        await store.recommendations.record(.like,
+            post: Post(key: "eporner:liked-a", id: "liked-a", provider: "Eporner",
+                       tags: ["engineering", "aerodynamics"]))
+        NativeProviderProtocol.log.reset()
+        await store.refresh()
+        let searches = NativeProviderProtocol.log.snapshot()
+            .filter { $0.url?.path.hasPrefix("/api/v2/video/search") == true }
+            .compactMap { request in
+                URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "query" })?.value
+            }
+        XCTAssertGreaterThanOrEqual(searches.count, 2,
+            "Recommended must search at least two distinct interest/discovery pools")
+        XCTAssertGreaterThan(Set(searches).count, 1,
+            "Rearranging duplicate pages cannot improve candidate quality")
+    }
+
     func testPornhubFeed404TriesCanonicalRouteOnce() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
-        let page = try await api.posts(provider: .pornhub, query: QueryParser.parse("route-fixture"), page: 1)
+        let page: PostPage
+        do {
+            page = try await api.posts(provider: .pornhub, query: QueryParser.parse("route-fixture"), page: 1)
+        } catch {
+            XCTFail("Expected fallback to the canonical public route; requests: \(NativeProviderProtocol.log.snapshot().compactMap(\.url)) error: \(error)")
+            return
+        }
         XCTAssertEqual(page.items.count, 1)
-        XCTAssertEqual(NativeProviderProtocol.log.snapshot().map { $0.url!.path }, ["/webmasters/search", "/webmasters/search/"])
+        let rawPaths = NativeProviderProtocol.log.snapshot().compactMap {
+            URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.percentEncodedPath
+        }
+        XCTAssertEqual(rawPaths, ["/webmasters/search", "/webmasters/search/"],
+                       "Fallback request should retain its trailing slash")
     }
     func testPornhubUsesCanonicalPageAndSurvivesRemovedMP4Definition() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }

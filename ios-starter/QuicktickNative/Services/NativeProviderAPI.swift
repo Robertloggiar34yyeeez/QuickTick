@@ -146,13 +146,14 @@ enum NativeProviderAPI {
         }
     }
     static func page(_ rows: [Post], hasMore: Bool, query: ParsedQuery, immersive: Bool) -> PostPage {
-        let banned = Set(query.excluded.map { $0.lowercased() })
         var seen = Set<String>()
         return PostPage(items: rows.filter { post in
             guard !post.id.isEmpty, seen.insert(post.stableID).inserted,
                   !immersive || post.isImmersiveMedia else { return false }
             if post.providerKey == .rule34 {
-                return banned.isDisjoint(with: Set(post.tags.map { $0.lowercased() }))
+                // Apply canonical aliases and whole families (furry/anthro)
+                // consistently with the feed and the user's explicit bans.
+                return !RecommendationTagRules.rejects(post, exclusions: query.excluded)
             }
             return !query.excluded.contains { containsKeyword($0, in: post) }
         }, hasMore: hasMore)

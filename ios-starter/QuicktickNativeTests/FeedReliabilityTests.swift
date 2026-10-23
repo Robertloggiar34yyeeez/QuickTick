@@ -30,7 +30,7 @@ private final class CandidatePageProtocol: URLProtocol, @unchecked Sendable {
         let page = (Int(query.first { $0.name == "pid" }?.value ?? "0") ?? 0) + 1
         let mode = query.first { $0.name == "tags" }?.value?.contains("video") == true ? "video" : "feed"
         let video = mode != "video" || page >= 3
-        let json: [[String: Any]] = [["id": "\(mode):\(page)", "tags": "engineering", "file_url": "https://cdn.example.invalid/fixture.\(video ? "mp4" : "jpg")"]]
+        let json: [[String: Any]] = [["id": "\(mode):\(page)", "tags": "engineering", "file_url": "https://cdn.example.invalid/fixture-\(page).\(video ? "mp4" : "jpg")"]]
         // A full raw page signals more pages even when local clip filtering removes it.
         let data = try! JSONSerialization.data(withJSONObject: Array(repeating: json[0], count: mode == "video" ? 100 : 80))
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
@@ -57,12 +57,16 @@ final class FeedReliabilityTests: XCTestCase {
     }
     @MainActor func testRecommendedRefreshAdvancesAndRestoresCandidateCursor() async {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
-        await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:1"])
-        await store.refresh(); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:2"])
+        await store.refresh()
+        XCTAssertEqual(Set(store.posts.map(\.stableID)), Set(["rule34:feed:1", "rule34:feed:2"]))
+        await store.refresh()
+        XCTAssertEqual(Set(store.posts.map(\.stableID)), Set(["rule34:feed:3", "rule34:feed:4"]))
         let saved = await store.recommendations.snapshot()
         let (restored, anotherSession) = candidateStore(); defer { anotherSession.invalidateAndCancel() }
         await restored.recommendations.load(saved)
-        await restored.refresh(); XCTAssertEqual(restored.posts.map(\.stableID), ["rule34:feed:3"])
+        await restored.refresh()
+        XCTAssertEqual(Set(restored.posts.map(\.stableID)), Set(["rule34:feed:5", "rule34:feed:6"]),
+                       "Both candidate cursors should persist beyond an app restart")
     }
     @MainActor func testConsumedCandidatePageIsSkippedInsteadOfReinserted() async {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
@@ -73,11 +77,15 @@ final class FeedReliabilityTests: XCTestCase {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
         store.activeTab = 1
         await store.refresh(immersive: true)
-        XCTAssertTrue(store.feedMediaOnly); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:video:3"])
+        XCTAssertTrue(store.feedMediaOnly)
+        XCTAssertEqual(Set(store.posts.map(\.stableID)), Set(["rule34:video:3", "rule34:video:4"]))
         await store.loadMore(immersive: true)
-        XCTAssertEqual(store.posts.map(\.stableID), ["rule34:video:3", "rule34:video:4"])
+        XCTAssertEqual(Set(store.posts.map(\.stableID)), Set([
+            "rule34:video:3", "rule34:video:4", "rule34:video:5", "rule34:video:6"
+        ]))
         store.activeTab = 0; await store.refresh()
-        XCTAssertFalse(store.feedMediaOnly); XCTAssertEqual(store.posts.map(\.stableID), ["rule34:feed:1"])
+        XCTAssertFalse(store.feedMediaOnly)
+        XCTAssertEqual(Set(store.posts.map(\.stableID)), Set(["rule34:feed:1", "rule34:feed:2"]))
     }
     @MainActor func testExplicitSearchKeepsFirstPageSemantics() async {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
@@ -94,7 +102,8 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(record.offlinePost?.type, "image")
         XCTAssertEqual(record.offlinePost?.cardPreviewURL, image.absoluteString)
         let remote = Post(key: "image", id: "1", provider: "Rule34", mediaUrl: "https://cdn.example.invalid/original.jpg", previewUrl: "https://cdn.example.invalid/tiny.jpg", type: "image")
-        XCTAssertEqual(remote.cardPreviewURL, remote.mediaUrl, "Home must downsample the original instead of enlarging a thumbnail")
+        XCTAssertEqual(remote.cardPreviewURL, remote.previewUrl,
+                       "Use the smaller CDN preview first while full-screen retains the original")
         record.state = .failed; XCTAssertNil(record.offlinePost)
     }
     @MainActor func testRecommendationAdaptationWaitsForVisibleHomeAnchor() async {
@@ -145,7 +154,8 @@ final class FeedReliabilityTests: XCTestCase {
         await store.refresh();await old.value
         XCTAssertEqual(store.posts.map(\.stableID),["eporner:recent:1"])
         store.feedSort = "recommended";await store.refresh()
-        XCTAssertEqual(store.posts.map(\.stableID),["eporner:recommended:1"])
+        XCTAssertEqual(Set(store.posts.map(\.stableID)), Set(["eporner:recommended:1", "eporner:recommended:2"]),
+                       "Recommended mode combines two independent candidate pools")
     }
     func testVisibleCardUsesCoverageAndHysteresis() {
         let viewport = CGRect(x: 0,y: 0,width: 390,height: 700)
@@ -209,6 +219,35 @@ final class FeedReliabilityTests: XCTestCase {
         _ = pool.activate(key: "three",url: a,muted: false);store.isForeground = false;XCTAssertNil(pool.activeKey)
         XCTAssertLessThanOrEqual(pool.count,3)
     }
+    func testHomeFeedCardIsFullBleedOnPhoneAndCappedOnTablet() {
+        let phone = CGSize(width: 390, height: 800)
+        let video = MediaSizing.feedCard(aspect: 16.0 / 9.0, available: phone)
+        XCTAssertEqual(video.width, 390)
+        XCTAssertEqual(video.width / video.height, 16.0 / 9.0, accuracy: 0.001)
+        let tall = MediaSizing.feedCard(aspect: 0.125, available: phone)
+        XCTAssertEqual(tall.width, 390)
+        XCTAssertLessThanOrEqual(tall.height, 560)
+        let tablet = MediaSizing.feedCard(aspect: 16.0 / 9.0,
+                                          available: CGSize(width: 1024, height: 1200))
+        XCTAssertEqual(tablet.width, 680)
+        let landscape = MediaSizing.feedCard(aspect: 16.0 / 9.0,
+                                             available: CGSize(width: 874, height: 322))
+        XCTAssertLessThanOrEqual(landscape.height, 322 * 0.72)
+        XCTAssertEqual(landscape.width / landscape.height, 16.0 / 9.0, accuracy: 0.001)
+        XCTAssertLessThan(landscape.width, 680, "Short landscape screens must not clip wide video")
+    }
+
+    func testHomeFiltersExplicitKeywordBansFromCaptionsAndCreators() {
+        var caption = Post(key: "eporner:1", id: "1", provider: "Eporner", tags: ["misc"])
+        caption.caption = "Outdoor portrait"
+        var creator = Post(key: "redgifs:2", id: "2", provider: "RedGIFs", tags: ["misc"])
+        creator.creator = "Blocked Studio"
+        let battle = Post(key: "hanime:3", id: "3", provider: "Hanime", tags: ["battle"])
+        XCTAssertTrue(RecommendationTagRules.rejects(caption, exclusions: ["portrait"]))
+        XCTAssertTrue(RecommendationTagRules.rejects(creator, exclusions: ["blocked studio"]))
+        XCTAssertFalse(RecommendationTagRules.rejects(battle, exclusions: ["bat"]))
+    }
+
     func testSizingMatrixForPhoneTabletAndSplitWindows() {
         for available in [CGSize(width: 358,height: 750),CGSize(width: 810,height: 1080),CGSize(width: 1180,height: 720),CGSize(width: 480,height: 1024)] {
             for native in [CGSize(width: 240,height: 426),CGSize(width: 1920,height: 1080),CGSize(width: 3000,height: 5000),CGSize(width: 320,height: 320)] {

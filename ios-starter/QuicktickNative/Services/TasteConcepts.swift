@@ -17,11 +17,17 @@ enum TasteConcepts {
         "rouge_the_bat_(sonic_the_hedgehog)": "rouge_the_bat",
         "sonic_the_hedgehog_(series)": "sonic_the_hedgehog"
     ]
-    static let franchises: Set<String> = ["street_fighter", "brawl_stars", "fortnite", "sonic_the_hedgehog"]
+    static let franchises: Set<String> = [
+        "street_fighter", "brawl_stars", "fortnite", "sonic_the_hedgehog",
+        "final_fantasy", "metroid", "tomb_raider"
+    ]
     static let characterFranchises: [String: Set<String>] = [
-        "chun_li": ["street_fighter"], "shelly_brawl_stars": ["brawl_stars"],
-        "colette_brawl_stars": ["brawl_stars"], "fishstick_fortnite": ["fortnite"],
-        "rouge_the_bat": ["sonic_the_hedgehog"]
+        "chun_li": ["street_fighter"], "cammy_white": ["street_fighter"],
+        "juri_han": ["street_fighter"],
+        "tifa_lockhart": ["final_fantasy"], "aerith_gainsborough": ["final_fantasy"],
+        "samus_aran": ["metroid"], "lara_croft": ["tomb_raider"],
+        "shelly_brawl_stars": ["brawl_stars"], "colette_brawl_stars": ["brawl_stars"],
+        "fishstick_fortnite": ["fortnite"], "rouge_the_bat": ["sonic_the_hedgehog"]
     ]
     static func canonical(_ raw: String) -> String {
         let value = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)

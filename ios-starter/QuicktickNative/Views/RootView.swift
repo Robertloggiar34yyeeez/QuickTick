@@ -26,20 +26,26 @@ struct RootView: View {
                     case 3:
                         NavigationStack { DownloadsFeedView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }
                     default:
-                        NavigationStack { HomeFeedView(showSettings: $showSettings, scrollAnchor: $homeAnchor).id(store.feedRevision) }
+                        NavigationStack { HomeFeedView(showSettings: $showSettings, scrollAnchor: $homeAnchor) }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if !sideNavigation {
-                    HStack(spacing: 4) { tabButtons(vertical: false) }
-                        .padding(4)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
-                        .shadow(color: .black.opacity(0.45), radius: 16, y: 5)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 4)
-                        .padding(.bottom, 5)
-                        .background(AppTheme.background)
+                    // Full-width, screen-edge dock instead of a floating pill.
+                    // The dock background extends behind the home indicator;
+                    // its buttons occupy the entire available horizontal space.
+                    HStack(spacing: 0) { tabButtons(vertical: false) }
+                        .padding(.horizontal, 4)
+                        .padding(.top, 5)
+                        .padding(.bottom, 0)
+                        .background {
+                            AppTheme.elevatedSurface.ignoresSafeArea(edges: .bottom)
+                        }
+                        .overlay(alignment: .top) {
+                            Rectangle().fill(AppTheme.border).frame(height: 1)
+                        }
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("bottom-navigation-bar")
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -106,12 +112,12 @@ struct RootView: View {
                     }
                 }
                                 .foregroundStyle(store.activeTab == index ? .white : .white.opacity(0.65))
-                .frame(width: vertical ? 46 : nil, height: vertical ? 46 : 48)
+                .frame(width: vertical ? 46 : nil, height: vertical ? 46 : 54)
                 .frame(maxWidth: vertical ? nil : .infinity)
-                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .contentShape(Rectangle())
                 .background {
                     if store.activeTab == index {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        RoundedRectangle(cornerRadius: vertical ? 18 : 10, style: .continuous)
                             .fill(AppTheme.gradient)
                             .matchedGeometryEffect(id: "selected-tab", in: navigationSelection)
                     }

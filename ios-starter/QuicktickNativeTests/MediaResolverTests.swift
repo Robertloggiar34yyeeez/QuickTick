@@ -73,9 +73,16 @@ final class FeedPaginationTests: XCTestCase {
         XCTAssertEqual(Set(store.posts.map(\.stableID)).count, 20)
         XCTAssertFalse(store.hasMore)
     }
-    func testNormalFeedUsesOriginalImagesAndStillVideoPreviews() {
+    func testFeedUsesBoundedPreviewsButOriginalImagesRemainAvailableForFullScreen() {
         let image = Post(key: "1", id: "1", provider: "Rule34", mediaUrl: "https://example.invalid/full.jpg", previewUrl: "https://example.invalid/sample.jpg", thumbUrl: "https://example.invalid/tiny.jpg", type: "image")
-        XCTAssertEqual(image.cardPreviewURL, image.mediaUrl)
+        XCTAssertEqual(image.cardPreviewURL, image.previewUrl)
+        XCTAssertNotEqual(image.cardPreviewURL, image.mediaUrl)
+        XCTAssertEqual(image.mediaUrl, "https://example.invalid/full.jpg", "Full screen must retain the original")
+        var fallback = image
+        fallback.previewUrl = ""
+        XCTAssertEqual(fallback.cardPreviewURL, fallback.thumbUrl)
+        fallback.thumbUrl = ""
+        XCTAssertEqual(fallback.cardPreviewURL, fallback.mediaUrl)
         var video = image; video.type = "video"
         XCTAssertEqual(video.cardPreviewURL, video.previewUrl)
         video.previewUrl = "https://example.invalid/preview.mp4"

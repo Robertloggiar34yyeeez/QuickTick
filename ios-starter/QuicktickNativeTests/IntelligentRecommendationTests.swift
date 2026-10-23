@@ -50,6 +50,48 @@ final class IntelligentRecommendationTests: XCTestCase {
         XCTAssertEqual(RecommendationQualityModel.combined(metadata: 3, visual: nil), 3)
     }
 
+    func testSessionIntentReactsToLikesButNotPassiveImpressions() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let liked = post("liked", ["qipao", "portrait"])
+        let similar = post("similar", ["qipao", "portrait"])
+        let other = post("different", ["landscape", "nature"])
+        let before = await engine.score(similar, taste: TasteChoice(), recent: [])
+        await engine.record(.impression, post: liked)
+        let passive = await engine.score(similar, taste: TasteChoice(), recent: [])
+        XCTAssertEqual(passive, before, accuracy: 0.001)
+        await engine.record(.like, post: liked)
+        let improved = await engine.score(similar, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(improved, passive)
+        let otherScore = await engine.score(other, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(improved, otherScore)
+        let ranked = await engine.rankFast([other, similar], taste: TasteChoice(), recent: [])
+        XCTAssertEqual(ranked.first?.stableID, similar.stableID)
+    }
+
+    func testWatchCreditDoesNotMultiplyPeriodicReports() {
+        var session = SessionPreferenceModel()
+        let item = Post(key: "rule34:watch", id: "watch", provider: "rule34", tags: ["qipao"])
+        session.record(.watched(seconds: 3, completion: 0.3), post: item, terms: item.tags)
+        XCTAssertEqual(session.score(provider: "rule34", terms: item.tags), 0)
+        session.record(.watched(seconds: 10, completion: 0.85), post: item, terms: item.tags)
+        let credited = session.score(provider: "rule34", terms: item.tags)
+        XCTAssertGreaterThan(credited, 0)
+        session.record(.watched(seconds: 10, completion: 0.85), post: item, terms: item.tags)
+        session.record(.impression, post: item, terms: item.tags)
+        session.record(.quickSkip, post: item, terms: item.tags)
+        XCTAssertEqual(session.score(provider: "rule34", terms: item.tags), credited)
+        XCTAssertEqual(session.score(provider: "eporner", terms: item.tags), 0)
+    }
+
+    func testSessionDeliberateLessReducesRecentSubjectAffinity() {
+        var session = SessionPreferenceModel()
+        let item = Post(key: "rule34:less", id: "less", provider: "rule34", tags: ["qipao", "portrait"])
+        session.record(.like, post: item, terms: item.tags)
+        let positive = session.score(provider: "rule34", terms: item.tags)
+        session.record(.less, post: item, terms: item.tags)
+        XCTAssertLessThan(session.score(provider: "rule34", terms: item.tags), positive)
+    }
+
     func testHistoricalFavoritesRemainAWeakSignalRatherThanOvertakingDiversity() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let favorites = (0..<100).map { post("saved-\($0)", ["chun_li", "qipao", "art"]) }
@@ -287,6 +329,26 @@ final class IntelligentRecommendationTests: XCTestCase {
         XCTAssertFalse(allowed)
     }
 
+    func testConditionalTasteModelKeepsCharactersArtistAndMediumSeparate() {
+        var model = ConditionalTasteModel()
+        let favorites = [
+            post("liked-a", ["2d", "chun_li", "artist:two_d_artist"]),
+            post("liked-b", ["3d", "chun_li", "artist:trusted_3d"])
+        ]
+        model.train(favorites, taxonomy: nil)
+        let trusted = post("trusted", ["3d", "chun_li", "artist:trusted_3d"])
+        let untrusted = post("untrusted", ["3d", "chun_li", "artist:unknown_3d"])
+        let falseMedium = post("false-medium", ["photo", "chun_li", "artist:trusted_3d"])
+        let otherCharacter = post("other", ["3d", "rouge_the_bat", "artist:trusted_3d"])
+        XCTAssertEqual(model.score(trusted, taxonomy: nil), 9, accuracy: 0.001)
+        XCTAssertEqual(model.score(untrusted, taxonomy: nil), 2, accuracy: 0.001)
+        XCTAssertEqual(model.score(falseMedium, taxonomy: nil), 0, accuracy: 0.001)
+        XCTAssertEqual(model.score(otherCharacter, taxonomy: nil), 3, accuracy: 0.001)
+        model.train([favorites[0]], taxonomy: nil)
+        XCTAssertEqual(model.score(trusted, taxonomy: nil), 0, accuracy: 0.001,
+            "Removing a favorite must clear that artist/medium pair")
+    }
+
     func testChunLi3DMatchesTrustedArtistsInsteadOfAny3DRender() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var one = post("liked-3d-a", ["3d", "chun_li", "artist:trusted_one"])
@@ -364,5 +426,49 @@ final class IntelligentRecommendationTests: XCTestCase {
         func precision(_ posts: [Post]) -> Double { Double(posts.prefix(5).filter { $0.tags.contains("artist:one") && $0.tags.contains("2d") }.count) / 5 }
         print("QUICKTICK_METRIC metadata_fixture_baseline_p5=\(precision(old)) current_p5=\(precision(new)) baseline_rank_ms=\(baselineMs) current_rank_ms=\(currentMs)")
         XCTAssertGreaterThanOrEqual(precision(new), precision(old)); XCTAssertEqual(precision(new), 1)
+    }
+
+    func testFastRankingFindsStrongInterestBeyondOriginal128CandidateWindow() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let unrelated = (0..<230).map { post("unrelated-\($0)", ["background"]) }
+        let wanted = post("wanted", ["rare_interest"])
+        let taste = TasteChoice(done: true, into: ["rare_interest"], notInto: [])
+        let ranked = await engine.rankFast(unrelated + [wanted], taste: taste, recent: [])
+        XCTAssertEqual(ranked.first?.stableID, wanted.stableID,
+                       "Strong interests must not be stranded after the first 128 items")
+        XCTAssertEqual(ranked.count, unrelated.count + 1)
+    }
+
+    func testDeepRankingRescuesCachedVisualMatchBeyondMetadataShortlist() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let ordinary = (0..<180).map { post("ordinary-\($0)", ["jacket"]) }
+        let visualMatch = post("visually-matching", ["jacket"])
+        let taste = TasteChoice(done: true, into: ["jacket"], notInto: [])
+        let ranked = await engine.rank(ordinary + [visualMatch], taste: taste, recent: [],
+                                       visualScores: [visualMatch.stableID: 4], limit: 5)
+        XCTAssertEqual(ranked.first?.stableID, visualMatch.stableID,
+                       "A cached high-affinity image should reach the reranker even with sparse metadata")
+    }
+
+    func testFullImageUsesActualAspectRatioToDistinguishComics() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for (height, expectedComic) in [(120, false), (700, true)] {
+            let width = 120
+            let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.setFillColor(CGColor(red: 0.4, green: 0.5, blue: 0.6, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            let url = folder.appendingPathComponent("image-\(height).png")
+            let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
+                url as CFURL, "public.png" as CFString, 1, nil))
+            CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+            XCTAssertTrue(CGImageDestinationFinalize(destination))
+            let full = try await MediaImagePipeline.shared.fullImage(url: url)
+            XCTAssertEqual(full.comic, expectedComic)
+        }
     }
 }

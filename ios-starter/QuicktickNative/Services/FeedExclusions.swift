@@ -23,6 +23,12 @@ enum RecommendationTagRules {
     }
     static func rejects(_ post: Post, exclusions: [String]) -> Bool {
         guard !exclusions.isEmpty else { return false }
+        // On keyword providers a banned topic may appear only in the title,
+        // category or credited creator. Preserve whole-word boundaries, so
+        // banning "bat" does not hide "battle".
+        if post.providerKey != .rule34 {
+            return exclusions.contains { NativeProviderAPI.containsKeyword($0, in: post) }
+        }
         let blocked = Set(exclusions.map(canonical))
         return post.tags.contains { raw in
             let tag = canonical(raw)

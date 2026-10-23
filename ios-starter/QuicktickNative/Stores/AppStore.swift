@@ -322,6 +322,8 @@ final class AppStore: ObservableObject {
     func selectFeedTab(_ tab: Int) async {
         guard (0...3).contains(tab) else { return }
         if tab == activeTab {
+            // Re-selecting the same tab refreshes its current query and sort.
+            // Never discard an explicit user search to force Recommended.
             if tab < 2 { await refresh(immersive: tab == 1) }
             return
         }
@@ -385,7 +387,12 @@ final class AppStore: ObservableObject {
             var broaden = false
             for _ in 0..<5 {
                 guard generation == token, !Task.isCancelled else { return }
-                let response = try await fetchCandidates(provider: provider, parsed: parsed, context: personalized ? context : nil, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly, forceBroad: broaden)
+                let response = personalized && !broaden
+                    ? try await fetchBlendedCandidates(provider: provider, parsed: parsed,
+                        context: context, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly)
+                    : try await fetchCandidates(provider: provider, parsed: parsed,
+                        context: personalized ? context : nil, page: requestedPage,
+                        sort: requestedSort, mediaOnly: mediaOnly, forceBroad: broaden)
                 let acquisition = response.request
                 let page = response.page
                 requestedPage = acquisition?.page ?? requestedPage
@@ -403,7 +410,7 @@ final class AppStore: ObservableObject {
                     // loading, network requests or pixel decoding on first paint.
                     let cachedAppearance = await visual.scores(incoming)
                     filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
-                        recent: [], visualScores: cachedAppearance)
+                        recent: [], visualScores: cachedAppearance, strict: true)
                 } else { filtered = incoming }
                 if filtered.isEmpty, let acquisition, acquisition.focused {
                     broaden = true
@@ -455,7 +462,12 @@ final class AppStore: ObservableObject {
             var broaden = false
             for attempt in 0..<5 {
             guard generation == token, !Task.isCancelled else { return }
-            let response = try await fetchCandidates(provider: provider, parsed: parsed, context: candidateContext, page: nextPage, sort: feedSort, mediaOnly: feedMediaOnly, forceBroad: broaden)
+            let response = candidateContext != nil && !broaden
+                ? try await fetchBlendedCandidates(provider: provider, parsed: parsed,
+                    context: candidateContext!, page: nextPage, sort: feedSort, mediaOnly: feedMediaOnly)
+                : try await fetchCandidates(provider: provider, parsed: parsed,
+                    context: candidateContext, page: nextPage, sort: feedSort,
+                    mediaOnly: feedMediaOnly, forceBroad: broaden)
             let acquisition = response.request
             let requestedPage = acquisition?.page ?? nextPage
             let page = response.page
@@ -473,7 +485,7 @@ final class AppStore: ObservableObject {
             if candidateContext != nil {
                 let cachedAppearance = await visual.scores(candidates)
                 ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
-                    recent: Array(posts.suffix(10)), visualScores: cachedAppearance)
+                    recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: true)
             } else { ranked = candidates }
             guard generation == token, !Task.isCancelled else { return }
             if ranked.isEmpty, let acquisition, acquisition.focused {
@@ -494,6 +506,92 @@ final class AppStore: ObservableObject {
             }
             guard generation == token, !Task.isCancelled else { return }
         } catch { if token == generation, !Task.isCancelled { recordFeedError(error, provider: provider) } }
+    }
+
+    // Rank across two independent candidate pools rather than rearranging a
+    // single 40-post search page. Network fetches run in parallel, and only
+    // cached metadata is scored on the first paint. A duplicate focused query
+    // is replaced by a broad discovery page to avoid two copies of one source.
+    private func fetchBlendedCandidates(provider: Provider, parsed: ParsedQuery, context: String,
+                                        page: Int, sort: String, mediaOnly: Bool)
+        async throws -> (page: PostPage, request: RecommendationEngine.CandidateRequest?) {
+        plannedAcquisition = nil
+        let taste = tasteChoice(for: provider)
+        let exclusions = self.exclusions + parsed.excluded
+        let first = await recommendations.candidateRequest(
+            context: context, provider: provider, taste: taste, excluded: exclusions)
+        var second = await recommendations.candidateRequest(
+            context: context, provider: provider, taste: taste, excluded: exclusions)
+        if first.context == second.context {
+            let broadKey = context + "|query:"
+            let broadCursor: Int
+            if let existing = candidateCursors[broadKey] {
+                broadCursor = existing
+            } else {
+                broadCursor = await recommendations.candidatePage(context: broadKey)
+            }
+            // With no learned interests, *both* plans may already be broad.
+            // Use consecutive pages rather than fetch identical URL twice.
+            let firstCursor = candidateCursors[first.context] ?? first.page
+            second = RecommendationEngine.CandidateRequest(
+                context: broadKey,
+                query: ParsedQuery(included: [], excluded: first.query.excluded),
+                page: first.context == broadKey ? max(broadCursor, firstCursor + 1) : broadCursor,
+                focused: false)
+        }
+        func prepared(_ request: RecommendationEngine.CandidateRequest)
+            -> (key: String, query: ParsedQuery, page: Int) {
+            let cursor = candidateCursors[request.context] ?? request.page
+            var query = request.query
+            query.excluded = RecommendationTagRules.queryExclusions(
+                query.excluded + exclusions + taste.notInto)
+            return (request.context, query, cursor)
+        }
+        let a = prepared(first)
+        var proposedB = prepared(second)
+        if a.key == proposedB.key && a.page == proposedB.page {
+            proposedB.page += 1
+        }
+        // Structured concurrent child tasks capture immutable query snapshots
+        // rather than AppStore's mutable local, satisfying Swift 6 isolation.
+        let b = proposedB
+        let primaryQuery = a.query
+        let primaryPageNumber = a.page
+        let secondaryQuery = b.query
+        let secondaryPageNumber = b.page
+        let requestedGeneration = generation
+        // async let keeps both requests structured and cancels outstanding
+        // work when the parent refresh is cancelled.
+        async let primary: PostPage? = try? await api.posts(
+            provider: provider, query: primaryQuery, page: primaryPageNumber,
+            sort: sort, immersive: mediaOnly)
+        async let secondary: PostPage? = try? await api.posts(
+            provider: provider, query: secondaryQuery, page: secondaryPageNumber,
+            sort: sort, immersive: mediaOnly)
+        let (firstPage, secondPage) = await (primary, secondary)
+        try Task.checkCancellation()
+        guard firstPage != nil || secondPage != nil else {
+            // Preserve meaningful HTTP/auth errors from the normal pathway.
+            return try await fetchCandidates(provider: provider, parsed: parsed,
+                context: context, page: page, sort: sort, mediaOnly: mediaOnly)
+        }
+        if generation == requestedGeneration {
+            if firstPage != nil {
+                candidateCursors[a.key] = a.page + 1
+                await recommendations.advanceCandidatePage(context: a.key, nextPage: a.page + 1)
+            }
+            if secondPage != nil {
+                candidateCursors[b.key] = b.page + 1
+                await recommendations.advanceCandidatePage(context: b.key, nextPage: b.page + 1)
+            }
+        }
+        let combined = PostPage(
+            items: (firstPage?.items ?? []) + (secondPage?.items ?? []),
+            hasMore: (firstPage?.hasMore ?? false) || (secondPage?.hasMore ?? false))
+        let used = firstPage != nil ? first : second
+        let usedPage = firstPage != nil ? a.page : b.page
+        return (combined, RecommendationEngine.CandidateRequest(
+            context: used.context, query: used.query, page: usedPage, focused: used.focused))
     }
 
     private func fetchCandidates(provider: Provider, parsed: ParsedQuery, context: String?, page: Int, sort: String, mediaOnly: Bool, forceBroad: Bool = false) async throws -> (page: PostPage, request: RecommendationEngine.CandidateRequest?) {
@@ -640,10 +738,21 @@ final class AppStore: ObservableObject {
     func adaptRecommendationTail(token: UUID) async {
         let tab = activeTab
         guard tab == 0 || tab == 1, feedSort == "recommended",
-              Date().timeIntervalSince(lastFeedMotion) >= 0.45,
-              let active = tab == 1 ? immersivePlaybackID : inlinePlaybackID else { return }
+              Date().timeIntervalSince(lastFeedMotion) >= 0.45 else { return }
         let source = posts
-        guard let activeIndex = source.firstIndex(where: { $0.stableID == active }) else { return }
+        let originalInlinePlaybackID = inlinePlaybackID
+        // Images have no inline AVPlayer. Use the last visible Home card as
+        // the protected anchor so feedback can adapt unseen posts there too.
+        let active: String?
+        if tab == 1 { active = immersivePlaybackID }
+        else {
+            active = inlinePlaybackID ?? source.last(where: {
+                protectedHomePostIDs.contains($0.stableID)
+            })?.stableID
+        }
+        guard let active, let activeIndex = source.firstIndex(where: {
+            $0.stableID == active
+        }) else { return }
         let protected = (tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs).union([active])
         let prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
         let prefix = Array(source.prefix(prefixCount))
@@ -652,7 +761,7 @@ final class AppStore: ObservableObject {
         let stillProtected = tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs
         guard !Task.isCancelled, generation == token, activeTab == tab, feedSort == "recommended",
               posts.map(\.stableID) == source.map(\.stableID),
-              (tab == 1 ? immersivePlaybackID : inlinePlaybackID) == active,
+              (tab == 1 ? immersivePlaybackID == active : inlinePlaybackID == originalInlinePlaybackID),
               stillProtected.isSubset(of: Set(prefix.map(\.stableID))) else { return }
         if ranked.map(\.stableID) != Array(source.dropFirst(prefixCount)).map(\.stableID) { posts = prefix + ranked }
     }
@@ -732,6 +841,19 @@ final class AppStore: ObservableObject {
         plannedAcquisition = nil
         await visual.stage(envelope, queueAnalysis: visualAnalysisEnabled)
         await applyFeedback(envelope)
+        if candidateContext != nil && feedSort == "recommended" {
+            switch event {
+            case .like, .unlike, .less, .download, .complete, .replay:
+                let token = generation
+                tailRankTask?.cancel()
+                tailRankTask = Task(priority: .utility) { [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+                    guard let self, !Task.isCancelled else { return }
+                    await self.adaptRecommendationTail(token: token)
+                }
+            case .impression, .quickSkip, .watched: break
+            }
+        }
         // A queued acquisition must not keep using the previous preference state.
         plannedAcquisition = nil
         persistenceTask?.cancel()
@@ -914,7 +1036,7 @@ final class AppStore: ObservableObject {
         let id = UUID(); manualVisualID = id
         manualVisualProgress = VisualRefreshProgress(completed: 0, total: 0, status: "Checking for new posts…", running: true)
         players.pauseAll()
-        manualVisualTask = Task(priority: .background) { [weak self] in
+        manualVisualTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }
             defer { if manualVisualID == id { manualVisualTask = nil } }
             // Drain a cancelled text prediction before starting a visual pass.

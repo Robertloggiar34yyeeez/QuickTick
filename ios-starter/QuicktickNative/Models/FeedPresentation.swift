@@ -48,6 +48,23 @@ enum PlaybackPosition {
 }
 
 enum MediaSizing {
+    /// The Home screen fills the available phone width instead of respecting
+    /// low-resolution provider thumbnail dimensions. Tall artwork is previewed
+    /// with a bounded crop; its full image remains available in full screen.
+    static func feedCard(aspect: CGFloat, available: CGSize) -> CGSize {
+        let ratio: CGFloat = aspect.isFinite && aspect > 0 ? aspect : CGFloat(4) / 3
+        let fullWidth = max(1, min(available.width, 680))
+        let heightCap = min(available.width > 600 ? CGFloat(620) : CGFloat(560),
+                            max(1, available.height * 0.72))
+        // In a short landscape viewport an uncapped 16:9 card can be taller
+        // than the entire scrollable area. Fit wide media to the viewport
+        // without distorting it. In portrait we still use every phone point.
+        let width = ratio >= 1 ? min(fullWidth, heightCap * ratio) : fullWidth
+        // Only tall artwork uses a crop; the original is kept for full screen.
+        let height = ratio >= 1 ? width / ratio : min(width / ratio, heightCap)
+        return CGSize(width: width, height: max(1, height))
+    }
+
     // Full viewing canvas: deliberately separate from the bounded Home cards.
     static func immersive(aspect: CGFloat, available: CGSize) -> CGSize {
         let ratio = aspect.isFinite && aspect > 0 ? aspect : 16 / 9
@@ -59,8 +76,11 @@ enum MediaSizing {
         let ratio = aspect.isFinite && aspect > 0 ? aspect : 4 / 3
         let wide = available.width > 600
         let maxHeight = min(wide ? 620 : 560, max(1, available.height * 0.72))
-        let width = max(1, min(available.width, 680))
-        return CGSize(width: width, height: max(1, min(width / ratio, maxHeight)))
+        // Preserve aspect ratio when height-limited. The previous calculation
+        // capped only height, stretching video frames and enlarging thumbnails.
+        let originalWidth = native.flatMap { $0.width > 0 && $0.width.isFinite ? $0.width : nil } ?? 680
+        let width = max(1, min(originalWidth, available.width, 680, maxHeight * ratio))
+        return CGSize(width: width, height: width / ratio)
     }
 }
 

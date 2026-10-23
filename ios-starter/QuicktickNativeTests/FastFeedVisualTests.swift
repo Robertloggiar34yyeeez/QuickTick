@@ -193,7 +193,7 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertFalse(store.players.isPreparing("next"))
         store.players.releaseAll()
     }
-    @MainActor func testRecommendationTasteAffectsInitialAndPaginatedPosts() async {
+    @MainActor func testStrictRecommendationTasteExcludesUnrelatedInitialAndPaginatedPosts() async {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [FastFeedProtocol.self]
         let credentials = ProviderCredentials(rule34User: "fixture-user", rule34Key: "fixture-key")
@@ -201,9 +201,13 @@ final class FastFeedVisualTests: XCTestCase {
         let liked = Post(key: "rule34:liked", id: "liked", provider: "rule34", tags: ["sitting"])
         await store.recommendations.record(.like, post: liked)
         await store.refresh()
-        XCTAssertEqual(store.posts.map(\.id), ["2", "1"])
+        // The fixture alternates unrelated `standing` and liked `sitting`.
+        // Strict Recommended must not pad a sparse page with unrelated posts.
+        XCTAssertEqual(store.posts.map(\.id), ["2"])
+        XCTAssertFalse(store.posts.contains(where: { $0.tags.contains("standing") }))
         await store.loadMore()
-        XCTAssertEqual(store.posts.map(\.id), ["2", "1", "4", "3"])
+        XCTAssertEqual(store.posts.map(\.id), ["2", "4"])
+        XCTAssertFalse(store.posts.contains(where: { $0.tags.contains("standing") }))
         store.selectedProvider = .eporner
     }
 
@@ -241,10 +245,12 @@ final class FastFeedVisualTests: XCTestCase {
         let start = Date()
         await store.refresh()
         print("QUICKTICK_METRIC fixture_first_posts_ms=\(Date().timeIntervalSince(start) * 1000)")
-        XCTAssertEqual(store.posts.map(\.id), ["1", "2"])
+        XCTAssertEqual(store.posts.map(\.id), ["1", "2", "3", "4"],
+                       "A recommended refresh must blend two unique candidate pages")
         XCTAssertFalse(store.isLoading)
         await store.loadMore()
-        XCTAssertEqual(store.posts.map(\.id), ["1", "2", "3", "4"])
+        XCTAssertEqual(store.posts.map(\.id), ["1", "2", "3", "4", "5", "6", "7", "8"],
+                       "Pagination should advance beyond both initial candidate pages")
         store.recordImpression(store.posts[0]); store.recordImpression(store.posts[1])
         store.favorites[store.posts[2].stableID] = store.posts[2]
         await store.refresh()

@@ -8,15 +8,21 @@ stored in app preferences, so an IPA upgrade does not show onboarding again.
 1. Install the app on iOS 17 or later. Generation is intended for a physical
    iPhone or iPad with enough available memory and disk space; a simulator is
    useful for UI tests but is not a representative inference device.
-2. Open **Create → Get starter model**. The Apple Stable Diffusion 1.5 6-bit
-   Core ML ZIP is approximately 1.57 GB compressed. Unpacking temporarily
-   requires additional space. It is downloaded only after the user taps.
+2. Open **Create → On-device engine → Download model**. The Apple Stable
+   Diffusion 1.5 6-bit Core ML ZIP is approximately 1.57 GB compressed.
+   Unpacking temporarily requires additional space. The compact transfer
+   panel shows real transferred bytes and progress (when the host provides a
+   length), and offers **Pause / Resume / Stop**. Pausing suspends the current
+   transfer, while Stop cancels it. Transfers only continue while Create is open;
+   they are cancelled if Create is dismissed, and cannot resume after app exit.
 3. Alternatively, import a ZIP or folder containing *compiled* Core ML model
    resources (`TextEncoder.mlmodelc`, `Unet.mlmodelc` or both UNet chunks,
    `VAEDecoder.mlmodelc`, `vocab.json`, and `merges.txt`).
-4. Compose a prompt manually, or tap **Fill from my favorites** to choose
-   prominent saved characters, artists, actions/attributes, and scenes.
-5. Choose steps, guidance and a seed; tap **Generate image**. Generation,
+4. Type a prompt into the centered canvas, or tap **Generate something I'd
+   love** to immediately fill an idea from prominent saved characters, artists,
+   actions/attributes, and scenes and start rendering if a model is installed.
+5. Tap **Advanced render settings** to reveal steps, guidance, seed, and
+   negative prompt, then tap the glowing **Generate** button. Generation,
    progress reporting, and PNG encoding happen locally. Generated PNG files
    remain in Application Support and are exportable through the share sheet.
 
@@ -26,7 +32,11 @@ depend on the device and converted model. It does not run on a backend server.
 
 ## Anima and CivitAI
 
-The discovery screen prefers `civitai.red` and can switch to `civitai.com`.
+Tap **Explore LoRAs & models** to open the separate searchable model library,
+where LoRAs and checkpoints have their own search modes. Results show the
+reported file size when CivitAI provides one, and downloads use the same
+progress, pause/resume, and Stop controls as the starter model. The library
+prefers `civitai.red` and can switch to `civitai.com`.
 An optional API key stays in iOS Keychain and is sent in a bearer header to
 the selected host. Suggested searches include **Anima** and the user's top
 favorite characters and credited artists. Assets must be explicitly downloaded;

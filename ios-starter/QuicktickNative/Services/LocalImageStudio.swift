@@ -7,7 +7,7 @@ import ZIPFoundation
 import StableDiffusion
 
 enum StudioError: LocalizedError {
-    case unsupportedModel, invalidArchive, invalidResponse, unavailableModel, noImage, invalidFile
+    case unsupportedModel, invalidArchive, invalidResponse, unavailableModel, noImage, invalidFile, downloadBusy
     var errorDescription: String? {
         switch self {
         case .unsupportedModel: "The archive does not contain a compiled Core ML Stable Diffusion pipeline. CivitAI .safetensors checkpoints and LoRAs need conversion before they can run here."
@@ -16,7 +16,94 @@ enum StudioError: LocalizedError {
         case .unavailableModel: "Download the on-device starter model or import a compatible Core ML model first."
         case .noImage: "The diffusion pipeline did not return an image."
         case .invalidFile: "This download is not a supported model or LoRA file."
+        case .downloadBusy: "Another model download is already running. Pause, finish or stop it first."
         }
+    }
+}
+
+/// A foreground URLSession transfer. `suspend` and `resume` keep its existing
+/// bytes and HTTP connection; Stop cancels it. Progress is derived from the
+/// real URLSession download task, never an estimated timer.
+final class StudioDownloadTransfer: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private let progressHandler: @Sendable (Int64, Int64) -> Void
+    private var session: URLSession?
+    private var task: URLSessionDownloadTask?
+    private var continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>?
+    private var finishedURL: URL?
+    private var finishedError: Error?
+
+    init(onProgress: @escaping @Sendable (Int64, Int64) -> Void) {
+        progressHandler = onProgress
+    }
+
+    func fetch(_ request: URLRequest) async throws -> (URL, HTTPURLResponse) {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+                let task = session.downloadTask(with: request)
+                lock.lock()
+                self.session = session
+                self.task = task
+                self.continuation = continuation
+                lock.unlock()
+                if Task.isCancelled { task.cancel() }
+                else { task.resume() }
+            }
+        } onCancel: { self.stop() }
+    }
+
+    func pause() {
+        lock.lock(); let task = self.task; lock.unlock()
+        task?.suspend()
+    }
+
+    func resume() {
+        lock.lock(); let task = self.task; lock.unlock()
+        task?.resume()
+    }
+
+    func stop() {
+        lock.lock(); let task = self.task; lock.unlock()
+        task?.cancel()
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        progressHandler(totalBytesWritten, totalBytesExpectedToWrite)
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quicktick-studio-" + UUID().uuidString)
+        do {
+            try FileManager.default.moveItem(at: location, to: destination)
+            lock.lock(); finishedURL = destination; lock.unlock()
+        } catch {
+            lock.lock(); finishedError = error; lock.unlock()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didCompleteWithError error: Error?) {
+        lock.lock()
+        let completion = continuation
+        let location = finishedURL
+        let fileError = finishedError
+        continuation = nil
+        self.task = nil
+        self.session = nil
+        lock.unlock()
+        if let completion {
+            if let error { completion.resume(throwing: error) }
+            else if let fileError { completion.resume(throwing: fileError) }
+            else if let location, let response = task.response as? HTTPURLResponse {
+                completion.resume(returning: (location, response))
+            } else { completion.resume(throwing: StudioError.invalidResponse) }
+        }
+        session.finishTasksAndInvalidate()
     }
 }
 
@@ -82,6 +169,14 @@ struct CivitaiStudioModel: Decodable, Identifiable, Sendable {
         let baseModel: String?
         let downloadUrl: URL?
         let trainedWords: [String]?
+        let files: [ModelFile]?
+        struct ModelFile: Decodable, Sendable {
+            let sizeKB: Double?
+        }
+        var displaySize: String? {
+            guard let kb = files?.compactMap(\.sizeKB).first, kb > 0 else { return nil }
+            return ByteCountFormatter.string(fromByteCount: Int64(kb * 1024), countStyle: .file)
+        }
     }
     var latest: Version? { modelVersions.first }
 }
@@ -114,6 +209,7 @@ actor LocalImageStudio {
     private let models: URL
     private let assets: URL
     private let gallery: URL
+    private var activeTransfer: StudioDownloadTransfer?
     private let starterURL = URL(string: "https://huggingface.co/apple/coreml-stable-diffusion-v1-5-palettized/resolve/main/coreml-stable-diffusion-v1-5-palettized_split_einsum_v2_compiled.zip")!
 
     init(directory: URL? = nil) {
@@ -148,8 +244,21 @@ actor LocalImageStudio {
         return nil
     }
 
-    func downloadStarter() async throws -> URL {
-        try await installZip(from: starterURL, name: "Apple SD 1.5 · 6-bit")
+    func downloadStarter(onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }) async throws -> URL {
+        try await installZip(from: starterURL, name: "Apple SD 1.5 · 6-bit", onProgress: onProgress)
+    }
+
+    func pauseActiveDownload() { activeTransfer?.pause() }
+    func resumeActiveDownload() { activeTransfer?.resume() }
+    func stopActiveDownload() { activeTransfer?.stop() }
+
+    private func fetchDownload(_ request: URLRequest,
+                               onProgress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> (URL, HTTPURLResponse) {
+        guard activeTransfer == nil else { throw StudioError.downloadBusy }
+        let transfer = StudioDownloadTransfer(onProgress: onProgress)
+        activeTransfer = transfer
+        defer { activeTransfer = nil }
+        return try await transfer.fetch(request)
     }
 
     func importModel(_ pickedURL: URL) throws -> URL {
@@ -165,9 +274,12 @@ actor LocalImageStudio {
         return Self.resources(in: destination) ?? destination
     }
 
-    private func installZip(from url: URL, name: String) async throws -> URL {
-        let (temp, response) = try await URLSession.shared.download(from: url)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw StudioError.invalidResponse }
+    private func installZip(from url: URL, name: String,
+                            onProgress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL {
+        let (temp, response) = try await fetchDownload(URLRequest(url: url), onProgress: onProgress)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try Task.checkCancellation()
+        guard response.statusCode == 200 else { throw StudioError.invalidResponse }
         return try installLocalZip(temp, name: name)
     }
 
@@ -201,7 +313,8 @@ actor LocalImageStudio {
         return URL(fileURLWithPath: destination.path + relativePath, isDirectory: true)
     }
 
-    func downloadCivitaiAsset(_ version: CivitaiStudioModel.Version, type: String, host: String, token: String?) async throws -> URL {
+    func downloadCivitaiAsset(_ version: CivitaiStudioModel.Version, type: String, host: String, token: String?,
+                              onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }) async throws -> URL {
         guard ["Checkpoint", "LORA"].contains(type), version.id > 0,
               ["civitai.com", "civitai.red"].contains(host) else { throw StudioError.invalidFile }
         // Construct a trusted API endpoint rather than follow arbitrary model
@@ -209,8 +322,10 @@ actor LocalImageStudio {
         let url = URL(string: "https://\(host)/api/download/models/\(version.id)")!
         var request = URLRequest(url: url)
         if let token, !token.isEmpty { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
-        let (temp, response) = try await URLSession.shared.download(for: request)
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw StudioError.invalidResponse }
+        let (temp, response) = try await fetchDownload(request, onProgress: onProgress)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try Task.checkCancellation()
+        guard response.statusCode == 200 else { throw StudioError.invalidResponse }
         let attributes = try FileManager.default.attributesOfItem(atPath: temp.path)
         let bytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         guard bytes > 100_000 else { throw StudioError.invalidFile }

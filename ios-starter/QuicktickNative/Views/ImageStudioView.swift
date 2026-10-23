@@ -3,11 +3,16 @@ import UniformTypeIdentifiers
 
 struct ImageStudioView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var renderStatus = StudioRenderProgress()
+    @StateObject private var transferStatus = StudioTransferProgress()
     @AppStorage("quicktick-studio-intro-v1") private var introCompleted = false
     @State private var showIntro = false
     @State private var showImport = false
     @State private var showToken = false
+    @State private var showCatalog = false
+    @State private var showAdvanced = false
+    @State private var glowActive = false
     @State private var prompt = ""
     @State private var negativePrompt = "low quality, blurry, distorted anatomy, watermark"
     @State private var stepCount = 20.0
@@ -19,39 +24,38 @@ struct ImageStudioView: View {
     @State private var downloadedAssets: [URL] = []
     @State private var checkpoints: [CivitaiStudioModel] = []
     @State private var loras: [CivitaiStudioModel] = []
-    @State private var searchQuery = "Anima"
+    @State private var searchQuery = ""
     @State private var tokenDraft = ""
     @State private var useRed = true
     @State private var busy = false
     @State private var catalogBusy = false
     @State private var downloadBusyID: Int?
+    @State private var catalogKind: StudioCatalogKind = .lora
     @State private var status: String?
     @State private var latestImage: URL?
     @State private var taxonomy: VisualTagTaxonomy?
     @State private var renderTask: Task<Void, Never>?
+    @State private var downloadTask: Task<Void, Never>?
 
     private var favorites: [Post] { Array(store.favorites.values) }
     private var inspiration: StudioPromptSeed { StudioPromptSeed.build(favorites: favorites, taxonomy: taxonomy) }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                introduction
-                promptPanel
-                modelPanel
-                generationPanel
+            VStack(alignment: .leading, spacing: 16) {
+                studioHero
                 if let latestImage { generatedImage(latestImage) }
-                civitaiPanel
-                if !downloadedAssets.isEmpty { downloadedAssetsPanel }
+                modelPanel
+                libraryLauncher
                 if !savedImages.isEmpty { galleryPanel }
             }
-            .frame(maxWidth: 650)
+            .frame(maxWidth: 600)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
             .padding(.bottom, 34)
         }
-        .background(AppTheme.canvas.ignoresSafeArea())
+        .background(StudioAuroraBackground().ignoresSafeArea())
         .navigationTitle("Create")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -62,6 +66,7 @@ struct ImageStudioView: View {
         }
         .sheet(isPresented: $showIntro) { introSheet }
         .sheet(isPresented: $showToken) { tokenSheet }
+        .sheet(isPresented: $showCatalog) { catalogSheet }
         .fileImporter(isPresented: $showImport, allowedContentTypes: [.zip, .folder]) { result in
             if case .success(let url) = result {
                 perform("Importing Core ML model…") {
@@ -79,65 +84,113 @@ struct ImageStudioView: View {
             taxonomy = await store.visual.metadataTaxonomy()
             if !introCompleted { showIntro = true }
         }
-        .onDisappear { renderTask?.cancel() }
+        .onDisappear {
+            renderTask?.cancel()
+            downloadTask?.cancel()
+        }
         .preferredColorScheme(.dark)
     }
 
-    private var introduction: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "sparkles.rectangle.stack.fill")
-                    .font(.title2).foregroundStyle(.white)
-                    .frame(width: 46, height: 46)
-                    .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 15))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Your imagination, locally.")
-                        .font(.system(.title2, design: .rounded, weight: .bold))
-                    Text("Private Core ML image generation")
-                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+    private var studioHero: some View {
+        VStack(spacing: 18) {
+            HStack {
+                Label("QUICKTICK STUDIO", systemImage: "sparkles")
+                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                    .tracking(2)
+                    .foregroundStyle(.white.opacity(0.85))
+                Spacer()
+                Label("ON DEVICE", systemImage: "lock.shield.fill")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.67))
+            }
+            Spacer(minLength: 8)
+            VStack(spacing: 5) {
+                Text("Imagine anything.")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .tracking(-0.8)
+                Text("Made by you. Created privately.")
+                    .font(.subheadline).foregroundStyle(.white.opacity(0.65))
+            }
+            .frame(maxWidth: .infinity)
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 20).fill(.black.opacity(0.36))
+                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(.white.opacity(0.20)))
+                if prompt.isEmpty {
+                    Text("A beautiful scene with your favorite character…")
+                        .font(.subheadline).foregroundStyle(.white.opacity(0.43))
+                        .padding(.horizontal, 19).padding(.top, 20)
+                        .allowsHitTesting(false)
                 }
+                TextEditor(text: $prompt)
+                    .scrollContentBackground(.hidden)
+                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .padding(12)
+                    .frame(height: 130)
+                    .accessibilityLabel("Image prompt")
+                    .accessibilityIdentifier("studio-prompt")
             }
-            Text("Make something inspired by your favorite characters, artists and styles. Generation runs on your device; downloading models is optional and explicit.")
-                .font(.subheadline).foregroundStyle(.white.opacity(0.78))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var promptPanel: some View {
-        StudioPanel(title: "The idea", icon: "wand.and.stars") {
-            HStack(spacing: 8) {
-                Button {
-                    prompt = inspiration.prompt
-                } label: { Label("Fill from my favorites", systemImage: "heart.text.square.fill") }
-                    .disabled(favorites.isEmpty)
-                    .accessibilityIdentifier("studio-prompt-from-favorites")
-                Spacer(minLength: 0)
-                Text("\(favorites.count) saved")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.bordered)
-            if !inspiration.characters.isEmpty || !inspiration.artists.isEmpty {
-                VStack(alignment: .leading, spacing: 5) {
-                    if !inspiration.characters.isEmpty { inspirationRow("Characters", values: inspiration.characters) }
-                    if !inspiration.artists.isEmpty { inspirationRow("Artists", values: inspiration.artists) }
-                    if !inspiration.attributes.isEmpty { inspirationRow("Attributes & actions", values: inspiration.attributes) }
-                    if !inspiration.scenes.isEmpty { inspirationRow("Scenes", values: inspiration.scenes) }
+            .frame(height: 130)
+            Button(action: generateFromFavorites) {
+                HStack(spacing: 8) {
+                    Image(systemName: "heart.text.square.fill")
+                    Text("Generate something I'd love")
                 }
+                .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .background(.white.opacity(0.13), in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.20)))
             }
-            TextEditor(text: $prompt)
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 112)
-                .padding(10)
-                .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppTheme.border))
-                .accessibilityLabel("Image prompt")
-                .accessibilityIdentifier("studio-prompt")
-            Text("Avoid in the image")
-                .font(.caption.weight(.medium)).foregroundStyle(AppTheme.secondaryLabel)
-            TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
-                .lineLimit(2...3).textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("studio-negative-prompt")
+            .buttonStyle(QuicktickPressStyle())
+            .disabled(busy)
+            .accessibilityIdentifier("studio-generate-from-favorites")
+            Button { render() } label: {
+                HStack(spacing: 10) {
+                    if busy { ProgressView().tint(.white) }
+                    Image(systemName: "sparkles")
+                        .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion && !busy)
+                    Text(busy ? "Creating…" : "Generate")
+                }
+                .font(.system(size: 19, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 58)
+                .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 21))
+                .overlay(RoundedRectangle(cornerRadius: 21).stroke(.white.opacity(0.45)))
+                .shadow(color: AppTheme.accent.opacity(glowActive ? 0.85 : 0.32), radius: glowActive ? 27 : 12, y: 3)
+                .scaleEffect(glowActive && !reduceMotion ? 1.012 : 1)
+            }
+            .buttonStyle(QuicktickPressStyle())
+            .disabled(busy)
+            .accessibilityIdentifier("studio-generate")
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 1.9).repeatForever(autoreverses: true)) { glowActive = true }
+            }
+            if renderTask != nil {
+                ProgressView(value: renderStatus.fraction)
+                    .tint(.white)
+                    .accessibilityIdentifier("studio-render-progress")
+                HStack {
+                    Text("Rendering · \(Int(renderStatus.fraction * 100))%")
+                    Spacer()
+                    Button("Stop render") { renderTask?.cancel() }
+                }
+                .font(.caption)
+            }
+            if let status {
+                Text(status).font(.caption).foregroundStyle(.white.opacity(0.80))
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .accessibilityIdentifier("studio-status")
+            }
+            Spacer(minLength: 0)
         }
+        .padding(20)
+        .frame(minHeight: 448)
+        .background {
+            RoundedRectangle(cornerRadius: 30).fill(Color(red: 0.08, green: 0.06, blue: 0.17).opacity(0.87))
+                .overlay(StudioAuroraBackground().clipShape(RoundedRectangle(cornerRadius: 30)).opacity(0.85))
+        }
+        .overlay(RoundedRectangle(cornerRadius: 30).stroke(.white.opacity(0.15)))
     }
 
     private func inspirationRow(_ title: String, values: [String]) -> some View {
@@ -149,12 +202,19 @@ struct ImageStudioView: View {
     }
 
     private var modelPanel: some View {
-        StudioPanel(title: "On-device model", icon: "cpu.fill") {
+        StudioPanel(title: "On-device engine", icon: "cpu.fill") {
             if installedModels.isEmpty {
-                Text("No compatible model installed yet")
-                    .font(.subheadline.weight(.semibold))
-                Text("The starter model is Apple's quantized Stable Diffusion 1.5. It downloads once and remains on your device. Prefer Anima? You can keep its CivitAI checkpoint, but it needs Core ML conversion before generation.")
-                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Apple Stable Diffusion 1.5 · 6-bit")
+                            .font(.subheadline.weight(.semibold))
+                        Text("1.57 GB download · local Core ML")
+                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                    Spacer()
+                    Image(systemName: "externaldrive.badge.wifi")
+                        .foregroundStyle(AppTheme.accent)
+                }
             } else {
                 Menu {
                     ForEach(installedModels, id: \.path) { url in
@@ -166,25 +226,107 @@ struct ImageStudioView: View {
                         Spacer()
                         Image(systemName: "chevron.up.chevron.down")
                     }
-                    .padding(13).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+                    .padding(12).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
                 }
+                Text("Model installed · available offline")
+                    .font(.caption).foregroundStyle(.green)
             }
             HStack(spacing: 10) {
-                Button { perform("Downloading model — several GB…") {
-                    let path = try await LocalImageStudio.shared.downloadStarter()
-                    await reloadModels(); selectedModel = path; status = "Starter model installed. Ready to generate."
-                } } label: { Label("Get starter model", systemImage: "arrow.down.circle") }
+                Button(action: beginStarterDownload) {
+                    Label(installedModels.isEmpty ? "Download model" : "Download another", systemImage: "arrow.down.circle")
+                }
                 Button { showImport = true } label: { Label("Import Core ML", systemImage: "folder") }
             }
             .buttonStyle(.bordered)
-            .disabled(busy)
-            Text("Only compiled Core ML model bundles run in the current engine. Raw CivitAI checkpoints and LoRAs are saved separately; downloading one does not silently change the active model.")
-                .font(.caption).foregroundStyle(.orange.opacity(0.88))
+            .disabled(busy || transferStatus.isActive)
+            if transferStatus.isActive { downloadProgressPanel }
+            DisclosureGroup(isExpanded: $showAdvanced) {
+                generationPanel
+                    .padding(.top, 8)
+            } label: {
+                Label("Advanced render settings", systemImage: "slider.horizontal.3")
+                    .font(.subheadline.weight(.medium))
+            }
+            .tint(AppTheme.accent)
         }
     }
 
+    private var downloadProgressPanel: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text(transferStatus.name)
+                    .font(.caption.weight(.semibold)).lineLimit(1)
+                Spacer()
+                Text(transferStatus.progressLabel)
+                    .font(.caption.monospacedDigit()).foregroundStyle(AppTheme.accent)
+            }
+            if let fraction = transferStatus.fraction {
+                ProgressView(value: fraction)
+                    .tint(AppTheme.accent)
+                    .accessibilityIdentifier("studio-download-progress")
+            } else {
+                ProgressView().tint(AppTheme.accent)
+                    .accessibilityIdentifier("studio-download-progress")
+            }
+            Text(transferStatus.sizeLabel)
+                .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+            HStack(spacing: 12) {
+                if transferStatus.phase == .running || transferStatus.phase == .paused {
+                    Button {
+                        Task {
+                            if transferStatus.phase == .running {
+                                await LocalImageStudio.shared.pauseActiveDownload()
+                                transferStatus.phase = .paused
+                            } else {
+                                await LocalImageStudio.shared.resumeActiveDownload()
+                                transferStatus.phase = .running
+                            }
+                        }
+                    } label: {
+                        Label(transferStatus.phase == .paused ? "Resume" : "Pause",
+                              systemImage: transferStatus.phase == .paused ? "play.fill" : "pause.fill")
+                    }
+                    .disabled(transferStatus.phase == .running && transferStatus.received == 0)
+                    .accessibilityIdentifier("studio-download-pause-resume")
+                    Button(role: .destructive) { stopDownload() } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                    }
+                    .accessibilityIdentifier("studio-download-stop")
+                } else {
+                    Text("Preparing downloaded model…").font(.caption)
+                }
+            }
+            .buttonStyle(.bordered)
+            .font(.caption.weight(.semibold))
+        }
+        .padding(12)
+        .background(AppTheme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var libraryLauncher: some View {
+        Button { showCatalog = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "square.stack.3d.up.fill")
+                    .font(.title3).foregroundStyle(AppTheme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Explore LoRAs & models").font(.subheadline.weight(.semibold))
+                    Text("Discover Anima, characters and artists")
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").foregroundStyle(.white.opacity(0.5))
+            }
+            .foregroundStyle(.white)
+            .padding(16)
+            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(AppTheme.border))
+        }
+        .buttonStyle(QuicktickPressStyle())
+        .accessibilityIdentifier("studio-open-lora-menu")
+    }
+
     private var generationPanel: some View {
-        StudioPanel(title: "Render", icon: "slider.horizontal.3") {
+        VStack(spacing: 10) {
             HStack {
                 Text("Steps").font(.subheadline)
                 Slider(value: $stepCount, in: 4...40, step: 1)
@@ -203,38 +345,9 @@ struct ImageStudioView: View {
                 Button { seed = UInt32.random(in: 1...UInt32.max) } label: { Image(systemName: "arrow.clockwise") }
                     .accessibilityLabel("Random seed")
             }
-            Button(action: render) {
-                HStack(spacing: 10) {
-                    if busy { ProgressView().tint(.white) }
-                    Label(busy ? "Working…" : "Generate image", systemImage: "sparkles")
-                        .font(.system(.headline, design: .rounded, weight: .semibold))
-                }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, minHeight: 52)
-                .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16))
-            }
-            .buttonStyle(QuicktickPressStyle())
-            .disabled(busy || selectedModel == nil || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .accessibilityIdentifier("studio-generate")
-            if renderTask != nil {
-                VStack(alignment: .leading, spacing: 6) {
-                    ProgressView(value: renderStatus.fraction)
-                        .tint(AppTheme.accent)
-                        .accessibilityIdentifier("studio-render-progress")
-                    HStack {
-                        Text("Denoising · \(Int(renderStatus.fraction * 100))%")
-                            .font(.caption.monospacedDigit())
-                        Spacer()
-                        Button("Cancel render") { renderTask?.cancel() }
-                            .font(.caption.weight(.semibold))
-                    }
-                }
-            }
-            if let status {
-                Text(status).font(.caption).foregroundStyle(status.contains("failed") || status.contains("could not") ? Color.orange : AppTheme.secondaryLabel)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("studio-status")
-            }
+            TextField("Avoid: blurry, distorted anatomy…", text: $negativePrompt, axis: .vertical)
+                .lineLimit(1...2).textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("studio-negative-prompt")
         }
     }
 
@@ -251,59 +364,80 @@ struct ImageStudioView: View {
         }
     }
 
-    private var civitaiPanel: some View {
-        StudioPanel(title: "Discover models & LoRAs", icon: "square.stack.3d.up") {
-            Text("Find Anima checkpoints and character or artist LoRAs matching your saved interests. CivitAI downloads are not compatible with the Core ML renderer until converted or adapted.")
-                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
-            HStack {
-                TextField("Model or character", text: $searchQuery)
-                    .textInputAutocapitalization(.never).textFieldStyle(.roundedBorder)
-                Button { searchCatalog() } label: { Image(systemName: "magnifyingglass") }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(catalogBusy || searchQuery.isEmpty)
-            }
-            HStack {
-                Toggle("Use civitai.red", isOn: $useRed).font(.caption)
-                Spacer()
-                Button("API key") { tokenDraft = KeychainStore.get(account: "civitai-api-key") ?? ""; showToken = true }
-                    .font(.caption)
-            }
-            Text("Suggested for your taste")
-                .font(.caption.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    Button { searchQuery = "Anima"; searchCatalog() } label: {
-                        Label("Anima model", systemImage: "sparkles")
-                    }
-                    ForEach(inspiration.characters.prefix(3), id: \.self) { character in
-                        Button { searchQuery = character; searchCatalog(onlyLoRA: true) } label: {
-                            Label(character.replacingOccurrences(of: "_", with: " "), systemImage: "heart")
+    private var catalogSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Picker("Explore", selection: $catalogKind) {
+                        ForEach(StudioCatalogKind.allCases) { kind in
+                            Text(kind.title).tag(kind)
                         }
                     }
-                    ForEach(inspiration.artists.prefix(2), id: \.self) { artist in
-                        Button { searchQuery = artist; searchCatalog(onlyLoRA: true) } label: {
-                            Label(artist.replacingOccurrences(of: "_", with: " "), systemImage: "paintpalette")
-                        }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("studio-catalog-kind")
+                    HStack {
+                        TextField("Search \(catalogKind.title.lowercased())", text: $searchQuery)
+                            .textInputAutocapitalization(.never)
+                            .textFieldStyle(.roundedBorder)
+                            .submitLabel(.search)
+                            .onSubmit { searchCatalog() }
+                            .accessibilityIdentifier("studio-catalog-search")
+                        Button { searchCatalog() } label: { Image(systemName: "magnifyingglass") }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(catalogBusy || searchQuery.isEmpty)
                     }
+                    HStack {
+                        Toggle("civitai.red", isOn: $useRed).font(.caption)
+                        Spacer()
+                        Button("API key") {
+                            tokenDraft = KeychainStore.get(account: "civitai-api-key") ?? ""
+                            showToken = true
+                        }.font(.caption)
+                    }
+                    Text("Suggested from your favorites")
+                        .font(.subheadline.weight(.semibold))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            Button { catalogKind = .checkpoint; searchQuery = "Anima"; searchCatalog() } label: {
+                                Label("Anima", systemImage: "sparkles")
+                            }
+                            ForEach(inspiration.characters.prefix(3), id: \.self) { character in
+                                Button { catalogKind = .lora; searchQuery = character; searchCatalog() } label: {
+                                    Label(character.replacingOccurrences(of: "_", with: " "), systemImage: "heart")
+                                }
+                            }
+                            ForEach(inspiration.artists.prefix(2), id: \.self) { artist in
+                                Button { catalogKind = .lora; searchQuery = artist; searchCatalog() } label: {
+                                    Label(artist.replacingOccurrences(of: "_", with: " "), systemImage: "paintpalette")
+                                }
+                            }
+                        }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.bordered)
+                        .disabled(catalogBusy)
+                    }
+                    if transferStatus.isActive { downloadProgressPanel }
+                    if catalogBusy { ProgressView("Finding \(catalogKind.title.lowercased())…") }
+                    ForEach(catalogKind == .lora ? loras : checkpoints) { model in modelRow(model) }
+                    if !catalogBusy && (catalogKind == .lora ? loras : checkpoints).isEmpty {
+                        Text("Search for a character, artist or model to see available downloads.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("CivitAI checkpoints and LoRAs are saved locally. Raw files need conversion to run with Core ML.")
+                        .font(.caption).foregroundStyle(.orange.opacity(0.9))
+                    if let status { Text(status).font(.caption).foregroundStyle(AppTheme.secondaryLabel) }
+                    if !downloadedAssets.isEmpty { downloadedAssetsPanel }
                 }
-                .font(.caption.weight(.medium))
-                .buttonStyle(.bordered)
-                .disabled(catalogBusy)
+                .padding(16)
             }
-            if catalogBusy { ProgressView("Finding matching models…") }
-            if !checkpoints.isEmpty {
-                Text("Checkpoints").font(.subheadline.weight(.semibold))
-                ForEach(checkpoints) { model in modelRow(model) }
-            }
-            if !loras.isEmpty {
-                Text("LoRAs").font(.subheadline.weight(.semibold))
-                ForEach(loras) { model in modelRow(model) }
-            }
-            if !catalogBusy && checkpoints.isEmpty && loras.isEmpty {
-                Text("Search to browse models and artist/character LoRAs.")
-                    .font(.caption).foregroundStyle(.secondary)
+            .background(StudioAuroraBackground().ignoresSafeArea())
+            .navigationTitle("Model library")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { showCatalog = false } }
             }
         }
+        .preferredColorScheme(.dark)
     }
 
     private func modelRow(_ model: CivitaiStudioModel) -> some View {
@@ -312,27 +446,19 @@ struct ImageStudioView: View {
                 Text(model.name).font(.subheadline.weight(.medium)).lineLimit(2)
                 Text([model.type, model.latest?.baseModel].compactMap { $0 }.joined(separator: " · "))
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                if let size = model.latest?.displaySize {
+                    Text(size).font(.caption2).foregroundStyle(.white.opacity(0.60))
+                }
                 if let words = model.latest?.trainedWords, !words.isEmpty {
                     Text(words.prefix(2).joined(separator: ", ")).font(.caption2).foregroundStyle(AppTheme.accent)
                 }
             }
             Spacer(minLength: 6)
-            Button {
-                guard let version = model.latest else { return }
-                downloadBusyID = model.id
-                Task {
-                    do {
-                        _ = try await LocalImageStudio.shared.downloadCivitaiAsset(version, type: model.type,
-                            host: useRed ? "civitai.red" : "civitai.com",
-                            token: KeychainStore.get(account: "civitai-api-key"))
-                        downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
-                        status = "Downloaded \(model.name). Conversion is required before use in Core ML."
-                    } catch { status = "Download failed: \(error.localizedDescription)" }
-                    downloadBusyID = nil
-                }
-            } label: { Image(systemName: downloadBusyID == model.id ? "hourglass" : "arrow.down.circle.fill") }
+            Button { beginAssetDownload(model) } label: {
+                Image(systemName: downloadBusyID == model.id ? "hourglass" : "arrow.down.circle.fill")
+            }
                 .buttonStyle(QuicktickPressStyle()).font(.title3)
-                .disabled(downloadBusyID != nil)
+                .disabled(transferStatus.isActive || downloadBusyID != nil)
                 .accessibilityLabel("Download \(model.name)")
         }
         .padding(12)
@@ -439,7 +565,7 @@ struct ImageStudioView: View {
         }.presentationDetents([.medium])
     }
 
-    private func searchCatalog(onlyLoRA: Bool = false) {
+    private func searchCatalog() {
         guard !catalogBusy else { return }
         catalogBusy = true
         Task {
@@ -449,25 +575,97 @@ struct ImageStudioView: View {
                 let key = KeychainStore.get(account: "civitai-api-key")
                 let host = useRed ? "civitai.red" : "civitai.com"
                 let query = searchQuery
-                if onlyLoRA {
+                if catalogKind == .lora {
                     checkpoints = []
                     loras = try await catalog.search(query, type: "LORA", host: host, token: key)
                 } else {
-                    async let foundCheckpoints = catalog.search(query, type: "Checkpoint", host: host, token: key)
-                    async let foundLoras = catalog.search(query, type: "LORA", host: host, token: key)
-                    (checkpoints, loras) = try await (foundCheckpoints, foundLoras)
+                    loras = []
+                    checkpoints = try await catalog.search(query, type: "Checkpoint", host: host, token: key)
                 }
             } catch { status = "Catalog failed: \(error.localizedDescription)" }
         }
     }
 
-    private func render() {
-        guard let model = selectedModel, !busy,
-              !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    private func generateFromFavorites() {
+        guard !favorites.isEmpty else {
+            status = "Like a few characters, artists or scenes in your feed first. I'll turn your favorites into an image idea."
+            return
+        }
+        let lovedPrompt = inspiration.prompt
+        prompt = lovedPrompt
+        if selectedModel != nil { render(promptOverride: lovedPrompt) }
+        else { status = "Your idea is ready. Download or import a Core ML model to generate it." }
+    }
+
+    private func beginStarterDownload() {
+        guard !transferStatus.isActive, !busy else { return }
+        let identity = transferStatus.begin("Apple SD 1.5 · 6-bit", estimatedBytes: 1_570_000_000)
+        let progress = transferStatus
+        status = "Downloading the private on-device model…"
+        downloadTask = Task {
+            defer { progress.finish(identity); downloadTask = nil }
+            do {
+                let model = try await LocalImageStudio.shared.downloadStarter(onProgress: { received, total in
+                    Task { @MainActor in progress.update(identity, received: received, expected: total) }
+                })
+                try Task.checkCancellation()
+                await reloadModels()
+                selectedModel = model
+                status = "Model installed. Ready to create offline."
+            } catch is CancellationError {
+                status = "Download stopped."
+            } catch let error as URLError where error.code == .cancelled {
+                status = "Download stopped."
+            } catch { status = "Model download failed: \(error.localizedDescription)" }
+        }
+    }
+
+    private func beginAssetDownload(_ model: CivitaiStudioModel) {
+        guard let version = model.latest, !transferStatus.isActive else { return }
+        let identity = transferStatus.begin(model.name, estimatedBytes: 0)
+        let progress = transferStatus
+        downloadBusyID = model.id
+        downloadTask = Task {
+            defer { progress.finish(identity); downloadBusyID = nil; downloadTask = nil }
+            do {
+                _ = try await LocalImageStudio.shared.downloadCivitaiAsset(version, type: model.type,
+                    host: useRed ? "civitai.red" : "civitai.com",
+                    token: KeychainStore.get(account: "civitai-api-key"),
+                    onProgress: { received, total in
+                        Task { @MainActor in progress.update(identity, received: received, expected: total) }
+                    })
+                try Task.checkCancellation()
+                downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
+                status = "Saved \(model.name). Convert it before using it in Core ML."
+            } catch is CancellationError {
+                status = "Download stopped."
+            } catch let error as URLError where error.code == .cancelled {
+                status = "Download stopped."
+            } catch { status = "Download failed: \(error.localizedDescription)" }
+        }
+    }
+
+    private func stopDownload() {
+        guard transferStatus.isActive else { return }
+        transferStatus.phase = .stopping
+        downloadTask?.cancel()
+        Task { await LocalImageStudio.shared.stopActiveDownload() }
+    }
+
+    private func render(promptOverride: String? = nil) {
+        guard !busy else { return }
+        guard let model = selectedModel else {
+            status = "Download the local model below or import a compatible Core ML model first."
+            return
+        }
+        guard !(promptOverride ?? prompt).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            status = "Describe your idea in the prompt, or use your favorites for inspiration."
+            return
+        }
         busy = true
         status = "Rendering on device…"
         renderStatus.fraction = 0
-        let inputPrompt = prompt, inputNegative = negativePrompt
+        let inputPrompt = promptOverride ?? prompt, inputNegative = negativePrompt
         let steps = Int(stepCount), scale = Float(guidance), inputSeed = seed
         let progress = renderStatus
         renderTask = Task {
@@ -507,6 +705,82 @@ struct ImageStudioView: View {
 
 @MainActor private final class StudioRenderProgress: ObservableObject {
     @Published var fraction = 0.0
+}
+
+private enum StudioCatalogKind: String, CaseIterable, Identifiable {
+    case lora, checkpoint
+    var id: String { rawValue }
+    var title: String { self == .lora ? "LoRAs" : "Checkpoints" }
+}
+
+@MainActor private final class StudioTransferProgress: ObservableObject {
+    enum Phase: Equatable { case idle, running, paused, installing, stopping }
+    @Published var phase: Phase = .idle
+    @Published private(set) var name = ""
+    @Published private(set) var received: Int64 = 0
+    @Published private(set) var expected: Int64 = 0
+    private var estimated: Int64 = 0
+    private var identity: UUID?
+
+    var isActive: Bool { phase != .idle }
+    var fraction: Double? { expected > 0 ? min(1, Double(received) / Double(expected)) : nil }
+    var progressLabel: String {
+        if phase == .paused { return "Paused" }
+        if phase == .stopping { return "Stopping…" }
+        if phase == .installing { return "Installing…" }
+        return fraction.map { "\(Int($0 * 100))%" } ?? "Downloading…"
+    }
+    var sizeLabel: String {
+        let downloaded = ByteCountFormatter.string(fromByteCount: received, countStyle: .file)
+        let total = expected > 0 ? expected : estimated
+        guard total > 0 else { return downloaded + " downloaded" }
+        return downloaded + " / " + ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+    }
+
+    func begin(_ title: String, estimatedBytes: Int64) -> UUID {
+        let key = UUID()
+        identity = key
+        name = title
+        received = 0; expected = 0; estimated = estimatedBytes
+        phase = .running
+        return key
+    }
+
+    func update(_ key: UUID, received: Int64, expected: Int64) {
+        guard identity == key, phase != .stopping else { return }
+        self.received = max(0, received)
+        self.expected = max(0, expected)
+        if expected > 0, received >= expected { phase = .installing }
+    }
+
+    func finish(_ key: UUID) {
+        guard identity == key else { return }
+        identity = nil
+        phase = .idle
+    }
+}
+
+private struct StudioAuroraBackground: View {
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color(red: 0.025, green: 0.025, blue: 0.07)
+                RadialGradient(colors: [Color(red: 0.40, green: 0.23, blue: 0.70).opacity(0.65), .clear],
+                               center: .init(x: 0.15, y: 0.10), startRadius: 0, endRadius: geometry.size.width * 0.9)
+                RadialGradient(colors: [Color(red: 0.13, green: 0.43, blue: 0.72).opacity(0.44), .clear],
+                               center: .init(x: 0.95, y: 0.70), startRadius: 0, endRadius: geometry.size.width * 1.1)
+                ForEach(0..<22, id: \.self) { index in
+                    Circle().fill(.white.opacity(index.isMultiple(of: 4) ? 0.65 : 0.27))
+                        .frame(width: index.isMultiple(of: 5) ? 2.5 : 1.5,
+                               height: index.isMultiple(of: 5) ? 2.5 : 1.5)
+                        .position(x: geometry.size.width * CGFloat((index * 37 + 11) % 97) / 97,
+                                  y: geometry.size.height * CGFloat((index * 53 + 17) % 89) / 89)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
 }
 
 private struct StudioPanel<Content: View>: View {

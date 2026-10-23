@@ -138,7 +138,9 @@ struct PostTagsView: View {
                             .padding(.horizontal, 8)
                             .background(blocked ? Color.orange.opacity(0.15) : AppTheme.elevatedSurface, in: Capsule())
                             .overlay(Capsule().stroke(blocked ? Color.orange.opacity(0.5) : AppTheme.border))
-                        }.buttonStyle(.plain)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("#\(tag)")
                     }
                 }.padding()
                 if post.tags.isEmpty { Text("No tags available").foregroundStyle(.secondary).padding() }

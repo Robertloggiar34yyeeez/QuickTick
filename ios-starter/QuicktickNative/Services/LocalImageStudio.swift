@@ -506,11 +506,11 @@ actor LocalImageStudio {
             // Silently retrying a multi-GB Mirage render here masks the real
             // error, exhausts the iOS jetsam budget and poisons later retries.
             // Mirage remains selectable explicitly in the model panel.
-            let rendered: CGImage
+            let encodedImage: URL
             do {
                 let bridge = DrawThingsAnimaBridge.shared
                 guard await bridge.isReady(checkpoint: checkpoint) else { throw DrawThingsAnimaBridge.Error.missingConvertedModel }
-                rendered = try await bridge.generate(
+                encodedImage = try await bridge.generate(
                     prompt: String(prompt.prefix(1000)), negative: String(negative.prefix(1200)),
                     steps: max(4, min(40, steps)), guidance: guidance, seed: seed,
                     width: width, height: height, checkpoint: checkpoint, loras: loras, onProgress: onProgress)
@@ -520,11 +520,12 @@ actor LocalImageStudio {
                 NSLog("[QuickTick Anima] backend=drawthings failed: %@", String(reflecting: error))
                 throw StudioError.optimizedRenderFailed(error.localizedDescription)
             }
+            defer { try? FileManager.default.removeItem(at: encodedImage) }
             try Task.checkCancellation()
             NSLog("[QuickTick Anima] backend=drawthings success; saving image")
             // Keep final image saving outside the inference catch as well: an
             // image-output error is not a reason to rerun the diffusion model.
-            return try finishImage(rendered, upscale: upscale, onPreview: onPreview)
+            return try finishEncodedImage(encodedImage, upscale: upscale, onPreview: onPreview)
         }
 #endif
         guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
@@ -767,6 +768,39 @@ actor LocalImageStudio {
         try Task.checkCancellation()
         guard let output = images.compactMap({ $0 }).first else { throw StudioError.imageFiltered }
         return aspect.crop(output)
+    }
+
+    /// Publish the real diffusion result before the optional (potentially long)
+    /// 4× pass. A failed enhancement must never discard a successful render.
+    private func finishEncodedImage(_ encoded: URL, upscale: Bool,
+                                    onPreview: @Sendable (URL) -> Void) throws -> StudioRenderOutput {
+        try Task.checkCancellation()
+        try FileManager.default.createDirectory(at: gallery, withIntermediateDirectories: true)
+        let originalURL = gallery.appendingPathComponent(UUID().uuidString + ".png")
+        // Draw Things already encoded this PNG. Preserve its bytes and iOS
+        // file protection instead of decoding and re-encoding under pressure.
+        let png = try Data(contentsOf: encoded, options: .mappedIfSafe)
+        try png.write(to: originalURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        onPreview(originalURL)
+        guard upscale else { return StudioRenderOutput(url: originalURL, enhanced: false, enhancementWarning: nil) }
+        do {
+            guard hasAnimeUpscaler() else { throw StudioError.unavailableModel }
+            try Task.checkCancellation()
+            guard let source = CGImageSourceCreateWithURL(originalURL as CFURL, nil),
+                  let original = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                throw StudioError.noImage
+            }
+            let enlarged = try StudioAnimeUpscaler.upscale(original, using: animeUpscalerURL)
+            try Task.checkCancellation()
+            let enhancedURL = try saveImage(enlarged)
+            try? FileManager.default.removeItem(at: originalURL)
+            return StudioRenderOutput(url: enhancedURL, enhanced: true, enhancementWarning: nil)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return StudioRenderOutput(url: originalURL, enhanced: false,
+                                      enhancementWarning: error.localizedDescription)
+        }
     }
 
     /// Publish the real diffusion result before the optional (potentially long)

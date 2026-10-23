@@ -1,6 +1,4 @@
 import Foundation
-import CoreGraphics
-import ImageIO
 import UniformTypeIdentifiers
 
 // Kept behind a separate import so QuickTick's crash-tested Mirage renderer
@@ -113,7 +111,7 @@ actor DrawThingsAnimaBridge {
 
     func generate(prompt: String, negative: String, steps: Int, guidance: Float, seed: UInt32,
                   width: Int, height: Int, checkpoint: URL?, loras: [StudioLoRA],
-                  onProgress: @escaping @Sendable (Int, Int) -> Void) async throws -> CGImage {
+                  onProgress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL {
         guard isReady(checkpoint: checkpoint) else { throw Error.missingConvertedModel }
         var pipeline = try await MediaGenerationPipeline.fromPretrained(Self.modelID, backend: .local)
         pipeline.configuration.width = width
@@ -140,13 +138,18 @@ actor DrawThingsAnimaBridge {
         }
         guard let first = results.first else { throw Error.imageDecode }
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("quicktick-drawthings-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: destination) }
         NSLog("[QuickTick Anima] backend=drawthings stage=encoding-image")
-        try first.write(to: destination, type: .png)
-        guard let source = CGImageSourceCreateWithURL(destination as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Error.imageDecode }
+        do {
+            try first.write(to: destination, type: .png)
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+        // Hand the encoded PNG to the caller, which owns its lifetime.
+        // Decoding it into a lazy CGImage and deleting the backing file before
+        // the gallery saves it could make the second PNG encode fail.
         NSLog("[QuickTick Anima] backend=drawthings stage=image-ready")
-        return image
+        return destination
     }
 }
 #endif

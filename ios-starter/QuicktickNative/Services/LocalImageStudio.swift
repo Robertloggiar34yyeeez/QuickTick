@@ -366,6 +366,16 @@ actor CivitaiStudioCatalog {
 
 /// All downloads and generated images stay in Application Support. The large
 /// reference archive is fetched only on request, never during feed scrolling.
+struct StudioGenerationMetadata: Codable, Sendable {
+    let prompt: String
+    let negativePrompt: String
+    let steps: Int
+    let guidance: Double
+    let seed: UInt32
+    let aspect: String
+    let longestEdge: Int
+}
+
 actor LocalImageStudio {
     static let shared = LocalImageStudio()
     private let root: URL
@@ -845,5 +855,26 @@ actor LocalImageStudio {
         ((try? FileManager.default.contentsOfDirectory(at: gallery, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
             .filter { $0.pathExtension.lowercased() == "png" }
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
+    }
+
+    /// Keep prompts beside their PNGs, not in UserDefaults. Older PNGs remain
+    /// viewable and shareable even when they predate this metadata format.
+    func saveGenerationMetadata(_ metadata: StudioGenerationMetadata, for image: URL) throws {
+        guard image.deletingLastPathComponent().standardizedFileURL == gallery.standardizedFileURL,
+              image.pathExtension.lowercased() == "png",
+              FileManager.default.fileExists(atPath: image.path) else { return }
+        let sidecar = image.deletingPathExtension().appendingPathExtension("json")
+        try JSONEncoder().encode(metadata).write(to: sidecar, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    func generationMetadata(for images: [URL]) -> [String: StudioGenerationMetadata] {
+        var result: [String: StudioGenerationMetadata] = [:]
+        for image in images where image.deletingLastPathComponent().standardizedFileURL == gallery.standardizedFileURL {
+            let sidecar = image.deletingPathExtension().appendingPathExtension("json")
+            guard let data = try? Data(contentsOf: sidecar),
+                  let metadata = try? JSONDecoder().decode(StudioGenerationMetadata.self, from: data) else { continue }
+            result[image.lastPathComponent] = metadata
+        }
+        return result
     }
 }

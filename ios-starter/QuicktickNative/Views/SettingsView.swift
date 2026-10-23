@@ -125,9 +125,9 @@ struct SettingsView: View {
             SettingsGroup(title: "Playback", icon: "play.rectangle") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
                 Toggle("Mute", isOn: $store.muted)
-                Toggle("Skip first 10 seconds of videos", isOn: $skipVideoIntros)
+                Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
                     .accessibilityIdentifier("skip-video-intros-toggle")
-                Text("Optional. Starts videos longer than 12 seconds at 0:10, including Pornhub. Short clips and GIFs play from the beginning.")
+                Text("Pornhub videos longer than 12 seconds start at 0:10. All other sources start at 0:00.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             }

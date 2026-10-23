@@ -429,8 +429,12 @@ private struct ImmersiveItemView: View {
             }
             .overlay {
                 if active, post.isImmersiveMedia, !ready, gifURL == nil, error == nil {
-                    ProgressView("Loading media").tint(.white).font(.caption)
-                        .padding(12).background(.black.opacity(0.45), in: Capsule()).allowsHitTesting(false)
+                    VStack(spacing: 5) {
+                        InfinityLoader(size: 44)
+                        Text("Loading media").font(.caption2.weight(.medium)).foregroundStyle(.white.opacity(0.82))
+                    }
+                    .padding(14).background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 17))
+                    .allowsHitTesting(false)
                 }
             }
             .clipped()
@@ -502,7 +506,7 @@ private struct ImmersiveItemView: View {
             let pool = store.players
             let key = post.stableID
             let owner = playbackOwner
-            let start = VideoIntroPolicy.startTime(duration: length, enabled: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"))
+            let start = VideoIntroPolicy.startTime(duration: length, enabled: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"), provider: post.provider)
             player.seek(to: CMTime(seconds: start, preferredTimescale: 600)) { finished in
                 Task { @MainActor in
                     guard finished, playing, store.isForeground, pool.activeKey == key, pool.activeOwner == owner else { return }
@@ -666,7 +670,7 @@ private struct ImmersiveDownloadControl: View {
             else { manager.download(post) }
         } label: {
             Group {
-                if record?.state == .downloading || record?.state == .queued { ProgressView().tint(.white) }
+                if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 28) }
                 else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 25, weight: .semibold)) }
             }.foregroundStyle(.white).frame(width: 48, height: 48).contentShape(Circle())
                 .background(.black.opacity(0.55), in: Circle())

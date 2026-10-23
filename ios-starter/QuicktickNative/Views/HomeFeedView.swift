@@ -122,7 +122,16 @@ struct HomeFeedView: View {
                         if store.activeTab == 0, let index = store.posts.firstIndex(where: { $0.stableID == post.stableID }), index >= store.posts.count - 4 { Task { await store.loadMore() } }
                     }
                 }
-                if store.isLoading { RoundedRectangle(cornerRadius: 22).fill(AppTheme.surface).frame(height: 220).overlay { ProgressView("Loading posts") }.accessibilityIdentifier("feed-loading") }
+                if store.isLoading {
+                    RoundedRectangle(cornerRadius: 22).fill(AppTheme.surface).frame(height: 220)
+                        .overlay {
+                            VStack(spacing: 7) {
+                                InfinityLoader(size: 46)
+                                Text("Loading posts").font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                            }
+                        }
+                        .accessibilityIdentifier("feed-loading")
+                }
                 if store.hasMore {
                     Button("Load more") { Task { await store.loadMore() } }
                         .frame(maxWidth: .infinity, minHeight: 44)

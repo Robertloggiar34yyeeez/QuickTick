@@ -48,6 +48,8 @@ struct ImageStudioView: View {
     @State private var renderPhase: StudioRenderPhase = .idle
     @State private var renderProgressHasExactSteps = false
     @State private var savedImages: [URL] = []
+    @State private var savedPromptMetadata: [String: StudioGenerationMetadata] = [:]
+    @State private var viewingImage: StudioImageSelection?
     @State private var downloadedAssets: [URL] = []
     @State private var checkpoints: [CivitaiStudioModel] = []
     @State private var loras: [CivitaiStudioModel] = []
@@ -108,6 +110,9 @@ struct ImageStudioView: View {
         .sheet(isPresented: $showIntro) { introSheet }
         .sheet(isPresented: $showToken) { tokenSheet }
         .sheet(isPresented: $showCatalog) { catalogSheet }
+        .fullScreenCover(item: $viewingImage) { selection in
+            fullscreenCreation(selection.url)
+        }
         .alert("Add a LoRA?", isPresented: $showSetupLoRAChoice) {
             Button("Browse LoRAs") {
                 catalogKind = .lora
@@ -132,6 +137,7 @@ struct ImageStudioView: View {
         .task {
             await reloadModels()
             savedImages = await LocalImageStudio.shared.savedImages()
+            savedPromptMetadata = await LocalImageStudio.shared.generationMetadata(for: Array(savedImages.prefix(18)))
             downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
             let savedLoRAs = (try? JSONDecoder().decode([String: Double].self, from: Data(savedLoRAStrengthsJSON.utf8))) ?? [:]
             let availableNames = Set(downloadedAssets.map(\.lastPathComponent))
@@ -204,6 +210,9 @@ struct ImageStudioView: View {
                         Label("Creating", systemImage: "sparkles")
                             .font(.subheadline.weight(.semibold))
                         Spacer()
+                        if !busy, let image = renderPreview ?? latestImage {
+                            creationMenu(image)
+                        }
                         Button {
                             if busy { renderTask?.cancel() }
                             withAnimation(.easeInOut(duration: 0.3)) { showGenerationFocus = false }
@@ -217,7 +226,7 @@ struct ImageStudioView: View {
                     .padding(.top, 4)
                     if busy {
                         VStack(spacing: 8) {
-                            StudioOrbitSpinner(reduceMotion: reduceMotion)
+                            InfinityLoader(size: 78)
                                 .frame(width: 78, height: 78)
                                 .padding(.top, 20)
                                 .accessibilityLabel("Image generation in progress")
@@ -260,7 +269,7 @@ struct ImageStudioView: View {
                             } else {
                                 // The native bridge emits internal operations, not
                                 // sampler steps. A numeric percent is misleading.
-                                ProgressView()
+                                InfinityLoader(size: 24)
                             }
                         }
                         .tint(AppTheme.accent)
@@ -398,7 +407,169 @@ struct ImageStudioView: View {
         }
     }
 
-    private var modelPanel: some View {
+    @ViewBuilder private var modelPanel: some View {
+        if modernUI { modernModelPanel }
+        else { legacyModelPanel }
+    }
+
+    private var modernModelPanel: some View {
+        StudioPanel(title: "Engine & canvas", icon: "square.stack.3d.up.fill") {
+            HStack(spacing: 9) {
+                modernEngineButton("Anima Turbo", symbol: "sparkles", selected: selectedEngine == .anima,
+                                   detail: animaReady ? "Ready" : "Install") {
+                    if animaReady { selectedEngine = .anima }
+                    else if selectedAnimaCheckpoint != nil { beginAnimaDownload(useExistingCheckpoint: true) }
+                    else { beginCivitaiAnimaSetup() }
+                }
+                modernEngineButton("Core ML", symbol: "cpu", selected: selectedEngine == .coreML,
+                                   detail: installedModels.isEmpty ? "Install" : "Ready") {
+                    if installedModels.isEmpty { beginStarterDownload() }
+                    else { selectedEngine = .coreML }
+                }
+            }
+            if selectedEngine == .anima {
+                HStack(spacing: 8) {
+                    Circle().fill(animaReady ? .green : .orange).frame(width: 7, height: 7)
+                    Text(selectedAnimaCheckpoint == nil ? "Anima" : "Anima Turbo v1.1")
+                        .font(.caption.weight(.semibold))
+                    Spacer(minLength: 4)
+                    Button("Models & LoRAs") { catalogKind = .lora; showCatalog = true }
+                        .font(.caption.weight(.semibold))
+                }
+                .foregroundStyle(.white.opacity(0.9))
+                if !selectedLoRAStrengths.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(selectedLoRAStrengths.keys.sorted(), id: \.self) { name in
+                                Text(name.replacingOccurrences(of: "lora-", with: ""))
+                                    .lineLimit(1)
+                                    .font(.caption2.weight(.medium))
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(AppTheme.accent.opacity(0.22), in: Capsule())
+                            }
+                        }
+                    }
+                }
+#if canImport(_MediaGenerationKit) && canImport(ModelOp) && canImport(ModelZoo) && canImport(DataModels)
+                HStack(spacing: 8) {
+                    Label(useDrawThings && drawThingsReady ? "Optimized · Metal" : "Mirage · Fallback", systemImage: "bolt.fill")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    Spacer()
+                    if drawThingsReady {
+                        Toggle("Optimized engine", isOn: $useDrawThings).labelsHidden()
+                    } else if selectedAnimaCheckpoint != nil {
+                        Button("Optimize") {
+                            guard let checkpoint = selectedAnimaCheckpoint else { return }
+                            perform("Optimizing Anima…") {
+                                try await DrawThingsAnimaBridge.shared.prepare(checkpoint: checkpoint) { fraction in
+                                    Task { @MainActor in drawThingsConversion = fraction }
+                                }
+                                drawThingsReady = true
+                                useDrawThings = true
+                                status = "Optimized engine ready. Mirage remains available."
+                            }
+                        }
+                        .font(.caption.weight(.semibold))
+                        .disabled(busy || selectedAnimaCheckpoint?.lastPathComponent != "checkpoint-3263843.safetensors")
+                    }
+                }
+                .padding(11)
+                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 13))
+                if busy && drawThingsConversion > 0 && drawThingsConversion < 1 {
+                    ProgressView(value: drawThingsConversion).tint(AppTheme.accent)
+                }
+#endif
+            } else {
+                HStack(spacing: 10) {
+                    if !installedModels.isEmpty {
+                        Menu {
+                            ForEach(installedModels, id: \.path) { url in
+                                Button(url.deletingLastPathComponent().lastPathComponent) { selectedModel = url }
+                            }
+                        } label: {
+                            Label(selectedModel?.deletingLastPathComponent().lastPathComponent ?? "Choose model", systemImage: "chevron.down")
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                    Button("Import") { showImport = true }
+                    Button("Download") { beginStarterDownload() }
+                }
+                .font(.caption.weight(.semibold))
+                .disabled(busy || transferStatus.isActive)
+            }
+            Divider().overlay(.white.opacity(0.12))
+            HStack {
+                Text("Resolution").font(.subheadline.weight(.semibold))
+                Spacer()
+                if selectedEngine == .anima {
+                    Menu {
+                        ForEach([512, 640, 768, 896, 1024], id: \.self) { pixels in
+                            Button("\(pixels) px") { animaLongestEdge = Double(pixels) }
+                        }
+                    } label: {
+                        Label("\(Int(animaLongestEdge)) px", systemImage: "chevron.up.chevron.down")
+                            .font(.caption.weight(.bold))
+                    }
+                } else {
+                    Text("Model native").font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                }
+            }
+            HStack(spacing: 7) {
+                ForEach(StudioAspectRatio.allCases) { ratio in
+                    Button { aspect = ratio } label: { Text(ratio.label).frame(maxWidth: .infinity) }
+                        .buttonStyle(StudioOptionChipStyle(isSelected: aspect == ratio))
+                        .accessibilityIdentifier("studio-aspect-\(ratio.rawValue)")
+                }
+            }
+            HStack {
+                Label("Anime 4×", systemImage: "arrow.up.left.and.arrow.down.right")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Button {
+                    if !animeUpscalerReady { beginAnimeUpscalerDownload() }
+                    else { highResolution.toggle() }
+                } label: {
+                    Text(!animeUpscalerReady ? "Get upscaler" : highResolution ? "On" : "Off")
+                        .font(.caption.weight(.bold))
+                }
+                .accessibilityIdentifier("studio-anime-upscaler")
+            }
+            if transferStatus.isActive { downloadProgressPanel }
+            DisclosureGroup(isExpanded: $showAdvanced) {
+                generationPanel.padding(.top, 10)
+            } label: {
+                Label("Advanced", systemImage: "slider.horizontal.3")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .tint(AppTheme.accent)
+        }
+    }
+
+    private func modernEngineButton(_ title: String, symbol: String, selected: Bool, detail: String,
+                                    action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Image(systemName: symbol).foregroundStyle(selected ? .white : AppTheme.accent)
+                    Spacer()
+                    if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                }
+                Text(title).font(.subheadline.weight(.bold)).lineLimit(1)
+                Text(detail).font(.caption2).foregroundStyle(.white.opacity(0.65))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(13)
+            .background(selected ? AppTheme.accent.opacity(0.28) : .white.opacity(0.055),
+                        in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(selected ? AppTheme.accent.opacity(0.65) : .white.opacity(0.1)))
+        }
+        .buttonStyle(QuicktickPressStyle())
+        .foregroundStyle(.white)
+    }
+
+    private var legacyModelPanel: some View {
         StudioPanel(title: "On-device engine", icon: "cpu.fill") {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 9) {
@@ -610,7 +781,7 @@ struct ImageStudioView: View {
                     .tint(AppTheme.accent)
                     .accessibilityIdentifier("studio-download-progress")
             } else {
-                ProgressView().tint(AppTheme.accent)
+                InfinityLoader(size: 28)
                     .accessibilityIdentifier("studio-download-progress")
             }
             Text(transferStatus.sizeLabel)
@@ -673,7 +844,9 @@ struct ImageStudioView: View {
     private var generationPanel: some View {
         VStack(spacing: 10) {
             if selectedEngine == .anima {
-                Text("Anima native sampler: Euler (fixed by the current Mirage binary). Euler A Substep requires a native runtime upgrade; selecting it here would not change the output.")
+                Text(useDrawThings && drawThingsReady
+                     ? "Optimized Anima: Euler A Substep. Mirage is available as fallback."
+                     : "Mirage uses its native Euler sampler. Enable the optimized engine for Euler A Substep.")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             } else {
                 HStack(spacing: 8) {
@@ -739,12 +912,7 @@ struct ImageStudioView: View {
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
                     .foregroundStyle(.green)
             }
-            StudioImageThumbnail(url: url, maxPixelDimension: 1200, fill: false)
-                .frame(maxWidth: .infinity)
-                .frame(height: 370)
-                .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 22))
-                .clipShape(RoundedRectangle(cornerRadius: 22))
-                .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.12)))
+            creationPreview(url, thumbnailSize: 1200, height: 370, fill: false)
             ShareLink(item: url) {
                 Label("Save or share image", systemImage: "square.and.arrow.up")
                     .font(.subheadline.weight(.semibold))
@@ -830,7 +998,12 @@ struct ImageStudioView: View {
                         .disabled(catalogBusy)
                     }
                     if transferStatus.isActive { downloadProgressPanel }
-                    if catalogBusy { ProgressView("Finding \(catalogKind.title.lowercased())…") }
+                    if catalogBusy {
+                        HStack(spacing: 10) {
+                            InfinityLoader(size: 29)
+                            Text("Finding \(catalogKind.title.lowercased())…").font(.caption)
+                        }
+                    }
                     ForEach(catalogKind == .lora ? loras : checkpoints) { model in modelRow(model) }
                     if !catalogBusy && (catalogKind == .lora ? loras : checkpoints).isEmpty {
                         Text("Search for a character, artist or model to see available downloads.")
@@ -993,15 +1166,112 @@ struct ImageStudioView: View {
         StudioPanel(title: "My creations", icon: "photo.on.rectangle.angled") {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
                 ForEach(savedImages.prefix(18), id: \.path) { url in
-                    ShareLink(item: url) {
-                        StudioImageThumbnail(url: url, maxPixelDimension: 240, fill: true)
-                            .frame(height: 112).frame(maxWidth: .infinity)
-                            .clipped()
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
+                    creationPreview(url, thumbnailSize: 240, height: 112, fill: true)
                 }
             }
         }
+    }
+
+    private func creationPreview(_ url: URL, thumbnailSize: Int, height: CGFloat, fill: Bool) -> some View {
+        StudioImageThumbnail(url: url, maxPixelDimension: thumbnailSize, fill: fill)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .clipped()
+            .background(.black.opacity(0.35))
+            .clipShape(RoundedRectangle(cornerRadius: 15))
+            .overlay(RoundedRectangle(cornerRadius: 15).stroke(.white.opacity(0.14)))
+            .contentShape(RoundedRectangle(cornerRadius: 15))
+            .onTapGesture { viewingImage = StudioImageSelection(url: url) }
+            .overlay(alignment: .topTrailing) {
+                creationMenu(url)
+                    .padding(7)
+            }
+            .accessibilityLabel("View generated image fullscreen")
+    }
+
+    private func creationMenu(_ url: URL) -> some View {
+        Menu {
+            Button {
+                viewingImage = StudioImageSelection(url: url)
+            } label: { Label("View fullscreen", systemImage: "arrow.up.left.and.arrow.down.right") }
+            if let metadata = savedPromptMetadata[url.lastPathComponent] {
+                Button {
+                    reusePrompt(metadata)
+                } label: { Label("Reuse prompt", systemImage: "text.badge.plus") }
+            } else {
+                Button("Prompt unavailable for older images") { }
+                    .disabled(true)
+            }
+            ShareLink(item: url) {
+                Label("Save or share", systemImage: "square.and.arrow.up")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .background(.black.opacity(0.62), in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.15)))
+        }
+        .accessibilityLabel("Image options")
+    }
+
+    private func reusePrompt(_ metadata: StudioGenerationMetadata) {
+        prompt = metadata.prompt
+        negativePrompt = metadata.negativePrompt
+        stepCount = Double(metadata.steps)
+        guidance = metadata.guidance
+        seed = metadata.seed
+        if let savedAspect = StudioAspectRatio(rawValue: metadata.aspect) { aspect = savedAspect }
+        animaLongestEdge = Double(metadata.longestEdge)
+        viewingImage = nil
+        status = "Prompt restored. Edit it or generate again."
+        promptFocused = true
+    }
+
+    private func fullscreenCreation(_ url: URL) -> some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 16) {
+                HStack {
+                    Text("YOUR CREATION")
+                        .font(.caption.weight(.bold)).tracking(1.8)
+                        .foregroundStyle(.white.opacity(0.65))
+                    Spacer()
+                    creationMenu(url)
+                    Button { viewingImage = nil } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 34, height: 34)
+                            .background(.white.opacity(0.13), in: Circle())
+                    }
+                    .accessibilityLabel("Close fullscreen image")
+                }
+                .padding(.horizontal, 18)
+                StudioImageThumbnail(url: url, maxPixelDimension: 2048, fill: false)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let metadata = savedPromptMetadata[url.lastPathComponent] {
+                    Text(metadata.prompt)
+                        .font(.subheadline)
+                        .lineLimit(2)
+                        .foregroundStyle(.white.opacity(0.7))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                    Button {
+                        reusePrompt(metadata)
+                    } label: {
+                        Label("Reuse this prompt", systemImage: "arrow.uturn.backward")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(AppTheme.accent)
+                    .padding(.horizontal, 18)
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.vertical, 16)
+        }
+        .preferredColorScheme(.dark)
     }
 
     private var introSheet: some View {
@@ -1027,7 +1297,7 @@ struct ImageStudioView: View {
             if transferStatus.isActive {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        ProgressView().tint(AppTheme.accent)
+                        InfinityLoader(size: 26)
                         Text(status ?? "Installing Anima…").font(.subheadline).lineLimit(2)
                     }
                     if let fraction = transferStatus.fraction {
@@ -1420,6 +1690,12 @@ struct ImageStudioView: View {
                 try Task.checkCancellation()
                 latestImage = result.url
                 renderPreview = result.url
+                let metadata = StudioGenerationMetadata(
+                    prompt: inputPrompt, negativePrompt: inputNegative, steps: steps,
+                    guidance: Double(scale), seed: inputSeed, aspect: selectedAspect.rawValue,
+                    longestEdge: longestEdge)
+                try? await LocalImageStudio.shared.saveGenerationMetadata(metadata, for: result.url)
+                savedPromptMetadata[result.url.lastPathComponent] = metadata
                 savedImages = await LocalImageStudio.shared.savedImages()
                 renderStatus.fraction = 1
                 if let warning = result.enhancementWarning {
@@ -1456,6 +1732,11 @@ struct ImageStudioView: View {
     }
 }
 
+private struct StudioImageSelection: Identifiable {
+    let url: URL
+    var id: String { url.path }
+}
+
 private struct StudioOptionChipStyle: ButtonStyle {
     let isSelected: Bool
 
@@ -1490,7 +1771,7 @@ private struct StudioImageThumbnail: View {
                     .foregroundStyle(.white.opacity(0.7))
             } else {
                 RoundedRectangle(cornerRadius: 12).fill(AppTheme.surface)
-                    .overlay(ProgressView().tint(AppTheme.accent))
+                    .overlay(InfinityLoader(size: 27))
             }
         }
         .task(id: url) {
@@ -1530,39 +1811,49 @@ private enum StudioRenderPhase {
     }
 }
 
-/// Adapted as a self-contained SwiftUI spinner from the MIT-licensed
-/// ProgressUI circular-spinner pattern: github.com/mumer92/progressui.
-/// The ring loops independently of the native diffusion progress callbacks.
-private struct StudioOrbitSpinner: View {
-    let reduceMotion: Bool
-    @State private var rotating = false
+/// Lightweight, reusable infinity loader: a glowing highlight travels along
+/// a continuous figure-eight. It doesn't allocate images or schedule timers.
+struct InfinityLoader: View {
+    var size: CGFloat = 44
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack {
-            Circle().stroke(.white.opacity(0.12), lineWidth: 5)
-            Circle()
-                .trim(from: 0.06, to: 0.78)
-                .stroke(
-                    AngularGradient(
-                        colors: [.clear, AppTheme.accent.opacity(0.55), .cyan, .white],
-                        center: .center
-                    ),
-                    style: StrokeStyle(lineWidth: 5, lineCap: .round)
-                )
-                .rotationEffect(.degrees(rotating ? 360 : 0))
-            Image(systemName: "sparkles")
-                .font(.system(size: 25, weight: .medium))
-                .foregroundStyle(.white)
-                .shadow(color: AppTheme.accent.opacity(0.7), radius: 12)
-        }
-        .padding(5)
-        .onAppear {
-            guard !reduceMotion else { return }
-            rotating = false
-            withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) {
-                rotating = true
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+            let phase = reduceMotion ? 0.2 : timeline.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: 1.75) / 1.75
+            Canvas { graphics, bounds in
+                func point(_ fraction: Double) -> CGPoint {
+                    let angle = 2 * Double.pi * fraction
+                    return CGPoint(x: bounds.width / 2 + sin(angle) * bounds.width * 0.42,
+                                   y: bounds.height / 2 + sin(2 * angle) * bounds.height * 0.32)
+                }
+                var loop = Path()
+                for step in 0...160 {
+                    let p = point(Double(step) / 160)
+                    if step == 0 { loop.move(to: p) } else { loop.addLine(to: p) }
+                }
+                graphics.stroke(loop, with: .color(AppTheme.accent.opacity(0.27)),
+                                style: StrokeStyle(lineWidth: max(2, size * 0.065), lineCap: .round))
+                var shimmer = Path()
+                for step in 0...45 {
+                    let p = point((phase + Double(step) / 180).truncatingRemainder(dividingBy: 1))
+                    if step == 0 { shimmer.move(to: p) } else { shimmer.addLine(to: p) }
+                }
+                graphics.stroke(shimmer,
+                                with: .linearGradient(Gradient(colors: [.clear, AppTheme.accent, .cyan, .white]),
+                                                      startPoint: point(phase), endPoint: point(phase + 0.24)),
+                                style: StrokeStyle(lineWidth: max(2.5, size * 0.072), lineCap: .round))
+                let glow = point(phase + 0.24)
+                let diameter = max(3, size * 0.105)
+                graphics.fill(Path(ellipseIn: CGRect(x: glow.x - diameter / 2, y: glow.y - diameter / 2,
+                                                     width: diameter, height: diameter)), with: .color(.white))
             }
+            .shadow(color: AppTheme.accent.opacity(0.65), radius: size * 0.12)
+            .frame(width: size, height: size * 0.72)
+            .frame(width: size, height: size)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading")
     }
 }
 

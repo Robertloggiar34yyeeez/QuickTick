@@ -130,7 +130,7 @@ struct PostCardView: View {
                 if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground {
                     store.recordComplete(post); store.recordReplay(post)
                     let length = player?.currentItem?.duration.seconds ?? 0
-                    let start = VideoIntroPolicy.startTime(duration: length, enabled: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"))
+                    let start = VideoIntroPolicy.startTime(duration: length, enabled: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"), provider: post.provider)
                     player?.seek(to: CMTime(seconds: start, preferredTimescale: 600))
                     if store.pausedPlaybackID != post.stableID { player?.play() }
                 }
@@ -185,7 +185,7 @@ struct PostCardView: View {
                     } else { store.inlinePlaybackID = post.stableID }
                 } label: {
                     HStack(spacing: 8) {
-                        if preparing { ProgressView() } else { Image(systemName: playing ? "pause.fill" : "play.fill") }
+                        if preparing { InfinityLoader(size: 24) } else { Image(systemName: playing ? "pause.fill" : "play.fill") }
                         Text(playing ? "Pause" : "Play")
                     }.font(.subheadline.weight(.semibold)).padding(12).frame(minHeight: 44).background(.ultraThinMaterial, in: Capsule())
                 }.disabled(preparing).buttonStyle(.plain).padding(10)
@@ -381,12 +381,12 @@ private struct FullComicView: View {
                 Image(uiImage: preview).resizable().scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(alignment: .bottom) {
-                        ProgressView("Loading full resolution").tint(.white)
+                        HStack(spacing: 7) { InfinityLoader(size: 25); Text("Loading full resolution").font(.caption) }
                             .padding(10).background(.black.opacity(0.65), in: Capsule())
                             .padding(.bottom, 20)
                     }
             } else if let error { Text(error).foregroundStyle(.white).padding() }
-            else { ProgressView("Loading full image").tint(.white) }
+            else { VStack(spacing: 8) { InfinityLoader(size: 50); Text("Loading full image").font(.caption) }.foregroundStyle(.white) }
         }.overlay(alignment: .topTrailing) {
             Button { dismiss() } label: {
                 Image(systemName: "xmark").font(.system(size: 20, weight: .bold)).frame(width: 48, height: 48)

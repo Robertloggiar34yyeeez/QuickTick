@@ -10,11 +10,32 @@ final class QueryParserTests: XCTestCase {
                        ParsedQuery(included: ["cosplay scene", "fantasy"], excluded: ["unwanted intro"]))
         XCTAssertEqual(QueryParser.parse("\"unfinished phrase"), ParsedQuery(included: ["unfinished phrase"], excluded: []))
     }
-    func testVideoIntroPolicySkipsOnlyLongClipsWhenEnabled() {
-        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true), 10)
-        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true), 0)
-        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: false), 0)
-        XCTAssertEqual(VideoIntroPolicy.startTime(duration: .nan, enabled: true), 0)
+    func testVideoIntroPolicyOnlySkipsLongPornhubVideos() {
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "pornhub"), 10)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "PornHub"), 10)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "rule34"), 0)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "redgifs"), 0)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true, provider: "pornhub"), 0)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: false, provider: "pornhub"), 0)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: .nan, enabled: true, provider: "pornhub"), 0)
+    }
+
+    func testStudioPromptMetadataIsPersistedBesideImage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gallery = root.appendingPathComponent("Images")
+        try FileManager.default.createDirectory(at: gallery, withIntermediateDirectories: true)
+        let image = gallery.appendingPathComponent("sample.png")
+        try Data([0x89, 0x50, 0x4e, 0x47]).write(to: image)
+        let metadata = StudioGenerationMetadata(prompt: "one character, nighttime city",
+                                                negativePrompt: "blurry", steps: 8,
+                                                guidance: 2, seed: 42, aspect: "square", longestEdge: 512)
+        let studio = LocalImageStudio(directory: root)
+        try await studio.saveGenerationMetadata(metadata, for: image)
+        let persisted = await studio.generationMetadata(for: [image])
+        XCTAssertEqual(persisted["sample.png"]?.prompt, metadata.prompt)
+        XCTAssertEqual(persisted["sample.png"]?.seed, 42)
+        XCTAssertEqual(persisted["sample.png"]?.steps, 8)
     }
 
     func testTagIdentityAndIndependentExclusion() {

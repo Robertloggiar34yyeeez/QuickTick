@@ -3,8 +3,12 @@ import AVFoundation
 import Combine
 
 enum VideoIntroPolicy {
-    static func startTime(duration: Double, enabled: Bool) -> Double {
-        enabled && duration.isFinite && duration > 12 ? 10 : 0
+    static func isPornhub(_ provider: String) -> Bool {
+        provider.lowercased() == "pornhub"
+    }
+
+    static func startTime(duration: Double, enabled: Bool, provider: String) -> Double {
+        enabled && isPornhub(provider) && duration.isFinite && duration > 12 ? 10 : 0
     }
 }
 
@@ -68,6 +72,7 @@ final class PlayerPool: ObservableObject {
     }
     private func scheduleIntroSkip(key: String, player: AVPlayer) {
         guard UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
+              key.lowercased().hasPrefix("pornhub:"),
               !introSkipped.contains(key), let item = player.currentItem else { return }
         introObservers[key] = item.observe(\.status, options: [.initial, .new]) { [weak self, weak player] item, _ in
             Task { @MainActor in
@@ -80,7 +85,7 @@ final class PlayerPool: ObservableObject {
                 guard self.players[key] === player, self.activeKey == key,
                       current.isFinite,
                       current < 9.5,
-                      VideoIntroPolicy.startTime(duration: duration, enabled: true) > 0 else { return }
+                      VideoIntroPolicy.startTime(duration: duration, enabled: true, provider: "pornhub") > 0 else { return }
                 self.introSkipped.insert(key)
                 await player.seek(to: CMTime(seconds: 10, preferredTimescale: 600),
                             toleranceBefore: CMTime(seconds: 0.15, preferredTimescale: 600),

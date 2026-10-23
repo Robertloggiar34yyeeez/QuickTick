@@ -452,7 +452,11 @@ final class AppStore: ObservableObject {
             releasedLoading = true
             recommendationMode = "On-device recommendations"
             scheduleIdleIntelligence()
-            if generation == token, !restoreFailed { lastError = nil }
+            if generation == token, !restoreFailed {
+                lastError = personalized && immediate.isEmpty
+                    ? "No new posts matched your interests. Try another source or adjust your exclusions."
+                    : nil
+            }
         } catch {
             if generation == token, !Task.isCancelled { recordFeedError(error, provider: provider) }
         }
@@ -581,15 +585,54 @@ final class AppStore: ObservableObject {
         let secondaryQuery = b.query
         let secondaryPageNumber = b.page
         let requestedGeneration = generation
-        // async let keeps both requests structured and cancels outstanding
-        // work when the parent refresh is cancelled.
-        async let primary: PostPage? = try? await api.posts(
-            provider: provider, query: primaryQuery, page: primaryPageNumber,
-            sort: sort, immersive: mediaOnly)
-        async let secondary: PostPage? = try? await api.posts(
-            provider: provider, query: secondaryQuery, page: secondaryPageNumber,
-            sort: sort, immersive: mediaOnly)
-        let (firstPage, secondPage) = await (primary, secondary)
+        // The first useful candidate page should not wait up to 15 seconds
+        // for a stalled secondary provider request. Allow a brief grace period
+        // for the other pool (to preserve ranking diversity), then cancel it.
+        // Sparse first pages still wait for the second pool.
+        enum CandidateBatch: Sendable {
+            case first(PostPage?)
+            case second(PostPage?)
+            case graceExpired
+        }
+        let client = api
+        let fetchStarted = Date()
+        let (firstPage, secondPage) = await withTaskGroup(
+            of: CandidateBatch.self, returning: (PostPage?, PostPage?).self
+        ) { group in
+            group.addTask {
+                .first(try? await client.posts(provider: provider, query: primaryQuery,
+                                              page: primaryPageNumber, sort: sort, immersive: mediaOnly))
+            }
+            group.addTask {
+                .second(try? await client.posts(provider: provider, query: secondaryQuery,
+                                               page: secondaryPageNumber, sort: sort, immersive: mediaOnly))
+            }
+            var primary: PostPage?
+            var secondary: PostPage?
+            var completed = 0
+            var graceStarted = false
+            while let result = await group.next() {
+                switch result {
+                case .first(let page): primary = page; completed += 1
+                case .second(let page): secondary = page; completed += 1
+                case .graceExpired: break
+                }
+                if completed == 2 { break }
+                if case .graceExpired = result { break }
+                let available = (primary?.items.count ?? 0) + (secondary?.items.count ?? 0)
+                if available >= 28 && !graceStarted {
+                    graceStarted = true
+                    group.addTask {
+                        try? await Task.sleep(for: .milliseconds(850))
+                        return .graceExpired
+                    }
+                }
+            }
+            group.cancelAll()
+            return (primary, secondary)
+        }
+        FeedPerformance.emit("candidate_fetch", started: fetchStarted,
+                             count: (firstPage?.items.count ?? 0) + (secondPage?.items.count ?? 0))
         try Task.checkCancellation()
         guard firstPage != nil || secondPage != nil else {
             // Preserve meaningful HTTP/auth errors from the normal pathway.

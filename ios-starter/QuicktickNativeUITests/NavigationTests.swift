@@ -181,6 +181,18 @@ final class NavigationTests: XCTestCase {
         app.buttons["Close"].tap()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 5))
     }
+    @MainActor func testStudioCanContinueWithoutDownloadingAnima() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "-quicktick-studio-intro-v1", "NO"]
+        app.launch()
+        XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))
+        app.buttons["tab-Create"].tap()
+        let continueButton = app.buttons["studio-intro-complete"]
+        XCTAssertTrue(continueButton.waitForExistence(timeout: 5))
+        XCTAssertTrue(continueButton.isEnabled)
+        continueButton.tap()
+        XCTAssertTrue(app.buttons["studio-generate"].waitForExistence(timeout: 5))
+    }
     @MainActor func testHideAITabKeepsFourNavigationTabs() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))
@@ -190,7 +202,9 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         if toggle.value as? String == "1" { toggle.tap() }
         app.buttons["Done"].tap()
-        XCTAssertFalse(app.buttons["tab-Create"].exists)
+        let createTab = app.buttons["tab-Create"]
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: createTab)
+        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 5), .completed)
         for name in ["Home", "Immersive", "Favorites", "Downloads"] {
             XCTAssertTrue(app.buttons["tab-\(name)"].exists)
         }
@@ -198,7 +212,7 @@ final class NavigationTests: XCTestCase {
         let restoreToggle = app.switches["show-ai-tab-toggle"]
         if restoreToggle.value as? String == "0" { restoreToggle.tap() }
         app.buttons["Done"].tap()
-        XCTAssertTrue(app.buttons["tab-Create"].exists)
+        XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 5))
     }
     @MainActor func testSearchAppearsOnceBeforeAndAfterSubmitting() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()

@@ -83,8 +83,8 @@ enum TasteConcepts {
     }
 }
 
-/// Explicitly tagged pose and gaze are relationships, not identities. We do
-/// not infer these actions from faces or from unverified video titles.
+/// Provider tags and high-confidence WD visual labels share an action taxonomy.
+/// These are relationships, not identities; missing labels stay unknown.
 enum ActionSemantics {
     static let aliases: [String: String] = [
         "leaning_over": "pose:leaning_forward", "leaning_forward": "pose:leaning_forward",
@@ -97,7 +97,27 @@ enum ActionSemantics {
         "sitting": "pose:sitting", "seated": "pose:sitting",
         "standing": "pose:standing", "kneeling": "pose:kneeling",
         "lying": "pose:lying", "lying_down": "pose:lying",
-        "running": "pose:running", "dancing": "pose:dancing"
+        "running": "pose:running", "dancing": "pose:dancing",
+        // Canonical booru action tags, matched as whole tags only. Never infer
+        // these from an artist, character, uploader or unverified video title.
+        "kissing": "act:kissing", "kiss": "act:kissing", "deep_kiss": "act:kissing",
+        "hugging": "act:hugging", "hug": "act:hugging",
+        "sex": "act:intercourse", "vaginal": "act:intercourse", "vaginal_sex": "act:intercourse",
+        "anal": "act:anal", "anal_sex": "act:anal",
+        "oral": "act:oral", "oral_sex": "act:oral", "fellatio": "act:oral", "cunnilingus": "act:oral",
+        "masturbation": "act:masturbation", "female_masturbation": "act:masturbation",
+        "male_masturbation": "act:masturbation",
+        "handjob": "act:manual_stimulation", "fingering": "act:manual_stimulation",
+        "footjob": "act:footjob", "paizuri": "act:paizuri",
+        "spanking": "act:spanking", "bondage": "act:bondage", "shibari": "act:bondage",
+        "groping": "act:groping", "breast_grab": "act:groping",
+        "grabbing_breast": "act:groping",
+        "penetration": "act:penetration", "double_penetration": "act:double_penetration",
+        "riding": "position:riding", "cowgirl_position": "position:riding",
+        "reverse_cowgirl_position": "position:reverse_riding",
+        "missionary": "position:missionary", "missionary_position": "position:missionary",
+        "doggystyle": "position:rear_entry", "doggy_style": "position:rear_entry",
+        "standing_sex": "position:standing", "standing_position": "position:standing"
     ]
 
     static func facet(_ raw: String) -> String? { aliases[TasteConcepts.canonical(raw)] }

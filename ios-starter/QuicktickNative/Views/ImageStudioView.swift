@@ -11,7 +11,9 @@ struct ImageStudioView: View {
     @AppStorage("quicktick-studio-anima-checkpoint-v1") private var savedAnimaCheckpointName = ""
     @AppStorage("quicktick-studio-lora-strengths-v1") private var savedLoRAStrengthsJSON = "{}"
     @AppStorage("quicktick-studio-coreml-safety-v1") private var coreMLSafetyCheck = true
+    @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @State private var showIntro = false
+    @State private var showSetupLoRAChoice = false
     @State private var showImport = false
     @State private var showAnimaImport = false
     @State private var showLoRAImport = false
@@ -20,10 +22,10 @@ struct ImageStudioView: View {
     @State private var showAdvanced = false
     @State private var prompt = ""
     @State private var negativePrompt = "low quality, blurry, distorted anatomy, watermark"
-    @State private var stepCount = 20.0
-    @State private var guidance = 7.0
+    @State private var stepCount = 8.0
+    @State private var guidance = 2.0
     @State private var aspect: StudioAspectRatio = .square
-    @State private var animaLongestEdge = 640.0
+    @State private var animaLongestEdge = 512.0
     @State private var scheduler: StudioScheduler = .dpm
     @State private var highResolution = false
     @State private var animeUpscalerReady = false
@@ -40,6 +42,7 @@ struct ImageStudioView: View {
     @State private var activeRenderPrompt = ""
     @State private var renderStage = "Preparing the canvas"
     @State private var renderPhase: StudioRenderPhase = .idle
+    @State private var renderProgressHasExactSteps = false
     @State private var savedImages: [URL] = []
     @State private var downloadedAssets: [URL] = []
     @State private var checkpoints: [CivitaiStudioModel] = []
@@ -101,6 +104,17 @@ struct ImageStudioView: View {
         .sheet(isPresented: $showIntro) { introSheet }
         .sheet(isPresented: $showToken) { tokenSheet }
         .sheet(isPresented: $showCatalog) { catalogSheet }
+        .alert("Add a LoRA?", isPresented: $showSetupLoRAChoice) {
+            Button("Browse LoRAs") {
+                catalogKind = .lora
+                searchQuery = inspiration.characters.first ?? inspiration.artists.first ?? "Anima"
+                showCatalog = true
+                searchCatalog()
+            }
+            Button("Not now", role: .cancel) { }
+        } message: {
+            Text("Anima is selected. Add a character or artist LoRA, or continue without one. Selected LoRAs are applied during generation.")
+        }
         .fileImporter(isPresented: $showImport, allowedContentTypes: [.zip, .folder]) { result in
             if case .success(let url) = result {
                 perform("Importing Core ML model…") {
@@ -110,12 +124,6 @@ struct ImageStudioView: View {
                     status = "Ready to generate on this device."
                 }
             } else if case .failure(let error) = result { status = error.localizedDescription }
-        }
-        .fileImporter(isPresented: $showAnimaImport, allowedContentTypes: [.item]) { result in
-            importAsset(result, type: "checkpoint")
-        }
-        .fileImporter(isPresented: $showLoRAImport, allowedContentTypes: [.item]) { result in
-            importAsset(result, type: "lora")
         }
         .task {
             await reloadModels()
@@ -188,12 +196,18 @@ struct ImageStudioView: View {
                     }
                     .padding(.top, 4)
                     if busy {
-                        StudioPromptCrawl(prompt: activeRenderPrompt, reduceMotion: reduceMotion)
-                            .id(renderSequence)
-                            .frame(maxWidth: 480)
-                            .frame(maxHeight: .infinity)
-                            .padding(.horizontal, 20)
-                            .accessibilityIdentifier("studio-prompt-crawl")
+                        VStack(spacing: 8) {
+                            StudioOrbitSpinner(reduceMotion: reduceMotion)
+                                .frame(width: 78, height: 78)
+                                .padding(.top, 20)
+                                .accessibilityLabel("Image generation in progress")
+                            StudioPromptCrawl(prompt: activeRenderPrompt, reduceMotion: reduceMotion)
+                                .id(renderSequence)
+                                .frame(maxWidth: 480)
+                                .frame(maxHeight: .infinity)
+                                .padding(.horizontal, 20)
+                                .accessibilityIdentifier("studio-prompt-crawl")
+                        }
                     } else {
                         Spacer(minLength: 36)
                         VStack(spacing: 12) {
@@ -218,14 +232,24 @@ struct ImageStudioView: View {
                                 .tracking(1.3)
                             Spacer()
                         }
-                        ProgressView(value: renderStatus.fraction)
-                            .tint(AppTheme.accent)
-                            .accessibilityIdentifier("studio-focus-progress")
-                        Text("\(Int(renderStatus.fraction * 100))%")
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .monospacedDigit()
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.8))
+                        Group {
+                            if renderProgressHasExactSteps || !busy {
+                                ProgressView(value: renderStatus.fraction)
+                            } else {
+                                // The native bridge emits internal operations, not
+                                // sampler steps. A numeric percent is misleading.
+                                ProgressView()
+                            }
+                        }
+                        .tint(AppTheme.accent)
+                        .accessibilityIdentifier("studio-focus-progress")
+                        if renderProgressHasExactSteps || !busy {
+                            Text("\(Int(renderStatus.fraction * 100))%")
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                                .monospacedDigit()
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.white.opacity(0.8))
+                        }
                         if let status {
                             Text(status).font(.caption).multilineTextAlignment(.center)
                                 .foregroundStyle(.white.opacity(0.84))
@@ -356,9 +380,10 @@ struct ImageStudioView: View {
                     }
                     Button {
                         if animaReady { selectedEngine = .anima; status = "Anima Metal engine selected." }
-                        else { beginAnimaDownload(useExistingCheckpoint: selectedAnimaCheckpoint != nil) }
+                        else if selectedAnimaCheckpoint != nil { beginAnimaDownload(useExistingCheckpoint: true) }
+                        else { beginCivitaiAnimaSetup() }
                     } label: {
-                        engineChip("Anima · CivitAI", detail: animaReady ? "Ready · Private" : (selectedAnimaCheckpoint == nil ? "2.07 GB · Get" : "650 MB · Setup"),
+                        engineChip("Anima · CivitAI", detail: animaReady ? "Ready · Private" : "Set up",
                                    icon: "sparkles.rectangle.stack", active: selectedEngine == .anima && animaReady)
                     }
                     Button {
@@ -371,7 +396,7 @@ struct ImageStudioView: View {
                 }
                 .buttonStyle(QuicktickPressStyle())
             }
-            Text("Choose Core ML or Anima Metal. You can import an Anima checkpoint from CivitAI and add LoRAs from the model library. Large checkpoints need significant device RAM.")
+            Text("Set up Anima from civitai.red with its encoder and VAE. Large checkpoints need significant device RAM.")
                 .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
             if selectedEngine == .anima {
                 HStack(spacing: 8) {
@@ -452,8 +477,8 @@ struct ImageStudioView: View {
                 HStack(spacing: 8) {
                     Text("Preset").font(.caption.weight(.semibold))
                     Spacer()
-                    Button("Fast") { stepCount = 16; animaLongestEdge = 512 }
-                        .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 16 && animaLongestEdge == 512))
+                    Button("Fast") { stepCount = 8; animaLongestEdge = 512 }
+                        .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 8 && animaLongestEdge == 512))
                         .accessibilityIdentifier("studio-preset-fast")
                     Button("Quality") { stepCount = 30; animaLongestEdge = 640 }
                         .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 30 && animaLongestEdge == 640))
@@ -592,15 +617,31 @@ struct ImageStudioView: View {
                     .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
             }
             HStack {
-                Text("Steps").font(.subheadline)
-                Slider(value: $stepCount, in: 4...40, step: 1)
-                Text("\(Int(stepCount))").font(.caption.monospacedDigit()).frame(width: 26)
+                Text("Steps").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(Int(stepCount))").font(.subheadline.monospacedDigit()).foregroundStyle(AppTheme.secondaryLabel)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach([4, 6, 8, 12, 16, 24, 32], id: \.self) { count in
+                        Button("\(count)") { stepCount = Double(count) }
+                            .buttonStyle(StudioOptionChipStyle(isSelected: Int(stepCount) == count))
+                    }
+                }
             }
             HStack {
-                Text("Guidance").font(.subheadline)
-                Slider(value: $guidance, in: 1...15, step: 0.5)
+                Text("Guidance").font(.subheadline.weight(.semibold))
+                Spacer()
                 Text(guidance.formatted(.number.precision(.fractionLength(1))))
-                    .font(.caption.monospacedDigit()).frame(width: 30)
+                    .font(.subheadline.monospacedDigit()).foregroundStyle(AppTheme.secondaryLabel)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach([1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0], id: \.self) { scale in
+                        Button(scale.formatted(.number.precision(.fractionLength(1)))) { guidance = scale }
+                            .buttonStyle(StudioOptionChipStyle(isSelected: guidance == scale))
+                    }
+                }
             }
             HStack {
                 Label("Seed \(seed)", systemImage: "dice")
@@ -648,6 +689,20 @@ struct ImageStudioView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if modernUI {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("YOUR MODELS").font(.caption2.weight(.semibold)).tracking(1.8).foregroundStyle(AppTheme.accent)
+                                Text("Model library").font(.system(.largeTitle, design: .default, weight: .bold))
+                            }
+                            Spacer()
+                            Image(systemName: "square.stack.3d.up.fill")
+                                .font(.title2).foregroundStyle(AppTheme.accent)
+                                .frame(width: 46, height: 46)
+                                .background(AppTheme.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 15))
+                        }
+                        .padding(.top, 8)
+                    }
                     Picker("Explore", selection: $catalogKind) {
                         ForEach(StudioCatalogKind.allCases) { kind in
                             Text(kind.title).tag(kind)
@@ -676,30 +731,25 @@ struct ImageStudioView: View {
                     }
                     HStack(spacing: 8) {
                         Button { showAnimaImport = true } label: {
-                            Label("Import checkpoint", systemImage: "square.and.arrow.down")
+                            Label("Checkpoint", systemImage: "square.and.arrow.down")
                         }
                         Button { showLoRAImport = true } label: {
-                            Label("Import LoRA", systemImage: "plus.circle")
+                            Label("Import LoRA", systemImage: "plus.circle.fill")
                         }
                     }
-                    .font(.caption.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .buttonStyle(.bordered)
+                    .controlSize(.large)
                     Text("Suggested from your favorites")
                         .font(.subheadline.weight(.semibold))
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
-                            Button { catalogKind = .checkpoint; searchQuery = "Anima"; searchCatalog() } label: {
-                                Label("Anima", systemImage: "sparkles")
-                            }
+                            catalogChip("Anima", icon: "sparkles", kind: .checkpoint, query: "Anima")
                             ForEach(inspiration.characters.prefix(3), id: \.self) { character in
-                                Button { catalogKind = .lora; searchQuery = character; searchCatalog() } label: {
-                                    Label(character.replacingOccurrences(of: "_", with: " "), systemImage: "heart")
-                                }
+                                catalogChip(character.replacingOccurrences(of: "_", with: " "), icon: "heart.fill", kind: .lora, query: character)
                             }
                             ForEach(inspiration.artists.prefix(2), id: \.self) { artist in
-                                Button { catalogKind = .lora; searchQuery = artist; searchCatalog() } label: {
-                                    Label(artist.replacingOccurrences(of: "_", with: " "), systemImage: "paintpalette")
-                                }
+                                catalogChip(artist.replacingOccurrences(of: "_", with: " "), icon: "paintpalette.fill", kind: .lora, query: artist)
                             }
                         }
                         .font(.caption.weight(.medium))
@@ -713,8 +763,8 @@ struct ImageStudioView: View {
                         Text("Search for a character, artist or model to see available downloads.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("CivitAI Anima checkpoints can be selected for native Metal generation. LoRAs can be saved and configured, but cannot yet be applied: the packaged native runtime has no LoRA API. Core ML requires converted models.")
-                        .font(.caption).foregroundStyle(.orange.opacity(0.9))
+                    Label("Choose up to four Anima-compatible LoRAs. Their strengths are applied during generation.", systemImage: "checkmark.seal")
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     if let status { Text(status).font(.caption).foregroundStyle(AppTheme.secondaryLabel) }
                     if !downloadedAssets.isEmpty { downloadedAssetsPanel }
                 }
@@ -726,18 +776,49 @@ struct ImageStudioView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { showCatalog = false } }
             }
+            // Present the document picker from the model-library sheet itself.
+            // A picker attached to the covered parent view fails on some iOS releases.
+            .fileImporter(isPresented: $showAnimaImport, allowedContentTypes: [.item]) { importAsset($0, type: "checkpoint") }
+            .fileImporter(isPresented: $showLoRAImport, allowedContentTypes: [.item]) { importAsset($0, type: "lora") }
         }
         .preferredColorScheme(.dark)
     }
 
+    private func catalogChip(_ title: String, icon: String, kind: StudioCatalogKind, query: String) -> some View {
+        Button {
+            catalogKind = kind
+            searchQuery = query
+            searchCatalog()
+        } label: {
+            Label(title, systemImage: icon)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 13).padding(.vertical, 10)
+                .background(AppTheme.accent.opacity(0.16), in: Capsule())
+                .overlay(Capsule().stroke(AppTheme.accent.opacity(0.34)))
+        }
+        .buttonStyle(QuicktickPressStyle())
+    }
+
     private func modelRow(_ model: CivitaiStudioModel) -> some View {
         HStack(spacing: 12) {
+            if modernUI {
+                Image(systemName: model.type == "LORA" ? "wand.and.stars" : "square.stack.3d.up.fill")
+                    .font(.title3).foregroundStyle(AppTheme.accent)
+                    .frame(width: 42, height: 42)
+                    .background(AppTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
+            }
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.name).font(.subheadline.weight(.medium)).lineLimit(2)
-                Text([model.type, model.latest?.baseModel].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
-                if let size = model.latest?.displaySize {
-                    Text(size).font(.caption2).foregroundStyle(.white.opacity(0.60))
+                if modernUI {
+                    HStack(spacing: 5) {
+                        modelBadge(model.type == "LORA" ? "LoRA" : "Checkpoint")
+                        if let base = model.latest?.baseModel { modelBadge(base) }
+                        if let size = model.latest?.displaySize { modelBadge(size) }
+                    }
+                } else {
+                    Text([model.type, model.latest?.baseModel, model.latest?.displaySize].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                 }
                 if let words = model.latest?.trainedWords, !words.isEmpty {
                     Text(words.prefix(2).joined(separator: ", ")).font(.caption2).foregroundStyle(AppTheme.accent)
@@ -745,19 +826,31 @@ struct ImageStudioView: View {
             }
             Spacer(minLength: 6)
             Button { beginAssetDownload(model) } label: {
-                Image(systemName: downloadBusyID == model.id ? "hourglass" : "arrow.down.circle.fill")
+                Image(systemName: downloadBusyID == model.id ? "hourglass" : "arrow.down.to.line.compact")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 42, height: 42)
+                    .background(AppTheme.accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 13))
             }
                 .buttonStyle(QuicktickPressStyle()).font(.title3)
                 .disabled(transferStatus.isActive || downloadBusyID != nil)
                 .accessibilityLabel("Download \(model.name)")
         }
         .padding(12)
-        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+        .background(modernUI ? AppTheme.elevatedSurface : AppTheme.surface, in: RoundedRectangle(cornerRadius: modernUI ? 20 : 14))
+        .overlay(RoundedRectangle(cornerRadius: modernUI ? 20 : 14).stroke(AppTheme.border))
+    }
+
+    private func modelBadge(_ value: String) -> some View {
+        Text(value).font(.system(size: 10, weight: .medium))
+            .lineLimit(1)
+            .padding(.horizontal, 7).padding(.vertical, 4)
+            .background(Color.white.opacity(0.08), in: Capsule())
+            .foregroundStyle(AppTheme.secondaryLabel)
     }
 
     private var downloadedAssetsPanel: some View {
         StudioPanel(title: "Downloaded CivitAI assets", icon: "externaldrive") {
-            Text("Select an Anima checkpoint. You may preconfigure up to four LoRAs, but the current Metal engine cannot apply them yet. Other model families are not guaranteed compatible.")
+            Text("Select an Anima checkpoint and up to four compatible LoRAs. Other model families may not work with Anima.")
                 .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             ForEach(downloadedAssets, id: \.path) { file in
                 VStack(alignment: .leading, spacing: 9) {
@@ -843,26 +936,64 @@ struct ImageStudioView: View {
             Image(systemName: "sparkles.rectangle.stack.fill")
                 .font(.system(size: 45)).foregroundStyle(AppTheme.accent)
             Text("Create with QuickTick")
-                .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                .font(.system(.largeTitle, design: .default, weight: .bold))
             ForEach([
-                ("1", "Start with your taste", "Use your favorites to build a prompt from the characters, artists, actions and scenes you like."),
-                ("2", "Choose your Anima model", "Get the compact Anima model or import an Anima checkpoint from CivitAI. Set the image size and select your LoRAs."),
-                ("3", "Make it yours", "Render privately on your device, save your images, and discover related CivitAI LoRAs.")
+                ("1", "Your taste", "Prompts inspired by favorites"),
+                ("2", "Install Anima", "Checkpoint + Qwen3 + VAE"),
+                ("3", "Add LoRAs", "Choose characters and styles")
             ], id: \.0) { item in
                 HStack(alignment: .top, spacing: 12) {
                     Text(item.0).font(.headline).foregroundStyle(.white)
                         .frame(width: 36, height: 36).background(AppTheme.gradient, in: Circle())
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.1).font(.headline)
-                        Text(item.2).font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
+                        Text(item.2).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     }
                 }
             }
+            if transferStatus.isActive {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        ProgressView().tint(AppTheme.accent)
+                        Text(status ?? "Installing Anima…").font(.subheadline).lineLimit(2)
+                    }
+                    if let fraction = transferStatus.fraction {
+                        ProgressView(value: fraction).tint(AppTheme.accent)
+                    }
+                    Text(transferStatus.progressLabel).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("anima-setup-progress")
+            } else if let status, status.contains("failed") || status.contains("stopped") {
+                Label(status, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .accessibilityIdentifier("anima-setup-error")
+            }
             Spacer(minLength: 4)
-            Button("Let's create") { introCompleted = true; showIntro = false }
+            if !animaReady {
+                Button(transferStatus.isActive ? "Installing Anima…" : "Set up Anima") {
+                    if selectedAnimaCheckpoint != nil {
+                        beginAnimaDownload(useExistingCheckpoint: true)
+                    } else {
+                        beginCivitaiAnimaSetup()
+                    }
+                }
+                .disabled(transferStatus.isActive)
                 .font(.headline).foregroundStyle(.white)
                 .frame(maxWidth: .infinity, minHeight: 52)
                 .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16))
+                .accessibilityIdentifier("studio-anima-install")
+            }
+            // Continue is deliberately independent of model installation.
+            // Even a stalled/failed download must never trap users in onboarding.
+            Button("Continue to Studio") {
+                introCompleted = true
+                showIntro = false
+                if animaReady { selectedEngine = .anima }
+                if animaReady { showSetupLoRAChoice = true }
+            }
+                .font(.headline).foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(animaReady ? AppTheme.gradient : LinearGradient(colors: [AppTheme.surface, AppTheme.elevatedSurface], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 16))
                 .accessibilityIdentifier("studio-intro-complete")
         }
         .padding(26).frame(maxWidth: 560)
@@ -887,7 +1018,7 @@ struct ImageStudioView: View {
                     }
                 }
             }
-        }.presentationDetents([.medium])
+        }.padding(24).presentationDetents([.large])
     }
 
     private func searchCatalog() {
@@ -990,6 +1121,47 @@ struct ImageStudioView: View {
         }
     }
 
+    private func beginCivitaiAnimaSetup() {
+        guard !transferStatus.isActive, !busy else { return }
+        let identity = transferStatus.begin("Anima Turbo · civitai.red", estimatedBytes: 0)
+        let progress = transferStatus
+        status = "Finding Anima Turbo on civitai.red…"
+        downloadTask = Task {
+            defer { progress.finish(identity); downloadTask = nil }
+            do {
+                let token = KeychainStore.get(account: "civitai-api-key")
+                let version = try await CivitaiStudioCatalog().recommendedAnima(token: token)
+                status = "Downloading Anima Turbo v1.1…"
+                let checkpoint = try await LocalImageStudio.shared.downloadCivitaiAsset(
+                    version, type: "Checkpoint", host: "civitai.red", token: token,
+                    onProgress: { received, expected in
+                        Task { @MainActor in progress.update(identity, received: received, expected: expected) }
+                    })
+                try Task.checkCancellation()
+                selectedAnimaCheckpoint = checkpoint
+                savedAnimaCheckpointName = checkpoint.lastPathComponent
+                downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
+                status = "Downloading Anima text encoder and VAE…"
+                try await LocalImageStudio.shared.downloadAnimaBundle(useExistingCheckpoint: true,
+                    onProgress: { received, expected in
+                        Task { @MainActor in progress.update(identity, received: received, expected: expected) }
+                    })
+                try Task.checkCancellation()
+                animaReady = await LocalImageStudio.shared.hasAnimaAuxiliaryFiles()
+                guard animaReady else { throw StudioError.unavailableModel }
+                selectedEngine = .anima
+                status = "Anima installed and selected. Choose a LoRA if you like."
+                introCompleted = true
+                showIntro = false
+                showSetupLoRAChoice = true
+            } catch is CancellationError {
+                status = "Setup stopped. Downloaded components are kept."
+            } catch {
+                status = "Anima setup failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func beginAnimaDownload(useExistingCheckpoint: Bool = false) {
         guard !animaReady, !transferStatus.isActive, !busy else { return }
         let estimate = useExistingCheckpoint ? StudioAnimaBundle.components.dropFirst().reduce(Int64(0)) { $0 + $1.bytes } : StudioAnimaBundle.totalBytes
@@ -1009,6 +1181,11 @@ struct ImageStudioView: View {
                 if animaReady {
                     selectedEngine = .anima
                     status = useExistingCheckpoint ? "Anima supporting files installed. Try generating with your CivitAI checkpoint." : "Anima Q4 installed! Select Generate to render with Metal."
+                    if useExistingCheckpoint {
+                        introCompleted = true
+                        showIntro = false
+                        showSetupLoRAChoice = true
+                    }
                 }
             } catch is CancellationError {
                 status = "Anima download stopped; completed model components are kept."
@@ -1051,7 +1228,7 @@ struct ImageStudioView: View {
         downloadTask = Task {
             defer { progress.finish(identity); downloadBusyID = nil; downloadTask = nil }
             do {
-                _ = try await LocalImageStudio.shared.downloadCivitaiAsset(version, type: model.type,
+                let file = try await LocalImageStudio.shared.downloadCivitaiAsset(version, type: model.type,
                     host: useRed ? "civitai.red" : "civitai.com",
                     token: KeychainStore.get(account: "civitai-api-key"),
                     onProgress: { received, total in
@@ -1059,7 +1236,11 @@ struct ImageStudioView: View {
                     })
                 try Task.checkCancellation()
                 downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
-                status = "Saved \(model.name). Select Anima checkpoints or enable compatible LoRAs below."
+                if model.type == "Checkpoint" && model.name.localizedCaseInsensitiveContains("Anima") {
+                    activateAnimaCheckpoint(file)
+                } else {
+                    status = "Saved \(model.name). You can select it in your downloaded assets."
+                }
             } catch is CancellationError {
                 status = "Download stopped."
             } catch let error as URLError where error.code == .cancelled {
@@ -1086,10 +1267,6 @@ struct ImageStudioView: View {
             status = "Download the Anima Q4 bundle (diffusion weights, Qwen3 and VAE) first."
             return
         }
-        if selectedEngine == .anima && !selectedLoRAStrengths.isEmpty {
-            status = StudioError.unsupportedLoRA.localizedDescription
-            return
-        }
         guard !(promptOverride ?? prompt).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             status = "Describe your idea in the prompt, or use your favorites for inspiration."
             return
@@ -1107,6 +1284,7 @@ struct ImageStudioView: View {
         renderStage = "Preparing the canvas"
         status = "Rendering on device…"
         renderStatus.fraction = 0
+        renderProgressHasExactSteps = false
         withAnimation(.easeInOut(duration: 0.3)) { showGenerationFocus = true }
         let steps = Int(stepCount), scale = Float(guidance), inputSeed = seed
         let selectedAspect = aspect, selectedScheduler = scheduler, shouldUpscale = highResolution
@@ -1127,9 +1305,18 @@ struct ImageStudioView: View {
                 let callback: @Sendable (Int, Int) -> Void = { finished, total in
                     Task { @MainActor in
                         guard renderPhase == .rendering else { return }
-                        let share = shouldUpscale ? 0.90 : 0.98
-                        progress.fraction = max(progress.fraction, min(share, Double(finished) / Double(max(1, total)) * share))
-                        renderStage = "Diffusing · step \(min(finished, total)) of \(total)"
+                        let exactSteps = total == steps
+                        renderProgressHasExactSteps = exactSteps
+                        if exactSteps {
+                            let share = shouldUpscale ? 0.90 : 0.98
+                            progress.fraction = max(progress.fraction, min(share, Double(finished) / Double(max(1, total)) * share))
+                        }
+                        // Mirage can report hundreds of internal operations, not
+                        // the user's requested diffusion steps. Never label those
+                        // operations as sampler steps (e.g. "685 of 685").
+                        renderStage = total == steps
+                            ? "Diffusing · step \(min(finished, steps)) of \(steps)"
+                            : "Generating · \(steps) diffusion steps"
                     }
                 }
                 let previewCallback: @Sendable (URL) -> Void = { file in
@@ -1266,6 +1453,42 @@ private enum StudioRenderPhase {
         case .enhancementFailed: "Original preserved"
         case .failed: "Failed"
         case .cancelled: "Cancelled"
+        }
+    }
+}
+
+/// Adapted as a self-contained SwiftUI spinner from the MIT-licensed
+/// ProgressUI circular-spinner pattern: github.com/mumer92/progressui.
+/// The ring loops independently of the native diffusion progress callbacks.
+private struct StudioOrbitSpinner: View {
+    let reduceMotion: Bool
+    @State private var rotating = false
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(.white.opacity(0.12), lineWidth: 5)
+            Circle()
+                .trim(from: 0.06, to: 0.78)
+                .stroke(
+                    AngularGradient(
+                        colors: [.clear, AppTheme.accent.opacity(0.55), .cyan, .white],
+                        center: .center
+                    ),
+                    style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                )
+                .rotationEffect(.degrees(rotating ? 360 : 0))
+            Image(systemName: "sparkles")
+                .font(.system(size: 25, weight: .medium))
+                .foregroundStyle(.white)
+                .shadow(color: AppTheme.accent.opacity(0.7), radius: 12)
+        }
+        .padding(5)
+        .onAppear {
+            guard !reduceMotion else { return }
+            rotating = false
+            withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) {
+                rotating = true
+            }
         }
     }
 }

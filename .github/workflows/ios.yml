@@ -23,6 +23,23 @@ jobs:
         run: |
           test "$(uname -m)" = arm64
           xcodebuild -version
+      - uses: actions/cache/restore@v5
+        id: mirage-lora-cache
+        with:
+          path: ios-starter/MirageRuntime/Frameworks/sdcpp.xcframework
+          key: mirage-lora-ios-arm64-${{ hashFiles('scripts/build-mirage-lora.sh', 'scripts/mirage-lora-native.patch') }}
+      - name: Build native Mirage with LoRA support
+        if: steps.mirage-lora-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ninja >/dev/null; then brew install ninja; fi
+          bash scripts/build-mirage-lora.sh
+      - uses: actions/cache/save@v5
+        if: steps.mirage-lora-cache.outputs.cache-hit != 'true'
+        with:
+          path: ios-starter/MirageRuntime/Frameworks/sdcpp.xcframework
+          key: mirage-lora-ios-arm64-${{ hashFiles('scripts/build-mirage-lora.sh', 'scripts/mirage-lora-native.patch') }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'

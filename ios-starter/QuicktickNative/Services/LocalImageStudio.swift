@@ -9,12 +9,11 @@ import Mirage
 import Darwin
 
 enum StudioError: LocalizedError {
-    case unsupportedModel, unsupportedLoRA, invalidArchive, invalidResponse, unavailableModel, noImage, imageFiltered, invalidFile, downloadBusy, renderBusy
+    case unsupportedModel, invalidArchive, invalidResponse, unavailableModel, noImage, imageFiltered, invalidFile, downloadBusy, renderBusy
     case insufficientMemory(required: Int64, available: Int64)
     var errorDescription: String? {
         switch self {
         case .unsupportedModel: "The archive does not contain a compiled Core ML Stable Diffusion pipeline. CivitAI .safetensors checkpoints and LoRAs need conversion before they can run here."
-        case .unsupportedLoRA: "LoRA import is available, but this build's Mirage Metal library has no LoRA inference API. Disable the selected LoRAs to generate with Anima; native LoRA support needs a rebuilt backend."
         case .invalidArchive: "The model archive is invalid or contains unsafe paths."
         case .invalidResponse: "The model service did not return a valid download."
         case .unavailableModel: "Download the on-device starter model or import a compatible Core ML model first."
@@ -308,11 +307,13 @@ struct CivitaiStudioModel: Decodable, Identifiable, Sendable {
     let modelVersions: [Version]
     struct Version: Decodable, Sendable {
         let id: Int
+        let name: String?
         let baseModel: String?
         let downloadUrl: URL?
         let trainedWords: [String]?
         let files: [ModelFile]?
         struct ModelFile: Decodable, Sendable {
+            let name: String?
             let sizeKB: Double?
         }
         var displaySize: String? {
@@ -326,6 +327,23 @@ struct CivitaiStudioModel: Decodable, Identifiable, Sendable {
 /// Metadata discovery and opt-in downloads only. No CivitAI inference API is
 /// used and the bearer key is never encoded into URLs or app state JSON.
 actor CivitaiStudioCatalog {
+    /// Official CircleStone Labs Anima listing, pinned to Turbo v1.1.
+    /// Never choose a community upload merely because its name contains Anima.
+    func recommendedAnima(token: String? = nil) async throws -> CivitaiStudioModel.Version {
+        var request = URLRequest(url: URL(string: "https://civitai.red/api/v1/models/2458426")!)
+        request.timeoutInterval = 25
+        if let token, !token.isEmpty { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+              data.count < 2_000_000 else { throw StudioError.invalidResponse }
+        let model = try JSONDecoder().decode(CivitaiStudioModel.self, from: data)
+        guard model.id == 2_458_426, model.name == "Anima",
+              let version = model.modelVersions.first(where: {
+                  $0.id == 3_263_843 && $0.name == "turbo-v1.1"
+              }) else { throw StudioError.unavailableModel }
+        return version
+    }
+
     func search(_ query: String, type: String, host: String, token: String? = nil) async throws -> [CivitaiStudioModel] {
         guard ["Checkpoint", "LORA"].contains(type), query.count <= 80,
               ["civitai.com", "civitai.red"].contains(host) else { return [] }
@@ -458,11 +476,15 @@ actor LocalImageStudio {
         defer { renderInProgress = false }
         guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
         guard !upscale || hasAnimeUpscaler() else { throw StudioError.unavailableModel }
-        // Mirage's public C bridge passes `prompt` through verbatim and never
-        // populates sd_img_gen_params_t.loras. Passing <lora:...> would
-        // silently create an image WITHOUT applying the requested LoRA.
-        // Fail explicitly until the native bridge exposes real weight loading.
-        guard loras.isEmpty else { throw StudioError.unsupportedLoRA }
+        // Pass LoRAs through the patched native bridge's structured API.
+        // Reject paths outside our managed assets folder and invalid strengths.
+        guard loras.count <= 4, loras.allSatisfy({ item in
+            let file = item.file.standardizedFileURL.resolvingSymlinksInPath()
+            return file.deletingLastPathComponent() == assets.standardizedFileURL.resolvingSymlinksInPath()
+                && file.pathExtension.lowercased() == "safetensors"
+                && FileManager.default.fileExists(atPath: file.path)
+                && item.strength.isFinite && item.strength >= 0 && item.strength <= 2
+        }) else { throw StudioError.invalidFile }
         let diffusionURL: URL
         if let checkpoint {
             let resolved = checkpoint.standardizedFileURL.resolvingSymlinksInPath()
@@ -480,8 +502,12 @@ actor LocalImageStudio {
         // the image decoder, not just the on-disk weight size.
         let diffusionBytes = (try? FileManager.default.attributesOfItem(atPath: diffusionURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         let auxiliaryBytes = StudioAnimaBundle.components.dropFirst().reduce(Int64(0)) { $0 + $1.bytes }
+        let loraBytes = loras.reduce(Int64(0)) { total, lora in
+            total + ((try? FileManager.default.attributesOfItem(atPath: lora.file.path)[.size] as? NSNumber)?.int64Value ?? 0)
+        }
         let memoryRequired = StudioAnimaMemoryBudget.requiredBeforeLoad(
-            diffusionBytes: diffusionBytes, auxiliaryBytes: auxiliaryBytes, upscale: upscale)
+            diffusionBytes: diffusionBytes, auxiliaryBytes: auxiliaryBytes + loraBytes,
+            upscale: upscale) + (loras.isEmpty ? 0 : 150_000_000)
         let available = Int64(os_proc_available_memory())
         try StudioAnimaMemoryBudget.check(available: available, required: memoryRequired)
         let parts = StudioAnimaBundle.components
@@ -493,7 +519,9 @@ actor LocalImageStudio {
             request: GenerationRequest(
                 prompt: String(prompt.prefix(1000)), negativePrompt: String(negative.prefix(1200)),
                 width: width, height: height, steps: max(4, min(40, steps)),
-                cfgScale: guidance, seed: Int64(seed)), onProgress: onProgress)
+                cfgScale: guidance, seed: Int64(seed),
+                loras: loras.map { GenerationLoRA(file: $0.file, strength: $0.strength) }),
+            onProgress: onProgress)
         try Task.checkCancellation()
         return try finishImage(result, upscale: upscale, onPreview: onPreview)
     }
@@ -504,7 +532,10 @@ actor LocalImageStudio {
         models: ModelFiles, request: GenerationRequest,
         onProgress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> CGImage {
+        let started = ProcessInfo.processInfo.systemUptime
         let engine = try Engine(models: models)
+        let loaded = ProcessInfo.processInfo.systemUptime
+        NSLog("[QuickTick Anima] backend=cpu-streamed load=%.1fs", loaded - started)
         // The model load itself may consume all remaining jetsam allowance.
         // Bail out before the temporary diffusion graph pushes the app over.
         try StudioAnimaMemoryBudget.check(
@@ -512,7 +543,9 @@ actor LocalImageStudio {
             required: StudioAnimaMemoryBudget.requiredAfterLoad)
         Mirage.setProgressCallback { step, total, _ in onProgress(step, total) }
         defer { Mirage.setProgressCallback(nil) }
-        return try await engine.generate(request)
+        let output = try await engine.generate(request)
+        NSLog("[QuickTick Anima] generation=%.1fs total=%.1fs", ProcessInfo.processInfo.systemUptime - loaded, ProcessInfo.processInfo.systemUptime - started)
+        return output
     }
 
     private var animeUpscalerURL: URL {
@@ -597,6 +630,17 @@ actor LocalImageStudio {
                               onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }) async throws -> URL {
         guard ["Checkpoint", "LORA"].contains(type), version.id > 0,
               ["civitai.com", "civitai.red"].contains(host) else { throw StudioError.invalidFile }
+        let supportedExtensions = ["safetensors", "gguf", "ckpt", "pt"]
+        let listedExtension = version.files?.compactMap { $0.name.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } }
+            .first(where: { supportedExtensions.contains($0) })
+        if let listedExtension {
+            let existing = assets.appendingPathComponent("\(type.lowercased())-\(version.id).\(listedExtension)")
+            let storedBytes = (try? FileManager.default.attributesOfItem(atPath: existing.path)[.size] as? NSNumber)?.int64Value ?? 0
+            let expectedBytes = (version.files?.compactMap(\.sizeKB).first).map { Int64($0 * 1024) }
+            if storedBytes > 100_000 && expectedBytes.map({ storedBytes >= Int64(Double($0) * 0.99) }) != false {
+                return existing
+            }
+        }
         // Construct a trusted API endpoint rather than follow arbitrary model
         // metadata URLs. Never append the token to a query string.
         let url = URL(string: "https://\(host)/api/download/models/\(version.id)")!
@@ -605,17 +649,20 @@ actor LocalImageStudio {
         let (temp, response) = try await fetchDownload(request, onProgress: onProgress)
         defer { try? FileManager.default.removeItem(at: temp) }
         try Task.checkCancellation()
-        guard response.statusCode == 200 else { throw StudioError.invalidResponse }
+        guard response.statusCode == 200,
+              !(response.mimeType ?? "").lowercased().contains("text/html") else { throw StudioError.invalidResponse }
         let attributes = try FileManager.default.attributesOfItem(atPath: temp.path)
         let bytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         guard bytes > 100_000 else { throw StudioError.invalidFile }
         let suggestedExtension = response.suggestedFilename.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } ?? ""
-        let extensionHint = suggestedExtension.isEmpty ? "safetensors" : suggestedExtension
-        guard ["safetensors", "gguf", "ckpt", "pt"].contains(extensionHint) else { throw StudioError.invalidFile }
+        let extensionHint = listedExtension ?? (supportedExtensions.contains(suggestedExtension) ? suggestedExtension : "safetensors")
         try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
         let result = assets.appendingPathComponent("\(type.lowercased())-\(version.id).\(extensionHint)")
-        if FileManager.default.fileExists(atPath: result.path) { return result }
-        try FileManager.default.moveItem(at: temp, to: result)
+        if FileManager.default.fileExists(atPath: result.path) {
+            _ = try FileManager.default.replaceItemAt(result, withItemAt: temp)
+        } else {
+            try FileManager.default.moveItem(at: temp, to: result)
+        }
         return result
     }
 

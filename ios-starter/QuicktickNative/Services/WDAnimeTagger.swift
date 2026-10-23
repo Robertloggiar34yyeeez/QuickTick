@@ -35,6 +35,10 @@ actor WDAnimeTagger {
                 let raw = axis(label.name) + ":" + label.name
                 result.attributes[raw] = confidence
                 if let facet = ActionSemantics.facet(label.name) {
+                    // Sexual acts and positions need stronger visual evidence
+                    // than ordinary clothing or color tags; these labels are
+                    // never interpreted as proof of an action.
+                    guard (!facet.hasPrefix("act:") && !facet.hasPrefix("position:")) || value >= 0.85 else { continue }
                     // A visual tagger's `looking_at_viewer` and a provider's
                     // `eye_contact` both mean gaze:at_viewer. Preserve the
                     // original attribute as well for existing profiles.

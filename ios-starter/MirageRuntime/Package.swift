@@ -1,10 +1,9 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
-// Mirage's iOS Metal backend is distributed by its maintainer as a 27 MB
-// XCFramework. Pin both release URL and SHA-256 to make CI reproducible.
-// The Swift adapter omits newer native upscaler entry points not present in
-// this binary; QuickTick uses its own Real-ESRGAN Core ML adapter instead.
+// QuickTick builds the pinned Mirage C bridge with structured LoRA support.
+// `scripts/build-mirage-lora.sh` creates the XCFramework before Xcode resolves
+// this local package. A prebuilt remote Mirage binary has no LoRA C ABI.
 let package = Package(
     name: "QuicktickMirageRuntime",
     platforms: [.iOS(.v17)],
@@ -12,8 +11,7 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "sdcpp",
-            url: "https://github.com/haplollc/Mirage/releases/download/sdcpp-2026-08-27/sdcpp.xcframework.zip",
-            checksum: "f56d84fa1d15baaa440507a7905f00fed28e7683ecf47b3af0aa05f53d4c0b94"
+            path: "Frameworks/sdcpp.xcframework"
         ),
         .target(name: "Mirage", dependencies: ["sdcpp"], path: "Sources/Mirage")
     ],

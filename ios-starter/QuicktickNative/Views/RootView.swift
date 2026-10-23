@@ -6,8 +6,11 @@ struct RootView: View {
     @Namespace private var navigationSelection
     @State private var brieflyNamedTab: Int?
     @State private var tabNameTask: Task<Void, Never>?
+    @State private var refreshingTab: Int?
+    @State private var refreshSpinDegrees = 0.0
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
+    @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @State private var showSettings = false
     @State private var showStudio = false
     @State private var homeAnchor: String?
@@ -39,17 +42,26 @@ struct RootView: View {
                     // Full-width dock with a raised, high-contrast creation
                     // action in the center. Preserve safe-area touch targets.
                     HStack(spacing: 0) { tabButtons(vertical: false) }
-                        .padding(.horizontal, 4)
-                        .padding(.top, 4)
+                        .padding(.horizontal, modernUI ? 8 : 4)
+                        .padding(.top, modernUI ? 8 : 4)
                         .padding(.bottom, 0)
                         .background {
-                            AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
+                            if modernUI {
+                                Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(edges: .bottom)
+                            } else {
+                                AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
+                            }
                         }
                         .overlay(alignment: .top) {
-                            AppTheme.gradient.frame(height: 1).opacity(0.55)
+                            if modernUI {
+                                Rectangle().fill(.white.opacity(0.15)).frame(height: 0.5)
+                            } else {
+                                AppTheme.gradient.frame(height: 1).opacity(0.55)
+                            }
                         }
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("bottom-navigation-bar")
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -61,8 +73,10 @@ struct RootView: View {
                         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
                         .shadow(color: .black.opacity(0.4), radius: 18, y: 4)
                         .padding(.leading, 16)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
                 }
             }
+            .animation(reduceMotion ? nil : .spring(response: 0.48, dampingFraction: 0.84), value: sideNavigation)
         }
         .onChange(of: store.activeTab) { _, tab in
             tabNameTask?.cancel()
@@ -73,6 +87,11 @@ struct RootView: View {
                 guard !Task.isCancelled else { return }
                 withAnimation(.easeOut(duration: 0.14)) { brieflyNamedTab = nil }
             }
+        }
+        .onChange(of: showAITab) { _, _ in
+            // AppStorage can update while Settings is still being dismissed.
+            // Keep the dock transaction in sync across both layouts.
+            brieflyNamedTab = nil
         }
         .onDisappear { tabNameTask?.cancel() }
         .tint(.white)
@@ -121,9 +140,9 @@ struct RootView: View {
                         .font(.system(size: 24, weight: .bold))
                         .foregroundStyle(.white)
                         .frame(width: vertical ? 46 : 54, height: vertical ? 46 : 52)
-                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: modernUI ? 20 : 17, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 17).stroke(.white.opacity(0.25)))
-                        .shadow(color: AppTheme.accent.opacity(0.28), radius: 13, y: 3)
+                        .shadow(color: AppTheme.accent.opacity(modernUI ? 0.36 : 0.28), radius: modernUI ? 18 : 13, y: 3)
                         .frame(maxWidth: vertical ? nil : .infinity)
                 }
                 .buttonStyle(QuicktickPressStyle())
@@ -132,10 +151,35 @@ struct RootView: View {
             } else {
                 let tabID = index < 2 ? index : index - 1
                 Button {
-                    Task { await store.selectFeedTab(tabID) }
+                    let isRefresh = tabID < 2 && store.activeTab == tabID
+                    if isRefresh {
+                        refreshSpinDegrees = 0
+                        withAnimation(.easeIn(duration: 0.15)) { refreshingTab = tabID }
+                        if !reduceMotion {
+                            withAnimation(.linear(duration: 0.72).repeatForever(autoreverses: false)) {
+                                refreshSpinDegrees = 360
+                            }
+                        }
+                    }
+                    Task {
+                        await store.selectFeedTab(tabID)
+                        if isRefresh {
+                            try? await Task.sleep(for: .milliseconds(450))
+                            if refreshingTab == tabID {
+                                withAnimation(.easeOut(duration: 0.24)) { refreshingTab = nil }
+                                refreshSpinDegrees = 0
+                            }
+                        }
+                    }
                 } label: {
                     Group {
-                        if store.activeTab == tabID && brieflyNamedTab == tabID {
+                        if refreshingTab == tabID {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 19, weight: .semibold, design: .rounded))
+                                .symbolRenderingMode(.hierarchical)
+                                .rotationEffect(.degrees(refreshSpinDegrees))
+                                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                        } else if store.activeTab == tabID && brieflyNamedTab == tabID {
                             Text(tabs[index].0)
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                                 .lineLimit(1).minimumScaleFactor(0.8)
@@ -152,7 +196,7 @@ struct RootView: View {
                     .contentShape(Rectangle())
                     .background {
                         if store.activeTab == tabID {
-                            RoundedRectangle(cornerRadius: vertical ? 18 : 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: vertical ? 18 : (modernUI ? 18 : 12), style: .continuous)
                                 .fill(AppTheme.gradient)
                                 .matchedGeometryEffect(id: "selected-tab", in: navigationSelection)
                         }
@@ -160,6 +204,7 @@ struct RootView: View {
                 }
                 .buttonStyle(QuicktickPressStyle())
                 .animation(reduceMotion ? nil : AppTheme.spring, value: store.activeTab)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: refreshingTab)
                 .accessibilityLabel(tabs[index].0)
                 .accessibilityIdentifier("tab-\(tabs[index].0)")
                 .accessibilityAddTraits(store.activeTab == tabID ? .isSelected : [])

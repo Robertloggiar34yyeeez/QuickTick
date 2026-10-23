@@ -25,10 +25,13 @@ final class VisualTasteTests: XCTestCase {
         for ratio in StudioAspectRatio.allCases {
             let size = ratio.nativePixelDimensions(longestEdge: 896)
             XCTAssertEqual(max(size.width, size.height), 896)
-            XCTAssertEqual(size.width % 16, 0)
-            XCTAssertEqual(size.height % 16, 0)
+            XCTAssertEqual(size.width % 64, 0)
+            XCTAssertEqual(size.height % 64, 0)
             XCTAssertGreaterThanOrEqual(min(size.width, size.height), 256)
         }
+        XCTAssertEqual(StudioAspectRatio.story.nativePixelDimensions(longestEdge: 512).width, 320)
+        XCTAssertEqual(StudioAspectRatio.tall.nativePixelDimensions(longestEdge: 1024).width, 512)
+        XCTAssertEqual(StudioAspectRatio.tall.nativePixelDimensions(longestEdge: 1024).height, 1024)
     }
 
     func testArtistsCharactersAndAttributesLearnIndependently() throws {

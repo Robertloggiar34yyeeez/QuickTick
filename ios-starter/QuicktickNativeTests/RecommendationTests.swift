@@ -130,6 +130,20 @@ final class RecommendationTests: XCTestCase {
         XCTAssertFalse(explicitPhoto)
     }
 
+    func testSpecificFavoriteOutranksBroadMediumAndKeepsVarietyRelevant() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let choice = TasteChoice(done: true, into: ["2d", "chun_li"], notInto: [])
+        let unrelated = Post(key: "rule34:unrelated", id: "1", provider: "rule34",
+                             tags: ["2d", "different_character", "long_hair"])
+        let relevantOne = Post(key: "rule34:relevant1", id: "2", provider: "rule34",
+                               tags: ["2d", "chun_li", "indoors"])
+        let relevantTwo = Post(key: "rule34:relevant2", id: "3", provider: "rule34",
+                               tags: ["2d", "chun_li", "outdoors"])
+        let results = await engine.rankFast([unrelated, relevantOne, relevantTwo],
+                                             taste: choice, recent: [], strict: true)
+        XCTAssertEqual(Set(results.map(\.stableID)), Set([relevantOne.stableID, relevantTwo.stableID]))
+    }
+
     func testImagePromptUsesActionsAndTaxonomyCreditedArtists() {
         let posts = [
             Post(key: "rule34:one", id: "one", provider: "rule34",

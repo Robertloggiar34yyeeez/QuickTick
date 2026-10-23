@@ -501,25 +501,30 @@ struct ImageStudioView: View {
             }
             Divider().overlay(.white.opacity(0.12))
             HStack {
-                Text("Resolution").font(.subheadline.weight(.semibold))
+                Text("Canvas size").font(.subheadline.weight(.semibold))
                 Spacer()
                 if selectedEngine == .anima {
-                    Menu {
-                        ForEach([512, 640, 768, 896, 1024], id: \.self) { pixels in
-                            Button("\(pixels) px") { animaLongestEdge = Double(pixels) }
-                        }
-                    } label: {
-                        Label("\(Int(animaLongestEdge)) px", systemImage: "chevron.up.chevron.down")
-                            .font(.caption.weight(.bold))
-                    }
+                    let dimensions = aspect.nativePixelDimensions(longestEdge: Int(animaLongestEdge))
+                    Text("\(dimensions.width) × \(dimensions.height)")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(AppTheme.accent)
                 } else {
                     Text("Model native").font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                 }
             }
+            if selectedEngine == .anima {
+                HStack(spacing: 6) {
+                    ForEach([512, 640, 768, 896, 1024], id: \.self) { pixels in
+                        Button("\(pixels)") { animaLongestEdge = Double(pixels) }
+                            .buttonStyle(StudioCompactChipStyle(isSelected: Int(animaLongestEdge) == pixels))
+                    }
+                }
+                .accessibilityIdentifier("studio-anima-resolution")
+            }
             HStack(spacing: 7) {
                 ForEach(StudioAspectRatio.allCases) { ratio in
                     Button { aspect = ratio } label: { Text(ratio.label).frame(maxWidth: .infinity) }
-                        .buttonStyle(StudioOptionChipStyle(isSelected: aspect == ratio))
+                        .buttonStyle(StudioCompactChipStyle(isSelected: aspect == ratio))
                         .accessibilityIdentifier("studio-aspect-\(ratio.rawValue)")
                 }
             }
@@ -769,19 +774,26 @@ struct ImageStudioView: View {
 
     private var downloadProgressPanel: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Text(transferStatus.name)
-                    .font(.caption.weight(.semibold)).lineLimit(1)
-                Spacer()
+            HStack(spacing: 10) {
+                InfinityLoader(size: 32)
+                    .accessibilityLabel("Download active")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(transferStatus.phase == .paused ? "Download paused" : "Downloading")
+                        .font(.caption2.weight(.medium)).foregroundStyle(AppTheme.secondaryLabel)
+                    Text(transferStatus.name)
+                        .font(.subheadline.weight(.semibold)).lineLimit(1)
+                }
+                Spacer(minLength: 4)
                 Text(transferStatus.progressLabel)
-                    .font(.caption.monospacedDigit()).foregroundStyle(AppTheme.accent)
+                    .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(AppTheme.accent)
             }
             if let fraction = transferStatus.fraction {
                 ProgressView(value: fraction)
                     .tint(AppTheme.accent)
                     .accessibilityIdentifier("studio-download-progress")
             } else {
-                InfinityLoader(size: 28)
+                ProgressView()
+                    .tint(AppTheme.accent)
                     .accessibilityIdentifier("studio-download-progress")
             }
             Text(transferStatus.sizeLabel)
@@ -929,21 +941,28 @@ struct ImageStudioView: View {
     private var catalogSheet: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if modernUI {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("YOUR MODELS").font(.caption2.weight(.semibold)).tracking(1.8).foregroundStyle(AppTheme.accent)
-                                Text("Model library").font(.system(.largeTitle, design: .default, weight: .bold))
-                            }
-                            Spacer()
-                            Image(systemName: "square.stack.3d.up.fill")
-                                .font(.title2).foregroundStyle(AppTheme.accent)
-                                .frame(width: 46, height: 46)
-                                .background(AppTheme.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 15))
+                LazyVStack(alignment: .leading, spacing: 15) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "square.stack.3d.up.fill")
+                            .font(.title3.weight(.medium))
+                            .foregroundStyle(.white)
+                            .frame(width: 46, height: 46)
+                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 15))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Model library")
+                                .font(.title2.weight(.bold))
+                            Text("Discover · Download · Create")
+                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                         }
-                        .padding(.top, 8)
+                        Spacer(minLength: 2)
+                        if !downloadedAssets.isEmpty {
+                            Text("\(downloadedAssets.count) saved")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(AppTheme.accent.opacity(0.14), in: Capsule())
+                        }
                     }
+                    .padding(.top, 8)
                     Picker("Explore", selection: $catalogKind) {
                         ForEach(StudioCatalogKind.allCases) { kind in
                             Text(kind.title).tag(kind)
@@ -951,38 +970,57 @@ struct ImageStudioView: View {
                     }
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("studio-catalog-kind")
-                    HStack {
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(AppTheme.secondaryLabel)
                         TextField("Search \(catalogKind.title.lowercased())", text: $searchQuery)
                             .textInputAutocapitalization(.never)
-                            .textFieldStyle(.roundedBorder)
+                            .autocorrectionDisabled()
                             .submitLabel(.search)
                             .onSubmit { searchCatalog() }
                             .accessibilityIdentifier("studio-catalog-search")
-                        Button { searchCatalog() } label: { Image(systemName: "magnifyingglass") }
-                            .buttonStyle(.borderedProminent)
+                        Button { searchCatalog() } label: {
+                            Image(systemName: "arrow.right")
+                                .font(.subheadline.weight(.bold))
+                                .frame(width: 36, height: 36)
+                                .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 11))
+                        }
+                            .buttonStyle(QuicktickPressStyle())
                             .disabled(catalogBusy || searchQuery.isEmpty)
                     }
-                    HStack {
-                        Toggle("civitai.red", isOn: $useRed).font(.caption)
+                    .padding(.leading, 15).padding(.trailing, 6).padding(.vertical, 5)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 17))
+                    .overlay(RoundedRectangle(cornerRadius: 17).stroke(AppTheme.border))
+                    HStack(spacing: 10) {
+                        Label("civitai.red", systemImage: "globe")
+                            .font(.caption.weight(.medium))
+                        Toggle("civitai.red", isOn: $useRed).labelsHidden().tint(AppTheme.accent)
                         Spacer()
-                        Button("API key") {
+                        Button {
                             tokenDraft = KeychainStore.get(account: "civitai-api-key") ?? ""
                             showToken = true
-                        }.font(.caption)
+                        } label: { Label("API key", systemImage: "key.fill") }
+                            .font(.caption.weight(.medium))
                     }
-                    HStack(spacing: 8) {
+                    .foregroundStyle(AppTheme.secondaryLabel)
+                    HStack(spacing: 9) {
                         Button { showAnimaImport = true } label: {
-                            Label("Checkpoint", systemImage: "square.and.arrow.down")
+                            Label("Import model", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity, minHeight: 43)
                         }
                         Button { showLoRAImport = true } label: {
                             Label("Import LoRA", systemImage: "plus.circle.fill")
+                                .frame(maxWidth: .infinity, minHeight: 43)
                         }
                     }
                     .font(.subheadline.weight(.semibold))
                     .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    Text("Suggested from your favorites")
-                        .font(.subheadline.weight(.semibold))
+                    HStack {
+                        Text("For you").font(.headline)
+                        Spacer()
+                        Text("From favorites")
+                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    }
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             catalogChip("Anima", icon: "sparkles", kind: .checkpoint, query: "Anima")
@@ -1000,21 +1038,34 @@ struct ImageStudioView: View {
                     if transferStatus.isActive { downloadProgressPanel }
                     if catalogBusy {
                         HStack(spacing: 10) {
-                            InfinityLoader(size: 29)
-                            Text("Finding \(catalogKind.title.lowercased())…").font(.caption)
+                            InfinityLoader(size: 31)
+                            Text("Finding models…")
+                                .font(.subheadline.weight(.medium))
                         }
+                        .frame(maxWidth: .infinity, minHeight: 64)
+                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
+                    }
+                    HStack {
+                        Text(catalogKind == .lora ? "LoRAs" : "Checkpoints")
+                            .font(.headline)
+                        Spacer()
+                        Text("\((catalogKind == .lora ? loras : checkpoints).count) results")
+                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     }
                     ForEach(catalogKind == .lora ? loras : checkpoints) { model in modelRow(model) }
                     if !catalogBusy && (catalogKind == .lora ? loras : checkpoints).isEmpty {
-                        Text("Search for a character, artist or model to see available downloads.")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Label("Search a name or try a favorite above.", systemImage: "sparkle.magnifyingglass")
+                            .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
+                            .frame(maxWidth: .infinity, minHeight: 82)
+                            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
                     }
-                    Label("Choose up to four Anima-compatible LoRAs. Their strengths are applied during generation.", systemImage: "checkmark.seal")
-                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
-                    if let status { Text(status).font(.caption).foregroundStyle(AppTheme.secondaryLabel) }
+                    if let status, status.localizedCaseInsensitiveContains("download") || status.localizedCaseInsensitiveContains("saved") || status.localizedCaseInsensitiveContains("import") {
+                        Text(status).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    }
                     if !downloadedAssets.isEmpty { downloadedAssetsPanel }
                 }
-                .padding(16)
+                .padding(16).frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
             }
             .background(StudioAuroraBackground().ignoresSafeArea())
             .navigationTitle("Model library")
@@ -1072,8 +1123,14 @@ struct ImageStudioView: View {
             }
             Spacer(minLength: 6)
             Button { beginAssetDownload(model) } label: {
-                Image(systemName: downloadBusyID == model.id ? "hourglass" : "arrow.down.to.line.compact")
-                    .font(.system(size: 17, weight: .semibold))
+                Group {
+                    if downloadBusyID == model.id {
+                        InfinityLoader(size: 30)
+                    } else {
+                        Image(systemName: "arrow.down.to.line.compact")
+                            .font(.system(size: 17, weight: .semibold))
+                    }
+                }
                     .frame(width: 42, height: 42)
                     .background(AppTheme.accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 13))
             }
@@ -1103,7 +1160,7 @@ struct ImageStudioView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "doc.zipper").foregroundStyle(AppTheme.accent)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(file.deletingPathExtension().lastPathComponent)
+                        Text(studioAssetDisplayName(file))
                             .font(.caption.weight(.medium)).lineLimit(1)
                         Text(file.pathExtension.uppercased())
                             .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
@@ -1160,6 +1217,19 @@ struct ImageStudioView: View {
                 }
             }
         }
+    }
+
+    private func studioAssetDisplayName(_ file: URL) -> String {
+        let basename = file.deletingPathExtension().lastPathComponent
+        if basename.hasPrefix("lora-import-") {
+            return "Imported LoRA · \(basename.suffix(6))"
+        }
+        if basename.hasPrefix("checkpoint-import-") {
+            return "Imported checkpoint · \(basename.suffix(6))"
+        }
+        if basename.hasPrefix("lora-") { return "LoRA · \(basename.dropFirst(5))" }
+        if basename.hasPrefix("checkpoint-") { return "Checkpoint · \(basename.dropFirst(11))" }
+        return basename
     }
 
     private var galleryPanel: some View {
@@ -1749,6 +1819,25 @@ private struct StudioOptionChipStyle: ButtonStyle {
                         in: Capsule())
             .overlay(Capsule().stroke(isSelected ? AppTheme.accent : AppTheme.border))
             .opacity(configuration.isPressed ? 0.72 : 1)
+    }
+}
+
+/// Five canvas choices fit compact phones without horizontal clipping.
+private struct StudioCompactChipStyle: ButtonStyle {
+    let isSelected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .minimumScaleFactor(0.8)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: 37)
+            .foregroundStyle(isSelected ? .white : .white.opacity(0.78))
+            .background(isSelected ? AppTheme.accent.opacity(0.42) : AppTheme.surface,
+                        in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12)
+                .stroke(isSelected ? AppTheme.accent : AppTheme.border))
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
     }
 }
 

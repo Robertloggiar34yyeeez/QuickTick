@@ -51,6 +51,18 @@ struct SearchFilters: Equatable, Sendable {
 }
 
 enum QueryParser {
+    /// Preserve literal multiword keywords when a post tag is added from its
+    /// action menu. Without quotes, searching for `red hair` becomes two
+    /// unrelated provider terms on a later parse.
+    static func formatted(_ query: ParsedQuery) -> String {
+        func token(_ text: String) -> String {
+            let clean = text.replacingOccurrences(of: "\"", with: "")
+            return clean.contains(where: \.isWhitespace) ? "\"\(clean)\"" : clean
+        }
+        return (query.included.map(token) + query.excluded.map { "-" + token($0) })
+            .joined(separator: " ")
+    }
+
     static func parse(_ text: String) -> ParsedQuery {
         var included: [String] = [], excluded: [String] = []
         for raw in tokens(text) {

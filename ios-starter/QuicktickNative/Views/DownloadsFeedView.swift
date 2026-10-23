@@ -54,10 +54,15 @@ private struct DownloadContent: View {
                                 if let path = record.thumbnailLocalPath {
                                     CachedMediaImage(url: URL(fileURLWithPath: path).absoluteString, pixels: 216).frame(width: 72, height: 72).clipped()
                                 }
-                                VStack(alignment: .leading) {
-                                    Text(record.title); Text("\(record.provider) · \(record.state.rawValue)").font(.caption)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(spacing: 8) {
+                                        if record.state == .downloading { InfinityLoader(size: 27) }
+                                        Text(record.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                                    }
+                                    Text("\(record.provider) · \(record.state.rawValue)")
+                                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                                     Text(record.formattedSize).font(.caption.monospacedDigit())
-                                    ProgressView(value: record.progress)
+                                    ProgressView(value: record.progress).tint(AppTheme.accent)
                                     if let error = record.errorMessage { Text(error).foregroundStyle(.orange).font(.caption) }
                                 }
                             }

@@ -932,6 +932,14 @@ actor RecommendationEngine {
         let inherited = Set(chosen.flatMap { TasteConcepts.characterFranchises[$0] ?? [] })
         let selected = chosen.subtracting(inherited)
         let observed = Set(terms(for: post).map(RecommendationTagRules.canonical))
+        // Broad format preferences such as "2d" must not open the gate for
+        // *every* 2D post when a character, action or artist was selected too.
+        // This was the source of many apparently unrelated recommendations.
+        let specific = selected.subtracting(Self.genericTasteTerms)
+        if !specific.isEmpty {
+            return !specific.isDisjoint(with: observed) ||
+                !ActionSemantics.facets(post.tags).isDisjoint(with: ActionSemantics.facets(taste.into))
+        }
         if !selected.isEmpty && !selected.isDisjoint(with: observed) { return true }
         if !ActionSemantics.facets(post.tags).isDisjoint(with: ActionSemantics.facets(taste.into)) {
             return true
@@ -951,7 +959,9 @@ actor RecommendationEngine {
             .filter { $0.1 >= 2.7 }.map { $0.0 })
         guard !selected.isEmpty || !reinforced.isEmpty || !recent.isEmpty else { return true }
         if !reinforced.isDisjoint(with: observed) || !recent.isDisjoint(with: observed) { return true }
-        return visual.map { $0.isFinite && $0 >= 3.0 } ?? false
+        // Cached visual affinity may rescue poorly tagged posts, but a weak
+        // visual similarity alone is not enough to serve an unrelated item.
+        return visual.map { $0.isFinite && $0 >= 5.0 } ?? false
     }
 
     /// Cheap metadata ranking before publication: no inference or network.
@@ -1000,7 +1010,7 @@ actor RecommendationEngine {
                     guard !topics.isEmpty, !seen.isEmpty else { return 0 }
                     return Double(topics.intersection(seen).count) / Double(max(1, min(topics.count, seen.count)))
                 }.max() ?? 0
-                let adjusted = scored[index].value - overlap * 6.5
+                let adjusted = scored[index].value - overlap * 12.0
                 if adjusted > bestScore { best = index; bestScore = adjusted }
             }
             let item = scored.remove(at: best)

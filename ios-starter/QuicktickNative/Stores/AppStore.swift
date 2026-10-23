@@ -374,6 +374,7 @@ final class AppStore: ObservableObject {
     }
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
+        let previousVisible = posts
         let mediaOnly = immersive || activeTab == 1
         feedMediaOnly = mediaOnly
         protectedImmersiveIDs = []; immersivePlaybackID = nil
@@ -406,7 +407,9 @@ final class AppStore: ObservableObject {
             var filtered: [Post] = []
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
             var broaden = false
-            for _ in 0..<5 {
+            // Keep an interactive refresh bounded; users can explicitly load
+            // more after three sparse/filtered pages without a long spinner.
+            for _ in 0..<3 {
                 guard generation == token, !Task.isCancelled else { return }
                 let response = personalized && !broaden
                     ? try await fetchBlendedCandidates(provider: provider, parsed: parsed,
@@ -439,7 +442,19 @@ final class AppStore: ObservableObject {
                 }
                 if !filtered.isEmpty || !hasMore { break }
             }
-            let immediate = filtered
+            var immediate = filtered
+            if immediate.isEmpty, provider != .rule34,
+               !parsed.included.isEmpty || !parsed.excluded.isEmpty {
+                // Some video providers search titles but omit searchable
+                // keywords/tags from their index. Keep *verified* matches
+                // already loaded when adding a tag from a visible post.
+                let cached = NativeProviderAPI.matchingCachedPosts(
+                    previousVisible, provider: provider, query: parsed, immersive: mediaOnly)
+                    .filter { !RecommendationTagRules.rejects($0, exclusions: Array(banned)) }
+                immediate = feedExclusions.filter(cached,
+                    favorites: Array(favorites.values), recommended: false,
+                    favoriteIDs: favoriteExclusionIDs)
+            }
             guard generation == token, !Task.isCancelled else { return }
             posts = immediate
             if personalized {
@@ -453,9 +468,11 @@ final class AppStore: ObservableObject {
             recommendationMode = "On-device recommendations"
             scheduleIdleIntelligence()
             if generation == token, !restoreFailed {
-                lastError = personalized && immediate.isEmpty
-                    ? "No new posts matched your interests. Try another source or adjust your exclusions."
-                    : nil
+                if immediate.isEmpty {
+                    lastError = personalized
+                        ? "No fresh matches yet. Try Load more, another source, or refine your interests."
+                        : "No matches for these tags. Remove a keyword or exclusion to broaden your search."
+                } else { lastError = nil }
             }
         } catch {
             if generation == token, !Task.isCancelled { recordFeedError(error, provider: provider) }
@@ -620,10 +637,10 @@ final class AppStore: ObservableObject {
                 if completed == 2 { break }
                 if case .graceExpired = result { break }
                 let available = (primary?.items.count ?? 0) + (secondary?.items.count ?? 0)
-                if available >= 28 && !graceStarted {
+                if available >= 20 && !graceStarted {
                     graceStarted = true
                     group.addTask {
-                        try? await Task.sleep(for: .milliseconds(850))
+                        try? await Task.sleep(for: .milliseconds(300))
                         return .graceExpired
                     }
                 }
@@ -858,15 +875,23 @@ final class AppStore: ObservableObject {
 
     func includeTag(_ tag: String) {
         let parsed = QueryParser.parse(queryText)
-        let next = (parsed.included + [tag]).uniqued() + parsed.excluded.filter { $0.caseInsensitiveCompare(tag) != .orderedSame }.map { "-\($0)" }
-        queryText = next.joined(separator: " ")
+        let normal = selectedProvider == .rule34 ? tag : tag.replacingOccurrences(of: "_", with: " ")
+        let included = (parsed.included + [normal]).uniqued()
+        let excluded = parsed.excluded.filter { $0.caseInsensitiveCompare(normal) != .orderedSame }
+        commitSearch(query: QueryParser.formatted(ParsedQuery(included: included, excluded: excluded)), sort: feedSort)
+        // Updating queryText alone invalidated the feed and left an empty
+        // screen saying "No more posts". Fetch immediately, keeping the
+        // old cards visible until the replacement results are ready.
+        Task { await refresh(immersive: activeTab == 1) }
     }
 
     func excludeTag(_ tag: String) {
         let parsed = QueryParser.parse(queryText)
-        let included = parsed.included.filter { $0.caseInsensitiveCompare(tag) != .orderedSame }
-        let excluded = (parsed.excluded + [tag]).uniqued().map { "-\($0)" }
-        queryText = (included + excluded).joined(separator: " ")
+        let normal = selectedProvider == .rule34 ? tag : tag.replacingOccurrences(of: "_", with: " ")
+        let included = parsed.included.filter { $0.caseInsensitiveCompare(normal) != .orderedSame }
+        let excluded = (parsed.excluded + [normal]).uniqued()
+        commitSearch(query: QueryParser.formatted(ParsedQuery(included: included, excluded: excluded)), sort: feedSort)
+        Task { await refresh(immersive: activeTab == 1) }
     }
 
     func tasteChoice(for provider: Provider) -> TasteChoice {

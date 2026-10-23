@@ -92,7 +92,8 @@ final class NativeProviderAPITests: XCTestCase {
             }
             let actual = try XCTUnwrap(search, "No keyword search request for \(provider.rawValue)")
             if provider == .hanime {
-                let body = try XCTUnwrap(actual.httpBody)
+                XCTAssertEqual(actual.httpMethod, "POST")
+                let body = try NativeProviderAPI.hanimeSearchBody(query: parsed, page: 1, sort: "recommended")
                 let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
                 XCTAssertEqual(json["search_text"] as? String, phrase)
             } else {
@@ -118,6 +119,21 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(result.items.map(\.stableID), [allowed.stableID])
         XCTAssertFalse(NativeProviderAPI.containsKeyword("bat", in: allowed),
             "A negative keyword must not match inside 'battle'")
+    }
+
+    func testKeywordSearchCanReuseOnlyMatchingVisiblePostsWhenProviderIndexIsEmpty() {
+        var matching = Post(key: "eporner:1", id: "1", provider: "Eporner",
+                            tags: ["red_hair", "cosplay"], type: "video")
+        matching.caption = "Character cosplay"
+        let wrong = Post(key: "eporner:2", id: "2", provider: "Eporner",
+                         tags: ["blue_hair", "cosplay"], type: "video")
+        let otherSource = Post(key: "redgifs:3", id: "3", provider: "RedGIFs",
+                               tags: ["red_hair", "cosplay"], type: "video")
+        let result = NativeProviderAPI.matchingCachedPosts([wrong, otherSource, matching],
+            provider: .eporner,
+            query: ParsedQuery(included: ["red hair"], excluded: ["blue hair"]),
+            immersive: false)
+        XCTAssertEqual(result.map(\.stableID), [matching.stableID])
     }
 
 

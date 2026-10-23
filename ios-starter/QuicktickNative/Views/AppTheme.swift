@@ -1,6 +1,32 @@
 import SwiftUI
 
 enum AppTheme {
+    enum AccentPalette: String, CaseIterable, Identifiable {
+        case violet, ocean, sunset, mint, rose
+        var id: String { rawValue }
+        var name: String { rawValue.capitalized }
+        var primary: Color {
+            switch self {
+            case .violet: Color(red: 0.60, green: 0.43, blue: 1.00)
+            case .ocean: Color(red: 0.20, green: 0.65, blue: 1.00)
+            case .sunset: Color(red: 1.00, green: 0.46, blue: 0.30)
+            case .mint: Color(red: 0.21, green: 0.83, blue: 0.65)
+            case .rose: Color(red: 0.98, green: 0.39, blue: 0.69)
+            }
+        }
+        var secondary: Color {
+            switch self {
+            case .violet: Color(red: 0.25, green: 0.62, blue: 0.95)
+            case .ocean: Color(red: 0.10, green: 0.84, blue: 0.83)
+            case .sunset: Color(red: 1.00, green: 0.72, blue: 0.36)
+            case .mint: Color(red: 0.20, green: 0.60, blue: 0.98)
+            case .rose: Color(red: 0.65, green: 0.38, blue: 0.98)
+            }
+        }
+    }
+    static var palette: AccentPalette {
+        AccentPalette(rawValue: UserDefaults.standard.string(forKey: "quicktick-accent-palette-v1") ?? "violet") ?? .violet
+    }
     static var modernUI: Bool { (UserDefaults.standard.object(forKey: "quicktick-modern-ui-v1") as? Bool) ?? true }
     static var background: Color { modernUI ? Color(red: 0.035, green: 0.035, blue: 0.065) : .black }
     static var surface: Color { modernUI ? Color(red: 0.073, green: 0.073, blue: 0.11) : Color(white: 0.055) }
@@ -9,8 +35,10 @@ enum AppTheme {
     static let border = Color.white.opacity(0.12)
     static let secondaryLabel = Color.white.opacity(0.58)
     static let spring = Animation.spring(response: 0.38, dampingFraction: 0.82)
-    static let accent = Color(red: 0.60, green: 0.43, blue: 1)
-    static let gradient = LinearGradient(colors: [accent, Color(red: 0.25, green: 0.62, blue: 0.95)], startPoint: .topLeading, endPoint: .bottomTrailing)
+    static var accent: Color { palette.primary }
+    static var gradient: LinearGradient {
+        LinearGradient(colors: [palette.primary, palette.secondary], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
     static var canvas: Color { background }
     static let small: CGFloat = 8
     static let contentMargin: CGFloat = 16

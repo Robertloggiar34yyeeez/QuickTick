@@ -11,6 +11,7 @@ struct RootView: View {
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
+    @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
     @State private var showSettings = false
     @State private var showStudio = false
     @State private var homeAnchor: String?
@@ -94,6 +95,7 @@ struct RootView: View {
             brieflyNamedTab = nil
         }
         .onDisappear { tabNameTask?.cancel() }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: accentPalette)
         .tint(.white)
         .background(AppTheme.background)
         .modifier(ProfileImportConfirmation(enabled: !showSettings && firstRunCompleted))

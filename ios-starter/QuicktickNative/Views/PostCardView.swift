@@ -25,6 +25,8 @@ struct PostCardView: View {
     @State private var playbackError: String?
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
+    @State private var showLikeHeart = false
+    @State private var likeHeartSequence = 0
     private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
     private var fullBleed: Bool { playbackTab == 0 && !offline }
     private var cardRadius: CGFloat { fullBleed ? 0 : 22 }
@@ -158,14 +160,28 @@ struct PostCardView: View {
         .frame(width: mediaSize.width, height: mediaSize.height)
         .allowsHitTesting(false)
         .overlay {
-            if post.type.lowercased() == "video" {
+            if fullBleed {
+                Color.clear.contentShape(Rectangle())
+                    .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { result in
+                        switch result {
+                        case .first:
+                            if store.favorites[post.stableID] == nil { store.toggleFavorite(post) }
+                            likeHeartSequence += 1
+                            let sequence = likeHeartSequence
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.65)) { showLikeHeart = true }
+                            Task {
+                                try? await Task.sleep(for: .milliseconds(650))
+                                guard sequence == likeHeartSequence else { return }
+                                withAnimation(.easeOut(duration: 0.25)) { showLikeHeart = false }
+                            }
+                        case .second:
+                            openMediaFullscreen()
+                        }
+                    })
+                    .accessibilityLabel("Double tap to like, tap to view")
+            } else if post.type.lowercased() == "video" {
                 Button {
-                    if player != nil {
-                        store.fullScreenPlaybackID = post.stableID
-                    } else {
-                        pendingVideoFullscreen = true
-                        store.inlinePlaybackID = post.stableID
-                    }
+                    openMediaFullscreen()
                 } label: {
                     Color.clear.contentShape(Rectangle())
                 }
@@ -174,6 +190,16 @@ struct PostCardView: View {
                 .accessibilityIdentifier("fullscreen-\(post.stableID)")
             } else if !post.isImmersiveMedia {
                 Color.clear.contentShape(Rectangle()).onTapGesture { fullImage = true }
+            }
+        }
+        .overlay {
+            if showLikeHeart {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 85, weight: .bold))
+                    .foregroundStyle(.white)
+                    .shadow(color: AppTheme.accent.opacity(0.8), radius: 22)
+                    .transition(.scale(scale: 0.45).combined(with: .opacity))
+                    .allowsHitTesting(false)
             }
         }
         .contentShape(Rectangle())
@@ -199,6 +225,13 @@ struct PostCardView: View {
                 }.buttonStyle(.plain).padding(10).accessibilityLabel("View full image")
             }
         }
+    }
+
+    private func openMediaFullscreen() {
+        if post.type.lowercased() == "video" {
+            if player != nil { store.fullScreenPlaybackID = post.stableID }
+            else { pendingVideoFullscreen = true; store.inlinePlaybackID = post.stableID }
+        } else { fullImage = true }
     }
     private func preparePlayback() async {
         preparing = true; playbackError = nil; playing = false

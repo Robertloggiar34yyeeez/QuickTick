@@ -50,7 +50,7 @@ enum StudioAnimaMemoryBudget {
 }
 
 enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
-    case square, portrait, landscape, story
+    case square, portrait, landscape, story, tall
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -58,6 +58,7 @@ enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
         case .portrait: "3:4"
         case .landscape: "4:3"
         case .story: "9:16"
+        case .tall: "1:2"
         }
     }
     var dimensions: (Int, Int) {
@@ -66,6 +67,7 @@ enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
         case .portrait: (3, 4)
         case .landscape: (4, 3)
         case .story: (9, 16)
+        case .tall: (1, 2)
         }
     }
 
@@ -73,8 +75,12 @@ enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
         let edge = max(512, min(1024, longestEdge))
         let (widthUnits, heightUnits) = dimensions
         let divisor = max(widthUnits, heightUnits)
-        return (max(256, edge * widthUnits / divisor / 16 * 16),
-                max(256, edge * heightUnits / divisor / 16 * 16))
+        // Draw Things' Metal pipeline requires *both* dimensions to be a
+        // multiple of 64. Rounding to 16 made 9:16 fail after diffusion.
+        func aligned(_ units: Int) -> Int {
+            max(256, Int((Double(edge * units) / Double(divisor) / 64).rounded()) * 64)
+        }
+        return (aligned(widthUnits), aligned(heightUnits))
     }
 
     func crop(_ source: CGImage) -> CGImage {

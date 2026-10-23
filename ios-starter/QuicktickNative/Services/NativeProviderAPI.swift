@@ -145,6 +145,17 @@ enum NativeProviderAPI {
             Array(tokens[offset..<(offset + needle.count)]) == needle
         }
     }
+    /// A keyword source may index only titles while the post exposes richer
+    /// metadata. Retain verifiable on-screen matches when that remote search
+    /// returns no rows; never show unrelated cached posts as search results.
+    static func matchingCachedPosts(_ posts: [Post], provider: Provider,
+                                    query: ParsedQuery, immersive: Bool) -> [Post] {
+        posts.filter { post in
+            post.providerKey == provider && (!immersive || post.isImmersiveMedia)
+                && query.included.allSatisfy { containsKeyword($0, in: post) }
+                && !query.excluded.contains { containsKeyword($0, in: post) }
+        }
+    }
     static func page(_ rows: [Post], hasMore: Bool, query: ParsedQuery, immersive: Bool) -> PostPage {
         var seen = Set<String>()
         return PostPage(items: rows.filter { post in
@@ -251,12 +262,15 @@ enum NativeProviderAPI {
         return self.page(posts, hasMore: number(result["pages"]) > 0 ? page < Int(number(result["pages"])) : !raw.isEmpty, query: query, immersive: immersive)
     }
 
-    static func hanime(session: URLSession, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
+    static func hanimeSearchBody(query: ParsedQuery, page: Int, sort: String) throws -> Data {
         let body: [String: Any] = ["search_text": query.included.joined(separator: " "), "tags": [], "tags_mode": "AND", "brands": [], "blacklist": [],
                                    "order_by": sort == "recent" ? "released_at_unix" : "views", "ordering": "desc", "page": max(0, page - 1)]
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+    static func hanime(session: URLSession, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
         let result: [String: Any]
         do {
-            result = try object(await data(session: session, url: url("https://search.htv-services.com/"), provider: .hanime, method: "POST", body: JSONSerialization.data(withJSONObject: body)))
+            result = try object(await data(session: session, url: url("https://search.htv-services.com/"), provider: .hanime, method: "POST", body: hanimeSearchBody(query: query, page: page, sort: sort)))
         } catch {
             if (error as? APIError)?.retryAfter != nil { throw error }
             guard query.included.isEmpty, !Task.isCancelled else { throw error }

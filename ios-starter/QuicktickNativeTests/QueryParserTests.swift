@@ -10,6 +10,11 @@ final class QueryParserTests: XCTestCase {
                        ParsedQuery(included: ["cosplay scene", "fantasy"], excluded: ["unwanted intro"]))
         XCTAssertEqual(QueryParser.parse("\"unfinished phrase"), ParsedQuery(included: ["unfinished phrase"], excluded: []))
     }
+    func testFormattingPostSearchTagsPreservesMultiwordPhrases() {
+        let terms = ParsedQuery(included: ["chun_li", "red hair"], excluded: ["long hair", "watermark"])
+        XCTAssertEqual(QueryParser.parse(QueryParser.formatted(terms)), terms)
+        XCTAssertEqual(QueryParser.formatted(terms), "chun_li \"red hair\" -\"long hair\" -watermark")
+    }
     func testVideoIntroPolicyOnlySkipsLongPornhubVideos() {
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "pornhub"), 10)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "PornHub"), 10)

@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
+    @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @FocusState private var syncFieldFocused: Bool
     @State private var syncID = ""
@@ -48,6 +49,30 @@ struct SettingsView: View {
                     .accessibilityIdentifier("modern-ui-toggle")
                 Text(modernUI ? "Rounded surfaces, compact chips and animated navigation." : "Previous QuickTick interface restored.")
                     .font(.footnote).foregroundStyle(.secondary)
+                Text("Accent gradient").font(.subheadline.weight(.semibold))
+                HStack(spacing: 7) {
+                    ForEach(AppTheme.AccentPalette.allCases) { palette in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.25)) { accentPalette = palette.rawValue }
+                        } label: {
+                            VStack(spacing: 6) {
+                                Circle().fill(LinearGradient(colors: [palette.primary, palette.secondary],
+                                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                                    .frame(width: 35, height: 35)
+                                    .overlay(Circle().stroke(.white.opacity(accentPalette == palette.rawValue ? 0.9 : 0.18), lineWidth: 2))
+                                    .overlay {
+                                        if accentPalette == palette.rawValue {
+                                            Image(systemName: "checkmark").font(.caption.weight(.bold)).foregroundStyle(.white)
+                                        }
+                                    }
+                                Text(palette.name).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(QuicktickPressStyle())
+                        .accessibilityIdentifier("accent-\(palette.rawValue)")
+                    }
+                }
             }
             SettingsGroup(title: "Website Sync", icon: "arrow.triangle.2.circlepath") {
                 Toggle("Enable website Sync", isOn: Binding(get: { store.cloudSyncEnabled }, set: { enabled in

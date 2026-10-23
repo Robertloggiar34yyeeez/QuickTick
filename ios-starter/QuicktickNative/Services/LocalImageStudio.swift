@@ -314,6 +314,7 @@ struct CivitaiStudioModel: Decodable, Identifiable, Sendable {
         let trainedWords: [String]?
         let files: [ModelFile]?
         struct ModelFile: Decodable, Sendable {
+            let name: String?
             let sizeKB: Double?
         }
         var displaySize: String? {
@@ -615,6 +616,17 @@ actor LocalImageStudio {
                               onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }) async throws -> URL {
         guard ["Checkpoint", "LORA"].contains(type), version.id > 0,
               ["civitai.com", "civitai.red"].contains(host) else { throw StudioError.invalidFile }
+        let supportedExtensions = ["safetensors", "gguf", "ckpt", "pt"]
+        let listedExtension = version.files?.compactMap { $0.name.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } }
+            .first(where: { supportedExtensions.contains($0) })
+        if let listedExtension {
+            let existing = assets.appendingPathComponent("\(type.lowercased())-\(version.id).\(listedExtension)")
+            let storedBytes = (try? FileManager.default.attributesOfItem(atPath: existing.path)[.size] as? NSNumber)?.int64Value ?? 0
+            let expectedBytes = (version.files?.compactMap(\.sizeKB).first).map { Int64($0 * 1024) }
+            if storedBytes > 100_000 && expectedBytes.map({ storedBytes >= Int64(Double($0) * 0.99) }) != false {
+                return existing
+            }
+        }
         // Construct a trusted API endpoint rather than follow arbitrary model
         // metadata URLs. Never append the token to a query string.
         let url = URL(string: "https://\(host)/api/download/models/\(version.id)")!
@@ -623,17 +635,20 @@ actor LocalImageStudio {
         let (temp, response) = try await fetchDownload(request, onProgress: onProgress)
         defer { try? FileManager.default.removeItem(at: temp) }
         try Task.checkCancellation()
-        guard response.statusCode == 200 else { throw StudioError.invalidResponse }
+        guard response.statusCode == 200,
+              !(response.mimeType ?? "").lowercased().contains("text/html") else { throw StudioError.invalidResponse }
         let attributes = try FileManager.default.attributesOfItem(atPath: temp.path)
         let bytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         guard bytes > 100_000 else { throw StudioError.invalidFile }
         let suggestedExtension = response.suggestedFilename.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } ?? ""
-        let extensionHint = suggestedExtension.isEmpty ? "safetensors" : suggestedExtension
-        guard ["safetensors", "gguf", "ckpt", "pt"].contains(extensionHint) else { throw StudioError.invalidFile }
+        let extensionHint = listedExtension ?? (supportedExtensions.contains(suggestedExtension) ? suggestedExtension : "safetensors")
         try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
         let result = assets.appendingPathComponent("\(type.lowercased())-\(version.id).\(extensionHint)")
-        if FileManager.default.fileExists(atPath: result.path) { return result }
-        try FileManager.default.moveItem(at: temp, to: result)
+        if FileManager.default.fileExists(atPath: result.path) {
+            _ = try FileManager.default.replaceItemAt(result, withItemAt: temp)
+        } else {
+            try FileManager.default.moveItem(at: temp, to: result)
+        }
         return result
     }
 

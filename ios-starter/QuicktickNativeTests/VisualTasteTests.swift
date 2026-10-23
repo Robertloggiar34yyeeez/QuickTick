@@ -3,6 +3,34 @@ import CoreGraphics
 @testable import QuicktickNative
 
 final class VisualTasteTests: XCTestCase {
+    func testStudioFavoritePromptKeepsOneCharacterOneSceneAndOnePose() {
+        let seed = StudioPromptSeed(
+            characters: ["chun_li", "samus_aran"], artists: ["favorite_artist"],
+            attributes: ["blonde_hair", "black_hair", "leaning_forward", "sitting", "at_viewer", "away"],
+            scenes: ["indoors", "outdoors"])
+        let prompt = seed.prompt
+        XCTAssertTrue(prompt.contains("chun li"))
+        XCTAssertTrue(prompt.contains("leaning forward"))
+        XCTAssertTrue(prompt.contains("looking at viewer"))
+        XCTAssertTrue(prompt.contains("indoors"))
+        XCTAssertFalse(prompt.contains("samus"))
+        XCTAssertFalse(prompt.contains("blonde"))
+        XCTAssertFalse(prompt.contains("black hair"))
+        XCTAssertFalse(prompt.contains("outdoors"))
+        XCTAssertFalse(prompt.contains("sitting"))
+        XCTAssertFalse(prompt.contains("looking away"))
+    }
+
+    func testStudioAnimaResolutionsAreNativeAndAligned() {
+        for ratio in StudioAspectRatio.allCases {
+            let size = ratio.nativePixelDimensions(longestEdge: 896)
+            XCTAssertEqual(max(size.width, size.height), 896)
+            XCTAssertEqual(size.width % 16, 0)
+            XCTAssertEqual(size.height % 16, 0)
+            XCTAssertGreaterThanOrEqual(min(size.width, size.height), 256)
+        }
+    }
+
     func testArtistsCharactersAndAttributesLearnIndependently() throws {
         let taxonomy = VisualTagTaxonomy(version: "fixture", artists: ["credited_artist"], characters: ["new_character"])
         var post = Post(key: "art", id: "1", provider: "rule34", mediaUrl: "", type: "image")

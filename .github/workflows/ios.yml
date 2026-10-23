@@ -80,7 +80,7 @@ jobs:
         run: bash scripts/package-archive-ipa.sh
       - uses: actions/upload-artifact@v6
         with:
-          name: QuickTick-0.9.7-unsigned-IPA
+          name: QuickTick-0.9.8-unsigned-IPA
           path: build/export/
           if-no-files-found: error
           retention-days: 14

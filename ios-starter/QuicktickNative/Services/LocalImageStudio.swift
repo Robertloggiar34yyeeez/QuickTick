@@ -46,6 +46,14 @@ enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    func nativePixelDimensions(longestEdge: Int) -> (width: Int, height: Int) {
+        let edge = max(512, min(1024, longestEdge))
+        let (widthUnits, heightUnits) = dimensions
+        let divisor = max(widthUnits, heightUnits)
+        return (max(256, edge * widthUnits / divisor / 16 * 16),
+                max(256, edge * heightUnits / divisor / 16 * 16))
+    }
+
     func crop(_ source: CGImage) -> CGImage {
         let (width, height) = dimensions
         let targetRatio = CGFloat(width) / CGFloat(height)
@@ -67,6 +75,11 @@ enum StudioScheduler: String, CaseIterable, Identifiable, Sendable {
 
 enum StudioGenerationEngine: String, Sendable {
     case coreML, anima
+}
+
+struct StudioLoRA: Sendable {
+    let file: URL
+    let strength: Float
 }
 
 /// Mobile-size, fixed-download Anima Q4 bundle. Anima is a Qwen-Image-family
@@ -204,11 +217,31 @@ struct StudioPromptSeed: Sendable, Equatable {
             ]
             return natural[attribute] ?? attribute.replacingOccurrences(of: "_", with: " ")
         }
-        let phrases = characters.prefix(2).map { $0.replacingOccurrences(of: "_", with: " ") }
-            + artists.prefix(1).map { "art by " + $0.replacingOccurrences(of: "_", with: " ") }
-            + attributes.prefix(3).map(spokenAttribute)
-            + scenes.prefix(2).map { $0.replacingOccurrences(of: "_", with: " ") }
-        return (phrases + ["detailed illustration, beautiful composition"]).joined(separator: ", ")
+        // A single favorite supplies the subject. Mixing the traits of many
+        // different favorites is how we got e.g. "Chun-Li, blonde hair".
+        // A single coherent setting also avoids "indoors, outdoors".
+        let character = characters.first.map { $0.replacingOccurrences(of: "_", with: " ") }
+        var phrases = ["masterpiece", "best quality", "detailed anime illustration"]
+        if let character { phrases.append(character) }
+        if let artist = artists.first { phrases.append("art by " + artist.replacingOccurrences(of: "_", with: " ")) }
+        var seenKinds: Set<String> = []
+        for raw in attributes {
+            let term = raw.lowercased().replacingOccurrences(of: " ", with: "_")
+            let kind: String
+            if term.contains("hair") || term.contains("eye_color") { kind = "appearance" }
+            else if term.contains("looking") || ["at_viewer", "away", "up", "down"].contains(term) { kind = "gaze" }
+            else if term.contains("leaning") || ["standing", "sitting", "lying", "kneeling", "walking"].contains(term) { kind = "pose" }
+            else if term.contains("smile") || term.contains("crying") || term.contains("frown") { kind = "expression" }
+            else { kind = "other:" + term }
+            // Do not override a named character's recognizable appearance.
+            if character != nil && kind == "appearance" { continue }
+            if !seenKinds.insert(kind).inserted { continue }
+            phrases.append(spokenAttribute(term))
+            if seenKinds.count >= 2 { break }
+        }
+        if let scene = scenes.first { phrases.append(scene.replacingOccurrences(of: "_", with: " ")) }
+        phrases.append("coherent composition")
+        return phrases.joined(separator: ", ")
     }
 
     static func build(favorites: [Post], taxonomy: VisualTagTaxonomy? = nil) -> Self {
@@ -390,7 +423,8 @@ actor LocalImageStudio {
     }
 
     func generateAnima(prompt: String, negative: String, steps: Int, guidance: Float, seed: UInt32,
-                       aspect: StudioAspectRatio, upscale: Bool, checkpoint: URL? = nil,
+                       aspect: StudioAspectRatio, longestEdge: Int = 512,
+                       upscale: Bool, checkpoint: URL? = nil, loras: [StudioLoRA] = [],
                        onProgress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL {
         guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
         guard !upscale || hasAnimeUpscaler() else { throw StudioError.unavailableModel }
@@ -398,7 +432,7 @@ actor LocalImageStudio {
         if let checkpoint {
             let resolved = checkpoint.standardizedFileURL.resolvingSymlinksInPath()
             guard resolved.deletingLastPathComponent() == assets.standardizedFileURL.resolvingSymlinksInPath(),
-                  resolved.pathExtension.lowercased() == "safetensors",
+                  ["safetensors", "gguf"].contains(resolved.pathExtension.lowercased()),
                   FileManager.default.fileExists(atPath: resolved.path) else { throw StudioError.invalidFile }
             diffusionURL = resolved
         } else {
@@ -426,12 +460,20 @@ actor LocalImageStudio {
         guard let engine = animaEngine else { throw StudioError.unavailableModel }
         Mirage.setProgressCallback { step, total, _ in onProgress(step, total) }
         defer { Mirage.setProgressCallback(nil) }
-        let (widthUnits, heightUnits) = aspect.dimensions
-        let maxAxis = max(widthUnits, heightUnits)
-        let width = (512 * widthUnits / maxAxis / 16) * 16
-        let height = (512 * heightUnits / maxAxis / 16) * 16
+        let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
+        // sd.cpp accepts <lora:path:strength> in the prompt. Never pass a
+        // user-supplied path before confirming it is one of our own assets.
+        var nativePrompt = String(prompt.prefix(1000))
+        for lora in loras.prefix(4) {
+            let file = lora.file.standardizedFileURL.resolvingSymlinksInPath()
+            guard file.deletingLastPathComponent() == assets.standardizedFileURL.resolvingSymlinksInPath(),
+                  file.lastPathComponent.hasPrefix("lora-"),
+                  file.pathExtension.lowercased() == "safetensors",
+                  FileManager.default.fileExists(atPath: file.path) else { throw StudioError.invalidFile }
+            nativePrompt += " <lora:\(file.path):\(String(format: "%.2f", max(0, min(1.5, lora.strength))))>"
+        }
         let result = try await engine.generate(GenerationRequest(
-            prompt: String(prompt.prefix(1200)), negativePrompt: String(negative.prefix(1200)),
+            prompt: nativePrompt, negativePrompt: String(negative.prefix(1200)),
             width: width, height: height, steps: max(4, min(40, steps)),
             cfgScale: guidance, seed: Int64(seed)))
         try Task.checkCancellation()
@@ -535,7 +577,7 @@ actor LocalImageStudio {
         guard bytes > 100_000 else { throw StudioError.invalidFile }
         let suggestedExtension = response.suggestedFilename.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } ?? ""
         let extensionHint = suggestedExtension.isEmpty ? "safetensors" : suggestedExtension
-        guard ["safetensors", "ckpt", "pt"].contains(extensionHint) else { throw StudioError.invalidFile }
+        guard ["safetensors", "gguf", "ckpt", "pt"].contains(extensionHint) else { throw StudioError.invalidFile }
         try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
         let result = assets.appendingPathComponent("\(type.lowercased())-\(version.id).\(extensionHint)")
         if FileManager.default.fileExists(atPath: result.path) { return result }
@@ -543,9 +585,26 @@ actor LocalImageStudio {
         return result
     }
 
+    func importCivitaiAsset(_ pickedURL: URL, type: String) throws -> URL {
+        guard ["checkpoint", "lora"].contains(type) else { throw StudioError.invalidFile }
+        let ext = pickedURL.pathExtension.lowercased()
+        guard (type == "lora" && ext == "safetensors") ||
+              (type == "checkpoint" && ["safetensors", "gguf"].contains(ext)) else {
+            throw StudioError.invalidFile
+        }
+        let scoped = pickedURL.startAccessingSecurityScopedResource()
+        defer { if scoped { pickedURL.stopAccessingSecurityScopedResource() } }
+        let size = (try FileManager.default.attributesOfItem(atPath: pickedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+        guard size > 100_000 else { throw StudioError.invalidFile }
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        let result = assets.appendingPathComponent("\(type)-import-\(UUID().uuidString).\(ext)")
+        try FileManager.default.copyItem(at: pickedURL, to: result)
+        return result
+    }
+
     func downloadedAssets() -> [URL] {
         ((try? FileManager.default.contentsOfDirectory(at: assets, includingPropertiesForKeys: nil)) ?? [])
-            .filter { ["safetensors", "ckpt", "pt"].contains($0.pathExtension.lowercased()) }
+            .filter { ["safetensors", "gguf", "ckpt", "pt"].contains($0.pathExtension.lowercased()) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 

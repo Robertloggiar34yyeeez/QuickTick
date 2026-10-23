@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import Darwin
 import CoreGraphics
 import ImageIO
 import CMirage
@@ -91,6 +92,16 @@ public struct ModelFiles: Sendable {
 
 // MARK: - Generation request
 
+public struct GenerationLoRA: Sendable {
+    public let file: URL
+    public let strength: Float
+
+    public init(file: URL, strength: Float) {
+        self.file = file
+        self.strength = strength
+    }
+}
+
 /// Inputs to one image-generation call. Field defaults are tuned for
 /// Z-Image-Turbo; tweak `cfgScale` and `steps` for other model families.
 public struct GenerationRequest: Sendable {
@@ -109,6 +120,8 @@ public struct GenerationRequest: Sendable {
     public var cfgScale: Float = 1.0
     /// RNG seed. Pass nil for a random seed.
     public var seed: Int64? = nil
+    /// Native LoRA weights applied by stable-diffusion.cpp, not prompt tokens.
+    public var loras: [GenerationLoRA] = []
 
     public init(
         prompt: String,
@@ -117,7 +130,8 @@ public struct GenerationRequest: Sendable {
         height: Int = 1024,
         steps: Int = 9,
         cfgScale: Float = 1.0,
-        seed: Int64? = nil
+        seed: Int64? = nil,
+        loras: [GenerationLoRA] = []
     ) {
         self.prompt = prompt
         self.negativePrompt = negativePrompt
@@ -126,6 +140,7 @@ public struct GenerationRequest: Sendable {
         self.steps = steps
         self.cfgScale = cfgScale
         self.seed = seed
+        self.loras = loras
     }
 }
 
@@ -306,20 +321,39 @@ public actor Engine {
         let promptHolder = request.prompt
         let negHolder = request.negativePrompt ?? ""
 
-        let imgPtr: UnsafeMutablePointer<mirage_image>? = promptHolder.withCString { pPtr in
-            negHolder.withCString { nPtr in
-                var params = mirage_gen_params(
-                    prompt: pPtr,
-                    negative_prompt: request.negativePrompt == nil ? nil : nPtr,
-                    width: Int32(request.width),
-                    height: Int32(request.height),
-                    steps: Int32(request.steps),
-                    cfg_scale: request.cfgScale,
-                    seed: request.seed ?? -1,
-                    batch_size: 1
-                )
-                return withUnsafePointer(to: &params) { pp in
-                    mirage_generate(self.ctx, pp)
+        guard request.loras.count <= 4 else {
+            throw MirageError.generationFailed("Select at most four LoRAs")
+        }
+        let ownedPaths = request.loras.map { strdup($0.file.path) }
+        defer {
+            ownedPaths.forEach { pointer in
+                if let pointer { free(UnsafeMutableRawPointer(pointer)) }
+            }
+        }
+        guard ownedPaths.allSatisfy({ $0 != nil }) else {
+            throw MirageError.generationFailed("Could not prepare LoRA file paths")
+        }
+        let nativeLoras = zip(request.loras, ownedPaths).map { lora, path in
+            mirage_lora(path: path.map { UnsafePointer($0) }, strength: lora.strength)
+        }
+        let imgPtr: UnsafeMutablePointer<mirage_image>? = nativeLoras.withUnsafeBufferPointer { nativeBuffer in
+            promptHolder.withCString { pPtr in
+                negHolder.withCString { nPtr in
+                    var params = mirage_gen_params(
+                        prompt: pPtr,
+                        negative_prompt: request.negativePrompt == nil ? nil : nPtr,
+                        width: Int32(request.width),
+                        height: Int32(request.height),
+                        steps: Int32(request.steps),
+                        cfg_scale: request.cfgScale,
+                        seed: request.seed ?? -1,
+                        batch_size: 1,
+                        loras: nativeBuffer.baseAddress,
+                        lora_count: UInt32(nativeBuffer.count)
+                    )
+                    return withUnsafePointer(to: &params) { pp in
+                        mirage_generate(self.ctx, pp)
+                    }
                 }
             }
         }

@@ -3,6 +3,8 @@ import PackageDescription
 
 // Mirage's iOS Metal backend is distributed by its maintainer as a 27 MB
 // XCFramework. Pin both release URL and SHA-256 to make CI reproducible.
+// The Swift adapter omits newer native upscaler entry points not present in
+// this binary; QuickTick uses its own Real-ESRGAN Core ML adapter instead.
 let package = Package(
     name: "QuicktickMirageRuntime",
     platforms: [.iOS(.v17)],

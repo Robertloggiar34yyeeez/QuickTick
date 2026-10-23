@@ -30,3 +30,4 @@ tools/xtool-source/
 .build/
 ios-starter/xtool/
 ios-starter/Config/xtool-Info.plist
+/ios-starter/MirageRuntime/Frameworks/sdcpp.xcframework/

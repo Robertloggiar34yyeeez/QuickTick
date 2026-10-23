@@ -510,10 +510,6 @@ actor LocalImageStudio {
             upscale: upscale) + (loras.isEmpty ? 0 : 150_000_000)
         let available = Int64(os_proc_available_memory())
         try StudioAnimaMemoryBudget.check(available: available, required: memoryRequired)
-        // Metal-resident weights avoid costly CPU-to-GPU streaming for each
-        // sampling step, but need additional jetsam headroom. Never opt into
-        // this mode on a constrained device or when availability is unknown.
-        let fastMetal = available >= memoryRequired + max(600_000_000, diffusionBytes / 3)
         let parts = StudioAnimaBundle.components
         let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
         let result = try await Self.renderWithFreshAnimaEngine(
@@ -525,7 +521,7 @@ actor LocalImageStudio {
                 width: width, height: height, steps: max(4, min(40, steps)),
                 cfgScale: guidance, seed: Int64(seed),
                 loras: loras.map { GenerationLoRA(file: $0.file, strength: $0.strength) }),
-            fastMetal: fastMetal, onProgress: onProgress)
+            onProgress: onProgress)
         try Task.checkCancellation()
         return try finishImage(result, upscale: upscale, onPreview: onPreview)
     }
@@ -533,18 +529,13 @@ actor LocalImageStudio {
     /// Scoping the Engine here guarantees its C++/Metal context is released
     /// before the caller starts upscaling or begins another render.
     private static func renderWithFreshAnimaEngine(
-        models: ModelFiles, request: GenerationRequest, fastMetal: Bool,
+        models: ModelFiles, request: GenerationRequest,
         onProgress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> CGImage {
-        // Mirage reads this flag when constructing its native context.
-        // Rendering is serialized by renderInProgress, so no other studio
-        // render can change the process-wide setting during construction.
-        setenv("QUICKTICK_ANIMA_FAST_METAL", fastMetal ? "1" : "0", 1)
-        defer { unsetenv("QUICKTICK_ANIMA_FAST_METAL") }
         let started = ProcessInfo.processInfo.systemUptime
         let engine = try Engine(models: models)
         let loaded = ProcessInfo.processInfo.systemUptime
-        NSLog("[QuickTick Anima] backend=%@ load=%.1fs", fastMetal ? "metal-resident" : "cpu-streamed", loaded - started)
+        NSLog("[QuickTick Anima] backend=cpu-streamed load=%.1fs", loaded - started)
         // The model load itself may consume all remaining jetsam allowance.
         // Bail out before the temporary diffusion graph pushes the app over.
         try StudioAnimaMemoryBudget.check(

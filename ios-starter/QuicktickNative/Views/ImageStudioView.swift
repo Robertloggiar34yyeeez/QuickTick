@@ -196,12 +196,18 @@ struct ImageStudioView: View {
                     }
                     .padding(.top, 4)
                     if busy {
-                        StudioPromptCrawl(prompt: activeRenderPrompt, reduceMotion: reduceMotion)
-                            .id(renderSequence)
-                            .frame(maxWidth: 480)
-                            .frame(maxHeight: .infinity)
-                            .padding(.horizontal, 20)
-                            .accessibilityIdentifier("studio-prompt-crawl")
+                        VStack(spacing: 8) {
+                            StudioOrbitSpinner(reduceMotion: reduceMotion)
+                                .frame(width: 78, height: 78)
+                                .padding(.top, 20)
+                                .accessibilityLabel("Image generation in progress")
+                            StudioPromptCrawl(prompt: activeRenderPrompt, reduceMotion: reduceMotion)
+                                .id(renderSequence)
+                                .frame(maxWidth: 480)
+                                .frame(maxHeight: .infinity)
+                                .padding(.horizontal, 20)
+                                .accessibilityIdentifier("studio-prompt-crawl")
+                        }
                     } else {
                         Spacer(minLength: 36)
                         VStack(spacing: 12) {
@@ -1447,6 +1453,42 @@ private enum StudioRenderPhase {
         case .enhancementFailed: "Original preserved"
         case .failed: "Failed"
         case .cancelled: "Cancelled"
+        }
+    }
+}
+
+/// Adapted as a self-contained SwiftUI spinner from the MIT-licensed
+/// ProgressUI circular-spinner pattern: github.com/mumer92/progressui.
+/// The ring loops independently of the native diffusion progress callbacks.
+private struct StudioOrbitSpinner: View {
+    let reduceMotion: Bool
+    @State private var rotating = false
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(.white.opacity(0.12), lineWidth: 5)
+            Circle()
+                .trim(from: 0.06, to: 0.78)
+                .stroke(
+                    AngularGradient(
+                        colors: [.clear, AppTheme.accent.opacity(0.55), .cyan, .white],
+                        center: .center
+                    ),
+                    style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                )
+                .rotationEffect(.degrees(rotating ? 360 : 0))
+            Image(systemName: "sparkles")
+                .font(.system(size: 25, weight: .medium))
+                .foregroundStyle(.white)
+                .shadow(color: AppTheme.accent.opacity(0.7), radius: 12)
+        }
+        .padding(5)
+        .onAppear {
+            guard !reduceMotion else { return }
+            rotating = false
+            withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) {
+                rotating = true
+            }
         }
     }
 }

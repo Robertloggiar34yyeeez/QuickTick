@@ -9,11 +9,12 @@ import Mirage
 import Darwin
 
 enum StudioError: LocalizedError {
-    case unsupportedModel, invalidArchive, invalidResponse, unavailableModel, noImage, invalidFile, downloadBusy
+    case unsupportedModel, unsupportedLoRA, invalidArchive, invalidResponse, unavailableModel, noImage, invalidFile, downloadBusy
     case insufficientMemory(required: Int64, available: Int64)
     var errorDescription: String? {
         switch self {
         case .unsupportedModel: "The archive does not contain a compiled Core ML Stable Diffusion pipeline. CivitAI .safetensors checkpoints and LoRAs need conversion before they can run here."
+        case .unsupportedLoRA: "LoRA import is available, but this build's Mirage Metal library has no LoRA inference API. Disable the selected LoRAs to generate with Anima; native LoRA support needs a rebuilt backend."
         case .invalidArchive: "The model archive is invalid or contains unsafe paths."
         case .invalidResponse: "The model service did not return a valid download."
         case .unavailableModel: "Download the on-device starter model or import a compatible Core ML model first."
@@ -428,6 +429,11 @@ actor LocalImageStudio {
                        onProgress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL {
         guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
         guard !upscale || hasAnimeUpscaler() else { throw StudioError.unavailableModel }
+        // Mirage's public C bridge passes `prompt` through verbatim and never
+        // populates sd_img_gen_params_t.loras. Passing <lora:...> would
+        // silently create an image WITHOUT applying the requested LoRA.
+        // Fail explicitly until the native bridge exposes real weight loading.
+        guard loras.isEmpty else { throw StudioError.unsupportedLoRA }
         let diffusionURL: URL
         if let checkpoint {
             let resolved = checkpoint.standardizedFileURL.resolvingSymlinksInPath()
@@ -461,19 +467,8 @@ actor LocalImageStudio {
         Mirage.setProgressCallback { step, total, _ in onProgress(step, total) }
         defer { Mirage.setProgressCallback(nil) }
         let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
-        // sd.cpp accepts <lora:path:strength> in the prompt. Never pass a
-        // user-supplied path before confirming it is one of our own assets.
-        var nativePrompt = String(prompt.prefix(1000))
-        for lora in loras.prefix(4) {
-            let file = lora.file.standardizedFileURL.resolvingSymlinksInPath()
-            guard file.deletingLastPathComponent() == assets.standardizedFileURL.resolvingSymlinksInPath(),
-                  file.lastPathComponent.hasPrefix("lora-"),
-                  file.pathExtension.lowercased() == "safetensors",
-                  FileManager.default.fileExists(atPath: file.path) else { throw StudioError.invalidFile }
-            nativePrompt += " <lora:\(file.path):\(String(format: "%.2f", max(0, min(1.5, lora.strength))))>"
-        }
         let result = try await engine.generate(GenerationRequest(
-            prompt: nativePrompt, negativePrompt: String(negative.prefix(1200)),
+            prompt: String(prompt.prefix(1000)), negativePrompt: String(negative.prefix(1200)),
             width: width, height: height, steps: max(4, min(40, steps)),
             cfgScale: guidance, seed: Int64(seed)))
         try Task.checkCancellation()

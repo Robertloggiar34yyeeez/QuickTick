@@ -690,7 +690,7 @@ struct ImageStudioView: View {
                         Text("Search for a character, artist or model to see available downloads.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("CivitAI Anima checkpoints can be selected for native Metal generation. LoRA loading is experimental in the current runtime; unsupported files may fail. Core ML still requires converted models.")
+                    Text("CivitAI Anima checkpoints can be selected for native Metal generation. LoRAs can be saved and configured, but cannot yet be applied: the packaged native runtime has no LoRA API. Core ML requires converted models.")
                         .font(.caption).foregroundStyle(.orange.opacity(0.9))
                     if let status { Text(status).font(.caption).foregroundStyle(AppTheme.secondaryLabel) }
                     if !downloadedAssets.isEmpty { downloadedAssetsPanel }
@@ -734,7 +734,7 @@ struct ImageStudioView: View {
 
     private var downloadedAssetsPanel: some View {
         StudioPanel(title: "Downloaded CivitAI assets", icon: "externaldrive") {
-            Text("Select an Anima checkpoint or enable up to four LoRAs for the native engine. Other model families are not guaranteed compatible.")
+            Text("Select an Anima checkpoint. You may preconfigure up to four LoRAs, but the current Metal engine cannot apply them yet. Other model families are not guaranteed compatible.")
                 .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             ForEach(downloadedAssets, id: \.path) { file in
                 VStack(alignment: .leading, spacing: 9) {
@@ -1061,6 +1061,10 @@ struct ImageStudioView: View {
         }
         if selectedEngine == .anima && !animaReady {
             status = "Download the Anima Q4 bundle (diffusion weights, Qwen3 and VAE) first."
+            return
+        }
+        if selectedEngine == .anima && !selectedLoRAStrengths.isEmpty {
+            status = StudioError.unsupportedLoRA.localizedDescription
             return
         }
         guard !(promptOverride ?? prompt).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

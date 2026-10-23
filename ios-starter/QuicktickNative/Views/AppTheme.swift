@@ -1,16 +1,17 @@
 import SwiftUI
 
 enum AppTheme {
-    static let background = Color.black
-    static let surface = Color(white: 0.055)
-    static let elevatedSurface = Color(red: 0.09, green: 0.09, blue: 0.13)
+    static var modernUI: Bool { (UserDefaults.standard.object(forKey: "quicktick-modern-ui-v1") as? Bool) ?? true }
+    static var background: Color { modernUI ? Color(red: 0.035, green: 0.035, blue: 0.065) : .black }
+    static var surface: Color { modernUI ? Color(red: 0.073, green: 0.073, blue: 0.11) : Color(white: 0.055) }
+    static var elevatedSurface: Color { modernUI ? Color(red: 0.10, green: 0.095, blue: 0.15) : Color(red: 0.09, green: 0.09, blue: 0.13) }
     static let navigationSurface = Color(red: 0.045, green: 0.04, blue: 0.075)
     static let border = Color.white.opacity(0.12)
     static let secondaryLabel = Color.white.opacity(0.58)
     static let spring = Animation.spring(response: 0.38, dampingFraction: 0.82)
     static let accent = Color(red: 0.60, green: 0.43, blue: 1)
     static let gradient = LinearGradient(colors: [accent, Color(red: 0.25, green: 0.62, blue: 0.95)], startPoint: .topLeading, endPoint: .bottomTrailing)
-    static let canvas = Color.black
+    static var canvas: Color { background }
     static let small: CGFloat = 8
     static let contentMargin: CGFloat = 16
     static let sectionGap: CGFloat = 24

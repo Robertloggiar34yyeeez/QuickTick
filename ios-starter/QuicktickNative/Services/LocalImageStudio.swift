@@ -9,12 +9,11 @@ import Mirage
 import Darwin
 
 enum StudioError: LocalizedError {
-    case unsupportedModel, unsupportedLoRA, invalidArchive, invalidResponse, unavailableModel, noImage, imageFiltered, invalidFile, downloadBusy, renderBusy
+    case unsupportedModel, invalidArchive, invalidResponse, unavailableModel, noImage, imageFiltered, invalidFile, downloadBusy, renderBusy
     case insufficientMemory(required: Int64, available: Int64)
     var errorDescription: String? {
         switch self {
         case .unsupportedModel: "The archive does not contain a compiled Core ML Stable Diffusion pipeline. CivitAI .safetensors checkpoints and LoRAs need conversion before they can run here."
-        case .unsupportedLoRA: "LoRA import is available, but this build's Mirage Metal library has no LoRA inference API. Disable the selected LoRAs to generate with Anima; native LoRA support needs a rebuilt backend."
         case .invalidArchive: "The model archive is invalid or contains unsafe paths."
         case .invalidResponse: "The model service did not return a valid download."
         case .unavailableModel: "Download the on-device starter model or import a compatible Core ML model first."
@@ -477,11 +476,15 @@ actor LocalImageStudio {
         defer { renderInProgress = false }
         guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
         guard !upscale || hasAnimeUpscaler() else { throw StudioError.unavailableModel }
-        // Mirage's public C bridge passes `prompt` through verbatim and never
-        // populates sd_img_gen_params_t.loras. Passing <lora:...> would
-        // silently create an image WITHOUT applying the requested LoRA.
-        // Fail explicitly until the native bridge exposes real weight loading.
-        guard loras.isEmpty else { throw StudioError.unsupportedLoRA }
+        // Pass LoRAs through the patched native bridge's structured API.
+        // Reject paths outside our managed assets folder and invalid strengths.
+        guard loras.count <= 4, loras.allSatisfy({ item in
+            let file = item.file.standardizedFileURL.resolvingSymlinksInPath()
+            return file.deletingLastPathComponent() == assets.standardizedFileURL.resolvingSymlinksInPath()
+                && file.pathExtension.lowercased() == "safetensors"
+                && FileManager.default.fileExists(atPath: file.path)
+                && item.strength.isFinite && item.strength >= 0 && item.strength <= 2
+        }) else { throw StudioError.invalidFile }
         let diffusionURL: URL
         if let checkpoint {
             let resolved = checkpoint.standardizedFileURL.resolvingSymlinksInPath()
@@ -512,7 +515,9 @@ actor LocalImageStudio {
             request: GenerationRequest(
                 prompt: String(prompt.prefix(1000)), negativePrompt: String(negative.prefix(1200)),
                 width: width, height: height, steps: max(4, min(40, steps)),
-                cfgScale: guidance, seed: Int64(seed)), onProgress: onProgress)
+                cfgScale: guidance, seed: Int64(seed),
+                loras: loras.map { GenerationLoRA(file: $0.file, strength: $0.strength) }),
+            onProgress: onProgress)
         try Task.checkCancellation()
         return try finishImage(result, upscale: upscale, onPreview: onPreview)
     }

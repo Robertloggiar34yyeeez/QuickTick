@@ -177,7 +177,7 @@ struct ReversibleSkipModel: Codable, Sendable, Equatable {
 }
 
 struct RecommendationState: Codable, Sendable, Equatable {
-    static let currentVersion = 4
+    static let currentVersion = 5
     var version: Int = currentVersion
     var profiles: [String: RecommendationProfile] = [:]
     var candidatePages: [String: Int] = [:]

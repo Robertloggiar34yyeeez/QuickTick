@@ -21,6 +21,45 @@ enum StudioError: LocalizedError {
     }
 }
 
+enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
+    case square, portrait, landscape, story
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .square: "1:1"
+        case .portrait: "3:4"
+        case .landscape: "4:3"
+        case .story: "9:16"
+        }
+    }
+    var dimensions: (Int, Int) {
+        switch self {
+        case .square: (1, 1)
+        case .portrait: (3, 4)
+        case .landscape: (4, 3)
+        case .story: (9, 16)
+        }
+    }
+
+    func crop(_ source: CGImage) -> CGImage {
+        let (width, height) = dimensions
+        let targetRatio = CGFloat(width) / CGFloat(height)
+        let sourceRatio = CGFloat(source.width) / CGFloat(source.height)
+        let cropWidth = sourceRatio > targetRatio ? Int(CGFloat(source.height) * targetRatio) : source.width
+        let cropHeight = sourceRatio > targetRatio ? source.height : Int(CGFloat(source.width) / targetRatio)
+        let rect = CGRect(x: CGFloat(source.width - cropWidth) / 2,
+                          y: CGFloat(source.height - cropHeight) / 2,
+                          width: CGFloat(cropWidth), height: CGFloat(cropHeight))
+        return source.cropping(to: rect) ?? source
+    }
+}
+
+enum StudioScheduler: String, CaseIterable, Identifiable, Sendable {
+    case dpm, pndm
+    var id: String { rawValue }
+    var label: String { self == .dpm ? "DPM++" : "PNDM" }
+}
+
 /// A foreground URLSession transfer. `suspend` and `resume` keep its existing
 /// bytes and HTTP connection; Stop cancels it. Progress is derived from the
 /// real URLSession download task, never an estimated timer.
@@ -32,6 +71,8 @@ final class StudioDownloadTransfer: NSObject, URLSessionDownloadDelegate, @unche
     private var continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>?
     private var finishedURL: URL?
     private var finishedError: Error?
+    private var lastReportedAt = Date.distantPast
+    private var lastReportedBytes: Int64 = 0
 
     init(onProgress: @escaping @Sendable (Int64, Int64) -> Void) {
         progressHandler = onProgress
@@ -71,6 +112,16 @@ final class StudioDownloadTransfer: NSObject, URLSessionDownloadDelegate, @unche
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
+        // SwiftUI must not re-render a full studio screen for every tiny
+        // network chunk of a multi-gigabyte checkpoint.
+        let now = Date()
+        lock.lock()
+        let shouldReport = now.timeIntervalSince(lastReportedAt) >= 0.16
+            || totalBytesWritten - lastReportedBytes >= 8_000_000
+            || (totalBytesExpectedToWrite > 0 && totalBytesWritten >= totalBytesExpectedToWrite)
+        if shouldReport { lastReportedAt = now; lastReportedBytes = totalBytesWritten }
+        lock.unlock()
+        guard shouldReport else { return }
         progressHandler(totalBytesWritten, totalBytesExpectedToWrite)
     }
 
@@ -208,6 +259,7 @@ actor LocalImageStudio {
     private let root: URL
     private let models: URL
     private let assets: URL
+    private let upscalers: URL
     private let gallery: URL
     private var activeTransfer: StudioDownloadTransfer?
     private let starterURL = URL(string: "https://huggingface.co/apple/coreml-stable-diffusion-v1-5-palettized/resolve/main/coreml-stable-diffusion-v1-5-palettized_split_einsum_v2_compiled.zip")!
@@ -217,6 +269,7 @@ actor LocalImageStudio {
             .appendingPathComponent("QuicktickStudio", isDirectory: true)
         models = root.appendingPathComponent("Models", isDirectory: true)
         assets = root.appendingPathComponent("CivitaiAssets", isDirectory: true)
+        upscalers = root.appendingPathComponent("Upscalers", isDirectory: true)
         gallery = root.appendingPathComponent("Images", isDirectory: true)
     }
 
@@ -246,6 +299,23 @@ actor LocalImageStudio {
 
     func downloadStarter(onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }) async throws -> URL {
         try await installZip(from: starterURL, name: "Apple SD 1.5 · 6-bit", onProgress: onProgress)
+    }
+
+    func hasAnimeUpscaler() -> Bool {
+        FileManager.default.fileExists(atPath: animeUpscalerURL.path)
+    }
+
+    private var animeUpscalerURL: URL {
+        upscalers.appendingPathComponent("RealESRGANAnime.mlmodelc", isDirectory: true)
+    }
+
+    func downloadAnimeUpscaler(onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }) async throws {
+        if hasAnimeUpscaler() { return }
+        let (temp, response) = try await fetchDownload(URLRequest(url: StudioAnimeUpscaler.downloadURL), onProgress: onProgress)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try Task.checkCancellation()
+        guard response.statusCode == 200 else { throw StudioError.invalidResponse }
+        _ = try StudioAnimeUpscaler.install(zip: temp, in: upscalers)
     }
 
     func pauseActiveDownload() { activeTransfer?.pause() }
@@ -353,6 +423,8 @@ actor LocalImageStudio {
     }
 
     func generate(prompt: String, negative: String, modelURL: URL, steps: Int, guidance: Float, seed: UInt32,
+                  aspect: StudioAspectRatio = .square, scheduler: StudioScheduler = .dpm,
+                  upscale: Bool = false,
                   onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> URL {
         guard let resources = Self.resources(in: modelURL), !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw StudioError.unavailableModel }
         try Task.checkCancellation()
@@ -367,14 +439,22 @@ actor LocalImageStudio {
         options.stepCount = max(4, min(40, steps))
         options.guidanceScale = max(1, min(15, guidance))
         options.seed = seed
-        options.schedulerType = .dpmSolverMultistepScheduler
+        options.schedulerType = scheduler == .dpm ? .dpmSolverMultistepScheduler : .pndmScheduler
         // Heavy computation occurs on this actor, outside the UI main actor.
         let images = try pipeline.generateImages(configuration: options) { progress in
             onProgress(progress.step + 1, progress.stepCount)
             return !withUnsafeCurrentTask { $0?.isCancelled ?? false }
         }
         try Task.checkCancellation()
-        guard let result = images.compactMap({ $0 }).first else { throw StudioError.noImage }
+        guard let output = images.compactMap({ $0 }).first else { throw StudioError.noImage }
+        let cropped = aspect.crop(output)
+        let result: CGImage
+        if upscale {
+            guard hasAnimeUpscaler() else { throw StudioError.unavailableModel }
+            result = try StudioAnimeUpscaler.upscale(cropped, using: animeUpscalerURL)
+        } else {
+            result = cropped
+        }
         let buffer = NSMutableData()
         guard let imageDestination = CGImageDestinationCreateWithData(buffer as CFMutableData, UTType.png.identifier as CFString, 1, nil) else {
             throw StudioError.noImage

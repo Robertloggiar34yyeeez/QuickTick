@@ -185,6 +185,12 @@ actor RecommendationEngine {
     private var sourcesWithFictionalCharacters: Set<String> = []
     private var sourcesWithWildlifeLikes: Set<String> = []
     private var favoriteMediumCounts: [String: [VisualDomain: Int]] = [:]
+    // Identity anchors are independent, saved Like/Favorite evidence. A pose
+    // such as "looking at viewer" may describe how a loved character appears,
+    // but it must not retrieve an unrelated character by itself.
+    private var favoriteCharacters: [String: Set<String>] = [:]
+    private var favoriteArtists: [String: Set<String>] = [:]
+    private var identifiedFavoriteCount: [String: Int] = [:]
 
     private static let wildlifeOnlyTerms: Set<String> = [
         "bat", "bats", "wildlife", "wild_animal", "animals", "animal",
@@ -283,10 +289,24 @@ actor RecommendationEngine {
         sourcesWithFictionalCharacters = []
         sourcesWithWildlifeLikes = []
         favoriteMediumCounts = [:]
+        favoriteCharacters = [:]
+        favoriteArtists = [:]
+        identifiedFavoriteCount = [:]
+        var uniqueFavoriteIDs = Set<String>()
         for post in favorites {
             let source = post.provider.lowercased()
+            guard uniqueFavoriteIDs.insert(post.stableID).inserted else { continue }
             if let medium = VisualDomain.classify(post) {
                 favoriteMediumCounts[source, default: [:]][medium, default: 0] += 1
+            }
+            if let identity = VisualFeatures.metadata(post, taxonomy: taxonomy) {
+                let subjects = Set(identity.subjects)
+                let artists = Set(identity.artists ?? [])
+                if !subjects.isEmpty || !artists.isEmpty {
+                    identifiedFavoriteCount[source, default: 0] += 1
+                    favoriteCharacters[source, default: []].formUnion(subjects)
+                    favoriteArtists[source, default: []].formUnion(artists)
+                }
             }
             let normalized = Set(post.tags.map(TasteConcepts.canonical))
             let characters = TasteConcepts.resolve(post.tags, taxonomy: taxonomy).characters
@@ -329,6 +349,34 @@ actor RecommendationEngine {
         (savedFavoriteAffinity[source] ?? [:]).sorted {
             $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
         }.prefix(limit).map { ($0.key, $0.value) }
+    }
+
+    private func isFavoriteIdentity(_ raw: String, source: String) -> Bool {
+        let term = TasteConcepts.canonical(raw)
+        let unprefixed = term.components(separatedBy: ":").last ?? term
+        return favoriteCharacters[source]?.contains(unprefixed) == true
+            || favoriteArtists[source]?.contains(unprefixed) == true
+    }
+
+    /// A few independent saved identities make unrelated *identified* subjects
+    /// low-quality recommendations, even when they share generic hair/pose tags.
+    /// Unknown identity is not automatically negative: sparse provider metadata
+    /// can still earn its place through an explicitly liked presentation.
+    private func conflictsWithFavoriteIdentity(_ post: Post, taste: TasteChoice) -> Bool {
+        let source = post.provider.lowercased()
+        guard (identifiedFavoriteCount[source] ?? 0) >= 3,
+              let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { return false }
+        let subjects = Set(features.subjects)
+        let artists = Set(features.artists ?? [])
+        let likedSubjects = favoriteCharacters[source] ?? []
+        let likedArtists = favoriteArtists[source] ?? []
+        if !subjects.isDisjoint(with: likedSubjects) || !artists.isDisjoint(with: likedArtists) { return false }
+        // Explicitly chosen identities take precedence over learned defaults.
+        let explicitlyChosen = Set(taste.into.map(TasteConcepts.canonical))
+        if subjects.contains(where: explicitlyChosen.contains) || artists.contains(where: explicitlyChosen.contains) { return false }
+        // Only reject known identity conflicts. Missing/unknown tags stay eligible.
+        if !subjects.isEmpty && !likedSubjects.isEmpty { return true }
+        return subjects.isEmpty && !artists.isEmpty && !likedArtists.isEmpty
     }
     func configureTaxonomy(_ value: VisualTagTaxonomy?) {
         // The idle worker can restart after foregrounding. Recompute large
@@ -436,12 +484,18 @@ actor RecommendationEngine {
             excluded + tasteTokens(source: provider.rawValue, values: taste.notInto)
             + repeatedlyRejectedTerms(source: provider.rawValue))
         let blocked = Set(queryExclusions.map { $0.lowercased() })
-        let explicit = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }
+        let chosen = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }
+        let hasIdentityFavorites = (identifiedFavoriteCount[provider.rawValue] ?? 0) >= 3
+        let explicit = hasIdentityFavorites
+            ? chosen.filter { isFavoriteIdentity($0, source: provider.rawValue)
+                || taxonomy?.kind(of: $0) == .character || taxonomy?.kind(of: $0) == .artist }
+            : chosen
         // Keep learned acquisition separate: adding many explicit tags must not
         // evict the established profile from candidate discovery.
         let learnedHistory = positiveTermEntries(source: provider.rawValue, taste: TasteChoice(), limit: 12)
             .filter {
                 $0.1 >= 3 && !blocked.contains($0.0) && !explicit.contains($0.0)
+                && (!hasIdentityFavorites || isFavoriteIdentity($0.0, source: provider.rawValue))
                 // "3d" alone should never become a provider discovery query
                 // just because a few favorite artists work in that medium.
                 && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
@@ -452,11 +506,13 @@ actor RecommendationEngine {
         let sessionInterests = sessionTaste.strongInterests(provider: provider.rawValue)
             .filter {
                 !blocked.contains($0.0) && !explicit.contains($0.0)
+                && (!hasIdentityFavorites || isFavoriteIdentity($0.0, source: provider.rawValue))
                 && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
             }
         let saved = savedFavoriteTerms(source: provider.rawValue, limit: 14)
             .filter {
                 !blocked.contains($0.0) && !explicit.contains($0.0)
+                && (!hasIdentityFavorites || isFavoriteIdentity($0.0, source: provider.rawValue))
                 && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
                 && !(sourcesWithFictionalCharacters.contains(provider.rawValue)
                     && !sourcesWithWildlifeLikes.contains(provider.rawValue)
@@ -504,10 +560,25 @@ actor RecommendationEngine {
             let queries = state.contextualProfiles.filter { $0.key.hasPrefix(provider.rawValue + "|") }
                 .sorted { $0.key < $1.key }.flatMap { $0.value.discoveryQueries() }
                 .filter { !$0.contains(where: { blocked.contains(RecommendationTagRules.canonical($0)) }) }
+                .filter { query in
+                    // Contextual action/style interests must stay attached to
+                    // a trusted identity; they are not discovery subjects.
+                    !hasIdentityFavorites || query.contains(where: {
+                        isFavoriteIdentity($0, source: provider.rawValue) || explicit.contains($0)
+                    })
+                }
             if !queries.isEmpty { terms = queries[round % queries.count] }
         }
         // Prefer co-liked character/artist + medium instead of isolated generic 3D.
         if focused, provider == .rule34, let anchor = terms.first {
+            // A manually selected action/style is a *condition* on an identity
+            // search, never a standalone retrieval anchor for a learned taste.
+            if hasIdentityFavorites,
+               let presentation = chosen.first(where: { !explicit.contains($0)
+                   && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0)) }),
+               terms.count == 1 {
+                terms.append(presentation)
+            }
             let styles: Set<String> = ["2d", "3d", "2d_art", "3d_art", "3dcg",
                 "3d_animation", "animation", "animated", "watercolor", "sketch", "pixel_art"]
             let related = profile(for: provider.rawValue).related
@@ -517,6 +588,19 @@ actor RecommendationEngine {
                 let likedTogether = (related[anchor]?[term] ?? related[term]?[anchor] ?? 0) >= 0.6
                 return complements && (chosen || likedTogether)
             }) { terms.append(partner) }
+        }
+        if hasIdentityFavorites, focused,
+           !terms.contains(where: { isFavoriteIdentity($0, source: provider.rawValue) || explicit.contains($0) }) {
+            // Last-line invariant: artist/pose/medium special cases above may
+            // otherwise reintroduce an unanchored discovery query.
+            if let identity = (explicit + learned).first(where: {
+                isFavoriteIdentity($0, source: provider.rawValue) || explicit.contains($0)
+            }) {
+                terms = [identity] + Array(terms.filter { $0 != identity }.prefix(1))
+            } else {
+                focused = false
+                terms = []
+            }
         }
         if focused, let deadline = drainedCandidateQueries[context + "|query:" + terms.joined(separator: " ")], deadline > .now {
             focused = false; terms = []
@@ -741,6 +825,7 @@ actor RecommendationEngine {
     func isHardDisliked(_ post: Post, taste: TasteChoice) -> Bool {
         let source = post.provider.lowercased()
         return fictionalWildlifeConfusion(post, taste: taste)
+            || conflictsWithFavoriteIdentity(post, taste: taste)
             || explicitlyOther3DArtist(post, taste: taste)
             || stronglyUnsupportedMedium(post, taste: taste)
             || RecommendationTagRules.rejects(post, exclusions: taste.notInto)

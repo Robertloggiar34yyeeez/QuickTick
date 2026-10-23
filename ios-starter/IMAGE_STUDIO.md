@@ -8,7 +8,7 @@ stored in app preferences, so an IPA upgrade does not show onboarding again.
 1. Install the app on iOS 17 or later. Generation is intended for a physical
    iPhone or iPad with enough available memory and disk space; a simulator is
    useful for UI tests but is not a representative inference device.
-2. Open **Create → On-device engine → Download model**. The Apple Stable
+2. Open **Create → On-device engine → Apple SD 1.5**. The Apple Stable
    Diffusion 1.5 6-bit Core ML ZIP is approximately 1.57 GB compressed.
    Unpacking temporarily requires additional space. The compact transfer
    panel shows real transferred bytes and progress (when the host provides a
@@ -21,8 +21,15 @@ stored in app preferences, so an IPA upgrade does not show onboarding again.
 4. Type a prompt into the centered canvas, or tap **Generate something I'd
    love** to immediately fill an idea from prominent saved characters, artists,
    actions/attributes, and scenes and start rendering if a model is installed.
-5. Tap **Advanced render settings** to reveal steps, guidance, seed, and
-   negative prompt, then tap the glowing **Generate** button. Generation,
+5. Pick an output **aspect ratio** (1:1, 3:4, 4:3, or 9:16). Apple's compiled
+   model has a fixed native canvas, so non-square output is a **center crop**,
+   not a wider or taller diffusion render. Select **Native** resolution or
+   download the approximately 8.5 MB **Real-ESRGAN X4+ Anime** Core ML
+   upscaler, then choose **Anime 4×** for offline enhancement after generation.
+   The 522px fixed-input conversion handles native Core ML generations up to
+   512px per side; it is not a generic unlimited-size photo upscaler.
+6. Tap **Advanced render settings** to choose DPM++ or PNDM scheduler, steps,
+   guidance, seed, and negative prompt, then tap the glowing **Generate** button. Generation,
    progress reporting, and PNG encoding happen locally. Generated PNG files
    remain in Application Support and are exportable through the share sheet.
 
@@ -42,21 +49,31 @@ the selected host. Suggested searches include **Anima** and the user's top
 favorite characters and credited artists. Assets must be explicitly downloaded;
 they may be exported or deleted in the studio.
 
-**Raw `.safetensors`, `.ckpt`, `.pt`, and LoRA files are not directly compatible
-with Apple's compiled Core ML pipeline.** Downloading them saves the original
-asset but does not apply it to generated images. Conversion/fusion to a
-compatible Core ML pipeline is a separate required step. The app surfaces this
-limitation rather than pretending a downloaded LoRA is active.
+**Anima checkpoints use a different architecture from SD 1.5** (Qwen3 text
+encoder and Qwen-Image VAE). Raw `.safetensors`, `.ckpt`, `.pt`, and LoRA files
+are not directly compatible with Apple's compiled Core ML pipeline. Downloading
+an Anima file does not activate it. A separate native engine (for example
+stable-diffusion.cpp/Mirage) plus the matching Anima model components, device
+memory gating, and real-device tests are required; these are not bundled here.
+The Create model chips mark the distinction explicitly.
 
 ## Recommendation updates and user data
 
-The current ranking state is version 4. Updating an older IPA migrates the
+The current ranking state is version 5. Updating an older IPA migrates the
 saved state once, resets stale candidate search cursors and unviewed offers,
 but **preserves** favorites, explicit dislikes, learned terms, quick skips,
 viewed-history de-duplication, and persistent blocked tags. The visual
 metadata revision also queues saved favorites for background reanalysis when
 the system permits it. **Settings → Rescan Recommended** manually rebuilds the
 candidate pool without wiping preferences.
+
+Candidate acquisition now requires an identifiable favorite character/artist
+anchor after enough independent saved identity examples are present. An action
+like `looking_at_viewer` can qualify an otherwise relevant identity but cannot
+search for arbitrary unrelated characters by itself. Contextual discovery and
+special 3D artist queries are subject to this invariant too; broad exploration
+continues separately. This is a precision-first stopgap, not proof that the
+recommender meets a personalized-feed precision@K target on real user history.
 
 Action concepts currently include aliases for looking at the viewer/camera,
 eye contact, looking away/up/down, leaning forward/back, and common poses.

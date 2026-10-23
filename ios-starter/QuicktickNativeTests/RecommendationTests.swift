@@ -2,7 +2,7 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
-    func testInstalledIPAMigratesV3CacheIntoV4WithoutDeletingTheOriginal() async throws {
+    func testInstalledIPAMigratesV3CacheIntoV5WithoutDeletingTheOriginal() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -23,7 +23,7 @@ final class RecommendationTests: XCTestCase {
         let saved = await persistence.save(upgraded)
         XCTAssertTrue(saved)
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("recommendations-v3.json").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("recommendations-v4.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("recommendations-v5.json").path))
         XCTAssertTrue(upgraded.candidatePages.isEmpty)
         XCTAssertEqual(upgraded.profiles["rule34"], profile)
         let persisted = await persistence.load()
@@ -32,6 +32,32 @@ final class RecommendationTests: XCTestCase {
         XCTAssertFalse(stillLegacy)
         XCTAssertEqual(reloaded.version, RecommendationState.currentVersion)
         XCTAssertEqual(reloaded.profiles["rule34"], profile)
+    }
+
+    func testExistingV4InstallationReacquiresCandidatesWithoutLosingFeedback() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var state = RecommendationState()
+        state.version = 4
+        state.candidatePages = ["rule34|query:looking_at_viewer": 42]
+        state.novelty.offered = ["rule34:old-offer"]
+        var evidence = RecommendationProfile()
+        evidence.terms = ["chun_li": 25, "unwanted": -21]
+        evidence.recentSeen = ["rule34:already-watched"]
+        state.profiles["rule34"] = evidence
+        try JSONEncoder().encode(state).write(to: root.appendingPathComponent("recommendations-v4.json"))
+        let persistence = RecommendationPersistence(directory: root)
+        let loaded = await persistence.load()
+        let restored = try XCTUnwrap(loaded)
+        let migrated = restored.upgradedForCurrentRanking()
+        XCTAssertTrue(migrated.candidatePages.isEmpty)
+        XCTAssertTrue(migrated.novelty.offered.isEmpty)
+        XCTAssertEqual(migrated.profiles["rule34"], evidence)
+        let saved = await persistence.save(migrated)
+        XCTAssertTrue(saved)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("recommendations-v4.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("recommendations-v5.json").path))
     }
 
     func testUpgradeRescansCandidateAcquisitionButPreservesExplicitNegativeEvidence() {
@@ -263,6 +289,48 @@ final class RecommendationTests: XCTestCase {
         let taste = TasteChoice(done: true, into: ["chun_li"], notInto: [])
         let result = await engine.rankFast([related], taste: taste, recent: [], strict: true)
         XCTAssertEqual(result.map(\.stableID), [related.stableID])
+    }
+
+    func testGenericPoseDoesNotAdmitAnUnrelatedIdentifiedCharacter() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let favorites = (0..<6).map { index in
+            Post(key: "rule34:loved-\(index)", id: "loved-\(index)", provider: "rule34",
+                 tags: ["2d", "chun_li", "artist:favorite_artist", "looking_at_viewer", "long_hair"])
+        }
+        await engine.configureFavorites(favorites)
+        let irrelevant = Post(key: "rule34:wrong", id: "wrong", provider: "rule34",
+                              tags: ["2d", "rouge_the_bat", "looking_at_viewer", "long_hair"])
+        let wanted = Post(key: "rule34:right", id: "right", provider: "rule34",
+                          tags: ["2d", "chun_li", "looking_at_viewer"])
+        let unknownIdentity = Post(key: "rule34:anonymous", id: "anonymous", provider: "rule34",
+                                   tags: ["2d", "looking_at_viewer", "qipao"])
+        let taste = TasteChoice(done: true, into: ["chun_li", "looking_at_viewer"], notInto: [])
+        let result = await engine.rankFast([irrelevant, wanted, unknownIdentity],
+                                            taste: taste, recent: [], strict: true)
+        XCTAssertFalse(result.contains { $0.stableID == irrelevant.stableID })
+        XCTAssertTrue(result.contains { $0.stableID == wanted.stableID })
+        XCTAssertTrue(result.contains { $0.stableID == unknownIdentity.stableID },
+                      "Unlabeled subjects can still match a loved action or outfit")
+    }
+
+    func testIdentityLedRetrievalNeverSearchesGenericPoseAlone() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let favorites = (0..<5).map { index in
+            Post(key: "rule34:fav-action-\(index)", id: "fav-action-\(index)",
+                 provider: "rule34", tags: ["2d", "chun_li", "looking_at_viewer", "long_hair"])
+        }
+        await engine.configureFavorites(favorites)
+        let taste = TasteChoice(done: true, into: ["chun_li", "looking_at_viewer"], notInto: [])
+        var focused = 0
+        for _ in 0..<12 {
+            let request = await engine.candidateRequest(context: "rule34|identity", provider: .rule34,
+                                                        taste: taste, excluded: [])
+            guard request.focused else { continue }
+            focused += 1
+            XCTAssertTrue(request.query.included.contains("chun_li"),
+                          "Every focused search should carry the character, not just long_hair or looking_at_viewer")
+        }
+        XCTAssertGreaterThan(focused, 0)
     }
 
     func testLegacyCharacterPlusFranchiseDoesNotCauseUnrelatedFranchiseRecommendations() async {

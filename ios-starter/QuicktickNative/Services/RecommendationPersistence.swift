@@ -10,14 +10,14 @@ actor RecommendationPersistence {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let directory = directory ?? support.appendingPathComponent("Quicktick", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        url = directory.appendingPathComponent("recommendations-v4.json")
+        url = directory.appendingPathComponent("recommendations-v5.json")
     }
 
     func load() -> RecommendationState? {
         loadedLegacyFile = false
         var source = url
         if !FileManager.default.fileExists(atPath: source.path) {
-            for version in [3, 2, 1] {
+            for version in [4, 3, 2, 1] {
                 let legacy = url.deletingLastPathComponent().appendingPathComponent("recommendations-v\(version).json")
                 if FileManager.default.fileExists(atPath: legacy.path) { source = legacy; break }
             }
@@ -44,7 +44,7 @@ actor RecommendationPersistence {
     }
 
     func clear() {
-        for version in [1, 2, 3, 4] { try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent("recommendations-v\(version).json")) }
+        for version in [1, 2, 3, 4, 5] { try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent("recommendations-v\(version).json")) }
         blockedWrite = false; lastError = nil
     }
 }

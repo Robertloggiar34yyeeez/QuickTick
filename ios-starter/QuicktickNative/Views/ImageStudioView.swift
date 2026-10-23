@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import ImageIO
 
 struct ImageStudioView: View {
     @EnvironmentObject private var store: AppStore
@@ -17,6 +18,10 @@ struct ImageStudioView: View {
     @State private var negativePrompt = "low quality, blurry, distorted anatomy, watermark"
     @State private var stepCount = 20.0
     @State private var guidance = 7.0
+    @State private var aspect: StudioAspectRatio = .square
+    @State private var scheduler: StudioScheduler = .dpm
+    @State private var highResolution = false
+    @State private var animeUpscalerReady = false
     @State private var seed = UInt32.random(in: 1...UInt32.max)
     @State private var installedModels: [URL] = []
     @State private var selectedModel: URL?
@@ -34,11 +39,12 @@ struct ImageStudioView: View {
     @State private var status: String?
     @State private var latestImage: URL?
     @State private var taxonomy: VisualTagTaxonomy?
+    @State private var inspiration = StudioPromptSeed(characters: [], artists: [], attributes: [], scenes: [])
+    @FocusState private var promptFocused: Bool
     @State private var renderTask: Task<Void, Never>?
     @State private var downloadTask: Task<Void, Never>?
 
     private var favorites: [Post] { Array(store.favorites.values) }
-    private var inspiration: StudioPromptSeed { StudioPromptSeed.build(favorites: favorites, taxonomy: taxonomy) }
 
     var body: some View {
         ScrollView {
@@ -55,6 +61,7 @@ struct ImageStudioView: View {
             .padding(.top, 10)
             .padding(.bottom, 34)
         }
+        .scrollDismissesKeyboard(.interactively)
         .background(StudioAuroraBackground().ignoresSafeArea())
         .navigationTitle("Create")
         .navigationBarTitleDisplayMode(.inline)
@@ -62,6 +69,10 @@ struct ImageStudioView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showIntro = true } label: { Image(systemName: "questionmark.circle") }
                     .accessibilityLabel("Image studio guide")
+            }
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { promptFocused = false }
             }
         }
         .sheet(isPresented: $showIntro) { introSheet }
@@ -81,8 +92,13 @@ struct ImageStudioView: View {
             await reloadModels()
             savedImages = await LocalImageStudio.shared.savedImages()
             downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
+            animeUpscalerReady = await LocalImageStudio.shared.hasAnimeUpscaler()
             taxonomy = await store.visual.metadataTaxonomy()
+            inspiration = StudioPromptSeed.build(favorites: favorites, taxonomy: taxonomy)
             if !introCompleted { showIntro = true }
+        }
+        .onChange(of: store.favorites) { _, newFavorites in
+            inspiration = StudioPromptSeed.build(favorites: Array(newFavorites.values), taxonomy: taxonomy)
         }
         .onDisappear {
             renderTask?.cancel()
@@ -122,6 +138,7 @@ struct ImageStudioView: View {
                         .allowsHitTesting(false)
                 }
                 TextEditor(text: $prompt)
+                    .focused($promptFocused)
                     .scrollContentBackground(.hidden)
                     .font(.system(size: 16, weight: .medium, design: .rounded))
                     .padding(12)
@@ -203,19 +220,37 @@ struct ImageStudioView: View {
 
     private var modelPanel: some View {
         StudioPanel(title: "On-device engine", icon: "cpu.fill") {
-            if installedModels.isEmpty {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Apple Stable Diffusion 1.5 · 6-bit")
-                            .font(.subheadline.weight(.semibold))
-                        Text("1.57 GB download · local Core ML")
-                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 9) {
+                    Button {
+                        if installedModels.isEmpty { beginStarterDownload() }
+                        else { status = "Apple Core ML is the active generation engine." }
+                    } label: {
+                        engineChip("Apple SD 1.5", detail: installedModels.isEmpty ? "1.57 GB · Get" : "Ready to create",
+                                   icon: "cpu.fill", active: !installedModels.isEmpty)
                     }
-                    Spacer()
-                    Image(systemName: "externaldrive.badge.wifi")
-                        .foregroundStyle(AppTheme.accent)
+                    Button {
+                        showCatalog = true
+                        catalogKind = .checkpoint
+                        searchQuery = "Anima"
+                        status = "Anima checkpoint files are stored, but need an Anima-compatible Metal engine plus text encoder and VAE. Apple Core ML cannot load them."
+                    } label: {
+                        engineChip("Anima", detail: downloadedAssets.contains { $0.lastPathComponent.hasPrefix("checkpoint-") } ? "Raw file stored" : "Explore model",
+                                   icon: "sparkle.magnifyingglass", active: false)
+                    }
+                    Button {
+                        if !animeUpscalerReady { beginAnimeUpscalerDownload() }
+                        else { highResolution = true }
+                    } label: {
+                        engineChip("Real-ESRGAN 4×", detail: animeUpscalerReady ? "Ready · Anime" : "8.5 MB · Get",
+                                   icon: "arrow.up.left.and.arrow.down.right", active: animeUpscalerReady)
+                    }
                 }
-            } else {
+                .buttonStyle(QuicktickPressStyle())
+            }
+            Text("Core ML runs compatible converted models. Downloaded Anima safetensors and LoRAs cannot run in this engine yet.")
+                .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+            if !installedModels.isEmpty {
                 Menu {
                     ForEach(installedModels, id: \.path) { url in
                         Button(url.deletingLastPathComponent().lastPathComponent) { selectedModel = url }
@@ -228,18 +263,17 @@ struct ImageStudioView: View {
                     }
                     .padding(12).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
                 }
-                Text("Model installed · available offline")
-                    .font(.caption).foregroundStyle(.green)
             }
             HStack(spacing: 10) {
                 Button(action: beginStarterDownload) {
-                    Label(installedModels.isEmpty ? "Download model" : "Download another", systemImage: "arrow.down.circle")
+                    Label(installedModels.isEmpty ? "Get Core ML" : "Add Core ML", systemImage: "arrow.down.circle")
                 }
                 Button { showImport = true } label: { Label("Import Core ML", systemImage: "folder") }
             }
             .buttonStyle(.bordered)
             .disabled(busy || transferStatus.isActive)
             if transferStatus.isActive { downloadProgressPanel }
+            outputControls
             DisclosureGroup(isExpanded: $showAdvanced) {
                 generationPanel
                     .padding(.top, 8)
@@ -248,6 +282,55 @@ struct ImageStudioView: View {
                     .font(.subheadline.weight(.medium))
             }
             .tint(AppTheme.accent)
+        }
+    }
+
+    private func engineChip(_ title: String, detail: String, icon: String, active: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .foregroundStyle(active ? .green : AppTheme.accent)
+                Text(title).font(.caption.weight(.bold))
+                if active { Image(systemName: "checkmark.circle.fill").font(.caption2).foregroundStyle(.green) }
+            }
+            Text(detail).font(.caption2).foregroundStyle(.white.opacity(0.7))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12).padding(.vertical, 11)
+        .background(active ? AppTheme.accent.opacity(0.22) : AppTheme.surface,
+                    in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(active ? AppTheme.accent.opacity(0.65) : AppTheme.border))
+    }
+
+    private var outputControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Aspect ratio").font(.caption.weight(.semibold))
+            HStack(spacing: 7) {
+                ForEach(StudioAspectRatio.allCases) { ratio in
+                    Button { aspect = ratio } label: {
+                        Text(ratio.label).frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(StudioOptionChipStyle(isSelected: aspect == ratio))
+                    .accessibilityIdentifier("studio-aspect-\(ratio.rawValue)")
+                }
+            }
+            Text("Output resolution").font(.caption.weight(.semibold))
+            HStack(spacing: 7) {
+                Button { highResolution = false } label: {
+                    Label("Native", systemImage: "photo")
+                }
+                .buttonStyle(StudioOptionChipStyle(isSelected: !highResolution))
+                Button {
+                    if animeUpscalerReady { highResolution = true }
+                    else { beginAnimeUpscalerDownload() }
+                } label: {
+                    Label(animeUpscalerReady ? "Anime 4×" : "Get Anime 4×", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .buttonStyle(StudioOptionChipStyle(isSelected: highResolution))
+                .accessibilityIdentifier("studio-anime-upscaler")
+            }
+            Text("Core ML renders at its native size. Other aspect ratios center-crop the output; Anime 4× enlarges it with Real-ESRGAN.")
+                .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
         }
     }
 
@@ -327,6 +410,14 @@ struct ImageStudioView: View {
 
     private var generationPanel: some View {
         VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Text("Scheduler").font(.caption.weight(.semibold))
+                Spacer()
+                ForEach(StudioScheduler.allCases) { candidate in
+                    Button(candidate.label) { scheduler = candidate }
+                        .buttonStyle(StudioOptionChipStyle(isSelected: scheduler == candidate))
+                }
+            }
             HStack {
                 Text("Steps").font(.subheadline)
                 Slider(value: $stepCount, in: 4...40, step: 1)
@@ -354,11 +445,9 @@ struct ImageStudioView: View {
     private func generatedImage(_ url: URL) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Latest creation").font(.headline)
-            if let image = UIImage(contentsOfFile: url.path) {
-                Image(uiImage: image).resizable().scaledToFit()
-                    .frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
-            }
+            StudioImageThumbnail(url: url, maxPixelDimension: 1200, fill: false)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
             ShareLink(item: url) { Label("Share or save image", systemImage: "square.and.arrow.up") }
                 .buttonStyle(.bordered)
         }
@@ -501,12 +590,11 @@ struct ImageStudioView: View {
         StudioPanel(title: "My creations", icon: "photo.on.rectangle.angled") {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
                 ForEach(savedImages.prefix(18), id: \.path) { url in
-                    if let image = UIImage(contentsOfFile: url.path) {
-                        ShareLink(item: url) {
-                            Image(uiImage: image).resizable().scaledToFill()
-                                .frame(height: 112).frame(maxWidth: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
+                    ShareLink(item: url) {
+                        StudioImageThumbnail(url: url, maxPixelDimension: 240, fill: true)
+                            .frame(height: 112).frame(maxWidth: .infinity)
+                            .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                 }
             }
@@ -587,6 +675,7 @@ struct ImageStudioView: View {
     }
 
     private func generateFromFavorites() {
+        promptFocused = false
         guard !favorites.isEmpty else {
             status = "Like a few characters, artists or scenes in your feed first. I'll turn your favorites into an image idea."
             return
@@ -617,6 +706,31 @@ struct ImageStudioView: View {
             } catch let error as URLError where error.code == .cancelled {
                 status = "Download stopped."
             } catch { status = "Model download failed: \(error.localizedDescription)" }
+        }
+    }
+
+    private func beginAnimeUpscalerDownload() {
+        guard !animeUpscalerReady, !transferStatus.isActive, !busy else { return }
+        let identity = transferStatus.begin(StudioAnimeUpscaler.name, estimatedBytes: StudioAnimeUpscaler.estimatedBytes)
+        let progress = transferStatus
+        status = "Downloading the Anime 4× on-device upscaler…"
+        downloadTask = Task {
+            defer { progress.finish(identity); downloadTask = nil }
+            do {
+                try await LocalImageStudio.shared.downloadAnimeUpscaler(onProgress: { received, total in
+                    Task { @MainActor in progress.update(identity, received: received, expected: total) }
+                })
+                try Task.checkCancellation()
+                animeUpscalerReady = await LocalImageStudio.shared.hasAnimeUpscaler()
+                if animeUpscalerReady {
+                    highResolution = true
+                    status = "Anime 4× installed. Your next creation can be upscaled offline."
+                }
+            } catch is CancellationError {
+                status = "Upscaler download stopped."
+            } catch let error as URLError where error.code == .cancelled {
+                status = "Upscaler download stopped."
+            } catch { status = "Upscaler install failed: \(error.localizedDescription)" }
         }
     }
 
@@ -653,6 +767,7 @@ struct ImageStudioView: View {
     }
 
     private func render(promptOverride: String? = nil) {
+        promptFocused = false
         guard !busy else { return }
         guard let model = selectedModel else {
             status = "Download the local model below or import a compatible Core ML model first."
@@ -662,24 +777,35 @@ struct ImageStudioView: View {
             status = "Describe your idea in the prompt, or use your favorites for inspiration."
             return
         }
+        guard !highResolution || animeUpscalerReady else {
+            status = "Download Real-ESRGAN X4+ Anime before selecting 4× resolution."
+            return
+        }
         busy = true
         status = "Rendering on device…"
         renderStatus.fraction = 0
         let inputPrompt = promptOverride ?? prompt, inputNegative = negativePrompt
         let steps = Int(stepCount), scale = Float(guidance), inputSeed = seed
+        let selectedAspect = aspect, selectedScheduler = scheduler, shouldUpscale = highResolution
         let progress = renderStatus
         renderTask = Task {
             defer { busy = false; renderTask = nil }
             do {
                 let result = try await LocalImageStudio.shared.generate(prompt: inputPrompt,
                     negative: inputNegative, modelURL: model, steps: steps, guidance: scale,
-                    seed: inputSeed, onProgress: { finished, total in
-                        Task { @MainActor in progress.fraction = Double(finished) / Double(max(1, total)) }
+                    seed: inputSeed, aspect: selectedAspect, scheduler: selectedScheduler,
+                    upscale: shouldUpscale, onProgress: { finished, total in
+                        Task { @MainActor in
+                            progress.fraction = Double(finished) / Double(max(1, total))
+                            if shouldUpscale && finished >= total {
+                                status = "Diffusion finished · applying Anime 4× enhancement…"
+                            }
+                        }
                     })
                 try Task.checkCancellation()
                 latestImage = result
                 savedImages = await LocalImageStudio.shared.savedImages()
-                status = "Created entirely on this device."
+                status = shouldUpscale ? "Created and enhanced 4× entirely on this device." : "Created entirely on this device."
             } catch is CancellationError {
                 status = "Render cancelled."
             } catch { status = "Render failed: \(error.localizedDescription)" }
@@ -699,6 +825,54 @@ struct ImageStudioView: View {
             defer { busy = false }
             do { try await action() }
             catch { status = "Operation failed: \(error.localizedDescription)" }
+        }
+    }
+}
+
+private struct StudioOptionChipStyle: ButtonStyle {
+    let isSelected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundStyle(isSelected ? .white : .white.opacity(0.8))
+            .padding(.horizontal, 11).padding(.vertical, 10)
+            .background(isSelected ? AppTheme.accent.opacity(0.48) : AppTheme.surface,
+                        in: Capsule())
+            .overlay(Capsule().stroke(isSelected ? AppTheme.accent : AppTheme.border))
+            .opacity(configuration.isPressed ? 0.72 : 1)
+    }
+}
+
+/// Decode small previews only when the gallery row is first displayed. In
+/// particular, a download progress update must never re-decode 18 full PNGs.
+private struct StudioImageThumbnail: View {
+    let url: URL
+    let maxPixelDimension: Int
+    let fill: Bool
+    @State private var preview: UIImage?
+
+    var body: some View {
+        Group {
+            if let preview {
+                if fill { Image(uiImage: preview).resizable().scaledToFill() }
+                else { Image(uiImage: preview).resizable().scaledToFit() }
+            } else {
+                RoundedRectangle(cornerRadius: 12).fill(AppTheme.surface)
+                    .overlay(ProgressView().tint(AppTheme.accent))
+            }
+        }
+        .task(id: url) {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelDimension,
+                kCGImageSourceShouldCacheImmediately: true
+            ]
+            if let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+                preview = UIImage(cgImage: image)
+            }
         }
     }
 }

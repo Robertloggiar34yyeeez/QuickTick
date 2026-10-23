@@ -502,8 +502,12 @@ actor LocalImageStudio {
         // the image decoder, not just the on-disk weight size.
         let diffusionBytes = (try? FileManager.default.attributesOfItem(atPath: diffusionURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         let auxiliaryBytes = StudioAnimaBundle.components.dropFirst().reduce(Int64(0)) { $0 + $1.bytes }
+        let loraBytes = loras.reduce(Int64(0)) { total, lora in
+            total + ((try? FileManager.default.attributesOfItem(atPath: lora.file.path)[.size] as? NSNumber)?.int64Value ?? 0)
+        }
         let memoryRequired = StudioAnimaMemoryBudget.requiredBeforeLoad(
-            diffusionBytes: diffusionBytes, auxiliaryBytes: auxiliaryBytes, upscale: upscale)
+            diffusionBytes: diffusionBytes, auxiliaryBytes: auxiliaryBytes + loraBytes,
+            upscale: upscale) + (loras.isEmpty ? 0 : 150_000_000)
         let available = Int64(os_proc_available_memory())
         try StudioAnimaMemoryBudget.check(available: available, required: memoryRequired)
         let parts = StudioAnimaBundle.components

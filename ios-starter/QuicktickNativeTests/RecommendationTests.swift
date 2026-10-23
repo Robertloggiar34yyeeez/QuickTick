@@ -140,6 +140,19 @@ final class RecommendationTests: XCTestCase {
         XCTAssertTrue(seed.prompt.contains("art by favorite artist"))
         XCTAssertTrue(seed.prompt.contains("looking at viewer"))
     }
+
+    func testAnimeUpscalerTilesCoverEveryNativeAnimaResolution() {
+        for length in [256, 512, 640, 768, 896, 1024] {
+            let origins = StudioAnimeUpscaler.tileOrigins(length: length)
+            XCTAssertEqual(origins.first, 0)
+            XCTAssertGreaterThanOrEqual((origins.last ?? 0) + 512, length)
+            XCTAssertTrue(zip(origins, origins.dropFirst()).allSatisfy { pair in
+                pair.1 > pair.0 && pair.1 - pair.0 < 512
+            })
+        }
+        XCTAssertEqual(StudioAnimeUpscaler.tileOrigins(length: 640), [0, 128])
+        XCTAssertEqual(StudioAnimeUpscaler.tileOrigins(length: 1024), [0, 256, 512])
+    }
     func testSimpleOnboardingSeparatesFictionalCharactersFromBroadKeywords() {
         let characters = StarterTastePick.characters
         let keywords = StarterTastePick.keywords

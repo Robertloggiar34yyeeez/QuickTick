@@ -3,9 +3,8 @@ import CoreGraphics
 import CoreML
 import ZIPFoundation
 
-/// The fixed-shape, 522px Core ML conversion of Real-ESRGAN x4plus anime 6B.
-/// The first 512px contain image data and 10px are reflection padding. This
-/// avoids reallocating giant float buffers for each source image on an iPhone.
+/// Fixed 522px Core ML model: up to 512px of content, with reflected padding.
+/// Larger renders are blended from overlapping tiles instead of being rejected.
 enum StudioAnimeUpscaler {
     static let name = "Real-ESRGAN X4+ Anime"
     static let estimatedBytes: Int64 = 8_500_000
@@ -13,6 +12,16 @@ enum StudioAnimeUpscaler {
 
     private static let inputSide = 522
     private static let scale = 4
+    private static let tileSize = 512
+    private static let overlap = 32
+
+    static func tileOrigins(length: Int) -> [Int] {
+        guard length > tileSize else { return [0] }
+        let count = Int(ceil(Double(length - tileSize) / Double(tileSize - overlap))) + 1
+        return (0..<count).map { index in
+            (index * (length - tileSize)) / (count - 1)
+        }
+    }
 
     static func install(zip: URL, in root: URL) throws -> URL {
         let archive: Archive
@@ -59,7 +68,7 @@ enum StudioAnimeUpscaler {
     }
 
     static func upscale(_ source: CGImage, using compiledModel: URL) throws -> CGImage {
-        guard source.width > 0, source.height > 0, source.width <= 512, source.height <= 512 else {
+        guard source.width > 0, source.height > 0, source.width <= 1024, source.height <= 1024 else {
             throw StudioError.invalidFile
         }
         let config = MLModelConfiguration()
@@ -85,34 +94,53 @@ enum StudioAnimeUpscaler {
             let position = index % period
             return position < length ? position : period - position
         }
-        for y in 0..<inputSide {
-            let sy = reflected(y, length: height)
-            for x in 0..<inputSide {
-                let sx = reflected(x, length: width)
-                let sourceOffset = (sy * width + sx) * 4
-                let destination = y * inputSide + x
-                for channel in 0..<3 {
-                    floats[channel * plane + destination] = Float(rgba[sourceOffset + channel]) / 255.0
-                }
-            }
-        }
-        let provider = try MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(multiArray: input)])
-        let prediction = try model.prediction(from: provider)
-        guard let name = model.modelDescription.outputDescriptionsByName.keys.first,
-              let output = prediction.featureValue(for: name)?.multiArrayValue,
-              output.shape.map(\.intValue) == [1, 3, inputSide * scale, inputSide * scale],
-              output.dataType == .float32 else { throw StudioError.noImage }
         let resultWidth = width * scale, resultHeight = height * scale
-        let resultPlane = inputSide * scale * inputSide * scale
-        let outputFloats = output.dataPointer.assumingMemoryBound(to: Float.self)
         var outputBytes = [UInt8](repeating: 255, count: resultWidth * resultHeight * 4)
-        for y in 0..<resultHeight {
-            for x in 0..<resultWidth {
-                let sourceIndex = y * inputSide * scale + x
-                let destination = (y * resultWidth + x) * 4
-                for channel in 0..<3 {
-                    let value = outputFloats[channel * resultPlane + sourceIndex]
-                    outputBytes[destination + channel] = UInt8(max(0, min(255, Int((value * 255).rounded()))))
+        let xOrigins = tileOrigins(length: width)
+        let yOrigins = tileOrigins(length: height)
+        for (row, originY) in yOrigins.enumerated() {
+            for (column, originX) in xOrigins.enumerated() {
+                let contentWidth = min(tileSize, width - originX)
+                let contentHeight = min(tileSize, height - originY)
+                for y in 0..<inputSide {
+                    let sy = originY + reflected(y, length: contentHeight)
+                    for x in 0..<inputSide {
+                        let sx = originX + reflected(x, length: contentWidth)
+                        let sourceOffset = (sy * width + sx) * 4
+                        let destination = y * inputSide + x
+                        for channel in 0..<3 {
+                            floats[channel * plane + destination] = Float(rgba[sourceOffset + channel]) / 255.0
+                        }
+                    }
+                }
+                let provider = try MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(multiArray: input)])
+                let prediction = try model.prediction(from: provider)
+                guard let name = model.modelDescription.outputDescriptionsByName.keys.first,
+                      let output = prediction.featureValue(for: name)?.multiArrayValue,
+                      output.shape.map(\.intValue) == [1, 3, inputSide * scale, inputSide * scale],
+                      output.dataType == .float32 || output.dataType == .float16 else { throw StudioError.noImage }
+                let outputFloats = output.dataType == .float32
+                    ? output.dataPointer.assumingMemoryBound(to: Float.self) : nil
+                let outputHalves = output.dataType == .float16
+                    ? output.dataPointer.assumingMemoryBound(to: UInt16.self) : nil
+                let strides = output.strides.map(\.intValue)
+                let blendX = column == 0 ? 0 : (xOrigins[column - 1] + tileSize - originX) * scale
+                let blendY = row == 0 ? 0 : (yOrigins[row - 1] + tileSize - originY) * scale
+                for y in 0..<(contentHeight * scale) {
+                    let blendVertical = blendY > 0 ? min(1, Double(y) / Double(blendY)) : 1
+                    for x in 0..<(contentWidth * scale) {
+                        let blendHorizontal = blendX > 0 ? min(1, Double(x) / Double(blendX)) : 1
+                        let weight = blendHorizontal * blendVertical
+                        let destination = ((originY * scale + y) * resultWidth + originX * scale + x) * 4
+                        for channel in 0..<3 {
+                            let index = channel * strides[1] + y * strides[2] + x * strides[3]
+                            let value = outputFloats.map { Double($0[index]) }
+                                ?? outputHalves.map { Double(Float16(bitPattern: $0[index])) } ?? 0
+                            let safeValue = value.isFinite ? max(0, min(1, value)) : 0
+                            let enhanced = safeValue * 255
+                            outputBytes[destination + channel] = UInt8((Double(outputBytes[destination + channel]) * (1 - weight) + enhanced * weight).rounded())
+                        }
+                    }
                 }
             }
         }

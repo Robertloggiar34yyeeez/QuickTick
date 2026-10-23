@@ -9,7 +9,7 @@ import Mirage
 import Darwin
 
 enum StudioError: LocalizedError {
-    case unsupportedModel, unsupportedLoRA, invalidArchive, invalidResponse, unavailableModel, noImage, invalidFile, downloadBusy
+    case unsupportedModel, unsupportedLoRA, invalidArchive, invalidResponse, unavailableModel, noImage, imageFiltered, invalidFile, downloadBusy, renderBusy
     case insufficientMemory(required: Int64, available: Int64)
     var errorDescription: String? {
         switch self {
@@ -19,8 +19,10 @@ enum StudioError: LocalizedError {
         case .invalidResponse: "The model service did not return a valid download."
         case .unavailableModel: "Download the on-device starter model or import a compatible Core ML model first."
         case .noImage: "The diffusion pipeline did not return an image."
+        case .imageFiltered: "Core ML finished rendering but the safety check withheld its image. Change the prompt or review the filter option in Advanced render settings. The 4× upscaler never started."
         case .invalidFile: "This download is not a supported model or LoRA file."
         case .downloadBusy: "Another model download is already running. Pause, finish or stop it first."
+        case .renderBusy: "Another on-device image render is still running. Wait for it to finish before creating the next image."
         case .insufficientMemory(let needed, let available):
             "Anima needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .memory)) free memory; only \(ByteCountFormatter.string(fromByteCount: available, countStyle: .memory)) is available. Close other apps or use a lighter device model."
         }
@@ -81,6 +83,12 @@ enum StudioGenerationEngine: String, Sendable {
 struct StudioLoRA: Sendable {
     let file: URL
     let strength: Float
+}
+
+struct StudioRenderOutput: Sendable {
+    let url: URL
+    let enhanced: Bool
+    let enhancementWarning: String?
 }
 
 /// Mobile-size, fixed-download Anima Q4 bundle. Anima is a Qwen-Image-family
@@ -328,8 +336,7 @@ actor LocalImageStudio {
     private let anima: URL
     private let gallery: URL
     private var activeTransfer: StudioDownloadTransfer?
-    private var animaEngine: Engine?
-    private var animaLoadedFile: URL?
+    private var renderInProgress = false
     private let starterURL = URL(string: "https://huggingface.co/apple/coreml-stable-diffusion-v1-5-palettized/resolve/main/coreml-stable-diffusion-v1-5-palettized_split_einsum_v2_compiled.zip")!
 
     init(directory: URL? = nil) {
@@ -426,7 +433,11 @@ actor LocalImageStudio {
     func generateAnima(prompt: String, negative: String, steps: Int, guidance: Float, seed: UInt32,
                        aspect: StudioAspectRatio, longestEdge: Int = 512,
                        upscale: Bool, checkpoint: URL? = nil, loras: [StudioLoRA] = [],
-                       onProgress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL {
+                       onProgress: @escaping @Sendable (Int, Int) -> Void,
+                       onPreview: @escaping @Sendable (URL) -> Void = { _ in }) async throws -> StudioRenderOutput {
+        guard !renderInProgress else { throw StudioError.renderBusy }
+        renderInProgress = true
+        defer { renderInProgress = false }
         guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
         guard !upscale || hasAnimeUpscaler() else { throw StudioError.unavailableModel }
         // Mirage's public C bridge passes `prompt` through verbatim and never
@@ -445,35 +456,40 @@ actor LocalImageStudio {
             guard hasAnimaBundle() else { throw StudioError.unavailableModel }
             diffusionURL = anima.appendingPathComponent(StudioAnimaBundle.components[0].file)
         }
-        // The native engine maps all weights; a per-process memory check
-        // prevents a predictable jetsam crash on RAM-constrained devices.
-        if animaEngine == nil || animaLoadedFile != diffusionURL {
-            let diffusionBytes = (try? FileManager.default.attributesOfItem(atPath: diffusionURL.path)[.size] as? NSNumber)?.int64Value ?? 0
-            let auxiliaryBytes = StudioAnimaBundle.components.dropFirst().reduce(Int64(0)) { $0 + $1.bytes }
-            let memoryRequired = diffusionBytes + auxiliaryBytes + 850_000_000
-            let available = Int64(os_proc_available_memory())
-            guard available == 0 || available >= memoryRequired else {
-                throw StudioError.insufficientMemory(required: memoryRequired, available: available)
-            }
-            let parts = StudioAnimaBundle.components
-            animaEngine = nil
-            animaEngine = try Engine(models: ModelFiles(
-                diffusionModel: diffusionURL,
-                vae: anima.appendingPathComponent(parts[2].file),
-                textEncoder: anima.appendingPathComponent(parts[1].file)))
-            animaLoadedFile = diffusionURL
+        // Always re-check memory, including the second and subsequent renders.
+        // A retained multi-GB Mirage/Metal context caused memory to accumulate
+        // between creations. Release that context before 4× upscaling starts.
+        let diffusionBytes = (try? FileManager.default.attributesOfItem(atPath: diffusionURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+        let auxiliaryBytes = StudioAnimaBundle.components.dropFirst().reduce(Int64(0)) { $0 + $1.bytes }
+        let memoryRequired = diffusionBytes + auxiliaryBytes + 850_000_000
+        let available = Int64(os_proc_available_memory())
+        guard available == 0 || available >= memoryRequired else {
+            throw StudioError.insufficientMemory(required: memoryRequired, available: available)
         }
-        guard let engine = animaEngine else { throw StudioError.unavailableModel }
+        let parts = StudioAnimaBundle.components
+        let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
+        let result = try await Self.renderWithFreshAnimaEngine(
+            models: ModelFiles(diffusionModel: diffusionURL,
+                               vae: anima.appendingPathComponent(parts[2].file),
+                               textEncoder: anima.appendingPathComponent(parts[1].file)),
+            request: GenerationRequest(
+                prompt: String(prompt.prefix(1000)), negativePrompt: String(negative.prefix(1200)),
+                width: width, height: height, steps: max(4, min(40, steps)),
+                cfgScale: guidance, seed: Int64(seed)), onProgress: onProgress)
+        try Task.checkCancellation()
+        return try finishImage(result, upscale: upscale, onPreview: onPreview)
+    }
+
+    /// Scoping the Engine here guarantees its C++/Metal context is released
+    /// before the caller starts upscaling or begins another render.
+    private static func renderWithFreshAnimaEngine(
+        models: ModelFiles, request: GenerationRequest,
+        onProgress: @escaping @Sendable (Int, Int) -> Void
+    ) async throws -> CGImage {
+        let engine = try Engine(models: models)
         Mirage.setProgressCallback { step, total, _ in onProgress(step, total) }
         defer { Mirage.setProgressCallback(nil) }
-        let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
-        let result = try await engine.generate(GenerationRequest(
-            prompt: String(prompt.prefix(1000)), negativePrompt: String(negative.prefix(1200)),
-            width: width, height: height, steps: max(4, min(40, steps)),
-            cfgScale: guidance, seed: Int64(seed)))
-        try Task.checkCancellation()
-        let output = upscale ? try StudioAnimeUpscaler.upscale(result, using: animeUpscalerURL) : result
-        return try saveImage(output)
+        return try await engine.generate(request)
     }
 
     private var animeUpscalerURL: URL {
@@ -612,14 +628,30 @@ actor LocalImageStudio {
 
     func generate(prompt: String, negative: String, modelURL: URL, steps: Int, guidance: Float, seed: UInt32,
                   aspect: StudioAspectRatio = .square, scheduler: StudioScheduler = .dpm,
-                  upscale: Bool = false,
-                  onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> URL {
+                  upscale: Bool = false, safetyCheck: Bool = true,
+                  onProgress: @Sendable (Int, Int) -> Void = { _, _ in },
+                  onPreview: @escaping @Sendable (URL) -> Void = { _ in }) async throws -> StudioRenderOutput {
+        guard !renderInProgress else { throw StudioError.renderBusy }
+        renderInProgress = true
+        defer { renderInProgress = false }
         guard let resources = Self.resources(in: modelURL), !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw StudioError.unavailableModel }
         try Task.checkCancellation()
+        let cropped = try renderCoreML(prompt: prompt, negative: negative, resources: resources,
+                                       steps: steps, guidance: guidance, seed: seed,
+                                       aspect: aspect, scheduler: scheduler,
+                                       safetyCheck: safetyCheck, onProgress: onProgress)
+        return try finishImage(cropped, upscale: upscale, onPreview: onPreview)
+    }
+
+    private func renderCoreML(prompt: String, negative: String, resources: URL,
+                              steps: Int, guidance: Float, seed: UInt32,
+                              aspect: StudioAspectRatio, scheduler: StudioScheduler,
+                              safetyCheck: Bool,
+                              onProgress: @Sendable (Int, Int) -> Void) throws -> CGImage {
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuAndNeuralEngine
         let pipeline = try StableDiffusionPipeline(resourcesAt: resources, controlNet: [],
-            configuration: configuration, disableSafety: false, reduceMemory: true)
+            configuration: configuration, disableSafety: !safetyCheck, reduceMemory: true)
         try pipeline.loadResources()
         defer { pipeline.unloadResources() }
         var options = PipelineConfiguration(prompt: String(prompt.prefix(1200)))
@@ -634,16 +666,33 @@ actor LocalImageStudio {
             return !withUnsafeCurrentTask { $0?.isCancelled ?? false }
         }
         try Task.checkCancellation()
-        guard let output = images.compactMap({ $0 }).first else { throw StudioError.noImage }
-        let cropped = aspect.crop(output)
-        let result: CGImage
-        if upscale {
+        guard let output = images.compactMap({ $0 }).first else { throw StudioError.imageFiltered }
+        return aspect.crop(output)
+    }
+
+    /// Publish the real diffusion result before the optional (potentially long)
+    /// 4× pass. A failed enhancement must never discard a successful render.
+    private func finishImage(_ original: CGImage, upscale: Bool,
+                             onPreview: @Sendable (URL) -> Void) throws -> StudioRenderOutput {
+        try Task.checkCancellation()
+        let originalURL = try saveImage(original)
+        onPreview(originalURL)
+        guard upscale else { return StudioRenderOutput(url: originalURL, enhanced: false, enhancementWarning: nil) }
+        do {
             guard hasAnimeUpscaler() else { throw StudioError.unavailableModel }
-            result = try StudioAnimeUpscaler.upscale(cropped, using: animeUpscalerURL)
-        } else {
-            result = cropped
+            try Task.checkCancellation()
+            let enlarged = try StudioAnimeUpscaler.upscale(original, using: animeUpscalerURL)
+            try Task.checkCancellation()
+            let enhancedURL = try saveImage(enlarged)
+            // Keep just the final image in the gallery if enhancement succeeded.
+            try? FileManager.default.removeItem(at: originalURL)
+            return StudioRenderOutput(url: enhancedURL, enhanced: true, enhancementWarning: nil)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return StudioRenderOutput(url: originalURL, enhanced: false,
+                                      enhancementWarning: error.localizedDescription)
         }
-        return try saveImage(result)
     }
 
     private func saveImage(_ result: CGImage) throws -> URL {

@@ -11,12 +11,18 @@ permissions:
   contents: read
 jobs:
   ios:
-    runs-on: macos-15-intel
+    # Mirage's native sdcpp XCFramework ships arm64 device/simulator slices.
+    # The Intel runner cannot link its x86_64 simulator tests.
+    runs-on: macos-15
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.3 toolchain
         run: sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
+      - name: Verify Mirage-compatible Apple Silicon runner
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
@@ -28,7 +34,7 @@ jobs:
         id: semantic-model-cache
         with:
           path: ios-starter/QuicktickNative/SemanticAssets
-          key: bge-coreml-macos15-intel-${{ hashFiles('scripts/prepare-semantic-model.py') }}
+          key: bge-coreml-macos15-arm64-${{ hashFiles('scripts/prepare-semantic-model.py') }}
       - name: Prepare pinned on-device embedding model
         if: steps.semantic-model-cache.outputs.cache-hit != 'true'
         shell: bash
@@ -41,7 +47,7 @@ jobs:
         if: steps.semantic-model-cache.outputs.cache-hit != 'true'
         with:
           path: ios-starter/QuicktickNative/SemanticAssets
-          key: bge-coreml-macos15-intel-${{ hashFiles('scripts/prepare-semantic-model.py') }}
+          key: bge-coreml-macos15-arm64-${{ hashFiles('scripts/prepare-semantic-model.py') }}
       - name: Prepare pinned offline artist and character taxonomy
         run: python scripts/prepare-visual-taxonomy.py
       - uses: actions/cache/restore@v5
@@ -51,7 +57,7 @@ jobs:
             ios-starter/QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-labels.json
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-model-card.md
-          key: wd-vit-v3-7f6b584-fp16-coreml8.3-v4
+          key: wd-vit-v3-7f6b584-fp16-coreml8.3-arm64-v5
       - name: Prepare pinned anime-only WD Tagger v3
         if: steps.wd-cache.outputs.cache-hit != 'true'
         id: wd-model
@@ -67,7 +73,7 @@ jobs:
             ios-starter/QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-labels.json
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-model-card.md
-          key: wd-vit-v3-7f6b584-fp16-coreml8.3-v4
+          key: wd-vit-v3-7f6b584-fp16-coreml8.3-arm64-v5
       - name: Archive real iPhone build without signing
         shell: bash
         run: |

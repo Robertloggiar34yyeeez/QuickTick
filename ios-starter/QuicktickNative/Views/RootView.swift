@@ -7,6 +7,7 @@ struct RootView: View {
     @State private var brieflyNamedTab: Int?
     @State private var tabNameTask: Task<Void, Never>?
     @State private var refreshingTab: Int?
+    @State private var refreshSpinDegrees = 0.0
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
@@ -151,22 +152,33 @@ struct RootView: View {
                 let tabID = index < 2 ? index : index - 1
                 Button {
                     let isRefresh = tabID < 2 && store.activeTab == tabID
-                    if isRefresh { withAnimation(.easeIn(duration: 0.15)) { refreshingTab = tabID } }
+                    if isRefresh {
+                        refreshSpinDegrees = 0
+                        withAnimation(.easeIn(duration: 0.15)) { refreshingTab = tabID }
+                        if !reduceMotion {
+                            withAnimation(.linear(duration: 0.72).repeatForever(autoreverses: false)) {
+                                refreshSpinDegrees = 360
+                            }
+                        }
+                    }
                     Task {
                         await store.selectFeedTab(tabID)
                         if isRefresh {
                             try? await Task.sleep(for: .milliseconds(450))
                             if refreshingTab == tabID {
                                 withAnimation(.easeOut(duration: 0.24)) { refreshingTab = nil }
+                                refreshSpinDegrees = 0
                             }
                         }
                     }
                 } label: {
                     Group {
                         if refreshingTab == tabID {
-                            ProgressView()
-                                .tint(.white)
-                                .transition(.opacity.combined(with: .scale(scale: 0.82)))
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 19, weight: .semibold, design: .rounded))
+                                .symbolRenderingMode(.hierarchical)
+                                .rotationEffect(.degrees(refreshSpinDegrees))
+                                .transition(.opacity.combined(with: .scale(scale: 0.9)))
                         } else if store.activeTab == tabID && brieflyNamedTab == tabID {
                             Text(tabs[index].0)
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))

@@ -27,6 +27,18 @@ diff --git a/Sources/CMirage/sd/MirageC.cpp b/Sources/CMirage/sd/MirageC.cpp
 index dc0659e..d78b383 100644
 --- a/Sources/CMirage/sd/MirageC.cpp
 +++ b/Sources/CMirage/sd/MirageC.cpp
+@@ -130,6 +130,10 @@ extern "C" mirage_ctx* mirage_ctx_create(const mirage_model_paths* paths) {
+     p.backend        = "te=cpu,vae=cpu,controlnet=cpu";
+ #if TARGET_OS_IPHONE
+-    p.params_backend = "all=cpu,te=disk";
++    // Keep diffusion weights in Metal when Swift reports enough headroom.
++    // Otherwise retain the memory-safe CPU streaming configuration.
++    const char* fast_metal = getenv("QUICKTICK_ANIMA_FAST_METAL");
++    p.params_backend = fast_metal && strcmp(fast_metal, "1") == 0
++        ? "diffusion=metal,te=disk,vae=cpu" : "all=cpu,te=disk";
+ #else
+     p.params_backend = "cpu";
+ #endif
 @@ -196,6 +196,25 @@ extern "C" mirage_image* mirage_generate(mirage_ctx* ctx, const mirage_gen_param
      g.seed = params->seed;
      g.batch_count = params->batch_size > 0 ? params->batch_size : 1;

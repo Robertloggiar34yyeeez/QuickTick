@@ -129,6 +129,26 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "DC1E49A478061D498896EA51";
 		};
+		"0B9BD008F73448448F70A9B9" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/FeedExclusions.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"3C0C404FF57FB16B10091D2C" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0B9BD008F73448448F70A9B9";
+		};
+		"9422E9487547741D402FB032" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/FeedPerformance.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"45AF167E0506ABA6C6B73A77" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "9422E9487547741D402FB032";
+		};
 		"54E33A269CEE13883C732856" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -268,6 +288,66 @@
 		"45331AC05FB4F8990DB8EF4A" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "69C8057082F6B7A8ACC94A3D";
+		};
+		"5F05EFB58E4E4FA628C806E8" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/TasteConcepts.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"2D3743A9F46E29676DBA4572" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "5F05EFB58E4E4FA628C806E8";
+		};
+		"677532C9CC544A755F43E9BF" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/VisualAnalysisService.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"6AE8F2C0D0AF140905FF1F4A" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "677532C9CC544A755F43E9BF";
+		};
+		"D822C7777F40BFDA72C1B2CD" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/VisualAppearanceEncoder.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"E4C45F22C51B7C28FCF2BCD2" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "D822C7777F40BFDA72C1B2CD";
+		};
+		"F8BDB3B414F6C5B7B93F13D5" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/VisualPreferences.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"26064FE82E26D229EAB6F8FD" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F8BDB3B414F6C5B7B93F13D5";
+		};
+		"18B638CEFC354F26447C14C5" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/VisualPreviewLoader.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F14C6A43112B24F26460B552" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "18B638CEFC354F26447C14C5";
+		};
+		"13794F0D382C0189DE2F508A" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/WDAnimeTagger.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"28D46C280CFD47768D4BD6F3" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "13794F0D382C0189DE2F508A";
 		};
 		"60E93205A75B91DE3BE3FF87" = {
 			"isa" = "PBXFileReference";
@@ -439,6 +519,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "EBF74B89DA9C6C143C9AA2D6";
 		};
+		"275CDCA9B7CBBE511ACB70F8" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNativeTests/FastFeedVisualTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"D69E1049BFB4F1DE9C5F4D05" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "275CDCA9B7CBBE511ACB70F8";
+		};
 		"7B0EA4C3D531347AFB4FBC38" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -508,6 +598,16 @@
 		"E874A51461B51542A42328F6" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "513A7E7BC7F7B625B576DF22";
+		};
+		"9BC2EC51FF286958D8BCB38F" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNativeTests/IntelligentRecommendationTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"BDDB0E9649BC3F4ED0C6FA96" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "9BC2EC51FF286958D8BCB38F";
 		};
 		"B1025898228F4D541E72B705" = {
 			"isa" = "PBXFileReference";
@@ -619,6 +719,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "073C0CC6C30BC6A644063462";
 		};
+		"31F72C8511E9D56C6D964112" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNativeTests/VisualTasteTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"D9A4DA6067AC04000E1A9187" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "31F72C8511E9D56C6D964112";
+		};
 		"E9C974562A88FC7884953A1A" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -669,6 +779,56 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "6ACDDB1AF990D87B9F6CACBC";
 		};
+		"BBBA1F3996E9E83178DA88C4" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "folder";
+			"path" = "QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"ACAFFB2DE419F43078F064BB" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "BBBA1F3996E9E83178DA88C4";
+		};
+		"4D953A1E78FF56A02F90AE9B" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = "QuicktickNative/SemanticAssets/wd-v3-labels.json";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"7D3BDB62694E4CFEF9F887D5" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "4D953A1E78FF56A02F90AE9B";
+		};
+		"B2F29707A326427D4C623EFA" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = "QuicktickNative/SemanticAssets/wd-v3-model-card.md";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"7562BB43ED7190E1AA1EB623" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "B2F29707A326427D4C623EFA";
+		};
+		"01C7F1C04F4DD2D33B942B9C" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = "QuicktickNative/SemanticAssets/visual-tag-taxonomy.json";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F5A7DEB44320091280E551C0" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "01C7F1C04F4DD2D33B942B9C";
+		};
+		"CC7D2E61A171D0ED0AFA9631" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = "QuicktickNative/SemanticAssets/visual-tag-attribution.txt";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"A2FC5CB8AD38738FE4BE574C" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "CC7D2E61A171D0ED0AFA9631";
+		};
 		"60460E000A21BDF8094BEA85" = {
 			"isa" = "PBXFileReference";
 			"explicitFileType" = "wrapper.application";
@@ -690,6 +850,8 @@
 				"74C3000342B3600E81357A77",
 				"EDE746768E74007E9D47D708",
 				"04FD5CB7FE8230973247D44E",
+				"3C0C404FF57FB16B10091D2C",
+				"45AF167E0506ABA6C6B73A77",
 				"A4CB4F1BDFB6D2C9C0E50552",
 				"DFB5E91480114B0733A3604C",
 				"F4FD53085F10C04EB3624FEA",
@@ -704,6 +866,12 @@
 				"1D467EC36BF43BAF05661909",
 				"8C78320B0214E9830B8B704C",
 				"45331AC05FB4F8990DB8EF4A",
+				"2D3743A9F46E29676DBA4572",
+				"6AE8F2C0D0AF140905FF1F4A",
+				"E4C45F22C51B7C28FCF2BCD2",
+				"26064FE82E26D229EAB6F8FD",
+				"F14C6A43112B24F26460B552",
+				"28D46C280CFD47768D4BD6F3",
 				"A3DBBA346C911D403CEE722E",
 				"040D543530D7BD3246239709",
 				"C6F2F0D622C7420C6DDC1F8D",
@@ -730,6 +898,11 @@
 				"9E60231250AFB54880FB7BF6",
 				"FAC6CAA41D3E049244AD5EA3",
 				"E3C75BB0DE43FDF6F944EF6A",
+				"ACAFFB2DE419F43078F064BB",
+				"7D3BDB62694E4CFEF9F887D5",
+				"7562BB43ED7190E1AA1EB623",
+				"F5A7DEB44320091280E551C0",
+				"A2FC5CB8AD38738FE4BE574C",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -751,8 +924,8 @@
 				"TARGETED_DEVICE_FAMILY" = "1,2";
 				"CODE_SIGN_STYLE" = "Automatic";
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
-				"MARKETING_VERSION" = "0.6.26";
-				"CURRENT_PROJECT_VERSION" = "18";
+				"MARKETING_VERSION" = "0.9.5";
+				"CURRENT_PROJECT_VERSION" = "25";
 				"INFOPLIST_KEY_QUICKTICK_API_BASE_URL" = "$(QUICKTICK_API_BASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation" = "YES";
 				"INFOPLIST_KEY_UILaunchScreen_Generation" = "YES";
@@ -778,8 +951,8 @@
 				"TARGETED_DEVICE_FAMILY" = "1,2";
 				"CODE_SIGN_STYLE" = "Automatic";
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
-				"MARKETING_VERSION" = "0.6.26";
-				"CURRENT_PROJECT_VERSION" = "18";
+				"MARKETING_VERSION" = "0.9.5";
+				"CURRENT_PROJECT_VERSION" = "25";
 				"INFOPLIST_KEY_QUICKTICK_API_BASE_URL" = "$(QUICKTICK_API_BASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation" = "YES";
 				"INFOPLIST_KEY_UILaunchScreen_Generation" = "YES";
@@ -833,8 +1006,10 @@
 			"files" = (
 				"AAA2B3C06C50EB5B270D6A47",
 				"296495298EF2BE47592C277C",
+				"D69E1049BFB4F1DE9C5F4D05",
 				"20D0F844EECCBDA90E9F610F",
 				"E874A51461B51542A42328F6",
+				"BDDB0E9649BC3F4ED0C6FA96",
 				"CFE197409EEB72A4DB090C1B",
 				"42BE8C854396B93468951617",
 				"7A30367DF8CBD26FCB690757",
@@ -846,6 +1021,7 @@
 				"60EFEBC722AC2DF982B5A117",
 				"822622462A5CC158D7A9B906",
 				"BFD69E6457B16CA77FD5DF7D",
+				"D9A4DA6067AC04000E1A9187",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -1066,6 +1242,8 @@
 				"B3228848DF402F2575178CEA",
 				"1E905080AB05B4DFB71C9BF9",
 				"DC1E49A478061D498896EA51",
+				"0B9BD008F73448448F70A9B9",
+				"9422E9487547741D402FB032",
 				"54E33A269CEE13883C732856",
 				"C68DB58B031F4FAE76676837",
 				"1F5E7B2E1DF3F0A5F7D8B334",
@@ -1080,6 +1258,12 @@
 				"1CA4346E247B66C50EDB9280",
 				"7C54B72DC1B9E24B33CFEBC1",
 				"69C8057082F6B7A8ACC94A3D",
+				"5F05EFB58E4E4FA628C806E8",
+				"677532C9CC544A755F43E9BF",
+				"D822C7777F40BFDA72C1B2CD",
+				"F8BDB3B414F6C5B7B93F13D5",
+				"18B638CEFC354F26447C14C5",
+				"13794F0D382C0189DE2F508A",
 				"60E93205A75B91DE3BE3FF87",
 				"7F7610B70DF2D38F9C5E70C8",
 				"7D831797AC7A7A23AD7F0698",
@@ -1097,6 +1281,7 @@
 				"E5CEA3CB4160770FAE556407",
 				"007FDB79ADCF25AE71095051",
 				"EBF74B89DA9C6C143C9AA2D6",
+				"275CDCA9B7CBBE511ACB70F8",
 				"7B0EA4C3D531347AFB4FBC38",
 				"EB3EC0AF32C3ED8458E0BCDF",
 				"F73FC5F2642E12710AC334D2",
@@ -1104,6 +1289,7 @@
 				"9193556AEBFB063734B2A162",
 				"A00D35EE326C2421B308F85E",
 				"513A7E7BC7F7B625B576DF22",
+				"9BC2EC51FF286958D8BCB38F",
 				"B1025898228F4D541E72B705",
 				"88DA23992F5F8C55B046D60B",
 				"3F42514E663A11BC5B7C8BAC",
@@ -1115,11 +1301,17 @@
 				"3C6F9848C8D464270781E19A",
 				"CE84D0A97A98DC466C6E2D76",
 				"073C0CC6C30BC6A644063462",
+				"31F72C8511E9D56C6D964112",
 				"E9C974562A88FC7884953A1A",
 				"D24E64E264913BD5E956E1C5",
 				"A1C8F094F9709BD7577142CF",
 				"B1220A4F4E09CAA24A04E2EE",
 				"6ACDDB1AF990D87B9F6CACBC",
+				"BBBA1F3996E9E83178DA88C4",
+				"4D953A1E78FF56A02F90AE9B",
+				"B2F29707A326427D4C623EFA",
+				"01C7F1C04F4DD2D33B942B9C",
+				"CC7D2E61A171D0ED0AFA9631",
 				"0A3E27B8CA818264D75C8D81",
 			);
 			"sourceTree" = "<group>";

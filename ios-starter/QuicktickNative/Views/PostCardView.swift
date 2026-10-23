@@ -15,6 +15,7 @@ struct PostCardView: View {
     @State private var comments = false
     @State private var tags = false
     @State private var fullImage = false
+    @State private var pendingVideoFullscreen = false
     @State private var player: AVPlayer?
     @State private var gifURL: URL?
     @State private var ready = false
@@ -22,15 +23,26 @@ struct PostCardView: View {
     @State private var preparing = false
     @State private var mediaAspect: CGFloat = 4 / 3
     @State private var playbackError: String?
+    @State private var retainedAcrossBackground = false
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
     private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
-    private var mediaSize: CGSize { MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: (post.nativeSize.map { post.type.lowercased() == "image" && $0.height > $0.width * 4 ? 2 / 3 : $0.width / $0.height }) ?? mediaAspect, available: available) }
+    private var fullBleed: Bool { playbackTab == 0 && !offline }
+    private var cardRadius: CGFloat { fullBleed ? 0 : 22 }
+    private var mediaSize: CGSize {
+        let aspect = (post.nativeSize.map {
+            post.type.lowercased() == "image" && $0.height > $0.width * 4
+                ? CGFloat(2) / 3 : $0.width / $0.height
+        }) ?? mediaAspect
+        return fullBleed
+            ? MediaSizing.feedCard(aspect: aspect, available: available)
+            : MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: aspect, available: available)
+    }
     var body: some View {
         VStack(spacing: 0) {
-            media.frame(width: mediaSize.width, height: mediaSize.height).clipped()
+            media.frame(width: mediaSize.width, height: mediaSize.height).clipped().contentShape(Rectangle())
                 .background {
-                    if playbackTab == 0 {
+                    if playbackTab == 0 || playbackTab == 2 {
                         GeometryReader { geometry in
                             Color.clear.preference(key: HomeVisibleFrames.self, value: [post.stableID: geometry.frame(in: .named("home-viewport"))])
                         }
@@ -52,18 +64,20 @@ struct PostCardView: View {
                     } else {
                     ActionIcon(title: "Like", symbol: store.favorites[post.stableID] == nil ? "heart" : "heart.fill", selected: store.favorites[post.stableID] != nil) { store.toggleFavorite(post) }
                     ActionIcon(title: "Less", symbol: "hand.thumbsdown") { store.less(post) }
+                        .accessibilityIdentifier("dislike-\(post.stableID)")
                     ActionIcon(title: "Download", symbol: "arrow.down.to.line") { store.download(post) }
                     ActionIcon(title: "Comments", symbol: "bubble.left") { comments = true }
                     }
                 }
             }.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 4)
-        }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 22))
-            .clipShape(RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.07), lineWidth: 1))
+        }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: cardRadius))
+            .clipShape(RoundedRectangle(cornerRadius: cardRadius))
+            .overlay(RoundedRectangle(cornerRadius: cardRadius).stroke(.white.opacity(0.07), lineWidth: 1))
             .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
             .sheet(isPresented: $comments) { CommentsView(post: post) }
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
-            .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl) }
+            .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
+                previewURL: post.cardPreviewURL) }
             .fullScreenCover(isPresented: Binding(
                 get: { store.fullScreenPlaybackID == post.stableID },
                 set: { if !$0 { store.fullScreenPlaybackID = nil } }
@@ -72,9 +86,26 @@ struct PostCardView: View {
             }) {
                 if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning)") {
                 guard !Task.isCancelled else { return }
-                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground else { stopPlayback(); return }
+                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab,
+                      !store.isManualVisualScanRunning else { stopPlayback(); return }
+                // AppStore suspends and retains the AVPlayer on backgrounding.
+                // Keep this view's reference too, so foreground restoration
+                // doesn't wait for another resolution and track metadata load.
+                guard store.isForeground else {
+                    retainedAcrossBackground = true
+                    player?.pause()
+                    return
+                }
+                if retainedAcrossBackground, let player, player.currentItem != nil,
+                   player.currentItem?.status != .failed {
+                    retainedAcrossBackground = false
+                    if store.pausedPlaybackID == post.stableID { player.pause() }
+                    else { player.play() }
+                    return
+                }
+                retainedAcrossBackground = false
                 await preparePlayback()
             }
             .onDisappear {
@@ -89,7 +120,19 @@ struct PostCardView: View {
             }
             .onChange(of: comments) { _, shown in if shown { store.pausedPlaybackID = post.stableID; store.players.pause(post.stableID) } }
             .onChange(of: fullImage) { _, shown in if shown { store.players.pauseAll() } }
+            .onChange(of: player != nil) { _, exists in
+                guard exists, pendingVideoFullscreen, store.activeTab == playbackTab else { return }
+                pendingVideoFullscreen = false
+                store.fullScreenPlaybackID = post.stableID
+            }
+            .onDisappear { pendingVideoFullscreen = false }
             .onChange(of: store.muted) { _, value in player?.isMuted = value }
+            .onChange(of: store.isForeground) { _, foreground in
+                guard foreground, store.activeTab == playbackTab,
+                      store.inlinePlaybackID == post.stableID,
+                      store.pausedPlaybackID != post.stableID else { return }
+                player?.play()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
                 guard let item = note.object as? AVPlayerItem, item === player?.currentItem else { return }
                 if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground { store.recordComplete(post); store.recordReplay(post); player?.seek(to: .zero); if store.pausedPlaybackID != post.stableID { player?.play() } }
@@ -100,7 +143,7 @@ struct PostCardView: View {
         Group {
             if let player, store.fullScreenPlaybackID != post.stableID {
                 ZStack {
-                    PosterView(url: post.cardPreviewURL)
+                    PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
                     NativePlayerSurface(player: player, fill: false, ready: $ready)
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready ? 1 : 0)
@@ -108,20 +151,34 @@ struct PostCardView: View {
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true, onSize: { nativeSize = $0; mediaAspect = $0.width / max(1,$0.height) })
             } else if post.type.lowercased() == "image" {
-                CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl, pixels: Int(mediaSize.width * 3), comic: true) { decoded in nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height) }
-            } else { PosterView(url: post.cardPreviewURL) }
+                CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl, pixels: Int(mediaSize.width * 3), comic: true, fill: true) { decoded in
+                    nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height)
+                    store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
+                }
+            } else { PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
         }
         .frame(width: mediaSize.width, height: mediaSize.height)
-        .overlay(alignment: .topTrailing) {
+        .allowsHitTesting(false)
+        .overlay {
             if post.type.lowercased() == "video" {
-                Button { store.fullScreenPlaybackID = post.stableID } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
-                        .background(.ultraThinMaterial, in: Circle())
-                }.buttonStyle(.plain).padding(8).disabled(player == nil)
-                    .accessibilityLabel("Full screen video").accessibilityIdentifier("fullscreen-\(post.stableID)")
+                Button {
+                    if player != nil {
+                        store.fullScreenPlaybackID = post.stableID
+                    } else {
+                        pendingVideoFullscreen = true
+                        store.inlinePlaybackID = post.stableID
+                    }
+                } label: {
+                    Color.clear.contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open full screen video")
+                .accessibilityIdentifier("fullscreen-\(post.stableID)")
+            } else if !post.isImmersiveMedia {
+                Color.clear.contentShape(Rectangle()).onTapGesture { fullImage = true }
             }
         }
+        .contentShape(Rectangle())
         .overlay(alignment: .bottomTrailing) {
             if post.isImmersiveMedia {
                 Button {
@@ -144,7 +201,6 @@ struct PostCardView: View {
                 }.buttonStyle(.plain).padding(10).accessibilityLabel("View full image")
             }
         }
-        .onTapGesture { if !post.isImmersiveMedia { fullImage = true } }
     }
     private func preparePlayback() async {
         preparing = true; playbackError = nil; playing = false
@@ -191,7 +247,7 @@ struct PostCardView: View {
         if watchSeconds >= 2 { store.recordWatch(post, seconds: watchSeconds, completion: completion) }
         watchSeconds = 0
     }
-    private func stopPlayback() { store.players.pause(post.stableID, owner: playbackOwner); player = nil; gifURL = nil; ready = false; playing = false }
+    private func stopPlayback() { retainedAcrossBackground = false; store.players.pause(post.stableID, owner: playbackOwner); player = nil; gifURL = nil; ready = false; playing = false }
 }
 
 private struct FullScreenVideoView: View {
@@ -200,7 +256,10 @@ private struct FullScreenVideoView: View {
     let postID: String
     let onClose: () -> Void
     var body: some View {
-        FullScreenPlayerController(player: player).ignoresSafeArea()
+        FullScreenPlayerController(player: player, onSwipeDown: {
+            store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
+            onClose()
+        }).ignoresSafeArea()
             .overlay(alignment: .topTrailing) {
                 Button {
                     store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
@@ -209,7 +268,12 @@ private struct FullScreenVideoView: View {
                     Image(systemName: "xmark").font(.system(size: 20, weight: .bold))
                         .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
                 }.buttonStyle(.plain).foregroundStyle(.white).padding(12).accessibilityLabel("Close full screen video")
-            }.background(.black)
+            }
+            .background(.black)
+            .quicktickEdgeBack {
+                store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
+                onClose()
+            }
             .onReceive(player.publisher(for: \.timeControlStatus)) { status in
                 guard store.isForeground, store.fullScreenPlaybackID == postID else { return }
                 if status == .playing { store.pausedPlaybackID = nil }
@@ -221,51 +285,159 @@ private struct FullScreenVideoView: View {
     }
 }
 
+// Attach the gesture to the native UIKit player rather than an overlay:
+// AVPlayerViewController intercepts drags before SwiftUI's overlay sees them.
+private final class FullscreenSwipeDownHandler: NSObject, UIGestureRecognizerDelegate {
+    var onExit: () -> Void
+    private var didExit = false
+    init(onExit: @escaping () -> Void) { self.onExit = onExit }
+
+    func install(on view: UIView, addSwipe: Bool = false) {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(didPan(_:)))
+        pan.delegate = self
+        pan.cancelsTouchesInView = false
+        view.addGestureRecognizer(pan)
+        if addSwipe {
+            // AVKit uses internal gesture recognizers and occasionally prevents
+            // our pan from ending. A simultaneous downward swipe is the fallback.
+            let swipe = UISwipeGestureRecognizer(target: self, action: #selector(didSwipe(_:)))
+            swipe.direction = .down
+            swipe.cancelsTouchesInView = false
+            swipe.delegate = self
+            view.addGestureRecognizer(swipe)
+        }
+    }
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let view = gestureRecognizer.view else { return false }
+        if gestureRecognizer is UISwipeGestureRecognizer { return !(view is ComicScrollView) }
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+        let velocity = pan.velocity(in: view)
+        // Do not interfere with AVKit's horizontal scrubbing or image zoom.
+        // Recognize only a clearly downward, one-finger dismissal pan.
+        // Videos may be dismissed from the center. A regular image uses the
+        // same gesture at its minimum zoom; zoomed images must remain pannable.
+        // Long comics never install this recognizer at all.
+        if let scroll = view as? ComicScrollView,
+           scroll.zoomScale > scroll.minimumZoomScale + 0.025 { return false }
+        return velocity.y > 20
+            && abs(velocity.y) > abs(velocity.x) * 1.15
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        true
+    }
+    @objc private func didPan(_ gesture: UIPanGestureRecognizer) {
+        guard gesture.state == .ended, let view = gesture.view else { return }
+        let offset = gesture.translation(in: view)
+        guard offset.y > 75, abs(offset.x) < offset.y * 0.72 else { return }
+        exitOnce()
+    }
+    @objc private func didSwipe(_ gesture: UISwipeGestureRecognizer) {
+        guard gesture.state == .ended else { return }
+        exitOnce()
+    }
+    private func exitOnce() {
+        guard !didExit else { return }
+        didExit = true
+        onExit()
+    }
+}
+
 private struct FullScreenPlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
+    let onSwipeDown: () -> Void
+    func makeCoordinator() -> FullscreenSwipeDownHandler { FullscreenSwipeDownHandler(onExit: onSwipeDown) }
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
-        controller.player = player; controller.showsPlaybackControls = true
+        controller.player = player
+        controller.showsPlaybackControls = true
         controller.videoGravity = .resizeAspect
+        context.coordinator.install(on: controller.view, addSwipe: true)
+        if let overlay = controller.contentOverlayView { context.coordinator.install(on: overlay, addSwipe: true) }
         return controller
     }
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== player { controller.player = player }
+        context.coordinator.onExit = onSwipeDown
     }
-    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: ()) { controller.player = nil }
+    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: FullscreenSwipeDownHandler) {
+        controller.player = nil
+    }
 }
 
 private struct FullComicView: View {
     let url: String
+    let previewURL: String
     @Environment(\.dismiss) private var dismiss
     @State private var image: UIImage?
+    @State private var preview: UIImage?
+    @State private var comic = false
     @State private var error: String?
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            if let image { ComicZoomSurface(image: image).ignoresSafeArea(edges: .bottom) }
-            else if let error { Text(error).foregroundStyle(.white).padding() }
+            if let image {
+                ComicZoomSurface(image: image, isComic: comic, onSwipeDown: { dismiss() })
+                    .ignoresSafeArea(edges: .bottom)
+            } else if let preview {
+                Image(uiImage: preview).resizable().scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .bottom) {
+                        ProgressView("Loading full resolution").tint(.white)
+                            .padding(10).background(.black.opacity(0.65), in: Capsule())
+                            .padding(.bottom, 20)
+                    }
+            } else if let error { Text(error).foregroundStyle(.white).padding() }
             else { ProgressView("Loading full image").tint(.white) }
         }.overlay(alignment: .topTrailing) {
             Button { dismiss() } label: {
                 Image(systemName: "xmark").font(.system(size: 20, weight: .bold)).frame(width: 48, height: 48)
                     .background(.ultraThinMaterial, in: Circle())
             }.buttonStyle(.plain).padding(12).accessibilityLabel("Close full image")
-        }.task {
+        }
+        .quicktickEdgeBack { dismiss() }
+        // Reuse the card's bounded decoded thumbnail from MediaImagePipeline.
+        // A preview can appear immediately while the original loads separately.
+        .task(id: previewURL) {
+            guard !previewURL.isEmpty else { return }
+            if let warm = await MediaImagePipeline.shared.cachedPreview(raw: previewURL) {
+                if !Task.isCancelled, image == nil { preview = UIImage(cgImage: warm.image) }
+                return
+            }
+            if let decoded = try? await MediaImagePipeline.shared.image(
+                raw: previewURL, pixels: 1024, comicPreview: true),
+               !Task.isCancelled, image == nil {
+                preview = UIImage(cgImage: decoded.image)
+            }
+        }
+        .task(id: url) {
             do {
                 guard let location = (URL(string: url)?.isFileURL == true ? URL(string: url) : NativeProviderAPI.mediaURL(url)) else { throw URLError(.badURL) }
                 let full = try await MediaImagePipeline.shared.fullImage(url: location)
                 guard !Task.isCancelled else { return }
+                comic = full.comic
                 image = UIImage(cgImage: full.image)
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
+        .onDisappear { preview = nil; image = nil }
     }
 }
 
 private struct ComicZoomSurface: UIViewRepresentable {
     let image: UIImage
-    func makeUIView(context: Context) -> ComicScrollView { ComicScrollView(image: image) }
-    func updateUIView(_ view: ComicScrollView, context: Context) {}
+    let isComic: Bool
+    let onSwipeDown: () -> Void
+    func makeCoordinator() -> FullscreenSwipeDownHandler { FullscreenSwipeDownHandler(onExit: onSwipeDown) }
+    func makeUIView(context: Context) -> ComicScrollView {
+        let view = ComicScrollView(image: image)
+        // Long comics keep their ordinary vertical scrolling gestures.
+        // Regular images can be dismissed with a downward drag from the middle.
+        if !isComic { context.coordinator.install(on: view) }
+        return view
+    }
+    func updateUIView(_ view: ComicScrollView, context: Context) {
+        context.coordinator.onExit = onSwipeDown
+    }
 }
 
 private final class ComicScrollView: UIScrollView, UIScrollViewDelegate {

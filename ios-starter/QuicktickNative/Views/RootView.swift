@@ -2,6 +2,11 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var navigationSelection
+    @State private var brieflyNamedTab: Int?
+    @State private var tabNameTask: Task<Void, Never>?
+    @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @State private var showSettings = false
     @State private var homeAnchor: String?
     @State private var immersiveAnchor: String?
@@ -10,58 +15,119 @@ struct RootView: View {
     var body: some View {
         GeometryReader { geometry in
             let sideNavigation = store.activeTab == 1 && geometry.size.width > 600
-            // Mount one native navigation host. Opacity-hidden stacks still
-            // export UIKit toolbars/accessibility controls and waste resources.
+            // Keep a single mounted navigation stack for playback and VoiceOver.
             VStack(spacing: 0) {
-            Group {
-                switch store.activeTab {
-                case 1:
-                    NavigationStack { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersiveAnchor, showSettings: $showSettings) }
-                case 2:
-                    NavigationStack { FavoritesView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }
-                case 3:
-                    NavigationStack { DownloadsFeedView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }
-                default:
-                    NavigationStack { HomeFeedView(showSettings: $showSettings, scrollAnchor: $homeAnchor).id(store.feedRevision) }
+                Group {
+                    switch store.activeTab {
+                    case 1:
+                        NavigationStack { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersiveAnchor, showSettings: $showSettings) }
+                    case 2:
+                        NavigationStack { FavoritesView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }
+                    case 3:
+                        NavigationStack { DownloadsFeedView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }
+                    default:
+                        NavigationStack { HomeFeedView(showSettings: $showSettings, scrollAnchor: $homeAnchor) }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if !sideNavigation {
+                    // Full-width, screen-edge dock instead of a floating pill.
+                    // The dock background extends behind the home indicator;
+                    // its buttons occupy the entire available horizontal space.
+                    HStack(spacing: 0) { tabButtons(vertical: false) }
+                        .padding(.horizontal, 4)
+                        .padding(.top, 5)
+                        .padding(.bottom, 0)
+                        .background {
+                            AppTheme.elevatedSurface.ignoresSafeArea(edges: .bottom)
+                        }
+                        .overlay(alignment: .top) {
+                            Rectangle().fill(AppTheme.border).frame(height: 1)
+                        }
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("bottom-navigation-bar")
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if !sideNavigation {
-                    HStack(spacing: 6) { tabButtons(vertical: false) }
-                        .padding(.horizontal, 12).padding(.vertical, 6).background(.black)
-                        .overlay(alignment: .top) { Color.white.opacity(0.1).frame(height: 0.5) }
-                }
-            }.frame(width: geometry.size.width, height: geometry.size.height)
+            .frame(width: geometry.size.width, height: geometry.size.height)
             .overlay(alignment: .leading) {
                 if sideNavigation {
                     VStack(spacing: 6) { tabButtons(vertical: true) }
-                        .padding(6).background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 22))
-                        .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.14), lineWidth: 1))
+                        .padding(6)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+                        .shadow(color: .black.opacity(0.4), radius: 18, y: 4)
                         .padding(.leading, 16)
                 }
             }
-        }.tint(.white).background(.black)
-            .modifier(ProfileImportConfirmation(enabled: !showSettings))
-            .sheet(isPresented: $showSettings) {
-                NavigationStack { SettingsView().toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showSettings = false } } } }
+        }
+.onChange(of: store.activeTab) { _, tab in
+            tabNameTask?.cancel()
+            guard !reduceMotion else { brieflyNamedTab = nil; return }
+            withAnimation(.easeIn(duration: 0.11)) { brieflyNamedTab = tab }
+            tabNameTask = Task {
+                try? await Task.sleep(for: .milliseconds(360))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.14)) { brieflyNamedTab = nil }
             }
+        }
+        .onDisappear { tabNameTask?.cancel() }
+        .tint(.white)
+        .background(AppTheme.background)
+        .modifier(ProfileImportConfirmation(enabled: !showSettings && firstRunCompleted))
+        .fullScreenCover(isPresented: Binding(
+            get: {
+                store.bootstrapped && !firstRunCompleted
+                    && (!ProcessInfo.processInfo.arguments.contains("--ui-testing")
+                        || ProcessInfo.processInfo.arguments.contains("--ui-testing-first-run"))
+            },
+            set: { _ in }
+        )) {
+            FirstRunSetupView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showSettings) {
+            NavigationStack {
+                SettingsView()
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showSettings = false } } }
+            }
+        }
     }
 
     @ViewBuilder private func tabButtons(vertical: Bool) -> some View {
         ForEach(tabs.indices, id: \.self) { index in
             Button {
-                if index < 2 { homeAnchor = nil; immersiveAnchor = nil }
                 Task { await store.selectFeedTab(index) }
             } label: {
-                Image(systemName: tabs[index].1).font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(store.activeTab == index ? .white : .white.opacity(0.55))
-                    .frame(width: vertical ? 48 : nil, height: 54)
-                    .frame(maxWidth: vertical ? nil : .infinity).contentShape(Rectangle())
-                    .background {
-                        if store.activeTab == index { RoundedRectangle(cornerRadius: 17).fill(AppTheme.gradient) }
+                Group {
+                    if store.activeTab == index && brieflyNamedTab == index {
+                        Text(tabs[index].0)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .transition(.opacity)
+                    } else {
+                        Image(systemName: tabs[index].1)
+                            .font(.system(size: 20, weight: .semibold))
+                            .transition(.opacity)
                     }
-            }.buttonStyle(.plain).accessibilityLabel(tabs[index].0).accessibilityIdentifier("tab-\(tabs[index].0)")
-                .accessibilityAddTraits(store.activeTab == index ? .isSelected : [])
+                }
+                                .foregroundStyle(store.activeTab == index ? .white : .white.opacity(0.65))
+                .frame(width: vertical ? 46 : nil, height: vertical ? 46 : 54)
+                .frame(maxWidth: vertical ? nil : .infinity)
+                .contentShape(Rectangle())
+                .background {
+                    if store.activeTab == index {
+                        RoundedRectangle(cornerRadius: vertical ? 18 : 10, style: .continuous)
+                            .fill(AppTheme.gradient)
+                            .matchedGeometryEffect(id: "selected-tab", in: navigationSelection)
+                    }
+                }
+            }
+            .buttonStyle(QuicktickPressStyle())
+            .animation(reduceMotion ? nil : AppTheme.spring, value: store.activeTab)
+            .accessibilityLabel(tabs[index].0)
+            .accessibilityIdentifier("tab-\(tabs[index].0)")
+            .accessibilityAddTraits(store.activeTab == index ? .isSelected : [])
         }
     }
 }

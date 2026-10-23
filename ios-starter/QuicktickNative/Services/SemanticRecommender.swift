@@ -65,6 +65,8 @@ private struct SemanticDiskState: Codable {
     var embeddings: [String: [Float]] = [:]
     var profiles: [String: SemanticInterest] = [:]
     var order: [String] = []
+    var pending: [FeedbackEnvelope]? = nil
+    var ledger: [String]? = nil
 }
 
 /// Serial utility work, CPU/Neural Engine only: never uses the GPU competing with AV playback.
@@ -76,6 +78,7 @@ actor SemanticRecommender {
     private var tokenizer: WordPieceTokenizer?
     private var unavailable = false
     private var changes = 0
+    private var pendingSignals: [FeedbackEnvelope] = []
     private(set) var modelLoadMs = 0.0
     private(set) var embeddingMs = 0.0
     private(set) var cacheHits = 0
@@ -93,7 +96,9 @@ actor SemanticRecommender {
     private func key(_ post: Post) -> String { SHA256.hash(data: Data(Self.text(for: post).utf8)).map { String(format: "%02x", $0) }.joined() }
     private func restore() {
         guard !restored else { return }; restored = true
-        if let data = try? Data(contentsOf: directory.appendingPathComponent("state.json")), let saved = try? JSONDecoder().decode(SemanticDiskState.self, from: data), saved.version == disk.version { disk = saved }
+        if let data = try? Data(contentsOf: directory.appendingPathComponent("state.json")), let saved = try? JSONDecoder().decode(SemanticDiskState.self, from: data), saved.version == disk.version {
+            disk = saved; pendingSignals = Array((saved.pending ?? []).suffix(128))
+        }
     }
     private func loadModel() throws {
         guard model == nil else { return }
@@ -108,6 +113,7 @@ actor SemanticRecommender {
         } catch { unavailable = true; throw error }
     }
     func embed(_ post: Post) throws -> [Float] {
+        try Task.checkCancellation()
         restore(); let key = key(post)
         if let vector = disk.embeddings[key] { cacheHits += 1; return vector }
         guard !Self.text(for: post).trimmingCharacters(in: CharacterSet(charactersIn: ". ")).isEmpty else { return [] }
@@ -135,10 +141,21 @@ actor SemanticRecommender {
             // Give cooperative executor work a turn; no per-swipe inference.
             await Task.yield()
         }
+        // Uncached engagement is replayed only during this idle preparation pass.
+        for _ in 0..<min(4, pendingSignals.count) {
+            guard !Task.isCancelled else { break }
+            let envelope = pendingSignals.removeFirst()
+            let event = envelope.event, post = envelope.post
+            if let vector = try? embed(post), !vector.isEmpty { record(event, post: post, eventID: envelope.id) }
+            else { pendingSignals.append(envelope); break }
+            await Task.yield()
+        }
         persist()
     }
-    func record(_ event: RecommendationEvent, post: Post) {
+    func record(_ event: RecommendationEvent, post: Post, eventID: String? = nil) {
         restore()
+        let identifier = eventID ?? UUID().uuidString
+        guard disk.ledger?.contains(identifier) != true, !pendingSignals.contains(where: { $0.id == identifier }) else { return }
         let weight: Float
         switch event {
         case .like: weight = 4
@@ -151,8 +168,16 @@ actor SemanticRecommender {
         case let .watched(seconds, completion): weight = completion >= 0.8 ? 2 : (seconds >= 8 ? 0.6 : (completion > 0 && completion < 0.15 ? -0.3 : 0))
         case .impression: weight = 0
         }
-        guard weight != 0, let vector = try? embed(post), !vector.isEmpty else { return }
-        var profile = disk.profiles[post.provider.lowercased()] ?? SemanticInterest()
+        // Engagement may arrive during playback: consume cached embeddings only.
+        // Model loading and inference belong exclusively to deferred preparation.
+        guard weight != 0 else { return }
+        guard let vector = disk.embeddings[key(post)], !vector.isEmpty else {
+            if pendingSignals.count >= 128 { pendingSignals.removeFirst() }
+            pendingSignals.append(FeedbackEnvelope(id: identifier, post: post, event: event)); persist(); return
+        }
+        disk.ledger = Array(((disk.ledger ?? []) + [identifier]).suffix(2048))
+        cacheHits += 1
+        var profile = disk.profiles[TasteConcepts.profileKey(post)] ?? SemanticInterest()
         let decay = Float(pow(0.5, Date().timeIntervalSince(profile.updated) / (30 * 86400)))
         profile.recent = profile.recent.map { $0 * decay }; profile.longTerm = profile.longTerm.map { $0 * decay }; profile.negative = profile.negative.map { $0 * decay }
         if weight > 0 {
@@ -163,7 +188,7 @@ actor SemanticRecommender {
             profile.creators[creator] = max(-1, min(1, (profile.creators[creator] ?? 0) * 0.95 + weight * 0.1))
             profile.creators = Dictionary(profile.creators.sorted { abs($0.value) > abs($1.value) }.prefix(48).map { ($0.key, $0.value) }, uniquingKeysWith: { first, _ in first })
         }
-        profile.updated = Date(); disk.profiles[post.provider.lowercased()] = profile; persist()
+        profile.updated = Date(); disk.profiles[TasteConcepts.profileKey(post)] = profile; persist()
     }
     private static func preferenceDocument(_ terms: [String]) -> Post {
         var document = Post(key: "local-preferences", id: "local-preferences", provider: "local")
@@ -180,7 +205,7 @@ actor SemanticRecommender {
         let avoided = disk.embeddings[key(Self.preferenceDocument(taste.notInto))] ?? []
         for post in posts {
             guard let vector = disk.embeddings[key(post)] else { continue }
-            let profile = disk.profiles[post.provider.lowercased()] ?? SemanticInterest()
+            let profile = disk.profiles[TasteConcepts.profileKey(post)] ?? SemanticInterest()
             let recentDecay = exp(-max(0, Date().timeIntervalSince(profile.updated)) / (7 * 86400))
             let longDecay = exp(-max(0, Date().timeIntervalSince(profile.updated)) / (30 * 86400))
             let age = post.createdAt.map { max(0, Date().timeIntervalSince1970 - $0) }
@@ -207,8 +232,9 @@ actor SemanticRecommender {
     func releaseModel() { model = nil; tokenizer = nil }
     func transferableProfiles() -> [String: SemanticInterest] { restore(); return disk.profiles }
     func replaceProfiles(_ profiles: [String: SemanticInterest]) { restore(); disk.profiles = profiles; persist() }
-    func reset() { disk = SemanticDiskState(); restored = true; persist() }
+    func reset() { disk = SemanticDiskState(); pendingSignals = []; restored = true; persist() }
     private func persist() {
+        disk.pending = pendingSignals
         do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true); let data = try JSONEncoder().encode(disk); try data.write(to: directory.appendingPathComponent("state.json"), options: .atomic); changes = 0 }
         catch { /* Local tag ranking remains available if private cache persistence fails. */ }
     }

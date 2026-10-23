@@ -1,7 +1,22 @@
 import Foundation
 import CoreGraphics
 
+// Pure gesture classifier for Home and Immersive. Ignore layout jitter,
+ // backwards paging, and deliberate viewing. A return to a previously
+ // skipped post is always neutralization, never positive feedback.
+enum QuickSkipDecision {
+    static func dislikes(elapsed: TimeInterval, from: Int, to: Int) -> Bool {
+        elapsed.isFinite && to > from && elapsed >= 0.08 && elapsed <= 1.25
+    }
+}
+
 struct VisiblePostSelector {
+    static func immersive(frames: [String: CGRect], viewport: CGRect, current: String?, keys: Set<String>) -> String? {
+        // Between full pages neither crosses the normal visibility threshold.
+        // Keep ownership through that gap and transient empty layout preferences.
+        select(frames: frames, viewport: viewport, current: current, eligible: keys)
+            ?? current.flatMap { keys.contains($0) ? $0 : nil }
+    }
     static func select(frames: [String: CGRect], viewport: CGRect, current: String?, eligible: Set<String>? = nil) -> String? {
         guard viewport.height > 0 else { return nil }
         let candidates = frames.compactMap { key, rect -> (String, CGFloat, CGFloat)? in
@@ -24,7 +39,32 @@ struct VisiblePostSelector {
     }
 }
 
+enum PlaybackPosition {
+    static func resume(_ seconds: Double?, duration: Double) -> Double? {
+        guard let seconds, seconds.isFinite, seconds > 0, duration.isFinite,
+              duration > 1, seconds < duration - 0.5 else { return nil }
+        return seconds
+    }
+}
+
 enum MediaSizing {
+    /// The Home screen fills the available phone width instead of respecting
+    /// low-resolution provider thumbnail dimensions. Tall artwork is previewed
+    /// with a bounded crop; its full image remains available in full screen.
+    static func feedCard(aspect: CGFloat, available: CGSize) -> CGSize {
+        let ratio: CGFloat = aspect.isFinite && aspect > 0 ? aspect : CGFloat(4) / 3
+        let fullWidth = max(1, min(available.width, 680))
+        let heightCap = min(available.width > 600 ? CGFloat(620) : CGFloat(560),
+                            max(1, available.height * 0.72))
+        // In a short landscape viewport an uncapped 16:9 card can be taller
+        // than the entire scrollable area. Fit wide media to the viewport
+        // without distorting it. In portrait we still use every phone point.
+        let width = ratio >= 1 ? min(fullWidth, heightCap * ratio) : fullWidth
+        // Only tall artwork uses a crop; the original is kept for full screen.
+        let height = ratio >= 1 ? width / ratio : min(width / ratio, heightCap)
+        return CGSize(width: width, height: max(1, height))
+    }
+
     // Full viewing canvas: deliberately separate from the bounded Home cards.
     static func immersive(aspect: CGFloat, available: CGSize) -> CGSize {
         let ratio = aspect.isFinite && aspect > 0 ? aspect : 16 / 9
@@ -36,8 +76,32 @@ enum MediaSizing {
         let ratio = aspect.isFinite && aspect > 0 ? aspect : 4 / 3
         let wide = available.width > 600
         let maxHeight = min(wide ? 620 : 560, max(1, available.height * 0.72))
-        var width = min(available.width, wide ? 680 : available.width, maxHeight * ratio)
-        if let native, native.width > 0 { width = min(width, native.width) }
-        return CGSize(width: max(1, width), height: max(1, width / ratio))
+        // Preserve aspect ratio when height-limited. The previous calculation
+        // capped only height, stretching video frames and enlarging thumbnails.
+        let originalWidth = native.flatMap { $0.width > 0 && $0.width.isFinite ? $0.width : nil } ?? 680
+        let width = max(1, min(originalWidth, available.width, 680, maxHeight * ratio))
+        return CGSize(width: width, height: width / ratio)
+    }
+}
+
+// Count advancing media time, capped by elapsed wall time. Buffering, pauses,
+// loading and discontinuous seeks never become positive engagement.
+struct PlaybackExposure {
+    static func completion(position: Double, watched: Double, duration: Double) -> Double {
+        guard position.isFinite, watched.isFinite, duration.isFinite, duration > 0 else { return 0 }
+        return max(0, min(1, min(position, watched / duration)))
+    }
+
+    private var previousMedia: Double?
+    private var previousWall: Double?
+    private var wasPlaying = false
+    mutating func sample(media: Double?, wall: Double, playing: Bool) -> Double {
+        defer { previousMedia = media; previousWall = wall; wasPlaying = playing }
+        guard playing || wasPlaying, let previousWall, wall > previousWall else { return 0 }
+        let elapsed = min(2, wall - previousWall)
+        guard let media, let previousMedia, media.isFinite, previousMedia.isFinite else { return 0 }
+        let advance = media - previousMedia
+        guard advance > 0, advance <= elapsed * 1.5 + 0.25 else { return 0 }
+        return min(elapsed, advance)
     }
 }

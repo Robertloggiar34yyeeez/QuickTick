@@ -2,6 +2,25 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
+    func testSimpleOnboardingSeparatesFictionalCharactersFromBroadKeywords() {
+        let characters = StarterTastePick.characters
+        let keywords = StarterTastePick.keywords
+        XCTAssertFalse(characters.isEmpty)
+        XCTAssertFalse(keywords.isEmpty)
+        XCTAssertEqual(Set(characters.map(\.id)).count, characters.count)
+        XCTAssertEqual(Set(keywords.map(\.id)).count, keywords.count)
+        let chunLi = characters.first { $0.id == "chun_li" }
+        XCTAssertEqual(chunLi?.query, "chun_li")
+        XCTAssertTrue(chunLi?.tags.contains("street_fighter") == true,
+                      "A selected character also seeds related franchise discovery")
+        let rouge = characters.first { $0.id == "rouge" }
+        XCTAssertEqual(rouge?.tags.first, "rouge_the_bat")
+        XCTAssertFalse(rouge?.tags.contains("bat") == true,
+                      "A fictional character must not add bare animal keywords")
+        XCTAssertTrue(keywords.allSatisfy { $0.tags.count == 1 && $0.tags[0] == $0.query },
+                      "Keyword providers should not silently insert fictional identities")
+    }
+
     func testDrainedInterestFallsBackToAdvancingBroadCursorWithoutResettingProfile() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var state = RecommendationState(); var profile = RecommendationProfile(); profile.terms = ["engineering": 20]
@@ -16,6 +35,88 @@ final class RecommendationTests: XCTestCase {
         XCTAssertFalse(continued.focused); XCTAssertEqual(continued.page, 7)
         let saved = await engine.snapshot(); XCTAssertEqual(saved.profiles["rule34"], profile)
     }
+    func testNoveltyExcludesPreviouslyOfferedPostsAndSignedURIAliasesAfterReload() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let original = Post(key: "rule34:10", id: "10", provider: "rule34",
+            mediaUrl: "https://cdn.example.invalid/abc123.mp4?token=one", type: "video")
+        let alias = Post(key: "rule34:other", id: "other", provider: "rule34",
+            mediaUrl: "https://cdn.example.invalid/abc123.mp4?token=two", type: "video")
+        let novel = Post(key: "rule34:11", id: "11", provider: "rule34", type: "video")
+        await engine.recordOffered([original])
+        let remaining = await engine.unseenRecommendations([original, alias, novel])
+        XCTAssertEqual(remaining.map(\.stableID), [novel.stableID])
+        let state = await engine.snapshot()
+        let restored = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await restored.load(state)
+        let after = await restored.unseenRecommendations([original, alias, novel])
+        XCTAssertEqual(after.map(\.stableID), [novel.stableID])
+    }
+
+    func testInstantSkipIsNegativeAndScrollBackNeutralizesWithoutPositiveTraining() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let skipped = Post(key: "r:skip", id: "skip", provider: "rule34", tags: ["portrait", "jacket", "night"])
+        let similar = Post(key: "r:similar", id: "similar", provider: "rule34", tags: ["portrait", "jacket", "night"])
+        let before = await engine.score(similar, taste: TasteChoice(), recent: [])
+        await engine.recordReversibleSkip(skipped)
+        let disliked = await engine.score(similar, taste: TasteChoice(), recent: [])
+        XCTAssertLessThan(disliked, before)
+        let wasSkipped = await engine.hasReversibleSkip(skipped.stableID)
+        XCTAssertTrue(wasSkipped)
+        let neutralized = await engine.neutralizeReversibleSkip(skipped.stableID)
+        XCTAssertTrue(neutralized)
+        let neutral = await engine.score(similar, taste: TasteChoice(), recent: [])
+        XCTAssertEqual(neutral, before, accuracy: 0.0001)
+        let state = await engine.snapshot()
+        XCTAssertEqual(state.profiles["rule34"]?.stats.likes ?? 0, 0)
+        XCTAssertEqual(state.profiles["rule34"]?.stats.less ?? 0, 0)
+    }
+
+    func testRepeatedFastSkipsMoreStronglyDownrankASharedPresentation() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let similar = Post(key: "r:match", id: "match", provider: "rule34", tags: ["portrait", "jacket"])
+        let one = Post(key: "r:one", id: "one", provider: "rule34", tags: ["portrait", "jacket"])
+        let two = Post(key: "r:two", id: "two", provider: "rule34", tags: ["portrait", "jacket"])
+        await engine.recordReversibleSkip(one)
+        let oneScore = await engine.score(similar, taste: TasteChoice(), recent: [])
+        await engine.recordReversibleSkip(two)
+        let twoScore = await engine.score(similar, taste: TasteChoice(), recent: [])
+        XCTAssertLessThan(twoScore, oneScore)
+    }
+
+    @MainActor func testCandidateRoundCountersAreKeptWhenSavingAppState() async {
+        let store = AppStore()
+        _ = await store.recommendations.candidateRequest(context: "rule34|clips", provider: .rule34,
+            taste: TasteChoice(done: true, into: ["portrait"]), excluded: [])
+        let before = await store.recommendations.snapshot()
+        let saved = await store.recommendationState()
+        XCTAssertEqual(saved.candidatePages["rule34|clips|round"], before.candidatePages["rule34|clips|round"])
+    }
+
+    func testInstantSkipClassifierRejectsReverseSwipeAndLongDwell() {
+        XCTAssertTrue(QuickSkipDecision.dislikes(elapsed: 0.35, from: 0, to: 1))
+        XCTAssertTrue(QuickSkipDecision.dislikes(elapsed: 1.1, from: 1, to: 3))
+        XCTAssertFalse(QuickSkipDecision.dislikes(elapsed: 0.05, from: 0, to: 1))
+        XCTAssertFalse(QuickSkipDecision.dislikes(elapsed: 2.0, from: 0, to: 1))
+        XCTAssertFalse(QuickSkipDecision.dislikes(elapsed: 0.2, from: 3, to: 2))
+        XCTAssertFalse(QuickSkipDecision.dislikes(elapsed: 0.2, from: 1, to: 1))
+    }
+
+    func testStrongRepeatedNegativeThemeIsFilteredButSingleDislikeIsNot() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let one = Post(key: "r:1", id: "1", provider: "rule34", tags: ["unwanted_theme", "red_hair"])
+        let two = Post(key: "r:2", id: "2", provider: "rule34", tags: ["unwanted_theme", "blue_hair"])
+        let candidate = Post(key: "r:3", id: "3", provider: "rule34", tags: ["unwanted_theme", "outside"])
+        await engine.record(.less, post: one)
+        let initiallyAllowed = await engine.isHardDisliked(candidate, taste: TasteChoice())
+        XCTAssertFalse(initiallyAllowed)
+        for _ in 0..<3 {
+            await engine.record(.less, post: one)
+            await engine.record(.less, post: two)
+        }
+        let nowRejected = await engine.isHardDisliked(candidate, taste: TasteChoice())
+        XCTAssertTrue(nowRejected)
+    }
+
     @MainActor func testImportCannotRaceInitialProfileRestoration() async {
         let store = AppStore()
         store.exclusions = ["existing"]
@@ -25,6 +126,65 @@ final class RecommendationTests: XCTestCase {
         XCTAssertNotNil(store.profileTransferError)
         XCTAssertFalse(store.cloudSyncEnabled)
     }
+    func testRecommendedStrictModeFiltersUnrelatedDiscoveryWithoutBlockingRelatedMatches() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let unrelated = Post(key: "rule34:random", id: "random", provider: "rule34", tags: ["landscape", "jacket"])
+        let wanted = Post(key: "rule34:wanted", id: "wanted", provider: "rule34", tags: ["chun_li", "qipao"])
+        let blocked = Post(key: "rule34:blocked", id: "blocked", provider: "rule34", tags: ["chun_li", "furry_female"])
+        let taste = TasteChoice(done: true, into: ["chun_li"], notInto: ["furry"])
+        let served = await engine.rankFast([unrelated, blocked, wanted], taste: taste, recent: [], strict: true)
+        XCTAssertEqual(served.map(\.stableID), [wanted.stableID])
+        let broad = await engine.rankFast([unrelated, wanted], taste: taste, recent: [])
+        XCTAssertEqual(broad.count, 2)
+        let empty = await engine.rankFast([unrelated], taste: taste, recent: [], strict: true)
+        XCTAssertTrue(empty.isEmpty, "Never fill explicit interests with unrelated posts")
+    }
+
+    func testStrongFavoriteCanRescueRelatedContentWithoutExactSelectedTag() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let favorites = (0..<3).map {
+            Post(key: "rule34:fav-\($0)", id: "fav-\($0)", provider: "rule34",
+                 tags: ["chun_li", "qipao"])
+        }
+        await engine.configureFavorites(favorites)
+        let related = Post(key: "rule34:related", id: "related", provider: "rule34", tags: ["qipao"])
+        let taste = TasteChoice(done: true, into: ["chun_li"], notInto: [])
+        let result = await engine.rankFast([related], taste: taste, recent: [], strict: true)
+        XCTAssertEqual(result.map(\.stableID), [related.stableID])
+    }
+
+    func testLegacyCharacterPlusFranchiseDoesNotCauseUnrelatedFranchiseRecommendations() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let wanted = Post(key: "rule34:character", id: "character", provider: "rule34",
+                          tags: ["chun_li", "street_fighter"])
+        let unrelated = Post(key: "rule34:franchise", id: "franchise", provider: "rule34",
+                             tags: ["street_fighter", "juri_han"])
+        let taste = TasteChoice(done: true, into: ["chun_li", "street_fighter"], notInto: [])
+        let ranked = await engine.rankFast([unrelated, wanted], taste: taste,
+                                           recent: [], strict: true)
+        XCTAssertEqual(ranked.map(\.stableID), [wanted.stableID])
+    }
+
+    func testLearnedFavoritesRequireRepeatedSupportBeforeStrictGating() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let unrelated = Post(key: "rule34:landscape", id: "landscape", provider: "rule34",
+                             tags: ["landscape"])
+        let related = Post(key: "rule34:qipao", id: "qipao", provider: "rule34", tags: ["qipao"])
+        await engine.configureFavorites([Post(key: "rule34:single", id: "single",
+                                            provider: "rule34", tags: ["qipao"])])
+        let early = await engine.rankFast([unrelated, related], taste: TasteChoice(),
+                                         recent: [], strict: true)
+        XCTAssertEqual(early.count, 2, "One favorite is not enough to hard-filter a cold-start feed")
+        let favorites = (0..<3).map { index in
+            Post(key: "rule34:favorite-\(index)", id: "favorite-\(index)",
+                 provider: "rule34", tags: ["qipao"])
+        }
+        await engine.configureFavorites(favorites)
+        let later = await engine.rankFast([unrelated, related], taste: TasteChoice(),
+                                         recent: [], strict: true)
+        XCTAssertEqual(later.map(\.stableID), [related.stableID])
+    }
+
     func testPositiveAndNegativeTagsGuideRatherThanReplaceLearnedProfile() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var state = RecommendationState(); var profile = RecommendationProfile()
@@ -36,16 +196,18 @@ final class RecommendationTests: XCTestCase {
         for _ in 0..<4 { requests.append(await engine.candidateRequest(context: "rule34|test", provider: .rule34, taste: taste, excluded: [])) }
         XCTAssertTrue(requests[0].query.included.first?.hasPrefix("new_topic_") == true)
         XCTAssertEqual(requests[1].query.included, ["engineering"])
-        XCTAssertEqual(requests[2].query.included, ["engineering"])
-        XCTAssertFalse(requests[3].focused)
+        XCTAssertTrue(requests[2].focused, "The first three acquisition attempts are interest-focused")
+        XCTAssertFalse(requests[3].focused, "Every fourth request explores broadly")
         XCTAssertTrue(requests.allSatisfy { $0.query.excluded.contains("blocked") })
         let after = await engine.snapshot()
         XCTAssertEqual(after.profiles, before.profiles)
     }
     func testBoundedLookAheadKeepsAllUniqueAllowedPostsAndPreferencesFirst() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
-        let posts = (0..<240).map { index in
-            Post(key: "rule34:\(index)", id: String(index), provider: "rule34", tags: [index == 239 ? "engineering" : (index == 238 ? "blocked" : "topic_\(index % 30)")])
+        var posts: [Post] = []
+        for index in 0..<240 {
+            let tag: String = index == 239 ? "engineering" : (index == 238 ? "blocked" : "topic_\(index % 30)")
+            posts.append(Post(key: "rule34:\(index)", id: String(index), provider: "rule34", tags: [tag]))
         }
         let start = Date()
         let ranked = await engine.rank(posts + [posts[0]], taste: TasteChoice(done: true, into: ["engineering"], notInto: ["blocked"]), recent: [])
@@ -140,5 +302,14 @@ final class RecommendationTests: XCTestCase {
         let scores = [await engine.gorseItemID(blocked): 1.0]
         let ranked = await engine.rank([blocked], taste: TasteChoice(done: true, into: [], notInto: ["blocked_theme"]), recent: [], collaborativeScores: scores)
         XCTAssertTrue(ranked.isEmpty)
+    }
+
+    func testSearchControlsDoNotBecomeTasteInterests() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await engine.recordSearch(provider: .rule34, query: "sort:score:desc engineering -blocked rating:explicit score:>=50")
+        let state = await engine.snapshot()
+        XCTAssertEqual(state.profiles["rule34"]?.recentQueries.last, "engineering -blocked")
+        XCTAssertGreaterThan(state.profiles["rule34"]?.terms["engineering"] ?? 0, 0)
+        for term in ["sort", "score", "desc", "rating", "explicit"] { XCTAssertNil(state.profiles["rule34"]?.terms[term]) }
     }
 }

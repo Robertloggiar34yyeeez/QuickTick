@@ -18,9 +18,24 @@ struct SettingsView: View {
     @State private var importingProfile = false
     @State private var preparingProfile = false
     var body: some View {
-        Form {
-            if let storageWarning = store.storageWarning { Section("Storage needs attention") { Text(storageWarning).foregroundStyle(.orange) } }
-            Section("Optional website Sync") {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 12) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 46, height: 46)
+                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 15))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Make QuickTick yours")
+                            .font(.system(.title3, design: .rounded).weight(.bold))
+                        Text("Preferences, privacy and visual recommendations")
+                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                }
+                .padding(.top, 12)
+            if let storageWarning = store.storageWarning { SettingsGroup(title: "Storage needs attention", icon: "exclamationmark.triangle") { Text(storageWarning).foregroundStyle(.orange) } }
+            SettingsGroup(title: "Website Sync", icon: "arrow.triangle.2.circlepath") {
                 Toggle("Enable website Sync", isOn: Binding(get: { store.cloudSyncEnabled }, set: { enabled in
                     Task { do { try await store.setCloudSyncEnabled(enabled) } catch { status = error.localizedDescription } }
                 })).accessibilityIdentifier("cloud-sync-toggle")
@@ -46,7 +61,7 @@ struct SettingsView: View {
                 Text(status.isEmpty ? store.syncStatus : status).accessibilityIdentifier("sync-status").font(.footnote).foregroundStyle(store.syncFailed ? .orange : .secondary)
                 Text("Your Sync ID is the key to your profile. Downloads stay on this device.").font(.caption).foregroundStyle(.secondary)
             }
-            Section("Provider access") {
+            SettingsGroup(title: "Provider access", icon: "lock.shield") {
                 TextField("Rule34 user ID", text: $user).textInputAutocapitalization(.never)
                     .accessibilityIdentifier("rule34-user-input").accessibilityLabel("Rule34 user ID")
                 SecureField("Rule34 API key", text: $key)
@@ -58,14 +73,14 @@ struct SettingsView: View {
                     .accessibilityIdentifier("pornhub-session-input").accessibilityLabel("Supported Pornhub session")
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
             }.disabled(store.isSyncing)
-            Section("Learned interests · \(store.selectedProvider.displayName)") {
+            SettingsGroup(title: "Learned interests · \(store.selectedProvider.displayName)", icon: "sparkles") {
                 LabeledContent("Engine", value: store.recommendationMode)
                 Text(store.learnedInterests.isEmpty ? "Interact with posts or search to learn interests." : store.learnedInterests.joined(separator: " · "))
                 Button("Edit Into / Not Into") { onboarding = true }
                 Button("Reset learned history", role: .destructive) { Task { await store.resetRecommendations() } }
                 if let resetStatus = store.resetStatus { Text(resetStatus).font(.caption) }
             }
-            Section("Move recommendations to another device") {
+            SettingsGroup(title: "Transfer recommendations", icon: "square.and.arrow.up") {
                 Button { preparingProfile = true; Task {
                     defer { preparingProfile = false }
                     do { sharedProfile = try await store.exportRecommendationProfile() }
@@ -76,15 +91,29 @@ struct SettingsView: View {
                 Text("Transfers your chosen and learned interests, exclusions and semantic interests. No logins, Sync ID, downloaded files or individual viewing/search history. The file contains private interests; share it only with your chosen device.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("Persistent exclusions") {
+            SettingsGroup(title: "Persistent exclusions", icon: "line.3.horizontal.decrease.circle") {
                 TextField("Tags separated by spaces", text: $exclusions).textInputAutocapitalization(.never)
                 Button("Save exclusions") { store.setExclusions(exclusions.split(whereSeparator: \.isWhitespace).map(String.init)); Task { await store.refresh() } }
             }
-            Section("Playback") {
+            SettingsGroup(title: "Visual intelligence", icon: "eye") {
+                Toggle("Learn visual taste while browsing", isOn: $store.visualAnalysisEnabled)
+                Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
+                ManualVisualRefreshPanel(manager: store.downloads)
+            }
+            SettingsGroup(title: "Playback", icon: "play.rectangle") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
                 Toggle("Mute", isOn: $store.muted)
             }
-        }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Settings")
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 30)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .background(AppTheme.canvas)
+        .navigationTitle("Settings")
+        .toolbarBackground(AppTheme.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .preferredColorScheme(.dark)
             .sheet(isPresented: $onboarding) { TasteOnboardingView() }
             .sheet(item: $sharedProfile) { profile in
                 NavigationStack {
@@ -106,6 +135,7 @@ struct SettingsView: View {
             }
             .modifier(ProfileImportConfirmation())
             .task { await reloadAccessFields() }
+            .onDisappear { store.cancelManualVisualRefresh() }
             .onChange(of: store.isSyncing) { _, busy in if !busy { Task { await reloadAccessFields() } } }
     }
     private func reloadAccessFields() async {
@@ -113,6 +143,84 @@ struct SettingsView: View {
         let credentials = await store.api.credentials
         user = credentials.rule34User; key = credentials.rule34Key; session = credentials.pornhubSession
         username = store.syncedPornhubUsername; remember = store.rememberedProviderAccess
+    }
+}
+
+private struct SettingsGroup<Content: View>: View {
+    let title: String
+    let icon: String
+    @ViewBuilder let content: Content
+
+    init(title: String, icon: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.icon = icon
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label(title, systemImage: icon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.88))
+                .padding(.leading, 3)
+            VStack(alignment: .leading, spacing: 12) {
+                content
+            }
+            .font(.subheadline)
+            .textFieldStyle(.roundedBorder)
+            .buttonStyle(.bordered)
+            .tint(AppTheme.accent)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+        }
+    }
+}
+
+private struct ManualVisualRefreshPanel: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject var manager: DownloadManager
+    @State private var previewURL: URL?
+    @State private var previewReady = false
+    var body: some View {
+        Group {
+            Button { store.startManualVisualRefresh() } label: {
+                Label("Update visual taste now", systemImage: "sparkles")
+            }.disabled(store.isManualVisualScanRunning).accessibilityIdentifier("force-visual-refresh")
+            Text("Checks every favorite, reuses valid scans and updates recommendations. Playback pauses during this manual update. Unavailable previews can be retried later.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let progress = store.manualVisualProgress {
+                ProgressView(value: progress.fraction) {
+                    Text(progress.status).accessibilityIdentifier("manual-visual-status")
+                }.accessibilityIdentifier("manual-visual-progress")
+                    .accessibilityValue("\(progress.completed) of \(progress.total) new posts analyzed")
+                if let previewURL {
+                    AnimatedGIFSurface(url: previewURL,
+                        playing: store.isForeground && !reduceMotion && !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState.rawValue < 2,
+                        pixels: 160, frameLimit: 24) { _ in previewReady = true }
+                        .frame(maxWidth: .infinity).frame(height: 160).clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous)).allowsHitTesting(false)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityValue(previewReady ? "Looping" : "Loading")
+                        .accessibilityLabel("Looping downloaded GIF").accessibilityIdentifier("visual-refresh-gif")
+                } else {
+                    Label("Download a GIF to show a looping preview here", systemImage: "photo")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if progress.running {
+                    Button("Stop update", role: .cancel) { store.cancelManualVisualRefresh() }
+                        .accessibilityIdentifier("cancel-visual-refresh")
+                }
+            }
+        }.task(id: manager.records.count) {
+            // Local downloads only; never fetch or decode a video for decoration.
+            let record = manager.records.first { record in
+                record.state == .complete && (record.mediaType?.lowercased() == "gif" || URL(fileURLWithPath: record.localMediaPath ?? "").pathExtension.lowercased() == "gif")
+                    && (record.fileSize ?? 0) <= 8 * 1024 * 1024
+            }
+            previewReady = false; previewURL = record?.exportURL
+        }
     }
 }
 

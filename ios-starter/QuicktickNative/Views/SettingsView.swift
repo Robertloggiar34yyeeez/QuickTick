@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
+    @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @FocusState private var syncFieldFocused: Bool
     @State private var syncID = ""
     @State private var status = ""
@@ -39,6 +40,12 @@ struct SettingsView: View {
                 Toggle("Show AI tab", isOn: $showAITab)
                     .accessibilityIdentifier("show-ai-tab-toggle")
                 Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            SettingsGroup(title: "Appearance", icon: "paintbrush.pointed") {
+                Toggle("Modern interface", isOn: $modernUI)
+                    .accessibilityIdentifier("modern-ui-toggle")
+                Text(modernUI ? "Rounded surfaces, compact chips and animated navigation." : "Previous QuickTick interface restored.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             SettingsGroup(title: "Website Sync", icon: "arrow.triangle.2.circlepath") {

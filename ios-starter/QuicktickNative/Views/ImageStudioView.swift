@@ -12,6 +12,7 @@ struct ImageStudioView: View {
     @AppStorage("quicktick-studio-lora-strengths-v1") private var savedLoRAStrengthsJSON = "{}"
     @AppStorage("quicktick-studio-coreml-safety-v1") private var coreMLSafetyCheck = true
     @State private var showIntro = false
+    @State private var showSetupLoRAChoice = false
     @State private var showImport = false
     @State private var showAnimaImport = false
     @State private var showLoRAImport = false
@@ -101,6 +102,17 @@ struct ImageStudioView: View {
         .sheet(isPresented: $showIntro) { introSheet }
         .sheet(isPresented: $showToken) { tokenSheet }
         .sheet(isPresented: $showCatalog) { catalogSheet }
+        .alert("Add a LoRA?", isPresented: $showSetupLoRAChoice) {
+            Button("Browse LoRAs") {
+                catalogKind = .lora
+                searchQuery = inspiration.characters.first ?? inspiration.artists.first ?? "Anima"
+                showCatalog = true
+                searchCatalog()
+            }
+            Button("Not now", role: .cancel) { }
+        } message: {
+            Text("Anima is selected. Pick a character or artist LoRA to download, or add one later. This Metal build can download LoRAs but cannot apply them during generation yet.")
+        }
         .fileImporter(isPresented: $showImport, allowedContentTypes: [.zip, .folder]) { result in
             if case .success(let url) = result {
                 perform("Importing Core ML model…") {
@@ -356,9 +368,10 @@ struct ImageStudioView: View {
                     }
                     Button {
                         if animaReady { selectedEngine = .anima; status = "Anima Metal engine selected." }
-                        else { beginAnimaDownload(useExistingCheckpoint: selectedAnimaCheckpoint != nil) }
+                        else if selectedAnimaCheckpoint != nil { beginAnimaDownload(useExistingCheckpoint: true) }
+                        else { beginCivitaiAnimaSetup() }
                     } label: {
-                        engineChip("Anima · CivitAI", detail: animaReady ? "Ready · Private" : (selectedAnimaCheckpoint == nil ? "2.07 GB · Get" : "650 MB · Setup"),
+                        engineChip("Anima · CivitAI", detail: animaReady ? "Ready · Private" : "Set up",
                                    icon: "sparkles.rectangle.stack", active: selectedEngine == .anima && animaReady)
                     }
                     Button {
@@ -371,7 +384,7 @@ struct ImageStudioView: View {
                 }
                 .buttonStyle(QuicktickPressStyle())
             }
-            Text("Choose Core ML or Anima Metal. You can import an Anima checkpoint from CivitAI and add LoRAs from the model library. Large checkpoints need significant device RAM.")
+            Text("Set up Anima from civitai.red with its encoder and VAE. Large checkpoints need significant device RAM.")
                 .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
             if selectedEngine == .anima {
                 HStack(spacing: 8) {
@@ -846,7 +859,7 @@ struct ImageStudioView: View {
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
             ForEach([
                 ("1", "Start with your taste", "Use your favorites to build a prompt from the characters, artists, actions and scenes you like."),
-                ("2", "Choose your Anima model", "Get the compact Anima model or import an Anima checkpoint from CivitAI. Set the image size and select your LoRAs."),
+                ("2", "Install Anima", "Download Anima Turbo from civitai.red with its two supporting files, then choose a LoRA."),
                 ("3", "Make it yours", "Render privately on your device, save your images, and discover related CivitAI LoRAs.")
             ], id: \.0) { item in
                 HStack(alignment: .top, spacing: 12) {
@@ -859,7 +872,13 @@ struct ImageStudioView: View {
                 }
             }
             Spacer(minLength: 4)
-            Button("Let's create") { introCompleted = true; showIntro = false }
+            Button("Set up Anima") {
+                introCompleted = true
+                showIntro = false
+                if animaReady { selectedEngine = .anima; showSetupLoRAChoice = true }
+                else if selectedAnimaCheckpoint != nil { beginAnimaDownload(useExistingCheckpoint: true) }
+                else { beginCivitaiAnimaSetup() }
+            }
                 .font(.headline).foregroundStyle(.white)
                 .frame(maxWidth: .infinity, minHeight: 52)
                 .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16))
@@ -990,6 +1009,45 @@ struct ImageStudioView: View {
         }
     }
 
+    private func beginCivitaiAnimaSetup() {
+        guard !transferStatus.isActive, !busy else { return }
+        let identity = transferStatus.begin("Anima Turbo · civitai.red", estimatedBytes: 0)
+        let progress = transferStatus
+        status = "Finding Anima Turbo on civitai.red…"
+        downloadTask = Task {
+            defer { progress.finish(identity); downloadTask = nil }
+            do {
+                let token = KeychainStore.get(account: "civitai-api-key")
+                let version = try await CivitaiStudioCatalog().recommendedAnima(token: token)
+                status = "Downloading Anima Turbo v1.1…"
+                let checkpoint = try await LocalImageStudio.shared.downloadCivitaiAsset(
+                    version, type: "Checkpoint", host: "civitai.red", token: token,
+                    onProgress: { received, expected in
+                        Task { @MainActor in progress.update(identity, received: received, expected: expected) }
+                    })
+                try Task.checkCancellation()
+                selectedAnimaCheckpoint = checkpoint
+                savedAnimaCheckpointName = checkpoint.lastPathComponent
+                downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
+                status = "Downloading Anima text encoder and VAE…"
+                try await LocalImageStudio.shared.downloadAnimaBundle(useExistingCheckpoint: true,
+                    onProgress: { received, expected in
+                        Task { @MainActor in progress.update(identity, received: received, expected: expected) }
+                    })
+                try Task.checkCancellation()
+                animaReady = await LocalImageStudio.shared.hasAnimaAuxiliaryFiles()
+                guard animaReady else { throw StudioError.unavailableModel }
+                selectedEngine = .anima
+                status = "Anima installed and selected. Choose a LoRA if you like."
+                showSetupLoRAChoice = true
+            } catch is CancellationError {
+                status = "Setup stopped. Downloaded components are kept."
+            } catch {
+                status = "Anima setup failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func beginAnimaDownload(useExistingCheckpoint: Bool = false) {
         guard !animaReady, !transferStatus.isActive, !busy else { return }
         let estimate = useExistingCheckpoint ? StudioAnimaBundle.components.dropFirst().reduce(Int64(0)) { $0 + $1.bytes } : StudioAnimaBundle.totalBytes
@@ -1009,6 +1067,7 @@ struct ImageStudioView: View {
                 if animaReady {
                     selectedEngine = .anima
                     status = useExistingCheckpoint ? "Anima supporting files installed. Try generating with your CivitAI checkpoint." : "Anima Q4 installed! Select Generate to render with Metal."
+                    if useExistingCheckpoint { showSetupLoRAChoice = true }
                 }
             } catch is CancellationError {
                 status = "Anima download stopped; completed model components are kept."
@@ -1051,7 +1110,7 @@ struct ImageStudioView: View {
         downloadTask = Task {
             defer { progress.finish(identity); downloadBusyID = nil; downloadTask = nil }
             do {
-                _ = try await LocalImageStudio.shared.downloadCivitaiAsset(version, type: model.type,
+                let file = try await LocalImageStudio.shared.downloadCivitaiAsset(version, type: model.type,
                     host: useRed ? "civitai.red" : "civitai.com",
                     token: KeychainStore.get(account: "civitai-api-key"),
                     onProgress: { received, total in
@@ -1059,7 +1118,11 @@ struct ImageStudioView: View {
                     })
                 try Task.checkCancellation()
                 downloadedAssets = await LocalImageStudio.shared.downloadedAssets()
-                status = "Saved \(model.name). Select Anima checkpoints or enable compatible LoRAs below."
+                if model.type == "Checkpoint" && model.name.localizedCaseInsensitiveContains("Anima") {
+                    activateAnimaCheckpoint(file)
+                } else {
+                    status = "Saved \(model.name). You can select it in your downloaded assets."
+                }
             } catch is CancellationError {
                 status = "Download stopped."
             } catch let error as URLError where error.code == .cancelled {

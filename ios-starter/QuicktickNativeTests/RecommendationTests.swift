@@ -153,6 +153,20 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(StudioAnimeUpscaler.tileOrigins(length: 640), [0, 128])
         XCTAssertEqual(StudioAnimeUpscaler.tileOrigins(length: 1024), [0, 256, 512])
     }
+
+    func testAnimaMemoryBudgetProtectsRepeatedRenders() throws {
+        let minimum = StudioAnimaMemoryBudget.requiredBeforeLoad(
+            diffusionBytes: 1_400_000_000, auxiliaryBytes: 650_000_000, upscale: false)
+        let enhanced = StudioAnimaMemoryBudget.requiredBeforeLoad(
+            diffusionBytes: 1_400_000_000, auxiliaryBytes: 650_000_000, upscale: true)
+        XCTAssertGreaterThanOrEqual(minimum, 3_000_000_000)
+        XCTAssertGreaterThan(enhanced, minimum)
+        XCTAssertThrowsError(try StudioAnimaMemoryBudget.check(available: minimum - 1, required: minimum))
+        XCTAssertNoThrow(try StudioAnimaMemoryBudget.check(available: minimum, required: minimum))
+        XCTAssertNoThrow(try StudioAnimaMemoryBudget.check(
+            available: StudioAnimaMemoryBudget.requiredAfterLoad,
+            required: StudioAnimaMemoryBudget.requiredAfterLoad))
+    }
     func testSimpleOnboardingSeparatesFictionalCharactersFromBroadKeywords() {
         let characters = StarterTastePick.characters
         let keywords = StarterTastePick.keywords

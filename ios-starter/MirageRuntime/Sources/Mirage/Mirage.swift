@@ -299,6 +299,10 @@ public actor Engine {
     /// native buffer — Kiln frees the C-side buffer before this call
     /// returns.
     public func generate(_ request: GenerationRequest) async throws -> CGImage {
+        // Metal and ImageIO may create autoreleased Objective-C wrappers.
+        // The worker actor otherwise retains those across successive runs,
+        // and a second render can hit the iOS per-process memory ceiling.
+        return try autoreleasepool {
         let promptHolder = request.prompt
         let negHolder = request.negativePrompt ?? ""
 
@@ -336,6 +340,7 @@ public actor Engine {
             throw MirageError.cgImageCreationFailed
         }
         return cg
+        }
     }
 
     /// True if the loaded checkpoint can generate video (Wan / SVD family).

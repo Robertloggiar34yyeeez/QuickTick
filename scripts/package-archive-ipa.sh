@@ -31,9 +31,11 @@ IPA_PATH="$ROOT/build/export/QuickTick-${IPA_VERSION}-unsigned.ipa"
 (cd "$staging_dir" && /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload "$IPA_PATH")
 shasum -a 256 "$IPA_PATH" > build/export/SHA256SUMS.txt
 python3 scripts/verify-ipa.py "$IPA_PATH" build/export/SHA256SUMS.txt
+cp ios-starter/Config/iPhone.entitlements build/export/iPhone.entitlements
 printf '%s\n' \
     'Exported directly from the successfully archived Xcode iPhone app.' \
     'Includes the Mirage Metal runtime linked by Xcode.' \
     'Unsigned: install using AltStore/Sideloadly for signing.' \
+    'Large on-device AI models need the bundled iPhone.entitlements when signing; some sideloaders may not preserve these permissions.' \
     "Git commit: ${GITHUB_SHA:-local}" \
     > build/export/INSTALLATION.txt

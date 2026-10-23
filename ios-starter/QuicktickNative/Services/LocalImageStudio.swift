@@ -29,6 +29,24 @@ enum StudioError: LocalizedError {
     }
 }
 
+/// Conservative jetsam headroom around Mirage's compressed model weights.
+/// Mirrors its maintainer's recommendation to reserve at least 1 GB for
+/// activations and accounts for the separate Qwen encoder / VAE downloads.
+enum StudioAnimaMemoryBudget {
+    static let requiredAfterLoad: Int64 = 900_000_000
+
+    static func requiredBeforeLoad(diffusionBytes: Int64, auxiliaryBytes: Int64, upscale: Bool) -> Int64 {
+        max(0, diffusionBytes) + max(0, auxiliaryBytes) + 1_100_000_000
+            + (upscale ? 300_000_000 : 0)
+    }
+
+    static func check(available: Int64, required: Int64) throws {
+        guard available == 0 || available >= required else {
+            throw StudioError.insufficientMemory(required: required, available: available)
+        }
+    }
+}
+
 enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
     case square, portrait, landscape, story
     var id: String { rawValue }
@@ -456,16 +474,16 @@ actor LocalImageStudio {
             guard hasAnimaBundle() else { throw StudioError.unavailableModel }
             diffusionURL = anima.appendingPathComponent(StudioAnimaBundle.components[0].file)
         }
-        // Always re-check memory, including the second and subsequent renders.
-        // A retained multi-GB Mirage/Metal context caused memory to accumulate
-        // between creations. Release that context before 4× upscaling starts.
+        // Check the remaining *process* memory before every render. A new
+        // context is required while Mirage cannot reliably reuse one across
+        // generations on all iPhones. Leave room for Metal activations and
+        // the image decoder, not just the on-disk weight size.
         let diffusionBytes = (try? FileManager.default.attributesOfItem(atPath: diffusionURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         let auxiliaryBytes = StudioAnimaBundle.components.dropFirst().reduce(Int64(0)) { $0 + $1.bytes }
-        let memoryRequired = diffusionBytes + auxiliaryBytes + 850_000_000
+        let memoryRequired = StudioAnimaMemoryBudget.requiredBeforeLoad(
+            diffusionBytes: diffusionBytes, auxiliaryBytes: auxiliaryBytes, upscale: upscale)
         let available = Int64(os_proc_available_memory())
-        guard available == 0 || available >= memoryRequired else {
-            throw StudioError.insufficientMemory(required: memoryRequired, available: available)
-        }
+        try StudioAnimaMemoryBudget.check(available: available, required: memoryRequired)
         let parts = StudioAnimaBundle.components
         let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
         let result = try await Self.renderWithFreshAnimaEngine(
@@ -487,6 +505,11 @@ actor LocalImageStudio {
         onProgress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> CGImage {
         let engine = try Engine(models: models)
+        // The model load itself may consume all remaining jetsam allowance.
+        // Bail out before the temporary diffusion graph pushes the app over.
+        try StudioAnimaMemoryBudget.check(
+            available: Int64(os_proc_available_memory()),
+            required: StudioAnimaMemoryBudget.requiredAfterLoad)
         Mirage.setProgressCallback { step, total, _ in onProgress(step, total) }
         defer { Mirage.setProgressCallback(nil) }
         return try await engine.generate(request)

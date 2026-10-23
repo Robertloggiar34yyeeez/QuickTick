@@ -1001,8 +1001,8 @@
 				"TARGETED_DEVICE_FAMILY" = "1,2";
 				"CODE_SIGN_STYLE" = "Automatic";
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
-				"MARKETING_VERSION" = "0.9.8";
-				"CURRENT_PROJECT_VERSION" = "28";
+				"MARKETING_VERSION" = "0.9.9";
+				"CURRENT_PROJECT_VERSION" = "29";
 				"INFOPLIST_KEY_QUICKTICK_API_BASE_URL" = "$(QUICKTICK_API_BASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation" = "YES";
 				"INFOPLIST_KEY_UILaunchScreen_Generation" = "YES";
@@ -1013,6 +1013,7 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
 				"INFOPLIST_FILE" = "Config/Info.plist";
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Config/Simulator.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Config/iPhone.entitlements";
 			};
 			"name" = "Debug";
 			"baseConfigurationReference" = "734399CC5ADF15F31FBB8FDF";
@@ -1028,8 +1029,8 @@
 				"TARGETED_DEVICE_FAMILY" = "1,2";
 				"CODE_SIGN_STYLE" = "Automatic";
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
-				"MARKETING_VERSION" = "0.9.8";
-				"CURRENT_PROJECT_VERSION" = "28";
+				"MARKETING_VERSION" = "0.9.9";
+				"CURRENT_PROJECT_VERSION" = "29";
 				"INFOPLIST_KEY_QUICKTICK_API_BASE_URL" = "$(QUICKTICK_API_BASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation" = "YES";
 				"INFOPLIST_KEY_UILaunchScreen_Generation" = "YES";
@@ -1040,6 +1041,7 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
 				"INFOPLIST_FILE" = "Config/Info.plist";
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Config/Simulator.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Config/iPhone.entitlements";
 			};
 			"name" = "Release";
 			"baseConfigurationReference" = "6414AD7185FE22D4F0767C2B";

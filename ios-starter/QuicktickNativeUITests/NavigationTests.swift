@@ -181,6 +181,25 @@ final class NavigationTests: XCTestCase {
         app.buttons["Close"].tap()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 5))
     }
+    @MainActor func testHideAITabKeepsFourNavigationTabs() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))
+        app.buttons["open-settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        let toggle = app.switches["show-ai-tab-toggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        if toggle.value as? String == "1" { toggle.tap() }
+        app.buttons["Done"].tap()
+        XCTAssertFalse(app.buttons["tab-Create"].exists)
+        for name in ["Home", "Immersive", "Favorites", "Downloads"] {
+            XCTAssertTrue(app.buttons["tab-\(name)"].exists)
+        }
+        app.buttons["open-settings"].tap()
+        let restoreToggle = app.switches["show-ai-tab-toggle"]
+        if restoreToggle.value as? String == "0" { restoreToggle.tap() }
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons["tab-Create"].exists)
+    }
     @MainActor func testSearchAppearsOnceBeforeAndAfterSubmitting() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         app.buttons["home-search-button"].tap()

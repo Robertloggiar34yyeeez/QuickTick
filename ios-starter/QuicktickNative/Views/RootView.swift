@@ -7,6 +7,7 @@ struct RootView: View {
     @State private var brieflyNamedTab: Int?
     @State private var tabNameTask: Task<Void, Never>?
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
+    @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
     @State private var showSettings = false
     @State private var showStudio = false
     @State private var homeAnchor: String?
@@ -108,7 +109,7 @@ struct RootView: View {
     }
 
     @ViewBuilder private func tabButtons(vertical: Bool) -> some View {
-        ForEach(tabs.indices, id: \.self) { index in
+        ForEach(tabs.indices.filter { showAITab || $0 != 2 }, id: \.self) { index in
             if index == 2 {
                 Button {
                     store.isStudioPresented = true

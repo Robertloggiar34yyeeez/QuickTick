@@ -18,7 +18,6 @@ struct ImageStudioView: View {
     @State private var showToken = false
     @State private var showCatalog = false
     @State private var showAdvanced = false
-    @State private var glowActive = false
     @State private var prompt = ""
     @State private var negativePrompt = "low quality, blurry, distorted anatomy, watermark"
     @State private var stepCount = 20.0
@@ -174,14 +173,8 @@ struct ImageStudioView: View {
                 }
                 VStack(spacing: 0) {
                     HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Label("QUICKTICK", systemImage: "sparkles")
-                                .font(.system(size: 12, weight: .heavy, design: .rounded))
-                                .tracking(2.2)
-                            Text("CREATION STUDIO / LIVE")
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                .tracking(1.4).foregroundStyle(.white.opacity(0.62))
-                        }
+                        Label("Creating", systemImage: "sparkles")
+                            .font(.subheadline.weight(.semibold))
                         Spacer()
                         Button {
                             if busy { renderTask?.cancel() }
@@ -195,14 +188,6 @@ struct ImageStudioView: View {
                     }
                     .padding(.top, 4)
                     if busy {
-                        VStack(spacing: 6) {
-                            Text(renderPreview == nil ? "IMAGINING" : "FINALIZING")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .tracking(4).foregroundStyle(Color(red: 0.98, green: 0.77, blue: 0.46))
-                            Text(renderPreview == nil ? "A vision takes shape" : "Your image is here")
-                                .font(.system(size: 24, weight: .semibold, design: .rounded))
-                        }
-                        .padding(.top, 42)
                         StudioPromptCrawl(prompt: activeRenderPrompt, reduceMotion: reduceMotion)
                             .id(renderSequence)
                             .frame(maxWidth: 480)
@@ -219,7 +204,7 @@ struct ImageStudioView: View {
                             Text(renderPhase == .completed ? "Your creation is ready" :
                                  renderPhase == .enhancementFailed ? "Original image saved" :
                                  renderPhase == .cancelled ? "Generation cancelled" : "Generation failed")
-                                .font(.system(size: 26, weight: .bold, design: .rounded))
+                                .font(.title2.weight(.bold))
                                 .multilineTextAlignment(.center)
                         }
                         Spacer(minLength: 36)
@@ -232,19 +217,13 @@ struct ImageStudioView: View {
                                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                                 .tracking(1.3)
                             Spacer()
-                            Text(selectedEngine == .anima ? "ANIMA · LOCAL" : "CORE ML · LOCAL")
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.68))
                         }
                         ProgressView(value: renderStatus.fraction)
                             .tint(AppTheme.accent)
                             .accessibilityIdentifier("studio-focus-progress")
-                        HStack {
-                            Text(busy ? "Creating privately on device" : "Render status")
-                            Spacer()
-                            Text("\(Int(renderStatus.fraction * 100))%")
-                                .monospacedDigit()
-                        }
+                        Text("\(Int(renderStatus.fraction * 100))%")
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .monospacedDigit()
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.white.opacity(0.8))
                         if let status {
@@ -285,110 +264,61 @@ struct ImageStudioView: View {
     }
 
     private var studioHero: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
                 Image(systemName: "sparkles.rectangle.stack.fill")
-                    .font(.title3).foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 15))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("QUICKTICK / STUDIO")
-                        .font(.system(size: 11, weight: .heavy, design: .rounded)).tracking(1.7)
-                    Text("YOUR PERSONAL CREATIVE SPACE")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced)).tracking(0.8)
-                        .foregroundStyle(.white.opacity(0.58))
-                }
+                    .font(.headline).foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 12))
+                Text("Image Studio")
+                    .font(.title2.weight(.bold))
                 Spacer(minLength: 4)
                 Image(systemName: "lock.shield.fill")
-                    .font(.subheadline).foregroundStyle(.green.opacity(0.9))
-                    .frame(width: 34, height: 34)
-                    .background(.white.opacity(0.08), in: Circle())
+                    .font(.caption).foregroundStyle(.green.opacity(0.85))
                     .accessibilityLabel("Private on-device generation")
             }
             VStack(alignment: .leading, spacing: 8) {
-                Text("DREAM IT. CREATE IT.")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .tracking(2.5).foregroundStyle(Color(red: 0.86, green: 0.72, blue: 1))
-                Text("Make something\nunforgettable.")
-                    .font(.system(size: 37, weight: .bold, design: .rounded))
-                    .tracking(-1.7)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .foregroundStyle(LinearGradient(colors: [.white, Color(red: 0.84, green: 0.79, blue: 1)],
-                                                    startPoint: .topLeading, endPoint: .bottomTrailing))
-                Text("Your favorite characters, your imagination. Everything stays on your device.")
-                    .font(.system(size: 13)).foregroundStyle(.white.opacity(0.67))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Label("YOUR PROMPT", systemImage: "text.alignleft")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced)).tracking(1.3)
-                    Spacer()
-                    Text("\(prompt.count) characters")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.48))
-                }
-                .foregroundStyle(.white.opacity(0.76))
+                Text("Prompt").font(.subheadline.weight(.semibold))
                 ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: 18).fill(Color.black.opacity(0.27))
+                    RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.27))
                     if prompt.isEmpty {
-                        Text("Describe the scene, character, lighting and mood…")
-                            .font(.subheadline).foregroundStyle(.white.opacity(0.42))
-                            .padding(.horizontal, 18).padding(.top, 20)
+                        Text("Describe your image…")
+                            .font(.subheadline).foregroundStyle(.white.opacity(0.45))
+                            .padding(.horizontal, 15).padding(.top, 17)
                             .allowsHitTesting(false)
                     }
                     TextEditor(text: $prompt)
                         .focused($promptFocused)
                         .scrollContentBackground(.hidden)
-                        .font(.system(size: 15, weight: .medium, design: .rounded))
-                        .padding(12)
-                        .frame(height: 132)
+                        .font(.system(size: 16))
+                        .padding(9)
+                        .frame(height: 124)
                         .accessibilityLabel("Image prompt")
                         .accessibilityIdentifier("studio-prompt")
                 }
-                .frame(height: 132)
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.19)))
+                .frame(height: 124)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.19)))
             }
             Button(action: generateFromFavorites) {
-                HStack(spacing: 9) {
-                    Image(systemName: "heart.text.square.fill").foregroundStyle(Color(red: 1, green: 0.72, blue: 0.87))
-                    Text("Surprise me with my favorites")
-                    Spacer()
-                    Image(systemName: "arrow.up.right").font(.caption)
-                }
-                .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                Label("Surprise me", systemImage: "heart.text.square.fill")
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .frame(maxWidth: .infinity, minHeight: 48)
-                .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 16))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.15)))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
             }
             .buttonStyle(QuicktickPressStyle())
             .disabled(busy)
             .accessibilityIdentifier("studio-generate-from-favorites")
             Button { render() } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "sparkles")
-                        .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion && !busy)
-                    Text(busy ? "Creating…" : "Generate image")
-                    Spacer()
-                    Image(systemName: "arrow.right").font(.headline)
-                }
-                .font(.system(size: 17, weight: .bold, design: .rounded))
+                Label(busy ? "Creating…" : "Generate", systemImage: "sparkles")
+                .font(.headline)
                 .foregroundStyle(.white)
-                .padding(.horizontal, 20)
-                .frame(maxWidth: .infinity, minHeight: 58)
-                .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 19))
-                .overlay(RoundedRectangle(cornerRadius: 19).stroke(.white.opacity(0.32)))
-                .shadow(color: AppTheme.accent.opacity(glowActive ? 0.48 : 0.24), radius: glowActive ? 23 : 11, y: 4)
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 14))
             }
             .buttonStyle(QuicktickPressStyle())
             .disabled(busy)
             .accessibilityIdentifier("studio-generate")
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true)) { glowActive = true }
-            }
             if let status {
                 Text(status)
                     .font(.caption).foregroundStyle(.white.opacity(0.76))
@@ -396,17 +326,13 @@ struct ImageStudioView: View {
                     .accessibilityIdentifier("studio-status")
             }
         }
-        .padding(22)
+        .padding(18)
         .background {
-            RoundedRectangle(cornerRadius: 30)
+            RoundedRectangle(cornerRadius: 22)
                 .fill(Color(red: 0.085, green: 0.065, blue: 0.18).opacity(0.94))
-                .overlay(alignment: .topTrailing) {
-                    Circle().fill(AppTheme.accent.opacity(0.17))
-                        .frame(width: 230, height: 230).blur(radius: 65).offset(x: 80, y: -70)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 30))
+                .clipShape(RoundedRectangle(cornerRadius: 22))
         }
-        .overlay(RoundedRectangle(cornerRadius: 30).stroke(.white.opacity(0.16)))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.16)))
     }
 
     private func inspirationRow(_ title: String, values: [String]) -> some View {
@@ -522,6 +448,18 @@ struct ImageStudioView: View {
 
     private var outputControls: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if selectedEngine == .anima {
+                HStack(spacing: 8) {
+                    Text("Preset").font(.caption.weight(.semibold))
+                    Spacer()
+                    Button("Fast") { stepCount = 16; animaLongestEdge = 512 }
+                        .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 16 && animaLongestEdge == 512))
+                        .accessibilityIdentifier("studio-preset-fast")
+                    Button("Quality") { stepCount = 30; animaLongestEdge = 640 }
+                        .buttonStyle(StudioOptionChipStyle(isSelected: stepCount == 30 && animaLongestEdge == 640))
+                        .accessibilityIdentifier("studio-preset-quality")
+                }
+            }
             Text("Aspect ratio").font(.caption.weight(.semibold))
             HStack(spacing: 7) {
                 ForEach(StudioAspectRatio.allCases) { ratio in
@@ -557,10 +495,6 @@ struct ImageStudioView: View {
                 .buttonStyle(StudioOptionChipStyle(isSelected: highResolution))
                 .accessibilityIdentifier("studio-anime-upscaler")
             }
-            Text(selectedEngine == .anima
-                 ? "Anima renders at the selected native size. 896–1024px needs substantial memory and may fail on older iPhones."
-                 : "Core ML renders at native size. Other ratios center-crop the output; Anime 4× enhances it.")
-                .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
         }
     }
 
@@ -1188,6 +1122,8 @@ struct ImageStudioView: View {
         renderTask = Task {
             defer { busy = false; renderTask = nil }
             do {
+                await store.prepareForImageGeneration()
+                try Task.checkCancellation()
                 let callback: @Sendable (Int, Int) -> Void = { finished, total in
                     Task { @MainActor in
                         guard renderPhase == .rendering else { return }
@@ -1344,12 +1280,8 @@ private struct StudioPromptCrawl: View {
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 18) {
-                Text("THE CREATION")
-                    .font(.system(size: 13, weight: .black, design: .rounded))
-                    .tracking(4)
                 Text(prompt)
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .tracking(0.6)
+                    .font(.system(size: 21, weight: .semibold))
                     .lineSpacing(12)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)

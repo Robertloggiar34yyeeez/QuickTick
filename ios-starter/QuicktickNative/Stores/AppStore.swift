@@ -280,6 +280,19 @@ final class AppStore: ObservableObject {
         Task { await MediaImagePipeline.shared.clearDecoded(); await recommendations.releaseSemanticModel(); await visual.releaseModels() }
     }
 
+    /// Image generation and feed analysis are mutually exclusive heavy tasks.
+    /// Await their teardown before Mirage allocates its Metal buffers.
+    func prepareForImageGeneration() async {
+        stopActiveLearning()
+        cancelManualVisualRefresh()
+        semanticTask?.cancel(); idleTask?.cancel()
+        inlinePlaybackID = nil
+        players.releaseAll()
+        await MediaImagePipeline.shared.clearDecoded()
+        await recommendations.releaseSemanticModel()
+        await visual.releaseModels()
+    }
+
     private func invalidateFeed() {
         fullScreenPlaybackID = nil
         idleTask?.cancel(); plannedAcquisition = nil

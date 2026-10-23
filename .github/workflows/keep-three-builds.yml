@@ -1,6 +1,10 @@
 name: Keep three recent QuickTick builds
 
 on:
+  # Updating this policy also runs cleanup immediately, without starting a
+  # costly iOS/macOS build. Regular cleanup follows completed iOS runs.
+  push:
+    paths: ['.github/workflows/keep-three-builds.yml']
   workflow_run:
     workflows: ["Native iOS build and IPA"]
     types: [completed]

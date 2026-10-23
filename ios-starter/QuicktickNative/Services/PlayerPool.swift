@@ -82,7 +82,7 @@ final class PlayerPool: ObservableObject {
                       current < 9.5,
                       VideoIntroPolicy.startTime(duration: duration, enabled: true) > 0 else { return }
                 self.introSkipped.insert(key)
-                player.seek(to: CMTime(seconds: 10, preferredTimescale: 600),
+                await player.seek(to: CMTime(seconds: 10, preferredTimescale: 600),
                             toleranceBefore: CMTime(seconds: 0.15, preferredTimescale: 600),
                             toleranceAfter: CMTime(seconds: 0.15, preferredTimescale: 600))
             }

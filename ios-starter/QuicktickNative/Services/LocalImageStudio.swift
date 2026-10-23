@@ -308,6 +308,7 @@ struct CivitaiStudioModel: Decodable, Identifiable, Sendable {
     let modelVersions: [Version]
     struct Version: Decodable, Sendable {
         let id: Int
+        let name: String?
         let baseModel: String?
         let downloadUrl: URL?
         let trainedWords: [String]?
@@ -326,6 +327,23 @@ struct CivitaiStudioModel: Decodable, Identifiable, Sendable {
 /// Metadata discovery and opt-in downloads only. No CivitAI inference API is
 /// used and the bearer key is never encoded into URLs or app state JSON.
 actor CivitaiStudioCatalog {
+    /// Official CircleStone Labs Anima listing, pinned to Turbo v1.1.
+    /// Never choose a community upload merely because its name contains Anima.
+    func recommendedAnima(token: String? = nil) async throws -> CivitaiStudioModel.Version {
+        var request = URLRequest(url: URL(string: "https://civitai.red/api/v1/models/2458426")!)
+        request.timeoutInterval = 25
+        if let token, !token.isEmpty { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+              data.count < 2_000_000 else { throw StudioError.invalidResponse }
+        let model = try JSONDecoder().decode(CivitaiStudioModel.self, from: data)
+        guard model.id == 2_458_426, model.name == "Anima",
+              let version = model.modelVersions.first(where: {
+                  $0.id == 3_263_843 && $0.name == "turbo-v1.1"
+              }) else { throw StudioError.unavailableModel }
+        return version
+    }
+
     func search(_ query: String, type: String, host: String, token: String? = nil) async throws -> [CivitaiStudioModel] {
         guard ["Checkpoint", "LORA"].contains(type), query.count <= 80,
               ["civitai.com", "civitai.red"].contains(host) else { return [] }

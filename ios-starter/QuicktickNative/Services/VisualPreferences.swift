@@ -63,7 +63,7 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             result.creators = [(post.providerKey?.rawValue ?? post.provider.lowercased()) + ":" + creator.lowercased()]
         }
         result.attributes["motion:" + (post.isImmersiveMedia ? "moving" : "still")] = 1
-        for facet in ActionSemantics.facets(post.tags) {
+        for facet in ActionSemantics.facets(post) {
             // An unspecified action stays unknown, not negative evidence.
             result.attributes[facet] = 0.95
         }

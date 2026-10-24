@@ -115,7 +115,7 @@ struct RootView: View {
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
-                SettingsView()
+                SettingsView(showAITab: $showAITab)
                     .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showSettings = false } } }
             }
             .tint(AppTheme.accent)

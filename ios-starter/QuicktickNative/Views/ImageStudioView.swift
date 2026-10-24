@@ -1024,7 +1024,7 @@ struct ImageStudioView: View {
                             .accessibilityIdentifier("studio-catalog-kind-\(kind.rawValue)")
                         }
                     }
-                    .accessibilityIdentifier("studio-catalog-kind")
+                    .accessibilityElement(children: .contain)
                     HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass")
                             .foregroundStyle(AppTheme.secondaryLabel)

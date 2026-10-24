@@ -161,7 +161,13 @@ struct PostCardView: View {
         .allowsHitTesting(false)
         .overlay {
             if fullBleed {
-                Color.clear.contentShape(Rectangle())
+                // Keep the full-bleed media discoverable as an actual button
+                // for VoiceOver and UI automation. The exclusive gesture keeps
+                // double-tap Like distinct from single-tap fullscreen.
+                Button(action: openMediaFullscreen) {
+                    Color.clear.contentShape(Rectangle())
+                }
+                    .buttonStyle(.plain)
                     .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { result in
                         switch result {
                         case .first:
@@ -178,7 +184,9 @@ struct PostCardView: View {
                             openMediaFullscreen()
                         }
                     })
-                    .accessibilityLabel("Double tap to like, tap to view")
+                    .accessibilityLabel("Open full screen \(post.type.lowercased() == "video" ? "video" : "image")")
+                    .accessibilityHint("Double tap the media to like")
+                    .accessibilityIdentifier("fullscreen-\(post.stableID)")
             } else if post.type.lowercased() == "video" {
                 Button {
                     openMediaFullscreen()

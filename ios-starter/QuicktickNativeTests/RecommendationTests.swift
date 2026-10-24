@@ -111,6 +111,85 @@ final class RecommendationTests: XCTestCase {
         XCTAssertGreaterThan(first, second)
     }
 
+    func testRelationshipDynamicsHaveDistinctCanonicalMeaning() {
+        XCTAssertEqual(ActionSemantics.facet("femdom"), "power:female_dominant")
+        XCTAssertEqual(ActionSemantics.facet("female domination"), "power:female_dominant")
+        XCTAssertEqual(ActionSemantics.facet("male dom"), "power:male_dominant")
+        XCTAssertEqual(ActionSemantics.facet("praise kink"), "tone:praise")
+        XCTAssertEqual(ActionSemantics.facet("mommy_dom"), "persona:mommy")
+        XCTAssertNotEqual(ActionSemantics.facet("mommy"), ActionSemantics.facet("femdom"))
+        XCTAssertNotEqual(ActionSemantics.facet("praise"), ActionSemantics.facet("humiliation"))
+        XCTAssertNil(ActionSemantics.facet("artist:femdom"))
+        XCTAssertNil(ActionSemantics.facet("milf"), "Age-related tags do not imply a mommy persona")
+
+        let selected = ActionSemantics.facets(["femdom", "praise_kink"])
+        XCTAssertTrue(ActionSemantics.conflicts(selected: selected, observed: ActionSemantics.facets(["male_dom"])))
+        XCTAssertFalse(ActionSemantics.conflicts(selected: selected, observed: ActionSemantics.facets(["mommy_dom"])))
+        XCTAssertFalse(ActionSemantics.conflicts(selected: selected, observed: []), "Unknown is not contradictory")
+    }
+
+    func testRelationshipAliasesAndKeywordTitlesRespectExplicitNegatives() async {
+        let tagged = Post(key: "rule34:dynamic", id: "dynamic", provider: "rule34",
+                          tags: ["chun_li", "dominant_male", "mommy_dom"])
+        XCTAssertTrue(RecommendationTagRules.rejects(tagged, exclusions: ["male_domination"]))
+        XCTAssertTrue(RecommendationTagRules.rejects(tagged, exclusions: ["mommy_kink"]))
+        XCTAssertFalse(RecommendationTagRules.rejects(tagged, exclusions: ["praise_kink"]))
+
+        var video = Post(key: "pornhub:dynamic", id: "dynamic", provider: "pornhub")
+        video.caption = "Femdom and praise kink"
+        video.creator = "Not A Dominatrix"
+        let facets = ActionSemantics.facets(video)
+        XCTAssertTrue(facets.contains("power:female_dominant"))
+        XCTAssertTrue(facets.contains("tone:praise"))
+        XCTAssertTrue(RecommendationTagRules.rejects(video, exclusions: ["female_domination"]))
+        var creatorOnly = Post(key: "pornhub:creator", id: "creator", provider: "pornhub")
+        creatorOnly.caption = "An ordinary clip"
+        creatorOnly.creator = "FemdomArtist"
+        XCTAssertFalse(ActionSemantics.facets(creatorOnly).contains("power:female_dominant"))
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let taste = TasteChoice(done: true, into: ["femdom", "chun_li"], notInto: [])
+        let disliked = await engine.isHardDisliked(tagged, taste: taste)
+        XCTAssertTrue(disliked)
+    }
+
+    func testLearnedPowerDirectionOutranksMatchingCharacterAndArtist() {
+        let positive = (0..<4).map { i in
+            Post(key: "rule34:fav-\(i)", id: "fav-\(i)", provider: "rule34",
+                 tags: ["2d", "chun_li", "artist:shared", "female_domination", "praise_kink"])
+        }
+        var learned = ConditionalTasteModel()
+        learned.train(positive, taxonomy: nil)
+        let compatible = Post(key: "rule34:compatible", id: "compatible", provider: "rule34",
+                              tags: ["2d", "chun_li", "artist:shared", "femdom", "verbal_praise"])
+        let incompatible = Post(key: "rule34:incompatible", id: "incompatible", provider: "rule34",
+                                tags: ["2d", "chun_li", "artist:shared", "male_domination"])
+        XCTAssertGreaterThan(learned.score(compatible, taxonomy: nil), learned.score(incompatible, taxonomy: nil) + 12)
+        let dimensions = VisualFeatures.metadata(compatible)!.attributes
+        XCTAssertNotNil(dimensions["power:female_dominant"])
+        XCTAssertNotNil(dimensions["tone:praise"])
+    }
+
+    func testDislikedDynamicDoesNotEraseLikedCharacterOrMotherlyPersona() {
+        let preferred = Post(key: "rule34:preferred", id: "preferred", provider: "rule34",
+                             tags: ["2d", "chun_li", "female_domination", "mommy_kink", "praise_kink"])
+        let rejected = Post(key: "rule34:rejected", id: "rejected", provider: "rule34",
+                            tags: ["2d", "chun_li", "male_domination", "degradation"])
+        var context = ContextTasteProfile()
+        let preferredFeatures = VisualFeatures.metadata(preferred)!
+        let rejectedFeatures = VisualFeatures.metadata(rejected)!
+        for _ in 0..<3 { context.record(.like, features: preferredFeatures) }
+        context.record(.less, features: rejectedFeatures)
+        context.record(.less, features: rejectedFeatures)
+        XCTAssertGreaterThan(context.score(preferredFeatures), context.score(rejectedFeatures))
+        XCTAssertEqual(context.dimensions["character:chun_li"]?.negative ?? 0, 0,
+                       "Context dislikes must not blacklist the character")
+        XCTAssertGreaterThan(context.dimensions["power:male_dominant"]?.negative ?? 0, 0)
+        XCTAssertNil(rejectedFeatures.attributes["persona:mommy"])
+        let contextualQueries = context.discoveryQueries()
+        XCTAssertTrue(contextualQueries.contains(["chun-li", "femdom"]),
+                      "Discovery should use a provider tag, not an internal concept key")
+    }
+
     func testDecisiveFavoriteMediumDoesNotLeakUnrelatedRenderStyles() async {
         let liked = (0..<6).map { index in
             Post(key: "rule34:a\(index)", id: "a\(index)", provider: "rule34",
@@ -336,6 +415,22 @@ final class RecommendationTests: XCTestCase {
         let taste = TasteChoice(done: true, into: ["chun_li"], notInto: [])
         let result = await engine.rankFast([related], taste: taste, recent: [], strict: true)
         XCTAssertEqual(result.map(\.stableID), [related.stableID])
+    }
+
+    func testGenericRepeatedFavoriteTagsNeverAdmitUnrelatedDiscovery() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let favorites = (0..<4).map { index in
+            Post(key: "rule34:liked-\(index)", id: "liked-\(index)", provider: "rule34",
+                 tags: ["2d", "chun_li", "1girl", "long_hair", "looking_at_viewer", "qipao"])
+        }
+        await engine.configureFavorites(favorites)
+        let irrelevant = Post(key: "rule34:generic", id: "generic", provider: "rule34",
+                              tags: ["2d", "1girl", "long_hair", "looking_at_viewer"])
+        let plausible = Post(key: "rule34:outfit", id: "outfit", provider: "rule34",
+                             tags: ["2d", "qipao"])
+        let relevant = await engine.rankFast([irrelevant, plausible],
+                                             taste: TasteChoice(), recent: [], strict: true)
+        XCTAssertEqual(relevant.map(\.stableID), [plausible.stableID])
     }
 
     func testGenericPoseDoesNotAdmitAnUnrelatedIdentifiedCharacter() async {

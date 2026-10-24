@@ -4,7 +4,9 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
-    @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
+    // Share the same state as the dock, so toggling this setting immediately
+    // updates the visible tabs even before the Settings sheet dismisses.
+    @Binding var showAITab: Bool
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false

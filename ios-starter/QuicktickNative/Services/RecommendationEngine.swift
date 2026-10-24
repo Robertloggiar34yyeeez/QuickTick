@@ -43,7 +43,7 @@ struct ConditionalTasteModel: Sendable {
             for subject in subjects where !artists.isEmpty {
                 approvedPairs[key + "|" + subject, default: []].formUnion(artists)
             }
-            for facet in ActionSemantics.facets(post.tags) {
+            for facet in ActionSemantics.facets(post) {
                 actionsByMedium[key, default: [:]][facet, default: 0] += 1
             }
         }
@@ -61,7 +61,7 @@ struct ConditionalTasteModel: Sendable {
             !artists.isDisjoint(with: approvedPairs[key + "|" + subject] ?? [])
         }
         let likedActions = actionsByMedium[key] ?? [:]
-        let candidateActions = ActionSemantics.facets(post.tags)
+        let candidateActions = ActionSemantics.facets(post)
         let actionBoost = candidateActions.reduce(0.0) { value, facet in
             value + min(3.5, Double(likedActions[facet] ?? 0) * 1.4)
         }
@@ -72,12 +72,16 @@ struct ConditionalTasteModel: Sendable {
                 ActionSemantics.axis($0.key) == ActionSemantics.axis(facet) && $0.key != facet
             }
             let count = competing.values.max() ?? 0
-            return value + (count >= 2 && likedActions[facet] == nil ? 2.5 : 0)
+            // Directional dominance is a strong contextual mismatch, whereas
+            // two different poses are merely a weak novelty signal. Neither
+            // is a hard blacklist learned from a handful of favorites.
+            let mismatch = ActionSemantics.axis(facet) == "power" ? 16.0 : 2.5
+            return value + (count >= 3 && likedActions[facet] == nil ? mismatch : 0)
         }
         // One matched character alone cannot outweigh an unapproved credited
         // artist. Confident pairs win; unknown creators get no artist boost.
         return (exactSubject ? 2.0 : 0) + (exactArtist ? 3.0 : 0) + (approvedPair ? 4.0 : 0)
-            + min(6.0, actionBoost) - min(5.0, actionConflict)
+            + min(6.0, actionBoost) - min(22.0, actionConflict)
     }
 }
 
@@ -174,6 +178,8 @@ actor RecommendationEngine {
     // Non-persisted, deduplicated affinity from every CURRENT saved favorite.
     // Rebuilding on changes avoids replaying old likes into the event ledger.
     private var savedFavoriteAffinity: [String: [String: Double]] = [:]
+    private var reinforcedFavoriteTerms: [String: Set<String>] = [:]
+    private var reinforcedFavoriteFacets: [String: Set<String>] = [:]
     private var conditionalTaste = ConditionalTasteModel()
     private var sessionTaste = SessionPreferenceModel()
     private var currentFavorites: [Post] = []
@@ -335,6 +341,8 @@ actor RecommendationEngine {
             }
         }
         savedFavoriteAffinity = [:]
+        reinforcedFavoriteTerms = [:]
+        reinforcedFavoriteFacets = [:]
         for source in counts.keys {
             let total = Double(max(1, totals[source] ?? 1))
             savedFavoriteAffinity[source] = counts[source]!.mapValues { count in
@@ -342,6 +350,18 @@ actor RecommendationEngine {
                 min(5.0, log1p(Double(count)) * 2.3) *
                     min(1.0, sqrt(Double(count) / total) * 2.0)
             }
+        }
+        // Compile the strict-serving anchors once per Favorites change, not
+        // hundreds of times while evaluating each feed candidate.
+        for (source, weights) in savedFavoriteAffinity {
+            let terms = Set(weights.compactMap { term, strength -> String? in
+                let canonical = RecommendationTagRules.canonical(term)
+                guard strength >= 2.5, !Self.genericTasteTerms.contains(canonical),
+                      !Self.lowSignalDiscoveryTags.contains(canonical) else { return nil }
+                return canonical
+            })
+            reinforcedFavoriteTerms[source] = terms
+            reinforcedFavoriteFacets[source] = ActionSemantics.facets(Array(terms))
         }
     }
 
@@ -440,6 +460,16 @@ actor RecommendationEngine {
         "2d", "3d", "3d_animation", "animation", "animated", "video",
         "image", "photo", "solo", "highres", "rating:safe", "rating:explicit"
     ]
+    // These visual descriptors occur on enormous numbers of unrelated posts.
+    // They can be intentionally selected, but must never become an automatic
+    // serving ticket simply because they appeared in a few liked images.
+    private static let lowSignalDiscoveryTags: Set<String> = [
+        "1girl", "1boy", "2girls", "2boys", "multiple_girls", "multiple_boys",
+        "female", "male", "solo", "smile", "smiling", "blush", "open_mouth",
+        "looking_at_viewer", "looking_at_another", "long_hair", "short_hair",
+        "black_hair", "blonde_hair", "blue_eyes", "large_breasts", "breasts",
+        "masterpiece", "best_quality", "high_resolution"
+    ]
     private let maxTerms = 140
     private let maxSeen = 2048
     private let maxQueries = 14
@@ -499,6 +529,7 @@ actor RecommendationEngine {
                 // "3d" alone should never become a provider discovery query
                 // just because a few favorite artists work in that medium.
                 && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
+                && !Self.lowSignalDiscoveryTags.contains(RecommendationTagRules.canonical($0.0))
                 && !(sourcesWithFictionalCharacters.contains(provider.rawValue)
                     && !sourcesWithWildlifeLikes.contains(provider.rawValue)
                     && Self.wildlifeOnlyTerms.contains(RecommendationTagRules.canonical($0.0)))
@@ -508,12 +539,14 @@ actor RecommendationEngine {
                 !blocked.contains($0.0) && !explicit.contains($0.0)
                 && (!hasIdentityFavorites || isFavoriteIdentity($0.0, source: provider.rawValue))
                 && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
+                && !Self.lowSignalDiscoveryTags.contains(RecommendationTagRules.canonical($0.0))
             }
         let saved = savedFavoriteTerms(source: provider.rawValue, limit: 14)
             .filter {
                 !blocked.contains($0.0) && !explicit.contains($0.0)
                 && (!hasIdentityFavorites || isFavoriteIdentity($0.0, source: provider.rawValue))
                 && !Self.genericTasteTerms.contains(RecommendationTagRules.canonical($0.0))
+                && !Self.lowSignalDiscoveryTags.contains(RecommendationTagRules.canonical($0.0))
                 && !(sourcesWithFictionalCharacters.contains(provider.rawValue)
                     && !sourcesWithWildlifeLikes.contains(provider.rawValue)
                     && Self.wildlifeOnlyTerms.contains(RecommendationTagRules.canonical($0.0)))
@@ -825,6 +858,8 @@ actor RecommendationEngine {
     func isHardDisliked(_ post: Post, taste: TasteChoice) -> Bool {
         let source = post.provider.lowercased()
         return fictionalWildlifeConfusion(post, taste: taste)
+            || ActionSemantics.conflicts(selected: ActionSemantics.facets(taste.into),
+                                          observed: ActionSemantics.facets(post))
             || conflictsWithFavoriteIdentity(post, taste: taste)
             || explicitlyOther3DArtist(post, taste: taste)
             || stronglyUnsupportedMedium(post, taste: taste)
@@ -946,36 +981,39 @@ actor RecommendationEngine {
                 return false
             }
         }
+        let reinforced = (reinforcedFavoriteTerms[source] ?? []).subtracting(inherited)
+        let candidateFacets = ActionSemantics.facets(post)
+        let reinforcedMatch = !reinforced.isDisjoint(with: observed)
+            || !candidateFacets.isDisjoint(with: reinforcedFavoriteFacets[source] ?? [])
         // Broad format preferences such as "2d" must not open the gate for
         // *every* 2D post when a character, action or artist was selected too.
         // This was the source of many apparently unrelated recommendations.
         let specific = selected.subtracting(Self.genericTasteTerms)
         if !specific.isEmpty {
-            return !specific.isDisjoint(with: observed) ||
-                !ActionSemantics.facets(post.tags).isDisjoint(with: ActionSemantics.facets(taste.into))
+            if !specific.isDisjoint(with: observed) ||
+                !candidateFacets.isDisjoint(with: ActionSemantics.facets(taste.into)) {
+                return true
+            }
+            // Strongly reinforced co-tags can rescue poorly credited posts.
+            // A known but different character was rejected above; a shared
+            // outfit alone cannot override an explicit opposite power dynamic.
+            return reinforcedMatch
         }
         if !selected.isEmpty && !selected.isDisjoint(with: observed) { return true }
-        if !ActionSemantics.facets(post.tags).isDisjoint(with: ActionSemantics.facets(taste.into)) {
+        if !candidateFacets.isDisjoint(with: ActionSemantics.facets(taste.into)) {
             return true
         }
 
         // For profiles built from real Likes/Favorites, demand repeated,
         // independently saved evidence before narrowing an otherwise empty
         // explicit profile. One favorite must not overfit the entire feed.
-        let favored = savedFavoriteAffinity[source] ?? [:]
-        let reinforced = Set(favored.compactMap { term, strength -> String? in
-            let canonical = RecommendationTagRules.canonical(term)
-            guard strength >= 2.5, !Self.genericTasteTerms.contains(canonical),
-                  !inherited.contains(canonical) else { return nil }
-            return canonical
-        })
         let recent = Set(sessionTaste.strongInterests(provider: source, limit: 12)
-            .filter { $0.1 >= 2.7 }.map { $0.0 })
+            .filter { $0.1 >= 2.7 && !Self.lowSignalDiscoveryTags.contains(RecommendationTagRules.canonical($0.0)) }.map { $0.0 })
         guard !selected.isEmpty || !reinforced.isEmpty || !recent.isEmpty else { return true }
-        if !reinforced.isDisjoint(with: observed) || !recent.isDisjoint(with: observed) { return true }
+        if reinforcedMatch || !recent.isDisjoint(with: observed) { return true }
         // Cached visual affinity may rescue poorly tagged posts, but a weak
         // visual similarity alone is not enough to serve an unrelated item.
-        return visual.map { $0.isFinite && $0 >= 5.0 } ?? false
+        return visual.map { $0.isFinite && $0 >= 3.2 } ?? false
     }
 
     /// Cheap metadata ranking before publication: no inference or network.

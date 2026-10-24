@@ -5,7 +5,7 @@ import Foundation
 enum TasteConcepts {
     // Versions the per-favorite metadata/appearance cache. New action facets
     // must be revisited after an in-place IPA upgrade.
-    static let version = "concepts-2026-10-23-actions-v2"
+    static let version = "concepts-2026-10-24-relationship-context-v3"
     static let aliases: [String: String] = [
         "chunli": "chun_li", "chun_li_(street_fighter)": "chun_li",
         "chun_li_(street_fighter_series)": "chun_li", "streetfighter": "street_fighter",
@@ -71,9 +71,17 @@ enum TasteConcepts {
         return result
     }
     static func identity(_ key: String) -> Bool { ["character:", "artist:", "franchise:", "performer:", "uploader:"].contains(where: key.hasPrefix) }
+    static func relationship(_ key: String) -> Bool {
+        ["power:", "role:", "tone:", "persona:"].contains(where: key.hasPrefix)
+    }
     static func pairs(_ dimensions: [String: Double]) -> [(String, Double)] {
         let anchors = dimensions.keys.filter(identity).sorted().prefix(8)
-        let presentation = dimensions.keys.filter { !identity($0) }.sorted().prefix(16)
+        // Keep consented relationship and tone preferences represented even
+        // when a post contains dozens of generic WD appearance labels.
+        let presentation = dimensions.keys.filter { !identity($0) }.sorted {
+            if relationship($0) != relationship($1) { return relationship($0) }
+            return $0 < $1
+        }.prefix(16)
         var result: [(String, Double)] = []
         for anchor in anchors {
             for item in presentation { result.append((anchor + "|" + item, min(dimensions[anchor] ?? 0, dimensions[item] ?? 0))) }
@@ -117,12 +125,63 @@ enum ActionSemantics {
         "reverse_cowgirl_position": "position:reverse_riding",
         "missionary": "position:missionary", "missionary_position": "position:missionary",
         "doggystyle": "position:rear_entry", "doggy_style": "position:rear_entry",
-        "standing_sex": "position:standing", "standing_position": "position:standing"
+        "standing_sex": "position:standing", "standing_position": "position:standing",
+        // Relationship dynamics are independent of positions, characters and
+        // artists. Do not collapse female domination into generic domination,
+        // or assume that a motherly persona is a family relationship.
+        "femdom": "power:female_dominant", "female_domination": "power:female_dominant",
+        "female_dominant": "power:female_dominant", "dominant_female": "power:female_dominant",
+        "dominatrix": "power:female_dominant", "female_dom": "power:female_dominant",
+        "maledom": "power:male_dominant", "male_dom": "power:male_dominant",
+        "male_domination": "power:male_dominant", "male_dominant": "power:male_dominant",
+        "dominant_male": "power:male_dominant",
+        "male_submissive": "role:male_submissive", "submissive_male": "role:male_submissive",
+        "female_submissive": "role:female_submissive", "submissive_female": "role:female_submissive",
+        "gentle_femdom": "power:female_dominant", "gentle_maledom": "power:male_dominant",
+        "praise_kink": "tone:praise", "praise": "tone:praise", "verbal_praise": "tone:praise",
+        "positive_reinforcement": "tone:praise", "good_girl": "tone:praise",
+        "good_boy": "tone:praise", "degradation": "tone:degradation",
+        "verbal_humiliation": "tone:degradation", "humiliation": "tone:degradation",
+        "mommy_dom": "persona:mommy", "mommy_dommy": "persona:mommy",
+        "mommy_kink": "persona:mommy", "mommy": "persona:mommy",
+        "mommy_gf": "persona:mommy", "mommy_girlfriend": "persona:mommy",
+        "daddy_dom": "persona:daddy", "daddy_kink": "persona:daddy",
+        "daddy": "persona:daddy"
     ]
 
     static func facet(_ raw: String) -> String? { aliases[TasteConcepts.canonical(raw)] }
     static func facets(_ tags: [String]) -> Set<String> { Set(tags.compactMap(facet)) }
+    private static let keywordPhrases: [String: String] = [
+        "femdom": "power:female_dominant", "female domination": "power:female_dominant",
+        "dominatrix": "power:female_dominant", "female dom": "power:female_dominant",
+        "male dom": "power:male_dominant", "maledom": "power:male_dominant",
+        "male domination": "power:male_dominant", "dominant male": "power:male_dominant",
+        "praise kink": "tone:praise", "verbal praise": "tone:praise",
+        "positive reinforcement": "tone:praise", "verbal humiliation": "tone:degradation",
+        "mommy dom": "persona:mommy", "mommy kink": "persona:mommy",
+        "mommy dommy": "persona:mommy", "daddy dom": "persona:daddy",
+        "male submissive": "role:male_submissive", "female submissive": "role:female_submissive"
+    ]
+    /// Titles from keyword/video sources can carry unambiguous relationship
+    /// phrases, but creator names must never imply the depicted context.
+    static func facets(_ post: Post) -> Set<String> {
+        var result = facets(post.tags)
+        guard post.providerKey != .rule34 else { return result }
+        let words = [post.caption, post.category].compactMap { $0 }.joined(separator: " ")
+            .lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        guard !words.isEmpty else { return result }
+        let text = " " + words.joined(separator: " ") + " "
+        for (phrase, facet) in keywordPhrases where text.contains(" " + phrase + " ") { result.insert(facet) }
+        return result
+    }
     static func axis(_ facet: String) -> String { String(facet.split(separator: ":").first ?? "") }
+    /// Only a known opposite *power direction* is an explicit contradiction.
+    /// Missing tags are unknown, and praise/mommy are orthogonal to power.
+    static func conflicts(selected: Set<String>, observed: Set<String>) -> Bool {
+        let wanted = selected.filter { axis($0) == "power" }
+        let present = observed.filter { axis($0) == "power" }
+        return !wanted.isEmpty && !present.isEmpty && wanted.isDisjoint(with: present)
+    }
 }
 
 struct ConceptEvidence: Codable, Sendable, Equatable {
@@ -177,12 +236,16 @@ struct ContextTasteProfile: Codable, Sendable, Equatable {
     }
     func score(_ features: VisualFeatures) -> Double {
         let values = TasteConcepts.dimensions(features)
-        let singles = values.reduce(0.0) { $0 + (dimensions[$1.key]?.affinity ?? 0) * $1.value * (TasteConcepts.identity($1.key) ? 0.5 : 0.15) }
+        let singles = values.reduce(0.0) { total, value in
+            let weight = TasteConcepts.identity(value.key) ? 0.5 : (TasteConcepts.relationship(value.key) ? 0.8 : 0.15)
+            return total + (dimensions[value.key]?.affinity ?? 0) * value.value * weight
+        }
         let pairs = TasteConcepts.pairs(values).reduce(0.0) { total, pair in
             // Motion and style:3d repeat medium evidence. A known franchise
             // also repeats its character identity; neither should drown out an
             // independently preferred artist, outfit or presentation.
             var weight = 3.0
+            if ["|power:", "|tone:", "|role:", "|persona:"].contains(where: pair.0.contains) { weight = 7.0 }
             if pair.0.contains("|motion:") { weight = 0.15 }
             if ["|style:2d", "|style:3d", "|style:animation", "|style:animated", "|style:3d_animation"].contains(where: pair.0.hasSuffix) { weight = 0.3 }
             if !features.subjects.isEmpty && pair.0.contains("franchise:") { weight *= 0.25 }
@@ -199,6 +262,12 @@ struct ContextTasteProfile: Codable, Sendable, Equatable {
             let terms = parts.map { part -> String in
                 let value = String(part.split(separator: ":", maxSplits: 1).last ?? "")
                 if part.hasPrefix("medium:") { return ["anime": "2d", "threeD": "3d", "realLife": "photo"][value] ?? "" }
+                // Typed concepts are ranking features. Discovery must ask
+                // providers for real tags, not internal `power:` names.
+                if part.hasPrefix("power:") { return ["female_dominant": "femdom", "male_dominant": "maledom"][value] ?? "" }
+                if part.hasPrefix("tone:") { return ["praise": "praise_kink", "degradation": "humiliation"][value] ?? "" }
+                if part.hasPrefix("persona:") { return ["mommy": "mommy", "daddy": "daddy"][value] ?? "" }
+                if part.hasPrefix("role:") { return ["male_submissive": "submissive_male", "female_submissive": "submissive_female"][value] ?? "" }
                 if value == "chun_li" { return "chun-li" }
                 if value.hasSuffix("_brawl_stars") { return value.replacingOccurrences(of: "_brawl_stars", with: "_(brawl_stars)") }
                 return value

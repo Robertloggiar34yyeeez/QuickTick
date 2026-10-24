@@ -66,8 +66,18 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings-category-chips")
             if let storageWarning = store.storageWarning { SettingsGroup(title: "Storage needs attention", icon: "exclamationmark.triangle") { Text(storageWarning).foregroundStyle(.orange) } }
             SettingsGroup(title: "Navigation", icon: "square.grid.2x2") {
-                Toggle("Show AI tab", isOn: $showAITab)
-                    .accessibilityIdentifier("show-ai-tab-toggle")
+                HStack(spacing: 12) {
+                    Text("Show AI tab")
+                    Spacer(minLength: 8)
+                    // Keep the switch's accessible frame on the actual
+                    // control, rather than the entire scroll-view row. UI
+                    // automation and normal taps now hit the same target.
+                    Toggle("Show AI tab", isOn: $showAITab)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .accessibilityIdentifier("show-ai-tab-toggle")
+                        .frame(minWidth: 52, minHeight: 44)
+                }
                 Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
                     .font(.footnote).foregroundStyle(.secondary)
             }.id(SettingsDestination.navigation.rawValue)

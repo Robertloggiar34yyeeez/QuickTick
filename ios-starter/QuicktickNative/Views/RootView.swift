@@ -11,6 +11,7 @@ struct RootView: View {
     @State private var refreshSpinDegrees = 0.0
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
+    @State private var aiTabSessionOverride: Bool?
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
     @State private var showSettings = false
@@ -21,7 +22,8 @@ struct RootView: View {
     // restored feeds. Create is a separate destination between tabs 1 and 2.
     private let tabs = [("Home", "house.fill"), ("Immersive", "play.fill"),
                         ("Create", "plus"), ("Favorites", "heart"), ("Downloads", "arrow.down.to.line")]
-    private var visibleTabIndices: [Int] { showAITab ? [0, 1, 2, 3, 4] : [0, 1, 3, 4] }
+    private var aiTabVisible: Bool { aiTabSessionOverride ?? showAITab }
+    private var visibleTabIndices: [Int] { aiTabVisible ? [0, 1, 2, 3, 4] : [0, 1, 3, 4] }
 
     var body: some View {
         GeometryReader { geometry in
@@ -64,7 +66,7 @@ struct RootView: View {
                         }
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("bottom-navigation-bar")
-                        .id(showAITab ? "five-tabs" : "four-tabs")
+                        .id(aiTabVisible ? "five-tabs" : "four-tabs")
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -78,7 +80,7 @@ struct RootView: View {
                         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
                         .shadow(color: .black.opacity(0.4), radius: 18, y: 4)
                         .padding(.leading, 16)
-                        .id(showAITab ? "five-side-tabs" : "four-side-tabs")
+                        .id(aiTabVisible ? "five-side-tabs" : "four-side-tabs")
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
             }
@@ -120,7 +122,14 @@ struct RootView: View {
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
-                SettingsView(showAITab: $showAITab)
+                SettingsView(showAITab: Binding(
+                    get: { aiTabVisible },
+                    set: { enabled in
+                        // Update this view's mounted dock in the same turn as
+                        // the tap, then persist the preference for next launch.
+                        aiTabSessionOverride = enabled
+                        showAITab = enabled
+                    }))
                     .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showSettings = false } } }
             }
             .tint(AppTheme.accent)

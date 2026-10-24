@@ -223,6 +223,22 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(Set(results.map(\.stableID)), Set([relevantOne.stableID, relevantTwo.stableID]))
     }
 
+    func testStrongCachedVisualMatchCanRescueMissingTagsButNotKnownWrongCharacter() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let taste = TasteChoice(done: true, into: ["chun_li"], notInto: [])
+        let visuallyMatching = Post(key: "rule34:visual-rescue", id: "visual-rescue", provider: "rule34",
+                                    tags: ["2d", "portrait"], type: "image")
+        let unrelated = Post(key: "rule34:unrelated", id: "unrelated", provider: "rule34",
+                             tags: ["2d", "portrait"], type: "image")
+        let identifiedOther = Post(key: "rule34:identified-other", id: "identified-other", provider: "rule34",
+                                   tags: ["2d", "samus_aran"], type: "image")
+        let scores = [visuallyMatching.stableID: 3.8, unrelated.stableID: 0.2,
+                      identifiedOther.stableID: 3.9]
+        let served = await engine.rankFast([unrelated, identifiedOther, visuallyMatching],
+                                           taste: taste, recent: [], visualScores: scores, strict: true)
+        XCTAssertEqual(served.map(\.stableID), [visuallyMatching.stableID])
+    }
+
     func testImagePromptUsesActionsAndTaxonomyCreditedArtists() {
         let posts = [
             Post(key: "rule34:one", id: "one", provider: "rule34",

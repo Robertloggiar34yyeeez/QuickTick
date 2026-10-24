@@ -99,6 +99,42 @@ final class VisualTasteTests: XCTestCase {
         let restored = await VisualAnalysisService(directory: directory).snapshot()
         XCTAssertEqual(restored.profiles, state.profiles)
     }
+    func testVisualContextAffectsFastFeedRankingAndCandidatesBeyond128() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = VisualAnalysisService(directory: directory)
+        for number in 0..<4 {
+            let liked = Post(key: "rule34:visual-like-\(number)", id: "like-\(number)", provider: "rule34",
+                             tags: ["2d", "chun_li", "qipao", "looking_at_viewer"], type: "image")
+            await service.record(.like, post: liked, queueAnalysis: false)
+        }
+        let wrongPresentation = Post(key: "rule34:visual-other", id: "other", provider: "rule34",
+                                     tags: ["2d", "chun_li", "jacket", "looking_away"], type: "image")
+        let preferred = Post(key: "rule34:visual-preferred", id: "preferred", provider: "rule34",
+                             tags: ["2d", "chun_li", "qipao", "looking_at_viewer"], type: "image")
+        let fillers = (0..<180).map { index in
+            Post(key: "rule34:visual-filler-\(index)", id: "filler-\(index)", provider: "rule34",
+                 tags: ["2d", "other_tag"], type: "image")
+        }
+        let scores = await service.scores(fillers + [wrongPresentation, preferred])
+        XCTAssertNotNil(scores[preferred.stableID], "The full ranking window must receive cached visual scores")
+        XCTAssertGreaterThan(scores[preferred.stableID] ?? 0, scores[wrongPresentation.stableID] ?? 0)
+
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let ranked = await engine.rankFast([wrongPresentation, preferred], taste: TasteChoice(),
+                                           recent: [], visualScores: scores)
+        XCTAssertEqual(ranked.first?.stableID, preferred.stableID)
+    }
+    func testVisualDiscoveryAlternatesWithBroadExplorationAndRespectsExclusions() {
+        let queries = [["chun-li", "2d"], ["palcomix", "2d"], ["samus_aran", "2d"]]
+        XCTAssertNil(VisualDiscoveryPolicy.query(round: 1, queries: queries, excluded: []))
+        XCTAssertEqual(VisualDiscoveryPolicy.query(round: 2, queries: queries, excluded: []), queries[0])
+        XCTAssertNil(VisualDiscoveryPolicy.query(round: 3, queries: queries, excluded: []))
+        XCTAssertEqual(VisualDiscoveryPolicy.query(round: 7, queries: queries, excluded: []), queries[1])
+        XCTAssertEqual(VisualDiscoveryPolicy.query(round: 12, queries: queries,
+                                                   excluded: ["chun_li", "palcomix"]), queries[2])
+        XCTAssertNil(VisualDiscoveryPolicy.query(round: 12, queries: queries, excluded: ["2d"]))
+    }
     private func image(red: CGFloat, green: CGFloat, blue: CGFloat) -> DecodedMediaImage {
         let context = CGContext(data: nil, width: 128, height: 128, bitsPerComponent: 8, bytesPerRow: 512,
             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!

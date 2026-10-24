@@ -1022,7 +1022,12 @@ actor RecommendationEngine {
             // Strongly reinforced co-tags can rescue poorly credited posts.
             // A known but different character was rejected above; a shared
             // outfit alone cannot override an explicit opposite power dynamic.
-            return reinforcedMatch
+            // When the candidate's tags omit the liked character or artist,
+            // repeated visual agreement can still admit it. Keep this rescue
+            // stricter than the no-explicit-interest gate: known different
+            // characters and explicitly conflicting dynamics were rejected
+            // above and by isHardDisliked before reaching this point.
+            return reinforcedMatch || (visual.map { $0.isFinite && $0 >= 3.6 } ?? false)
         }
         if !selected.isEmpty && !selected.isDisjoint(with: observed) { return true }
         if !candidateFacets.isDisjoint(with: ActionSemantics.facets(taste.into)) {

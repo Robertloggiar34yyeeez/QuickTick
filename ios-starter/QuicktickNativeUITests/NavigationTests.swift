@@ -385,6 +385,8 @@ final class NavigationTests: XCTestCase {
         app.buttons["feed-popular"].tap()
         XCTAssertTrue(app.buttons["feed-popular"].isSelected)
         app.buttons["feed-recommended"].tap()
+        XCTAssertTrue(app.buttons["feed-recommended"].isSelected,
+                      "The second sort tap must take effect before its asynchronous refresh")
         XCTAssertTrue(app.buttons["inline-play-test:video"].waitForExistence(timeout: 10))
         let full = app.buttons["View full image"].firstMatch
         for _ in 0..<3 { if full.isHittable { break }; app.swipeUp() }
@@ -491,8 +493,15 @@ final class NavigationTests: XCTestCase {
         // The first gesture can land during a SwiftUI paging/seek transition
         // on a busy simulator; a second deliberate swipe must still work.
         if like.value as? String != "Not liked" { app.swipeUp() }
-        expectation(for: NSPredicate(format: "value == %@", "Not liked"), evaluatedWith: like)
-        waitForExpectations(timeout: 5)
+        let pageAdvanced = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Not liked"), object: like)
+        let swipeResult = XCTWaiter.wait(for: [pageAdvanced], timeout: 5)
+        if swipeResult != .completed {
+            let attachment = XCTAttachment(string: app.debugDescription)
+            attachment.name = "Immersive swipe did not advance"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        XCTAssertEqual(swipeResult, .completed, "A vertical media swipe must switch to the next post")
         XCTAssertEqual(like.frame.midX, before.midX, accuracy: 1)
         XCTAssertEqual(like.frame.midY, before.midY, accuracy: 1)
         like.tap()

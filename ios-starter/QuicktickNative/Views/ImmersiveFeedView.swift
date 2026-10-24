@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import ImageIO
+import UIKit
 
 struct ImmersiveFeedView: View {
     @EnvironmentObject private var store: AppStore
@@ -155,6 +156,11 @@ struct ImmersiveFeedView: View {
         }
     }
     private func pageSwipe(from origin: String, translation: CGSize, viewportHeight: CGFloat) {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+            print("QUICKTICK_PAGING_INPUT origin=\(origin) dy=\(Int(translation.height)) dx=\(Int(translation.width)) active=\(presentationActive) count=\(mediaPosts.count)")
+        }
+        #endif
         guard presentationActive, abs(translation.height) > max(55, viewportHeight * 0.12),
               abs(translation.height) > abs(translation.width) * 1.25,
               let index = mediaPosts.firstIndex(where: { $0.stableID == origin }) else { return }
@@ -162,6 +168,9 @@ struct ImmersiveFeedView: View {
         guard mediaPosts.indices.contains(next) else { return }
         let key = mediaPosts[next].stableID
         pageDirection = translation.height < 0 ? 1 : -1
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { print("QUICKTICK_PAGING_SELECTED next=\(key)") }
+        #endif
         withAnimation(.easeOut(duration: 0.22)) { activeID = key }
     }
     private func prewarm() async {
@@ -215,6 +224,77 @@ struct ImmersiveFeedView: View {
         }
     }
 
+}
+
+/// UIKit owns the media-area tap/pan arbitration. SwiftUI's exclusive double
+/// tap recognizer repeatedly won over both high-priority and simultaneous
+/// DragGesture paging on iPhone, even though it handled the taps correctly.
+/// Action buttons and the timeline remain above this transparent surface.
+private struct ImmersiveTouchSurface: UIViewRepresentable {
+    let id: String
+    let onSingleTap: () -> Void
+    let onDoubleTap: () -> Void
+    let onPan: (CGSize) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(single: onSingleTap, double: onDoubleTap, pan: onPan)
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let surface = UIView()
+        surface.backgroundColor = .clear
+        surface.isUserInteractionEnabled = true
+        surface.isAccessibilityElement = true
+        surface.accessibilityLabel = "Immersive media"
+
+        let doubleTap = UITapGestureRecognizer(target: context.coordinator,
+                                               action: #selector(Coordinator.doubleTapped(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        let singleTap = UITapGestureRecognizer(target: context.coordinator,
+                                               action: #selector(Coordinator.singleTapped(_:)))
+        singleTap.require(toFail: doubleTap)
+        let pan = UIPanGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.panned(_:)))
+        pan.maximumNumberOfTouches = 1
+        surface.addGestureRecognizer(doubleTap)
+        surface.addGestureRecognizer(singleTap)
+        surface.addGestureRecognizer(pan)
+        return surface
+    }
+
+    func updateUIView(_ surface: UIView, context: Context) {
+        surface.accessibilityIdentifier = "immersive-media-\(id)"
+        context.coordinator.single = onSingleTap
+        context.coordinator.double = onDoubleTap
+        context.coordinator.pan = onPan
+    }
+
+    final class Coordinator: NSObject {
+        var single: () -> Void
+        var double: () -> Void
+        var pan: (CGSize) -> Void
+
+        init(single: @escaping () -> Void, double: @escaping () -> Void,
+             pan: @escaping (CGSize) -> Void) {
+            self.single = single
+            self.double = double
+            self.pan = pan
+        }
+
+        @objc func singleTapped(_ recognizer: UITapGestureRecognizer) {
+            if recognizer.state == .ended { single() }
+        }
+
+        @objc func doubleTapped(_ recognizer: UITapGestureRecognizer) {
+            if recognizer.state == .ended { double() }
+        }
+
+        @objc func panned(_ recognizer: UIPanGestureRecognizer) {
+            guard recognizer.state == .ended, let surface = recognizer.view else { return }
+            let translation = recognizer.translation(in: surface)
+            pan(CGSize(width: translation.x, height: translation.y))
+        }
+    }
 }
 
 private struct ImmersiveItemView: View {
@@ -314,26 +394,14 @@ private struct ImmersiveItemView: View {
                 if post.type.lowercased() == "gif", active, let gifURL {
                     AnimatedGIFSurface(url: gifURL, playing: playing, onSize: { mediaSize = $0; gifDecoded = true; lastGIFSample = .now }).frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height).allowsHitTesting(false)
                 }
-                Color.clear.contentShape(Rectangle())
-                    .accessibilityIdentifier("immersive-media-\(post.stableID)")
-                    .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { gesture in
-                        switch gesture {
-                        case .first:
-                            interacted = true
-                            if store.favorites[post.stableID] == nil { store.toggleFavorite(post) }
-                            withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { likePulse = true }
-                        case .second:
-                            if post.isImmersiveMedia { playing.toggle(); playing ? player?.play() : player?.pause() }
-                        }
-                    })
-                    // Recognize the pan on the actual touch surface. A parent
-                    // simultaneous gesture can lose to the surface's exclusive
-                    // single/double-tap recognizer on iPhone, leaving a swipe
-                    // on the same post. Once movement passes the tap threshold,
-                    // prioritize paging without changing the tap behavior.
-                    .highPriorityGesture(DragGesture(minimumDistance: 18).onEnded { drag in
-                        onPageSwipe(drag.translation)
-                    }, including: .all)
+                ImmersiveTouchSurface(id: post.stableID, onSingleTap: {
+                    if post.isImmersiveMedia { playing.toggle(); playing ? player?.play() : player?.pause() }
+                }, onDoubleTap: {
+                    interacted = true
+                    if store.favorites[post.stableID] == nil { store.toggleFavorite(post) }
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { likePulse = true }
+                }, onPan: onPageSwipe)
+                    .frame(width: geo.size.width, height: geo.size.height)
                 if likePulse {
                     Image(systemName: "heart.fill").font(.system(size: 88)).foregroundStyle(.white)
                         .shadow(color: .pink.opacity(0.8), radius: 20).transition(.scale.combined(with: .opacity))

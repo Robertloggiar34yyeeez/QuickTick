@@ -17,7 +17,6 @@ struct HomeFeedView: View {
     @State private var lastVisibleTop: String?
     @State private var visibleTopSince = Date.distantPast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var feedSelection
 
     var body: some View {
         GeometryReader { viewport in
@@ -51,7 +50,12 @@ struct HomeFeedView: View {
                     HStack(spacing: 3) {
                         ForEach([("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
                             Button {
-                                store.feedSort = mode
+                                // Keep the selector mounted while the next
+                                // feed is requested. Directly assigning
+                                // feedSort cleared the whole LazyVStack in
+                                // didSet and could swallow a quick second
+                                // iPad tap (Popular -> Recommended).
+                                store.commitSearch(query: store.queryText, sort: mode)
                                 Task { await store.refresh() }
                             } label: {
                                 Text(title)
@@ -65,12 +69,10 @@ struct HomeFeedView: View {
                                         if store.feedSort == mode {
                                             RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous)
                                                 .fill(AppTheme.gradient)
-                                                .matchedGeometryEffect(id: "feed-mode", in: feedSelection)
                                         }
                                     }
                             }
-                            .buttonStyle(QuicktickPressStyle())
-                            .animation(reduceMotion ? nil : AppTheme.spring, value: store.feedSort)
+                            .buttonStyle(.plain)
                             .accessibilityIdentifier("feed-\(mode)")
                             .accessibilityAddTraits(store.feedSort == mode ? .isSelected : [])
                         }

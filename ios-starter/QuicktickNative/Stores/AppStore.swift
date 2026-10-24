@@ -1120,8 +1120,10 @@ final class AppStore: ObservableObject {
                 plannedAcquisition = request
                 visualDiscoveryRound += 1
                 let queries = await visual.discoveryQueries(provider: selectedProvider)
-                if visualDiscoveryRound % 3 == 1, !queries.isEmpty {
-                    let terms = queries[(visualDiscoveryRound / 3) % queries.count]
+                let blocked = Set((exclusions + QueryParser.parse(queryText).excluded
+                    + tasteChoice(for: selectedProvider).notInto).map(RecommendationTagRules.canonical))
+                if let terms = VisualDiscoveryPolicy.query(round: visualDiscoveryRound,
+                                                          queries: queries, excluded: blocked) {
                     let key = context + "|query:" + terms.joined(separator: " ")
                     plannedAcquisition = RecommendationEngine.CandidateRequest(context: key,
                         query: ParsedQuery(included: terms, excluded: request.query.excluded), page: candidateCursors[key] ?? 1, focused: true)
@@ -1225,7 +1227,7 @@ final class AppStore: ObservableObject {
                 checked += 1
                 if Date().timeIntervalSince(lastProgress) >= 0.2 || checked == history.count {
                     manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
-                        status: "Checking favorites Ãƒâ€šÃ‚· \(checked)/\(history.count)", running: true)
+                        status: "Checking favorites · \(checked)/\(history.count)", running: true)
                     lastProgress = .now
                 }
                 await Task.yield()
@@ -1251,7 +1253,7 @@ final class AppStore: ObservableObject {
         guard isManualVisualScanRunning else { return }
         manualVisualID = UUID(); manualVisualTask?.cancel(); manualVisualTask = nil
         if var progress = manualVisualProgress {
-            progress.running = false; progress.status = "Update stopped Ãƒâ€šÃ‚· \(progress.completed)/\(progress.total) checked"
+            progress.running = false; progress.status = "Update stopped · \(progress.completed)/\(progress.total) checked"
             manualVisualProgress = progress
         }
     }

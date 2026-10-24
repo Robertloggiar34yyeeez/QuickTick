@@ -17,6 +17,20 @@ struct PendingVisualWork: Codable, Sendable {
     var created = Date()
 }
 
+/// A visual preference can focus occasional discovery, but it must not keep
+/// requesting the same character/artist instead of broadening a varied feed.
+/// Exclusions also apply at retrieval time, not only after results arrive.
+enum VisualDiscoveryPolicy {
+    static func query(round: Int, queries: [[String]], excluded: Set<String>) -> [String]? {
+        guard round > 0, round % 5 == 2 else { return nil }
+        let eligible = queries.filter { terms in
+            !terms.isEmpty && terms.allSatisfy { !excluded.contains(RecommendationTagRules.canonical($0)) }
+        }
+        guard !eligible.isEmpty else { return nil }
+        return eligible[(round / 5) % eligible.count]
+    }
+}
+
 /// One bounded worker; metadata feedback is independent of model execution.
 actor VisualAnalysisService {
     struct State: Codable, Sendable {
@@ -386,7 +400,11 @@ actor VisualAnalysisService {
     }
     func scores(_ posts: [Post]) -> [String: Double] {
         restore()
-        return Dictionary(posts.prefix(128).compactMap { post -> (String, Double)? in
+        // The fast ranker considers up to 384 candidates, and the semantic
+        // shortlist up to 512. Scoring only the first 128 silently disabled
+        // visual taste for the rest even when their metadata or cached pixels
+        // were ready. This remains cache/metadata-only: no model or I/O.
+        return Dictionary(posts.prefix(512).compactMap { post -> (String, Double)? in
             guard let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy),
                   let p = state.profiles[profileKey(post)] else { return nil }
             let cached = state.features[post.stableID]

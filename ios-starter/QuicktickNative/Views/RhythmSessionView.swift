@@ -142,6 +142,9 @@ struct RhythmSessionView: View {
     @AppStorage("quicktick-rhythm-haptics-v1") private var haptics = true
     @AppStorage("quicktick-rhythm-manual-v1") private var manual = false
     @AppStorage("quicktick-rhythm-mix-subdivisions-v1") private var mixSubdivisions = true
+    // Always show the complete image on a phone unless cropping is explicitly
+    // requested. The blurred backdrop provides edge-to-edge ambience instead.
+    @AppStorage("quicktick-rhythm-crop-photos-v1") private var cropPhotos = false
     @AppStorage("quicktick-rhythm-finish-text-v1") private var finishText = "Beautiful rhythm. Session complete."
     @AppStorage("quicktick-rhythm-finish-style-v1") private var finishStyle = "Glow"
     @AppStorage("quicktick-rhythm-finish-animation-v1") private var finishAnimation = "Scale"
@@ -180,8 +183,8 @@ struct RhythmSessionView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     mediaPanel
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .ignoresSafeArea(edges: .all)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
                         .animation(reduceMotion ? nil : .easeInOut(duration: transitionSpeed), value: current?.stableID)
                     VStack(spacing: 12) {
                         HStack(spacing: 10) {
@@ -325,6 +328,9 @@ struct RhythmSessionView: View {
                     labeledSlider("Click volume", value: $clickVolume, range: 0.4...1)
                     Toggle("Beat haptics", isOn: $haptics)
                     Toggle("Alternate Regular, Duo, Triple and Quad", isOn: $mixSubdivisions)
+                    Toggle("Crop photos to fill screen", isOn: $cropPhotos)
+                    Text("Off keeps entire photos visible on iPhone. The blurred background still fills the screen.")
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                 }
                 .font(.subheadline)
                 .padding(20)
@@ -345,32 +351,51 @@ struct RhythmSessionView: View {
 
     @ViewBuilder private var mediaPanel: some View {
         if let post = current {
-            ZStack {
-                Color.black
-                CachedMediaImage(url: post.cardPreviewURL, pixels: 700, comic: false, fill: true)
-                    .blur(radius: 34).scaleEffect(1.12).opacity(0.68)
-                Color.black.opacity(0.26)
-                if post.type.lowercased() == "video" {
-                    if let player, resolvedVideoID == post.stableID {
-                        VideoPlayer(player: player).id(post.stableID)
-                    } else {
-                        CachedMediaImage(url: post.cardPreviewURL, pixels: 960, fill: false)
-                        ProgressView().tint(AppTheme.accent)
-                    }
-                } else if post.type.lowercased() == "gif", offline,
-                          let url = URL(string: post.mediaUrl), url.isFileURL {
-                    AnimatedGIFSurface(url: url, playing: running)
-                } else {
-                    CachedMediaImage(url: offline && post.mediaUrl.hasPrefix("file:") ? post.mediaUrl : post.cardPreviewURL,
-                                     pixels: 1200, comic: false, fill: false)
+            GeometryReader { viewport in
+                ZStack {
+                    Color.black
+                    // Only the backdrop is allowed to aspect-fill. Give it a
+                    // fixed viewport before scaling or its ideal image size
+                    // can enlarge the whole ZStack on narrow iPhones.
+                    CachedMediaImage(url: post.cardPreviewURL, pixels: 700, comic: false, fill: true)
+                        .frame(width: viewport.size.width, height: viewport.size.height)
+                        .blur(radius: 34).scaleEffect(1.12).opacity(0.68)
+                        .clipped()
+                    Color.black.opacity(0.26)
+                    fittedMedia(for: post, viewport: viewport.size)
                 }
+                .frame(width: viewport.size.width, height: viewport.size.height)
+                .clipped()
             }
-            .clipped()
             .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.965)))
         } else {
             ContentUnavailableView("No media to shuffle", systemImage: "photo.stack",
                                    description: Text("Save some posts first."))
         }
+    }
+
+    @ViewBuilder private func fittedMedia(for post: Post, viewport: CGSize) -> some View {
+        ZStack {
+            if post.type.lowercased() == "video" {
+                if let player, resolvedVideoID == post.stableID {
+                    VideoPlayer(player: player).id(post.stableID)
+                } else {
+                    CachedMediaImage(url: post.cardPreviewURL, pixels: 960, fill: false)
+                    ProgressView().tint(AppTheme.accent)
+                }
+            } else if post.type.lowercased() == "gif", offline,
+                      let url = URL(string: post.mediaUrl), url.isFileURL {
+                AnimatedGIFSurface(url: url, playing: running, naturalAspect: true)
+            } else {
+                CachedMediaImage(url: offline && post.mediaUrl.hasPrefix("file:") ? post.mediaUrl : post.cardPreviewURL,
+                                 pixels: 1200, comic: false, fill: cropPhotos)
+            }
+        }
+        // Aspect-fit photos/GIFs/videos within the actual safe-area viewport.
+        // Nothing here inherits the scaled-to-fill backdrop's intrinsic size.
+        .frame(width: viewport.width, height: viewport.height)
+        .clipped()
+        .accessibilityIdentifier("rhythm-media-viewport")
     }
 
     private var completionPanel: some View {

@@ -40,7 +40,11 @@ struct ImmersiveFeedView: View {
                 if let post = visiblePost {
                     ImmersiveItemView(post: post, offline: offline, active: true,
                                       presentationActive: presentationActive, playbackOwner: playbackOwner,
-                                      collection: collectionTab != nil, previews: previews)
+                                      collection: collectionTab != nil, previews: previews,
+                                      onPageSwipe: { translation in
+                                          pageSwipe(from: post.stableID, translation: translation,
+                                                    viewportHeight: geo.size.height)
+                                      })
                     .frame(width: geo.size.width, height: geo.size.height)
                     .contentShape(Rectangle())
                     .id(post.stableID)
@@ -72,15 +76,6 @@ struct ImmersiveFeedView: View {
             }
                 .frame(width: geo.size.width, height: geo.size.height)
                 .contentShape(Rectangle())
-                // Attach the vertical pan at the viewport boundary. A drag
-                // attached only to the transparent media child was lost by
-                // UIKit's player/tap gesture arbitration on actual devices.
-                // Simultaneous recognition preserves rail, seek and edge-back
-                // interactions; only a clearly vertical completed swipe pages.
-                .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { drag in
-                    guard let origin = activeID else { return }
-                    pageSwipe(from: origin, translation: drag.translation, viewportHeight: geo.size.height)
-                }, including: .all)
                 .clipped()
         }
         .navigationTitle(offline ? "Offline Immersive" : "Immersive")
@@ -232,6 +227,7 @@ private struct ImmersiveItemView: View {
     let playbackOwner: String
     let collection: Bool
     @ObservedObject var previews: ImmersivePreviewCache
+    let onPageSwipe: (CGSize) -> Void
     @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
     @State private var ready = false
@@ -330,6 +326,14 @@ private struct ImmersiveItemView: View {
                             if post.isImmersiveMedia { playing.toggle(); playing ? player?.play() : player?.pause() }
                         }
                     })
+                    // Recognize the pan on the actual touch surface. A parent
+                    // simultaneous gesture can lose to the surface's exclusive
+                    // single/double-tap recognizer on iPhone, leaving a swipe
+                    // on the same post. Once movement passes the tap threshold,
+                    // prioritize paging without changing the tap behavior.
+                    .highPriorityGesture(DragGesture(minimumDistance: 18).onEnded { drag in
+                        onPageSwipe(drag.translation)
+                    }, including: .all)
                 if likePulse {
                     Image(systemName: "heart.fill").font(.system(size: 88)).foregroundStyle(.white)
                         .shadow(color: .pink.opacity(0.8), radius: 20).transition(.scale.combined(with: .opacity))

@@ -443,13 +443,21 @@ final class AppStore: ObservableObject {
         feedMediaOnly = mediaOnly
         protectedImmersiveIDs = []; immersivePlaybackID = nil
         generation = UUID(); feedRevision = generation; inlinePlaybackID = nil; players.pauseAll()
+        let token = generation
+        let requestedSort = feedSort
         #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []; hasMore = false; return }
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+            let fixture = (try? await UITestMediaFactory.shared.posts(sort: requestedSort)) ?? []
+            // Fixture creation suspends while media is prepared. An older
+            // Popular refresh must never publish after the user has already
+            // switched back to Recommended (or left the tab).
+            guard !Task.isCancelled, generation == token, feedSort == requestedSort else { return }
+            posts = fixture; hasMore = false
+            return
+        }
         #endif
         plannedAcquisition = nil
         let feedStarted = Date()
-        let token = generation
-        let requestedSort = feedSort
         let requestedQuery = queryText
         let provider = selectedProvider
         isLoading = true

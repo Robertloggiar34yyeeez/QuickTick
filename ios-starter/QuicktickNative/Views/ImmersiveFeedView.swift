@@ -72,6 +72,7 @@ struct ImmersiveFeedView: View {
                 .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
                     guard presentationActive, store.isForeground else { return }
                     activeID = VisiblePostSelector.select(frames: frames, viewport: CGRect(origin: .zero, size: geo.size), current: activeID)
+                    if !offline && onClose == nil { store.setVisibleImmersivePost(activeID) }
                 }
                 .scrollIndicators(.hidden)
                 .frame(width: geo.size.width, height: geo.size.height)
@@ -113,6 +114,7 @@ struct ImmersiveFeedView: View {
             guard presentationActive else { return }
             if activeID == nil { activeID = mediaPosts.first?.stableID }
             scrollTargetID = activeID
+            if !offline && onClose == nil { store.setVisibleImmersivePost(activeID) }
         }
         .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision)") { await prewarm() }
         .onChange(of: store.feedRevision) { _, _ in activeIndex = 0; activeID = mediaPosts.first?.stableID; scrollTargetID = activeID }
@@ -123,8 +125,14 @@ struct ImmersiveFeedView: View {
                 if keys.isEmpty { activeIndex = 0 }
             }
         }
-        .onChange(of: activeID) { _, key in if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index } }
-        .onDisappear { if store.players.activeOwner == "immersive" { store.players.releaseAll() } }
+        .onChange(of: activeID) { _, key in
+            if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index }
+            if !offline && onClose == nil && presentationActive { store.setVisibleImmersivePost(key) }
+        }
+        .onDisappear {
+            if !offline && onClose == nil { store.setVisibleImmersivePost(nil) }
+            if store.players.activeOwner == "immersive" { store.players.releaseAll() }
+        }
         .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
     }
     private func prewarm() async {
@@ -203,6 +211,7 @@ private struct ImmersiveItemView: View {
     @State private var showTags = false
     @State private var gifURL: URL?
     @State private var exposureStarted: Date?
+    @State private var impressionReported = false
     @State private var likePulse = false
     private let clock = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
@@ -292,11 +301,13 @@ private struct ImmersiveItemView: View {
         }
         .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(mediaRetry)") {
             guard active, presentationActive, store.isForeground else { endExposure(); player = nil; ready = false; gifURL = nil; return }
-            exposureStarted = .now
+            exposureStarted = nil
+            impressionReported = false
+            interacted = false
             progress = 0; duration = 0; scrubbing = false; error = nil
             await prepare()
             guard !Task.isCancelled else { return }
-            if !offline { store.recordImpression(post) }
+            reportImpressionIfReady()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if player?.timeControlStatus == .playing || (gifURL != nil && playing) {
@@ -320,6 +331,8 @@ private struct ImmersiveItemView: View {
             duration = length; progress = min(1, max(0, seconds / length))
         }
         .onDisappear { endExposure(); player = nil; ready = false; gifURL = nil }
+        .onChange(of: ready) { _, value in if value { reportImpressionIfReady() } }
+        .onChange(of: gifURL) { _, value in if value != nil { reportImpressionIfReady() } }
         .onChange(of: store.muted) { _, value in player?.isMuted = value }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
             guard active, presentationActive, store.isForeground, let item = notification.object as? AVPlayerItem, item === player?.currentItem else { return }
@@ -424,9 +437,22 @@ private struct ImmersiveItemView: View {
         let size = mediaSize ?? post.nativeSize
         return MediaSizing.immersive(aspect: size.map { $0.width / max(1,$0.height) } ?? 16/9, available: available)
     }
+    private func reportImpressionIfReady() {
+        guard !offline, active, presentationActive, store.isForeground, !impressionReported,
+              ready || gifURL != nil else { return }
+        impressionReported = true
+        exposureStarted = .now
+        store.recordImpression(post)
+    }
+
     private func endExposure() {
         store.players.pause(post.stableID, owner: "immersive")
-        guard let started = exposureStarted else { return }
+        guard let started = exposureStarted else {
+            watched = 0
+            reportedWatch = 0
+            impressionReported = false
+            return
+        }
         let elapsed = Date().timeIntervalSince(started)
         if let player, player.currentItem?.status == .readyToPlay { store.saveResume(post.stableID, seconds: player.currentTime().seconds) }
         if !offline {
@@ -436,6 +462,7 @@ private struct ImmersiveItemView: View {
         watched = 0
         reportedWatch = 0
         exposureStarted = nil
+        impressionReported = false
     }
 }
 

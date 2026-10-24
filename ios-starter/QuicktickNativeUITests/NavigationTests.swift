@@ -69,8 +69,9 @@ final class NavigationTests: XCTestCase {
     }
     @MainActor func testSearchAppearsOnceBeforeAndAfterSubmitting() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
-        app.buttons["Toggle search"].tap()
         let fields = app.textFields.matching(identifier: "feed-search-input")
+        XCTAssertEqual(fields.count, 0, "Search field should be hidden behind the search button")
+        app.buttons["Toggle search"].tap()
         XCTAssertEqual(fields.count, 1)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         // A fresh simulator can show the system QuickPath introduction over
@@ -78,16 +79,25 @@ final class NavigationTests: XCTestCase {
         let keyboardIntroduction = app.buttons["Continue"]
         if keyboardIntroduction.waitForExistence(timeout: 2) { keyboardIntroduction.tap() }
         fields.firstMatch.tap()
-        fields.firstMatch.typeText("engineering")
+        fields.firstMatch.typeText("yeezy basketball")
         // iPadOS can present QuickPath only after the first keystroke. It
         // temporarily exposes a stale field value through accessibility.
         if keyboardIntroduction.waitForExistence(timeout: 2) { keyboardIntroduction.tap() }
-        expectation(for: NSPredicate(format: "value == %@", "engineering"), evaluatedWith: fields.firstMatch)
+        expectation(for: NSPredicate(format: "value == %@", "yeezy basketball"), evaluatedWith: fields.firstMatch)
         waitForExpectations(timeout: 10)
         app.buttons["Search"].firstMatch.tap()
         XCTAssertTrue(fields.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(fields.count, 1)
-        XCTAssertEqual(fields.firstMatch.value as? String, "engineering")
+        XCTAssertTrue(app.buttons["search-tag-yeezy"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["search-tag-basketball"].exists)
+        app.buttons["search-block-basketball"].tap()
+        XCTAssertTrue(app.buttons["Include tag basketball"].exists, "The block control should toggle the tag into an exclusion")
+        app.buttons["search-tag-yeezy"].tap()
+        XCTAssertFalse(app.buttons["search-tag-yeezy"].exists, "Tapping the tag name should remove it")
+        app.buttons["Search"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["search-tag-basketball"].exists)
+        app.buttons["Toggle search"].tap()
+        XCTAssertEqual(fields.count, 0, "Search can be collapsed again")
     }
     @MainActor func testDownloadedImagesUseNormalFeedAndCloseFullComic() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]; app.launch()

@@ -5,6 +5,7 @@ struct RootView: View {
     @State private var showSettings = false
     @State private var homeAnchor: String?
     @State private var immersiveAnchor: String?
+    @State private var homeSearchExpanded = false
     private let tabs = [("Home", "house.fill"), ("Immersive", "play.fill"), ("Favorites", "heart"), ("Downloads", "arrow.down.to.line")]
 
     var body: some View {
@@ -22,7 +23,7 @@ struct RootView: View {
                 case 3:
                     NavigationStack { DownloadsFeedView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }
                 default:
-                    NavigationStack { HomeFeedView(showSettings: $showSettings, scrollAnchor: $homeAnchor).id(store.feedRevision) }
+                    NavigationStack { HomeFeedView(showSettings: $showSettings, scrollAnchor: $homeAnchor, showSearch: $homeSearchExpanded).id(store.feedRevision) }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -4,7 +4,8 @@ struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
     @Binding var scrollAnchor: String?
-    @State private var showSearch = false
+    @Binding var showSearch: Bool
+    @State private var focusSearch = false
     @State private var onboarding = false
     @State private var immersive = false
     @State private var immersivePostID: String?
@@ -31,7 +32,7 @@ struct HomeFeedView: View {
                     }
                     Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44,height: 44).background(AppTheme.gradient,in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Refresh feed")
                 }
-                searchBar.id("home-search")
+                if showSearch { searchBar.id("home-search") }
                 Button { onboarding = true } label: {
                     Label("What would you like to see?", systemImage: "sparkles")
                         .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -114,7 +115,16 @@ struct HomeFeedView: View {
                         Text(store.selectedProvider.displayName).font(.caption.weight(.medium)).padding(.horizontal, 12).frame(height: 44)
                             .background(AppTheme.surface, in: Capsule()).overlay(Capsule().stroke(.white.opacity(0.15)))
                     }
-                    Button { showSearch = true; withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("home-search", anchor: .top) } } label: { Image(systemName: "magnifyingglass").font(.system(size: 19)).frame(width: 44, height: 44).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Toggle search")
+                    Button {
+                        if showSearch {
+                            showSearch = false
+                            focusSearch = false
+                        } else {
+                            showSearch = true
+                            focusSearch = true
+                            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("home-search", anchor: .top) }
+                        }
+                    } label: { Image(systemName: "magnifyingglass").font(.system(size: 19)).frame(width: 44, height: 44).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("Toggle search")
                     SettingsLauncher(isPresented: $showSettings)
                 }
             }
@@ -170,7 +180,7 @@ struct HomeFeedView: View {
     }
 
     private var searchBar: some View {
-        NativeSearchBar(focusRequested: $showSearch)
+        NativeSearchBar(focusRequested: $focusSearch)
     }
 }
 

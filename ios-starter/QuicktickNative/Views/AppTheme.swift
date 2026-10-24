@@ -36,15 +36,38 @@ struct PostTagsView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 10)], spacing: 10) {
+                let query = QueryParser.parse(store.queryText)
+                let included = Set(query.included.map { $0.lowercased() })
+                let excluded = Set(query.excluded.map { $0.lowercased() })
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
                     ForEach(Array(Set(post.tags)).sorted(), id: \.self) { tag in
-                        Menu {
-                            Button("Add to search") { store.includeTag(tag) }
-                            Button("Exclude from search") { store.excludeTag(tag) }
-                        } label: {
-                            Text("#\(tag)").font(.subheadline).frame(maxWidth: .infinity, minHeight: 44)
-                                .padding(.horizontal, 8).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
-                        }.buttonStyle(.plain)
+                        let isSelected = included.contains(tag.lowercased()) || excluded.contains(tag.lowercased())
+                        let isExcluded = excluded.contains(tag.lowercased())
+                        HStack(spacing: 0) {
+                            Button {
+                                if isSelected { store.removeTag(tag) }
+                                else { store.includeTag(tag) }
+                            } label: {
+                                Text("#\(tag)").font(.subheadline).lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading).frame(minHeight: 44)
+                                    .padding(.leading, 10)
+                            }
+                            .accessibilityLabel("#\(tag)")
+                            .accessibilityHint(isSelected ? "Remove from search" : "Add to search")
+                            Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 26)
+                            Button {
+                                if isExcluded { store.includeTag(tag) }
+                                else { store.excludeTag(tag) }
+                            } label: {
+                                Image(systemName: "nosign")
+                                    .foregroundStyle(isExcluded ? .orange : .white.opacity(0.8))
+                                    .frame(width: 44, height: 44)
+                            }
+                            .accessibilityLabel(isExcluded ? "Include #\(tag)" : "Exclude #\(tag)")
+                        }
+                        .buttonStyle(.plain)
+                        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(isExcluded ? .orange.opacity(0.7) : .white.opacity(0.12)))
                     }
                 }.padding()
                 if post.tags.isEmpty { Text("No tags available").foregroundStyle(.secondary).padding() }

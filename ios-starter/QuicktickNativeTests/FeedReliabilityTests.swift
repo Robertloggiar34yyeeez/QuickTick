@@ -97,6 +97,28 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(remote.cardPreviewURL, remote.mediaUrl, "Home must downsample the original instead of enlarging a thumbnail")
         record.state = .failed; XCTAssertNil(record.offlinePost)
     }
+    @MainActor func testImmersiveReranksOnlyUnseenTailAndPreservesActivePage() async {
+        let store = AppStore()
+        store.activeTab = 1
+        let active = Post(key: "active", id: "1", provider: "Eporner", tags: ["neutral"], type: "video")
+        let unrelated = Post(key: "unrelated", id: "2", provider: "Eporner", tags: ["baking"], type: "video")
+        let relevant = Post(key: "relevant", id: "3", provider: "Eporner", tags: ["engineering"], type: "video")
+        let liked = Post(key: "liked", id: "4", provider: "Eporner", tags: ["engineering"], type: "video")
+        await store.recommendations.record(.like, post: liked)
+        store.posts = [active, unrelated, relevant]
+        store.setVisibleImmersivePost(active.stableID)
+
+        await store.adaptRecommendationTail(token: store.feedRevision)
+        XCTAssertEqual(store.posts.map(\.stableID), ["active", "relevant", "unrelated"])
+
+        // The active clip stays at the same index even when taste changes.
+        store.setVisibleImmersivePost(relevant.stableID)
+        await store.recommendations.record(.like, post: unrelated)
+        await store.adaptRecommendationTail(token: store.feedRevision)
+        XCTAssertEqual(store.posts.first?.stableID, active.stableID)
+        XCTAssertEqual(store.posts[1].stableID, relevant.stableID)
+    }
+
     @MainActor func testRecommendationAdaptationWaitsForVisibleHomeAnchor() async {
         let store = AppStore(); store.selectedProvider = .eporner
         let first = Post(key: "first", id: "1", provider: "Eporner", tags: ["baking"], type: "video")

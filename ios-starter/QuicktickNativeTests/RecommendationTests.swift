@@ -283,6 +283,69 @@ final class RecommendationTests: XCTestCase {
                       "A fictional character must not add bare animal keywords")
         XCTAssertTrue(keywords.allSatisfy { $0.tags.count == 1 && $0.tags[0] == $0.query },
                       "Keyword providers should not silently insert fictional identities")
+        XCTAssertGreaterThanOrEqual(characters.count, 15,
+            "Onboarding should offer diverse identities rather than one franchise or presentation")
+        XCTAssertGreaterThanOrEqual(Set(characters.map(\.context)).count, 8)
+        XCTAssertTrue(characters.contains { $0.id == "kratos" })
+        XCTAssertTrue(characters.contains { $0.id == "fishstick" })
+        XCTAssertTrue(StarterTastePick.dynamics.contains { $0.tag == "femdom" })
+        XCTAssertTrue(StarterTastePick.dynamics.contains { $0.tag == "male_dom" })
+        XCTAssertTrue(StarterTastePick.dynamics.contains { $0.tag == "praise_kink" })
+    }
+
+    func testLegacyTasteDecodesWithoutCharacterPairings() throws {
+        let legacy = Data(#"{"done":true,"into":["chun_li"],"notInto":[]}"#.utf8)
+        let decoded = try JSONDecoder().decode(TasteChoice.self, from: legacy)
+        XCTAssertTrue(decoded.characterTags.isEmpty)
+        let paired = TasteChoice(done: true, into: ["chun_li"],
+            characterTags: ["chun_li": ["femdom", "praise_kink"]])
+        XCTAssertEqual(try JSONDecoder().decode(TasteChoice.self,
+            from: JSONEncoder().encode(paired)), paired)
+    }
+
+    func testLongRepetitionRunDoesNotSuppressDifferentEligibleTopics() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let repeated = (0..<26).map { index in
+            Post(key: "rule34:repeat-\(index)", id: "repeat-\(index)",
+                 provider: "rule34", tags: ["chun_li", "qipao", "street_fighter"])
+        }
+        let discovered = (0..<10).map { index in
+            Post(key: "rule34:other-\(index)", id: "other-\(index)",
+                 provider: "rule34", tags: ["chun_li", "outdoors", "scene_\(index)"])
+        }
+        let recent = (0..<8).map { index in
+            Post(key: "rule34:recent-\(index)", id: "recent-\(index)",
+                 provider: "rule34", tags: ["chun_li", "qipao", "street_fighter"])
+        }
+        let taste = TasteChoice(done: true, into: ["chun_li"])
+        let ranked = await engine.rankFast(repeated + discovered, taste: taste,
+                                           recent: recent, strict: true)
+        XCTAssertEqual(ranked.count, repeated.count + discovered.count)
+        XCTAssertEqual(Set(ranked.map(\.stableID)).count, ranked.count)
+        XCTAssertTrue(ranked.prefix(5).contains(where: { $0.tags.contains("outdoors") }),
+            "Diverse posts about the same liked character must escape a saturated recent theme")
+        XCTAssertTrue(ranked.allSatisfy { $0.tags.contains("chun_li") },
+            "Exploration must not bypass explicit identity relevance")
+    }
+
+    func testPairedDynamicsRemainScopedToSelectedCharacter() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let selected = TasteChoice(done: true, into: ["chun_li", "kratos"],
+            characterTags: ["chun_li": ["femdom", "praise_kink"]])
+        let matching = Post(key: "rule34:paired", id: "paired", provider: "rule34",
+                            tags: ["chun_li", "femdom", "praise_kink"])
+        let opposite = Post(key: "rule34:opposite", id: "opposite", provider: "rule34",
+                            tags: ["chun_li", "male_dom"])
+        let otherCharacter = Post(key: "rule34:other", id: "other", provider: "rule34",
+                                  tags: ["kratos", "male_dom"])
+        let matchingScore = await engine.score(matching, taste: selected, recent: [])
+        let oppositeScore = await engine.score(opposite, taste: selected, recent: [])
+        XCTAssertGreaterThan(matchingScore, oppositeScore + 20)
+        let unrelatedWithPairs = await engine.score(otherCharacter, taste: selected, recent: [])
+        let unrelatedWithoutPairs = await engine.score(otherCharacter,
+            taste: TasteChoice(done: true, into: selected.into), recent: [])
+        XCTAssertEqual(unrelatedWithPairs, unrelatedWithoutPairs, accuracy: 0.001,
+            "A character-specific power choice may not penalize another selected identity")
     }
 
     func testDrainedInterestFallsBackToAdvancingBroadCursorWithoutResettingProfile() async {

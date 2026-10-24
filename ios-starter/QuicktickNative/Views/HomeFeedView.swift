@@ -156,14 +156,24 @@ struct HomeFeedView: View {
             visibleTopSince = .distantPast
             proxy.scrollTo("home-top", anchor: .top)
         }
-        .overlay(alignment: .bottomLeading) {
+        .overlay(alignment: .bottomTrailing) {
             Group {
                 Button {
                     withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo("home-top", anchor: .top) }
                 } label: {
-                    Image(systemName: "chevron.up").font(.system(size: 18, weight: .bold)).frame(width: 48, height: 48)
-                        .background(AppTheme.gradient, in: Circle()).shadow(color: .black.opacity(0.5), radius: 10)
-                }.buttonStyle(.plain).padding(16).accessibilityLabel("Scroll to top").accessibilityIdentifier("home-scroll-top")
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 13, weight: .bold))
+                        .frame(width: 34, height: 34)
+                        .background(AppTheme.gradient, in: Circle())
+                        .shadow(color: .black.opacity(0.35), radius: 7)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 12)
+                .padding(.bottom, 12)
+                .accessibilityLabel("Scroll to top")
+                .accessibilityIdentifier("home-scroll-top")
             }
         }
         .coordinateSpace(name: "home-viewport")

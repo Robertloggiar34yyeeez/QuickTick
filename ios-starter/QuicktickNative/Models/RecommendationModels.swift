@@ -50,7 +50,12 @@ struct RecommendationTransfer: Codable, Transferable, Sendable, Identifiable {
         }
         for taste in preferences.sources.values {
             guard strings(taste.into, limit: 40), strings(taste.notInto, limit: 40),
-                  taste.into.allSatisfy({ $0.count <= 80 }), taste.notInto.allSatisfy({ $0.count <= 80 }) else { throw APIError.invalidResponse }
+                  taste.into.allSatisfy({ $0.count <= 80 }), taste.notInto.allSatisfy({ $0.count <= 80 }),
+                  taste.characterTags.count <= 40,
+                  taste.characterTags.allSatisfy({ entry in
+                      entry.key.count <= 80 && strings(entry.value, limit: 16)
+                          && entry.value.allSatisfy { $0.count <= 80 }
+                  }) else { throw APIError.invalidResponse }
         }
         for p in profiles.values {
             guard numbers(p.terms, limit: 140), numbers(p.negativeThemes, limit: 512), p.related.count <= 140,

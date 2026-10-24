@@ -506,8 +506,8 @@ actor RecommendationEngine {
         let page: Int
         let focused: Bool
     }
-    // Acquisition, not only reranking, follows engagement. Three of four
-    // requests rotate across strong interests; the fourth browses broadly.
+    // Acquisition, not only reranking, follows engagement. Explicitly chosen
+    // identities alternate with learned interests; one in four is broad.
     // Each query owns its cursor in the existing persisted recommendation state.
     func candidateRequest(context: String, provider: Provider, taste: TasteChoice, excluded: [String], forceBroad: Bool = false) -> CandidateRequest {
         let queryExclusions = RecommendationTagRules.queryExclusions(
@@ -576,13 +576,24 @@ actor RecommendationEngine {
         let roundKey = context + "|round"
         let round = max(0, (state.candidatePages[roundKey] ?? 1) - 1)
         advanceCandidatePage(context: roundKey, nextPage: (round + 1) % 12_000 + 1)
-        // Three focused searches followed by one broad discovery page.
-        // Persisting this four-step rotation ensures exploration still occurs.
+        // Alternate user-chosen identities and learned interests instead of
+        // letting one high-weight learned topic consume three consecutive slots.
+        // Keep the fourth request broad for safe new discoveries.
         var focused = !forceBroad && (!explicit.isEmpty || !learned.isEmpty) && round % 4 != 3
         var terms: [String]
         if !focused { terms = [] }
-        else if !explicit.isEmpty && (learned.isEmpty || round % 4 == 0) { terms = [explicit[(round / 4 + (learned.isEmpty ? round % 4 : 0)) % explicit.count]] }
+        else if !explicit.isEmpty && (learned.isEmpty || round % 4 != 1) {
+            let index = (round / 4 * 2 + (round % 4 == 2 ? 1 : 0)) % explicit.count
+            terms = [explicit[index]]
+        }
         else { terms = [learned[round % learned.count]] }
+        // Selected scene/relationship tags only travel with their selected
+        // character. Never use them as standalone provider searches.
+        if focused, provider == .rule34, terms.count == 1,
+           let chosenContext = taste.characterTags[terms[0]], !chosenContext.isEmpty,
+           round % 4 == 2 {
+            terms.append(chosenContext[(round / 4) % chosenContext.count])
+        }
         // A subset of focused discoveries explicitly includes a previously
         // liked 3D artist. Artist/medium context must survive candidate retrieval.
         if focused, provider == .rule34, round % 6 == 4,
@@ -951,6 +962,20 @@ actor RecommendationEngine {
         if contextualRanking, let context = state.contextualProfiles[scopedKey], let features = VisualFeatures.metadata(post, taxonomy: taxonomy) {
             score += context.score(features) * 4
         }
+        // A manual onboarding pairing is scoped to its chosen identity; a
+        // global 'mommy' or 'femdom' boost would contaminate every subject.
+        for (character, pairedTags) in taste.characterTags where candidateTerms.contains(character) {
+            let wantedFacets = ActionSemantics.facets(pairedTags)
+            let presentFacets = ActionSemantics.facets(post)
+            if ActionSemantics.conflicts(selected: wantedFacets, observed: presentFacets) {
+                score -= 24
+            } else {
+                let direct = Set(pairedTags.map(RecommendationTagRules.canonical))
+                let matchedTags = direct.intersection(candidateTerms).count
+                let matchedFacets = wantedFacets.intersection(presentFacets).count
+                score += min(18, Double(matchedTags + matchedFacets) * 5)
+            }
+        }
         score += sessionTaste.score(provider: source, terms: postTerms)
         return score
     }
@@ -1023,17 +1048,68 @@ actor RecommendationEngine {
         "smile", "open_mouth", "blush", "high_resolution", "masterpiece", "best_quality"
     ]
 
+    /// Subject- and tag-aware reranking with a longer memory than adjacent
+    /// post overlap. This cannot relax explicit taste/dislike admission: it
+    /// merely picks the next post among candidates already admitted.
+    private func diversifyFast(_ scored: [(post: Post, value: Double, offset: Int, topics: Set<String>)],
+                               recent: [Post]) -> [Post] {
+        var pool = scored
+        var chosen: [Post] = []
+        var window = recent.suffix(12).map {
+            Set(terms(for: $0).map(RecommendationTagRules.canonical))
+                .subtracting(Self.genericTasteTerms).subtracting(Self.broadDiversityTags)
+        }
+        let target = min(96, pool.count)
+        while chosen.count < target {
+            let lookAhead = min(64, pool.count)
+            let preceding = Array(window.suffix(12))
+            let discoverySlot = (chosen.count + recent.count) % 6 == 5
+            var bestIndex = 0
+            var bestScore = -Double.infinity
+            for index in 0..<lookAhead {
+                let topics = pool[index].topics
+                var closeMatches = 0
+                var exactMatches = 0
+                var closest = 0.0
+                for seen in preceding where !seen.isEmpty && !topics.isEmpty {
+                    let common = topics.intersection(seen).count
+                    let similarity = Double(common) / Double(max(1, min(topics.count, seen.count)))
+                    closest = max(closest, similarity)
+                    if similarity >= 0.55 { closeMatches += 1 }
+                    if similarity >= 0.90 { exactMatches += 1 }
+                }
+                // Repeated near-identical subjects incur a growing cost, not
+                // merely the previous post's once-off overlap penalty.
+                let saturation = min(48.0, Double(closeMatches) * 6.5 + Double(exactMatches) * 3.5)
+                let novelty = closest < 0.35 ? 8.0 : 0.0
+                let adjusted = pool[index].value - closest * 10 - saturation
+                    + (discoverySlot ? novelty : 0)
+                if adjusted > bestScore { bestScore = adjusted; bestIndex = index }
+            }
+            let item = pool.remove(at: bestIndex)
+            chosen.append(item.post)
+            window.append(item.topics)
+        }
+        return chosen + pool.map(\.post)
+    }
+
     func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post], visualScores: [String: Double] = [:], strict: Bool = false) -> [Post] {
         let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(384, candidates.count)) }
         guard let first = candidates.first else { return [] }
         let p = profile(for: first.provider.lowercased())
-        let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !savedFavoriteAffinity.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty
+        let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !savedFavoriteAffinity.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty || !taste.characterTags.isEmpty
             || !p.terms.isEmpty || !p.negativeThemes.isEmpty || !p.termEvidence.isEmpty
         guard hasSignal || !state.reversibleSkips.evidence.isEmpty || !visualScores.isEmpty else {
-            return candidates.filter { post in
+            let allowed = candidates.filter { post in
                 !isHardDisliked(post, taste: taste) &&
                 (!strict || matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]))
             }
+            let scored = allowed.enumerated().map { offset, post in
+                (post: post, value: 0.0, offset: offset,
+                 topics: Set(terms(for: post).map(RecommendationTagRules.canonical))
+                    .subtracting(Self.genericTasteTerms).subtracting(Self.broadDiversityTags))
+            }
+            return diversifyFast(scored, recent: recent)
         }
         let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
         var scored: [(post: Post, value: Double, offset: Int, topics: Set<String>)] = []
@@ -1052,35 +1128,7 @@ actor RecommendationEngine {
             scored.append((post: post, value: calibrated, offset: offset, topics: topics))
         }
         scored.sort { $0.value == $1.value ? $0.offset < $1.offset : $0.value > $1.value }
-        // Lightweight, bounded diversification without model inference:
-        // compare the next 20 candidates against recent chosen themes so
-        // adjacent cards do not repeat the same near-identical subjects.
-        var output: [Post] = []
-        var termWindow: [Set<String>] = []
-        let previous = recent.suffix(5).map {
-            Set(terms(for: $0).map(RecommendationTagRules.canonical))
-                .subtracting(Self.genericTasteTerms).subtracting(Self.broadDiversityTags)
-        }
-        let maxDiversified = min(48, scored.count)
-        while output.count < maxDiversified {
-            let count = min(20, scored.count)
-            let context = Array((previous + termWindow).suffix(5))
-            var best = 0
-            var bestScore = -Double.infinity
-            for index in 0..<count {
-                let topics = scored[index].topics
-                let overlap = context.map { seen -> Double in
-                    guard !topics.isEmpty, !seen.isEmpty else { return 0 }
-                    return Double(topics.intersection(seen).count) / Double(max(1, min(topics.count, seen.count)))
-                }.max() ?? 0
-                let adjusted = scored[index].value - overlap * 12.0
-                if adjusted > bestScore { best = index; bestScore = adjusted }
-            }
-            let item = scored.remove(at: best)
-            output.append(item.post)
-            termWindow.append(item.topics)
-        }
-        output += scored.map(\.post)
+        let output = diversifyFast(scored, recent: recent)
         return output + candidates.dropFirst(384).filter { post in
             !isHardDisliked(post, taste: taste) &&
             (!strict || matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]))

@@ -111,9 +111,8 @@ private struct TasteChipRow: View {
 /// A one-time native welcome flow. Credential secrets go to Keychain through
 /// AppStore; only the non-secret completion flag goes to UserDefaults.
 
-// Curated starter suggestions, not fabricated live-trending statistics.
-// One representative provider post is fetched only after the user focuses a
-// suggestion, so onboarding never launches a grid of network/image requests.
+// Curated identities, not fabricated live-trending statistics. Image-backed
+// cards use real matching provider previews, fetched in small bounded batches.
 struct StarterTastePick: Identifiable, Sendable {
     let id: String
     let title: String
@@ -121,16 +120,37 @@ struct StarterTastePick: Identifiable, Sendable {
     let query: String
     let tags: [String]
     let symbol: String
+    var suggestedAttributes: [String] = []
     static let characters: [Self] = [
-        .init(id: "chun_li", title: "Chun-Li", context: "Street Fighter", query: "chun_li", tags: ["chun_li", "street_fighter"], symbol: "figure.martial.arts"),
+        .init(id: "chun_li", title: "Chun-Li", context: "Street Fighter", query: "chun_li", tags: ["chun_li", "street_fighter"], symbol: "figure.martial.arts", suggestedAttributes: ["qipao", "muscular_female", "thick_thighs"]),
         .init(id: "cammy", title: "Cammy", context: "Street Fighter", query: "cammy_white", tags: ["cammy_white", "street_fighter"], symbol: "figure.martial.arts"),
         .init(id: "juri", title: "Juri", context: "Street Fighter", query: "juri_han", tags: ["juri_han", "street_fighter"], symbol: "figure.martial.arts"),
         .init(id: "tifa", title: "Tifa Lockhart", context: "Final Fantasy", query: "tifa_lockhart", tags: ["tifa_lockhart", "final_fantasy"], symbol: "star.circle"),
         .init(id: "aerith", title: "Aerith Gainsborough", context: "Final Fantasy", query: "aerith_gainsborough", tags: ["aerith_gainsborough", "final_fantasy"], symbol: "star.circle"),
-        .init(id: "rouge", title: "Rouge the Bat", context: "Sonic", query: "rouge_the_bat", tags: ["rouge_the_bat", "sonic_the_hedgehog"], symbol: "gamecontroller"),
+        .init(id: "rouge", title: "Rouge the Bat", context: "Sonic", query: "rouge_the_bat", tags: ["rouge_the_bat", "sonic_the_hedgehog"], symbol: "gamecontroller", suggestedAttributes: ["furry", "wings", "bodysuit"]),
         .init(id: "samus", title: "Samus Aran", context: "Metroid", query: "samus_aran", tags: ["samus_aran", "metroid"], symbol: "shield.lefthalf.filled"),
         .init(id: "bayonetta", title: "Bayonetta", context: "Bayonetta", query: "bayonetta", tags: ["bayonetta"], symbol: "crown"),
-        .init(id: "lara", title: "Lara Croft", context: "Tomb Raider", query: "lara_croft", tags: ["lara_croft", "tomb_raider"], symbol: "mountain.2")
+        .init(id: "lara", title: "Lara Croft", context: "Tomb Raider", query: "lara_croft", tags: ["lara_croft", "tomb_raider"], symbol: "mountain.2"),
+        .init(id: "peach", title: "Princess Peach", context: "Super Mario", query: "princess_peach", tags: ["princess_peach", "super_mario_bros"], symbol: "crown"),
+        .init(id: "shelly", title: "Shelly", context: "Brawl Stars", query: "shelly_brawl_stars", tags: ["shelly_brawl_stars", "brawl_stars"], symbol: "bolt"),
+        .init(id: "colette", title: "Colette", context: "Brawl Stars", query: "colette_brawl_stars", tags: ["colette_brawl_stars", "brawl_stars"], symbol: "heart"),
+        .init(id: "fishstick", title: "Fishstick", context: "Fortnite", query: "fishstick_fortnite", tags: ["fishstick_fortnite", "fortnite"], symbol: "fish"),
+        .init(id: "knuckles", title: "Knuckles", context: "Sonic", query: "knuckles_the_echidna", tags: ["knuckles_the_echidna", "sonic_the_hedgehog"], symbol: "hare"),
+        .init(id: "shadow", title: "Shadow", context: "Sonic", query: "shadow_the_hedgehog", tags: ["shadow_the_hedgehog", "sonic_the_hedgehog"], symbol: "moon.stars"),
+        .init(id: "kratos", title: "Kratos", context: "God of War", query: "kratos", tags: ["kratos", "god_of_war"], symbol: "shield", suggestedAttributes: ["muscular_male", "beard", "armor"]),
+        .init(id: "bowser", title: "Bowser", context: "Super Mario", query: "bowser", tags: ["bowser", "super_mario_bros"], symbol: "flame")
+    ]
+    // Suggestions are *options*, never personality assumptions derived from a
+    // character's name. Only manually selected pairs influence rankings.
+    static let dynamics: [(label: String, tag: String)] = [
+        ("Femdom", "femdom"), ("Male dom", "male_dom"), ("Mommy", "mommy_dom"),
+        ("Daddy", "daddy_dom"), ("Praise", "praise_kink"),
+        ("Gentle femdom", "gentle_femdom"),
+        ("Male sub", "male_submissive"), ("Female sub", "female_submissive")
+    ]
+    static let presentations: [(label: String, tag: String)] = [
+        ("2D art", "2d"), ("3D", "3d"), ("Cosplay", "cosplay"),
+        ("Animation", "animation"), ("Sketch", "sketch"), ("Pixel art", "pixel_art")
     ]
     static let keywords: [Self] = [
         .init(id: "cosplay", title: "Cosplay", context: "Characters and costumes", query: "cosplay", tags: ["cosplay"], symbol: "theatermasks"),
@@ -161,8 +181,11 @@ struct FirstRunSetupView: View {
     @State private var setupMode: SetupMode = .simple
     @State private var selectedPicks: Set<String> = []
     @State private var selectedAttributes: Set<String> = []
+    @State private var characterPairings: [String: Set<String>] = [:]
+    @State private var cardExamples: [String: Post] = [:]
     @State private var focusedPick: String?
     @State private var examplePost: Post?
+    @State private var examplePickID: String?
     @State private var exampleLoading = false
     @State private var exampleError: String?
     private enum SetupMode: String, CaseIterable, Hashable, Sendable { case simple = "Simple", advanced = "Advanced" }
@@ -356,7 +379,7 @@ struct FirstRunSetupView: View {
             Text(isRule34 ? "Which characters do you like?" : "Which topics interest you?")
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
             Text(isRule34
-                ? "Choose familiar characters. Their franchise helps discover related characters; styles and artists stay separate so one liked character doesn't imply liking every 3D artist."
+                ? "Pick from different worlds. Previews come from matching source posts. Then choose the traits you want with each character."
                 : "Choose starter keywords for this source, or add your own words below.")
                 .foregroundStyle(.secondary)
             if let focused = previewPick {
@@ -364,6 +387,9 @@ struct FirstRunSetupView: View {
                     .task(id: "\(provider.rawValue):\(focused.id)") {
                         await loadExample(for: focused)
                     }
+                if isRule34, selectedPicks.contains(focused.id) {
+                    characterPairingSection(for: focused)
+                }
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 10)], spacing: 10) {
                 ForEach(suggestions) { pick in
@@ -373,21 +399,34 @@ struct FirstRunSetupView: View {
                         focusedPick = pick.id
                     } label: {
                         VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Image(systemName: pick.symbol)
-                                    .font(.title)
-                                    .frame(width: 46, height: 46)
-                                    .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 14))
-                                Spacer()
+                            ZStack(alignment: .topTrailing) {
+                                RoundedRectangle(cornerRadius: 13).fill(AppTheme.gradient).opacity(0.38)
+                                if let post = cardExamples[pick.id] {
+                                    PosterView(url: post.thumbUrl.isEmpty ? post.cardPreviewURL : post.thumbUrl)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 104)
+                                        .clipped()
+                                } else {
+                                    Image(systemName: pick.symbol)
+                                        .font(.system(size: 32, weight: .light))
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 104)
+                                }
                                 Image(systemName: selectedPicks.contains(pick.id) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(selectedPicks.contains(pick.id) ? AppTheme.accent : Color.white.opacity(0.55))
+                                    .font(.system(size: 21))
+                                    .foregroundStyle(selectedPicks.contains(pick.id) ? AppTheme.accent : .white)
+                                    .padding(8)
+                                    .background(.black.opacity(0.35), in: Circle())
+                                    .padding(6)
                             }
+                            .frame(height: 104)
+                            .clipShape(RoundedRectangle(cornerRadius: 13))
                             Text(pick.title).font(.headline).lineLimit(2)
                             Text(pick.context).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                         }
-                        .padding(12)
+                        .padding(9)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .frame(minHeight: 126, alignment: .top)
+                        .frame(minHeight: 161, alignment: .top)
                         .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
                         .overlay(RoundedRectangle(cornerRadius: 18)
                             .stroke(selectedPicks.contains(pick.id) ? AppTheme.accent : AppTheme.border, lineWidth: 1.5))
@@ -395,6 +434,9 @@ struct FirstRunSetupView: View {
                     .buttonStyle(QuicktickPressStyle())
                     .accessibilityIdentifier("simple-pick-\(pick.id)")
                 }
+            }
+            .task(id: "\(provider.rawValue):\(setupMode.rawValue)") {
+                await loadCardExamples()
             }
             if isRule34 {
                 if !selectedPicks.isEmpty {
@@ -445,8 +487,64 @@ struct FirstRunSetupView: View {
         }
     }
 
+    private func characterPairingSection(for pick: StarterTastePick) -> some View {
+        let looks = pick.suggestedAttributes.map { tag in
+            (label: tag.replacingOccurrences(of: "_", with: " ").capitalized, tag: tag)
+        }
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Pair tags with \(pick.title)").font(.headline)
+            Text("Optional preferences for this character only. Dynamics such as femdom, mommy or praise aren't assumed from identity.")
+                .font(.caption).foregroundStyle(.secondary)
+            pairingChips(for: pick, title: "Dynamics", options: StarterTastePick.dynamics)
+            pairingChips(for: pick, title: "Presentation", options: StarterTastePick.presentations)
+            if !looks.isEmpty { pairingChips(for: pick, title: "Character-related attributes", options: looks) }
+        }
+        .padding(14)
+        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
+        .accessibilityIdentifier("simple-character-pairings")
+    }
+
+    private func pairingChips(for pick: StarterTastePick, title: String,
+                              options: [(label: String, tag: String)]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 7)], spacing: 7) {
+                ForEach(options.indices, id: \.self) { index in
+                    let option = options[index]
+                    let isSelected = characterPairings[pick.query]?.contains(option.tag) == true
+                    Button {
+                        var selected = characterPairings[pick.query] ?? []
+                        if isSelected { selected.remove(option.tag) }
+                        else {
+                            // Don't let one character request contradictory
+                            // power directions or personas simultaneously.
+                            if let facet = ActionSemantics.facet(option.tag),
+                               ["power", "persona"].contains(ActionSemantics.axis(facet)) {
+                                selected = selected.filter { tag in
+                                    guard let other = ActionSemantics.facet(tag) else { return true }
+                                    return ActionSemantics.axis(other) != ActionSemantics.axis(facet)
+                                        || other == facet
+                                }
+                            }
+                            selected.insert(option.tag)
+                        }
+                        characterPairings[pick.query] = selected
+                    } label: {
+                        Label(option.label, systemImage: isSelected ? "checkmark.circle.fill" : "plus.circle")
+                            .font(.caption.weight(.medium))
+                            .frame(maxWidth: .infinity, minHeight: 34)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(isSelected ? AppTheme.accent : .gray)
+                    .accessibilityIdentifier("simple-pair-\(pick.id)-\(option.tag)")
+                }
+            }
+        }
+    }
+
     private func simpleExample(_ pick: StarterTastePick) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let preview = cardExamples[pick.id] ?? (examplePickID == pick.id ? examplePost : nil)
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label("Example post", systemImage: "rectangle.stack")
                     .font(.headline)
@@ -455,9 +553,9 @@ struct FirstRunSetupView: View {
             }
             ZStack(alignment: .bottomLeading) {
                 RoundedRectangle(cornerRadius: 17).fill(AppTheme.gradient).opacity(0.30)
-                if let examplePost,
-                   let url = URL(string: examplePost.thumbUrl.isEmpty
-                        ? examplePost.cardPreviewURL : examplePost.thumbUrl) {
+                if let preview,
+                   let url = URL(string: preview.thumbUrl.isEmpty
+                        ? preview.cardPreviewURL : preview.thumbUrl) {
                     AsyncImage(url: url) { phase in
                         switch phase {
                         case .success(let image):
@@ -488,7 +586,7 @@ struct FirstRunSetupView: View {
                 Text(exampleError).font(.caption).foregroundStyle(.secondary)
             }
             Text("Important tags").font(.subheadline.weight(.semibold))
-            let observed = (examplePost?.tags ?? []).filter {
+            let observed = (preview?.tags ?? []).filter {
                 !["solo", "video", "highres", "2d_art", "3d_art"].contains($0)
             }
             let highlighted = Array(NSOrderedSet(array: pick.tags + Array(observed.prefix(6))).compactMap { $0 as? String })
@@ -504,9 +602,50 @@ struct FirstRunSetupView: View {
         .accessibilityIdentifier("simple-example-post")
     }
 
+    /// An image is evidence of the exact selected identity, not a generic
+    /// character illustration. Keep at most three live API requests at once
+    /// and cancel when onboarding leaves this page.
+    private func loadCardExamples() async {
+        guard isRule34 else { return }
+        let source = provider
+        let api = store.api
+        let choices = suggestions
+        for start in stride(from: 0, to: choices.count, by: 3) {
+            guard !Task.isCancelled else { return }
+            let end = min(start + 3, choices.count)
+            let batch = choices[start..<end].filter { cardExamples[$0.id] == nil }
+            await withTaskGroup(of: (String, Post?).self) { group in
+                for pick in batch {
+                    group.addTask {
+                        guard !Task.isCancelled else { return (pick.id, nil) }
+                        let page = try? await api.posts(provider: source,
+                            query: ParsedQuery(included: [pick.query], excluded: []),
+                            page: 1, sort: "popular")
+                        let match = page?.items.first { post in
+                            (!post.thumbUrl.isEmpty || !post.cardPreviewURL.isEmpty)
+                                && post.tags.map(RecommendationTagRules.canonical)
+                                    .contains(RecommendationTagRules.canonical(pick.query))
+                        }
+                        return (pick.id, match)
+                    }
+                }
+                for await (id, preview) in group {
+                    guard !Task.isCancelled else { return }
+                    if let preview { cardExamples[id] = preview }
+                }
+            }
+        }
+    }
+
     private func loadExample(for pick: StarterTastePick) async {
         examplePost = nil
+        examplePickID = pick.id
         exampleError = nil
+        if let cached = cardExamples[pick.id] {
+            examplePost = cached
+            exampleLoading = false
+            return
+        }
         exampleLoading = true
         defer { exampleLoading = false }
         do {
@@ -515,7 +654,9 @@ struct FirstRunSetupView: View {
                 page: 1, sort: "popular")
             guard !Task.isCancelled, focusedPick == pick.id else { return }
             examplePost = result.items.first(where: {
-                !$0.thumbUrl.isEmpty || !$0.cardPreviewURL.isEmpty
+                (!$0.thumbUrl.isEmpty || !$0.cardPreviewURL.isEmpty)
+                    && $0.tags.map(RecommendationTagRules.canonical)
+                        .contains(RecommendationTagRules.canonical(pick.query))
             })
             if examplePost == nil { exampleError = "No live example available. The suggested tags can still be selected." }
         } catch {
@@ -595,7 +736,12 @@ struct FirstRunSetupView: View {
         let positive = setupMode == .simple
             ? (picks + (isRule34 ? Array(selectedAttributes) : []) + values(interests))
             : (advanced + values(interests))
-        store.setTaste(into: Array(NSOrderedSet(array: positive).compactMap { $0 as? String }), notInto: values(avoid))
+        let selectedContexts = Dictionary(uniqueKeysWithValues: suggestions.compactMap { pick -> (String, [String])? in
+            guard selectedPicks.contains(pick.id), let paired = characterPairings[pick.query], !paired.isEmpty else { return nil }
+            return (pick.query, paired.sorted())
+        })
+        store.setTaste(into: Array(NSOrderedSet(array: positive).compactMap { $0 as? String }),
+                       notInto: values(avoid), characterTags: selectedContexts)
         completed = true
         saving = false
     }

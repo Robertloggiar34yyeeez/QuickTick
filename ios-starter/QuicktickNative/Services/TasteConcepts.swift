@@ -5,7 +5,7 @@ import Foundation
 enum TasteConcepts {
     // Versions the per-favorite metadata/appearance cache. New action facets
     // must be revisited after an in-place IPA upgrade.
-    static let version = "concepts-2026-10-24-relationship-context-v3"
+    static let version = "concepts-2026-10-24-relationship-context-v4"
     static let aliases: [String: String] = [
         "chunli": "chun_li", "chun_li_(street_fighter)": "chun_li",
         "chun_li_(street_fighter_series)": "chun_li", "streetfighter": "street_fighter",
@@ -15,17 +15,24 @@ enum TasteConcepts {
         "fishstick_(fortnite)": "fishstick_fortnite",
         "rouge_(sonic)": "rouge_the_bat", "rouge_the_bat_(sonic)": "rouge_the_bat",
         "rouge_the_bat_(sonic_the_hedgehog)": "rouge_the_bat",
+        "princess_peach_(mario)": "princess_peach",
+        "kratos_(god_of_war)": "kratos",
+        "shadow_(sonic)": "shadow_the_hedgehog",
+        "knuckles_(sonic)": "knuckles_the_echidna",
         "sonic_the_hedgehog_(series)": "sonic_the_hedgehog"
     ]
     static let franchises: Set<String> = [
         "street_fighter", "brawl_stars", "fortnite", "sonic_the_hedgehog",
-        "final_fantasy", "metroid", "tomb_raider"
+        "final_fantasy", "metroid", "tomb_raider", "super_mario_bros", "god_of_war"
     ]
     static let characterFranchises: [String: Set<String>] = [
         "chun_li": ["street_fighter"], "cammy_white": ["street_fighter"],
         "juri_han": ["street_fighter"],
         "tifa_lockhart": ["final_fantasy"], "aerith_gainsborough": ["final_fantasy"],
         "samus_aran": ["metroid"], "lara_croft": ["tomb_raider"],
+        "princess_peach": ["super_mario_bros"], "bowser": ["super_mario_bros"],
+        "kratos": ["god_of_war"], "knuckles_the_echidna": ["sonic_the_hedgehog"],
+        "shadow_the_hedgehog": ["sonic_the_hedgehog"],
         "shelly_brawl_stars": ["brawl_stars"], "colette_brawl_stars": ["brawl_stars"],
         "fishstick_fortnite": ["fortnite"], "rouge_the_bat": ["sonic_the_hedgehog"]
     ]

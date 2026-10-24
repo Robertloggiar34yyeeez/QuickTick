@@ -1205,10 +1205,15 @@ final class AppStore: ObservableObject {
         if generation == token, selectedProvider == provider, learnedInterests != interests { learnedInterests = interests }
     }
 
-    func setTaste(into: [String], notInto: [String]) {
+    func setTaste(into: [String], notInto: [String], characterTags: [String: [String]]? = nil) {
         let negative = TasteChoice.normalized(notInto)
         let positive = TasteChoice.normalized(into).filter { !negative.contains($0) }
-        tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true, into: positive, notInto: negative)
+        let existing = tasteChoice(for: selectedProvider).characterTags
+        let contextual = characterTags ?? existing
+        let sanitized = contextual.filter { positive.contains(RecommendationTagRules.canonical($0.key)) }
+            .mapValues { TasteChoice.normalized($0).filter { !negative.contains($0) } }
+        tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(
+            done: true, into: positive, notInto: negative, characterTags: sanitized)
         local.snapshot.preferences.updatedAt = timestamp()
         persistLocal(); queueSync(); Task { await refresh() }
     }

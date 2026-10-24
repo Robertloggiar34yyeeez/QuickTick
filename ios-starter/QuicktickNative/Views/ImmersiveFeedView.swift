@@ -15,12 +15,10 @@ struct ImmersiveFeedView: View {
         _activeID = activePostID
     }
     @Binding private var activeID: String?
-    // SwiftUI's scroll target is a restoration request, not playback truth.
-    // On some OS versions it remains on an offscreen page after paging.
-    @State private var scrollTargetID: String?
-    // A deliberate paging request must not be undone by interim geometry
-    // snapshots of the outgoing page while the scroll animation settles.
-    @State private var pageTransitionProtectedUntil = Date.distantPast
+    // A single mounted page is always aligned with the viewport. Native
+    // ScrollView target/geometry reconciliation could strand a page halfway
+    // through a snap or keep the outgoing post's actions accessible.
+    @State private var pageDirection = 1
     @State private var activeIndex = 0
     @State private var activeSince = Date.distantPast
     @State private var searchVisible = false
@@ -28,6 +26,7 @@ struct ImmersiveFeedView: View {
     @StateObject private var previews = ImmersivePreviewCache()
 
     private var mediaPosts: [Post] { collectionTab == 2 ? posts : posts.filter(\.isImmersiveMedia) }
+    private var visiblePost: Post? { mediaPosts.first(where: { $0.stableID == activeID }) }
     private var presentationActive: Bool {
         !store.isStudioPresented &&
             (collectionTab.map { store.activeTab == $0 }
@@ -37,25 +36,20 @@ struct ImmersiveFeedView: View {
 
     var body: some View {
         GeometryReader { geo in
-          ScrollViewReader { scrollProxy in
-            ScrollView(.vertical) {
-                LazyVStack(spacing: 0) {
-                    ForEach(mediaPosts, id: \.stableID) { post in
-                        ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: presentationActive, playbackOwner: playbackOwner, collection: collectionTab != nil, previews: previews) { origin, translation in
-                            pageSwipe(from: origin, translation: translation, viewportHeight: geo.size.height, scrollProxy: scrollProxy)
-                        }
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .contentShape(Rectangle())
-                            .allowsHitTesting(activeID == post.stableID && presentationActive)
-                            .accessibilityHidden(activeID != post.stableID)
-                            .background {
-                                GeometryReader { page in
-                                    Color.clear.preference(key: ImmersiveVisibleFrames.self, value: [post.stableID: page.frame(in: .named("immersive-viewport"))])
-                                }
-                            }
-                            .id(post.stableID)
+            ZStack {
+                if let post = visiblePost {
+                    ImmersiveItemView(post: post, offline: offline, active: true,
+                                      presentationActive: presentationActive, playbackOwner: playbackOwner,
+                                      collection: collectionTab != nil, previews: previews) { origin, translation in
+                        pageSwipe(from: origin, translation: translation, viewportHeight: geo.size.height)
                     }
-                }.scrollTargetLayout().frame(width: geo.size.width)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .contentShape(Rectangle())
+                    .id(post.stableID)
+                    .transition(.asymmetric(
+                        insertion: .offset(y: geo.size.height * CGFloat(pageDirection)).combined(with: .opacity),
+                        removal: .offset(y: -geo.size.height * CGFloat(pageDirection)).combined(with: .opacity)))
+                }
                 if mediaPosts.isEmpty {
                     ContentUnavailableView {
                         Label(store.isLoading ? "Loading clips" : "No videos or GIFs", systemImage: "play.rectangle")
@@ -78,23 +72,8 @@ struct ImmersiveFeedView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
             }
-                // One gesture owner makes a swipe atomic. Combining native
-                // paging, a high-priority drag and a writable scrollPosition
-                // could leave the content stranded between two pages.
-                // FullComicView has its own scroll view and is unaffected.
-                .scrollDisabled(true)
-                // ScrollView's settled target is the source of truth after a
-                // page swipe. Geometry callbacks can omit the target while a
-                // lazy cell mounts, leaving the previous video's rail active.
-                .coordinateSpace(name: "immersive-viewport")
-                .onChange(of: activeID) { _, key in
-                    guard let key, mediaPosts.contains(where: { $0.stableID == key }) else { return }
-                    withAnimation(.easeOut(duration: 0.22)) { scrollProxy.scrollTo(key, anchor: .top) }
-                }
-                .scrollIndicators(.hidden)
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
-          }
         }
         .navigationTitle(offline ? "Offline Immersive" : "Immersive")
         .navigationBarTitleDisplayMode(.inline)
@@ -131,18 +110,16 @@ struct ImmersiveFeedView: View {
         .task(id: presentationActive) {
             guard presentationActive else { return }
             if activeID == nil { activeID = mediaPosts.first?.stableID }
-            scrollTargetID = activeID
             activeSince = .now
         }
         .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")") { await prewarm() }
         .onChange(of: store.feedRevision) { _, _ in
             activeSince = .distantPast
-            activeIndex = 0; activeID = mediaPosts.first?.stableID; scrollTargetID = activeID
+            activeIndex = 0; activeID = mediaPosts.first?.stableID
         }
         .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
             if activeID == nil || !keys.contains(activeID ?? "") {
                 activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
-                scrollTargetID = activeID
                 if keys.isEmpty { activeIndex = 0 }
             }
         }
@@ -174,17 +151,15 @@ struct ImmersiveFeedView: View {
             else { Task { await store.selectFeedTab(0) } }
         }
     }
-    private func pageSwipe(from origin: String, translation: CGSize, viewportHeight: CGFloat, scrollProxy: ScrollViewProxy) {
+    private func pageSwipe(from origin: String, translation: CGSize, viewportHeight: CGFloat) {
         guard presentationActive, abs(translation.height) > max(55, viewportHeight * 0.12),
               abs(translation.height) > abs(translation.width) * 1.25,
               let index = mediaPosts.firstIndex(where: { $0.stableID == origin }) else { return }
         let next = index + (translation.height < 0 ? 1 : -1)
         guard mediaPosts.indices.contains(next) else { return }
         let key = mediaPosts[next].stableID
-        pageTransitionProtectedUntil = Date().addingTimeInterval(1.2)
-        activeID = key
-        scrollTargetID = key
-        withAnimation(.easeOut(duration: 0.22)) { scrollProxy.scrollTo(key, anchor: .top) }
+        pageDirection = translation.height < 0 ? 1 : -1
+        withAnimation(.easeOut(duration: 0.22)) { activeID = key }
     }
     private func prewarm() async {
         guard presentationActive, store.isForeground, !store.isManualVisualScanRunning, !Task.isCancelled else { return }
@@ -237,13 +212,6 @@ struct ImmersiveFeedView: View {
         }
     }
 
-}
-
-private struct ImmersiveVisibleFrames: PreferenceKey {
-    static let defaultValue: [String: CGRect] = [:]
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
-    }
 }
 
 private struct ImmersiveItemView: View {

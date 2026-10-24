@@ -739,3 +739,33 @@ final class RecommendationTests: XCTestCase {
         for term in ["sort", "score", "desc", "rating", "explicit"] { XCTAssertNil(state.profiles["rule34"]?.terms[term]) }
     }
 }
+
+final class RhythmPhraseTests: XCTestCase {
+    func testAdaptiveSessionVisitsAllFourDensitiesWithoutRestart() {
+        var sequence = RhythmPhraseSequencer()
+        sequence.reset(mode: .adaptive, mixed: true, quarterBeats: 2)
+        var observed: [RhythmDivision] = [sequence.current]
+        for _ in 0..<18 {
+            let old = sequence.current
+            for _ in 0..<(2 * old.rawValue) {
+                if sequence.tick(mixed: true, quarterBeats: 2, shuffle: false) {
+                    observed.append(sequence.current)
+                }
+            }
+        }
+        XCTAssertEqual(Array(observed.prefix(4)), [.regular, .duo, .triple, .quad])
+        XCTAssertEqual(Set(observed), Set(RhythmDivision.allCases))
+        for pair in zip(observed, observed.dropFirst()) {
+            XCTAssertNotEqual(pair.0, pair.1)
+        }
+    }
+
+    func testFixedDuoKeepsSubdivisionWhenMixDisabled() {
+        var sequence = RhythmPhraseSequencer()
+        sequence.reset(mode: .duo, mixed: false)
+        for _ in 0..<100 {
+            XCTAssertFalse(sequence.tick(mixed: false, quarterBeats: 4))
+            XCTAssertEqual(sequence.current, .duo)
+        }
+    }
+}

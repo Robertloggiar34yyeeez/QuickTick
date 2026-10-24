@@ -18,6 +18,56 @@ enum RhythmPattern: String, CaseIterable, Identifiable {
     }
 }
 
+/// Beat-bar phrases change density within a *single* session. We start with a
+/// familiar regular pulse, then visit Duo, Triple and Quad before repeating.
+/// Subsequent rounds may shuffle, but never repeat the same phrase twice in a
+/// row. This is a local sequencer, not a dependency on the reference editor.
+enum RhythmDivision: Int, CaseIterable, Identifiable {
+    case regular = 1, duo, triple, quad
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .regular: "Regular"
+        case .duo: "Duo"
+        case .triple: "Triple"
+        case .quad: "Quad"
+        }
+    }
+}
+
+struct RhythmPhraseSequencer {
+    private(set) var current: RhythmDivision = .regular
+    private(set) var phraseNumber = 0
+    private(set) var ticksRemaining = 4
+    private var upcoming: [RhythmDivision] = [.duo, .triple, .quad]
+
+    mutating func reset(mode: RhythmPattern, mixed: Bool, quarterBeats: Int = 4) {
+        current = mixed ? .regular : (RhythmDivision(rawValue: mode.subdivisions) ?? .regular)
+        upcoming = [.duo, .triple, .quad]
+        phraseNumber = 0
+        ticksRemaining = max(2, quarterBeats) * current.rawValue
+    }
+
+    /// Return true only when the next phrase begins. Duration is measured in
+    /// quarter notes so a triple phrase isn't three times shorter than regular.
+    mutating func tick(mixed: Bool, quarterBeats: Int, shuffle: Bool = true) -> Bool {
+        guard mixed else { return false }
+        ticksRemaining -= 1
+        guard ticksRemaining <= 0 else { return false }
+        if upcoming.isEmpty {
+            upcoming = RhythmDivision.allCases
+            if shuffle { upcoming.shuffle() }
+            if upcoming.first == current, let different = upcoming.firstIndex(where: { $0 != current }) {
+                upcoming.swapAt(0, different)
+            }
+        }
+        current = upcoming.removeFirst()
+        phraseNumber += 1
+        ticksRemaining = max(2, quarterBeats) * current.rawValue
+        return true
+    }
+}
+
 /// Local-only auto shuffle. The engine owns its timer and media player, never
 /// the feed's PlayerPool, so ending a session cannot disrupt feed autoplay.
 struct RhythmSessionView: View {
@@ -35,6 +85,7 @@ struct RhythmSessionView: View {
     @AppStorage("quicktick-rhythm-metronome-v1") private var metronome = false
     @AppStorage("quicktick-rhythm-haptics-v1") private var haptics = true
     @AppStorage("quicktick-rhythm-manual-v1") private var manual = false
+    @AppStorage("quicktick-rhythm-mix-subdivisions-v1") private var mixSubdivisions = true
     @AppStorage("quicktick-rhythm-finish-text-v1") private var finishText = "Beautiful rhythm. Session complete."
     @AppStorage("quicktick-rhythm-finish-style-v1") private var finishStyle = "Glow"
     @AppStorage("quicktick-rhythm-finish-animation-v1") private var finishAnimation = "Scale"
@@ -42,6 +93,7 @@ struct RhythmSessionView: View {
     @State private var deck: [Post] = []
     @State private var index = 0
     @State private var beat = 0
+    @State private var phraseSequencer = RhythmPhraseSequencer()
     @State private var switches = 0
     @State private var started = false
     @State private var running = false
@@ -53,7 +105,11 @@ struct RhythmSessionView: View {
 
     private var mode: RhythmPattern { RhythmPattern(rawValue: pattern) ?? .adaptive }
     private var current: Post? { deck.indices.contains(index) ? deck[index] : nil }
-    private var beatInterval: Double { 60 / Double(max(40, min(260, bpm))) / Double(mode.subdivisions) }
+    private var beatInterval: Double { 60 / Double(max(40, min(260, bpm))) / Double(phraseSequencer.current.rawValue) }
+    private var phraseLength: Int {
+        // Randomness changes phrase length as well as media switch timing.
+        max(2, Int((5 - randomness * 2).rounded()))
+    }
 
     var body: some View {
         NavigationStack {
@@ -76,17 +132,18 @@ struct RhythmSessionView: View {
                         }
                     }
                     .frame(height: 30)
-                    .accessibilityLabel("Beat \(beat + 1) of 8")
+                    .accessibilityLabel("\(phraseSequencer.current.title), beat \(beat + 1) of 8")
                     HStack(spacing: 12) {
                         Menu {
                             Picker("Rhythm", selection: $pattern) {
                                 ForEach(RhythmPattern.allCases) { item in Text(item.title).tag(item.rawValue) }
                             }
                         } label: {
-                            Label(mode.title, systemImage: "waveform.path")
+                            Label("\(mode.title) · \(phraseSequencer.current.title)", systemImage: "waveform.path")
                                 .frame(maxWidth: .infinity, minHeight: 44)
                         }
                         .buttonStyle(.bordered)
+                        .accessibilityIdentifier("rhythm-current-division")
                         Text("\(bpm) BPM")
                             .font(.subheadline.monospacedDigit().weight(.semibold))
                             .foregroundStyle(AppTheme.secondaryLabel)
@@ -115,6 +172,9 @@ struct RhythmSessionView: View {
                             labeledSlider("Transitions", value: $transitionSpeed, range: 0.08...0.65)
                             Toggle("Metronome clicks", isOn: $metronome)
                             Toggle("Beat haptics", isOn: $haptics)
+                            Toggle("Alternate Regular, Duo, Triple and Quad", isOn: $mixSubdivisions)
+                            Text("Each phrase lasts a few beats. Every rhythm appears in one session; the order varies over time.")
+                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                         }
                         .font(.subheadline)
                         .padding(.top, 8)
@@ -145,13 +205,19 @@ struct RhythmSessionView: View {
             started = true
             deck = posts.shuffled()
             running = !deck.isEmpty
+            resetPhrases()
             nextSwitch = .now.addingTimeInterval(dwellTime())
         }
         .onDisappear { running = false; player?.pause(); player = nil }
-        .task(id: "\(running):\(bpm):\(pattern):\(manual)") {
+        .onChange(of: pattern) { _, _ in resetPhrases() }
+        .onChange(of: mixSubdivisions) { _, _ in resetPhrases() }
+        .task(id: "\(running):\(bpm):\(pattern):\(manual):\(mixSubdivisions)") {
             guard running else { return }
             while !Task.isCancelled && running {
                 beat = (beat + 1) % 8
+                if phraseSequencer.tick(mixed: mixSubdivisions, quarterBeats: nextPhraseLength()) {
+                    beat = 0
+                }
                 if metronome { AudioServicesPlaySystemSound(1104) }
                 if haptics { UIImpactFeedbackGenerator(style: beat == 0 ? .medium : .light).impactOccurred() }
                 if !manual && Date() >= nextSwitch { advance() }
@@ -221,6 +287,16 @@ struct RhythmSessionView: View {
             Text(label).frame(width: 100, alignment: .leading)
             Slider(value: value, in: range)
         }
+    }
+
+    private func resetPhrases() {
+        phraseSequencer.reset(mode: mode, mixed: mixSubdivisions, quarterBeats: phraseLength)
+        beat = 0
+    }
+
+    private func nextPhraseLength() -> Int {
+        let spread = Int((randomness * 2).rounded())
+        return Int.random(in: max(2, phraseLength - spread)...max(2, phraseLength + spread))
     }
 
     private func dwellTime() -> Double {

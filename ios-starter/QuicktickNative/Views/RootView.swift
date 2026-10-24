@@ -7,6 +7,7 @@ struct RootView: View {
     @State private var brieflyNamedTab: Int?
     @State private var tabNameTask: Task<Void, Never>?
     @State private var refreshingTab: Int?
+    @State private var tabSelectionTask: Task<Void, Never>?
     @State private var refreshSpinDegrees = 0.0
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
@@ -20,6 +21,7 @@ struct RootView: View {
     // restored feeds. Create is a separate destination between tabs 1 and 2.
     private let tabs = [("Home", "house.fill"), ("Immersive", "play.fill"),
                         ("Create", "plus"), ("Favorites", "heart"), ("Downloads", "arrow.down.to.line")]
+    private var visibleTabIndices: [Int] { showAITab ? [0, 1, 2, 3, 4] : [0, 1, 3, 4] }
 
     var body: some View {
         GeometryReader { geometry in
@@ -97,7 +99,7 @@ struct RootView: View {
             // Keep the dock transaction in sync across both layouts.
             brieflyNamedTab = nil
         }
-        .onDisappear { tabNameTask?.cancel() }
+        .onDisappear { tabNameTask?.cancel(); tabSelectionTask?.cancel() }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: accentPalette)
         // A single environment tint reaches NavigationStacks, toolbars,
         // menus and all presented settings/model-library sheets.
@@ -139,9 +141,8 @@ struct RootView: View {
     }
 
     @ViewBuilder private func tabButtons(vertical: Bool) -> some View {
-        ForEach(tabs.indices, id: \.self) { index in
+        ForEach(visibleTabIndices, id: \.self) { index in
             if index == 2 {
-                if showAITab {
                 Button {
                     store.isStudioPresented = true
                     store.inlinePlaybackID = nil
@@ -160,7 +161,6 @@ struct RootView: View {
                 .buttonStyle(QuicktickPressStyle())
                 .accessibilityLabel("Create image")
                 .accessibilityIdentifier("tab-Create")
-                }
             } else {
                 let tabID = index < 2 ? index : index - 1
                 Button {
@@ -174,8 +174,13 @@ struct RootView: View {
                             }
                         }
                     }
-                    Task {
+                    // A quick Immersive → Home double tap must not let an
+                    // older asynchronous selection restore Immersive later.
+                    tabSelectionTask?.cancel()
+                    tabSelectionTask = Task { @MainActor in
+                        guard !Task.isCancelled else { return }
                         await store.selectFeedTab(tabID)
+                        guard !Task.isCancelled else { return }
                         if isRefresh {
                             try? await Task.sleep(for: .milliseconds(450))
                             if refreshingTab == tabID {

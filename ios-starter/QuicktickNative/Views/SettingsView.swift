@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
+    @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @FocusState private var syncFieldFocused: Bool
     @State private var syncID = ""
     @State private var status = ""
@@ -23,6 +24,9 @@ struct SettingsView: View {
     @State private var importingProfile = false
     @State private var preparingProfile = false
     @State private var activeSection: SettingsDestination = .appearance
+    @State private var mobileCLIPInstalled = MobileCLIPRealLifeEncoder.isInstalled()
+    @State private var mobileCLIPInstalling = false
+    @State private var mobileCLIPError: String?
 
     var body: some View {
         settingsPage
@@ -66,10 +70,10 @@ struct SettingsView: View {
                     .accessibilityIdentifier("modern-ui-toggle")
                 Text(modernUI ? "Rounded surfaces, compact chips and animated navigation." : "Previous QuickTick interface restored.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Label("Accent gradient", systemImage: "paintpalette.fill")
+                Label("Color theme", systemImage: "paintpalette.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
                 SettingsPaletteSelector(selected: $accentPalette)
-                Text("Your accent follows you through tabs, buttons, menus and sheets.")
+                Text("Galaxy also colors surfaces, borders and navigation. Every theme follows you through tabs, menus and sheets.")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             }.id(SettingsDestination.appearance.rawValue)
             SettingsGroup(title: "Website Sync", icon: "arrow.triangle.2.circlepath") {
@@ -163,14 +167,47 @@ struct SettingsView: View {
             SettingsGroup(title: "Visual intelligence", icon: "eye") {
                 Toggle("Learn visual taste while browsing", isOn: $store.visualAnalysisEnabled)
                 Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
+                Button {
+                    guard !mobileCLIPInstalling, !mobileCLIPInstalled else { return }
+                    mobileCLIPInstalling = true; mobileCLIPError = nil
+                    Task {
+                        do {
+                            try await MobileCLIPRealLifeEncoder.shared.install()
+                            mobileCLIPInstalled = true
+                            store.visualModelDidInstall()
+                        } catch { mobileCLIPError = error.localizedDescription }
+                        mobileCLIPInstalling = false
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        if mobileCLIPInstalling { InfinityLoader(size: 22) }
+                        else { Image(systemName: mobileCLIPInstalled ? "checkmark.circle.fill" : "arrow.down.circle") }
+                        Text(mobileCLIPInstalled ? "MobileCLIP ready" : (mobileCLIPInstalling ? "Installing MobileCLIP…" : "Install MobileCLIP · 23 MB"))
+                        Spacer()
+                    }
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .disabled(mobileCLIPInstalling || mobileCLIPInstalled)
+                .accessibilityIdentifier("install-mobileclip-button")
+                Text("Optional Apple on-device model for real-life visual similarity. Keeps anime and photo tastes separate; existing tags still determine specific themes. Runs during idle visual analysis, never during video playback.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let mobileCLIPError {
+                    Text("MobileCLIP installation failed: \(mobileCLIPError)")
+                        .font(.footnote).foregroundStyle(.orange)
+                }
                 ManualVisualRefreshPanel(manager: store.downloads)
             }
             SettingsGroup(title: "Playback", icon: "play.rectangle") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
                 Toggle("Mute", isOn: $store.muted)
+                Toggle("Autoplay in Home & cards", isOn: $autoplayVideos)
+                    .accessibilityIdentifier("autoplay-videos-toggle")
+                Text("When off, videos in Home and other card views stay on previews until you tap Play. Immersive always autoplays as you swipe.")
+                    .font(.footnote).foregroundStyle(.secondary)
                 Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
                     .accessibilityIdentifier("skip-video-intros-toggle")
-                Text("Pornhub videos longer than 12 seconds start at 0:10. All other sources start at 0:00.")
+                Text("For Pornhub videos longer than 12 seconds, the preview stays visible while the 0:10 position loads, then playback starts. Other sources begin at 0:00.")
                     .font(.footnote).foregroundStyle(.secondary)
             }.id(SettingsDestination.playback.rawValue)
             }
@@ -292,9 +329,21 @@ private struct SettingsPaletteSelector: View {
                 } label: {
                     VStack(spacing: 7) {
                         RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .fill(LinearGradient(colors: [palette.primary, palette.secondary],
+                            .fill(LinearGradient(colors: palette.gradientColors,
                                                  startPoint: .topLeading, endPoint: .bottomTrailing))
                             .frame(height: 49)
+                            .overlay {
+                                if palette == .galaxy {
+                                    HStack(alignment: .top) {
+                                        Image(systemName: "sparkle").font(.system(size: 13, weight: .light))
+                                        Spacer()
+                                        Image(systemName: "star.fill").font(.system(size: 5))
+                                    }
+                                    .foregroundStyle(.white.opacity(0.88))
+                                    .padding(10)
+                                    .allowsHitTesting(false)
+                                }
+                            }
                             .overlay {
                                 if chosen {
                                     Image(systemName: "checkmark.circle.fill")

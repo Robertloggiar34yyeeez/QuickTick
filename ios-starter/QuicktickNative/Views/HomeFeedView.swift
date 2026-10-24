@@ -5,6 +5,7 @@ struct HomeFeedView: View {
     @Binding var showSettings: Bool
     @Binding var scrollAnchor: String?
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
+    @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @State private var showSearch = false
     @State private var onboarding = false
     @State private var immersive = false
@@ -217,7 +218,7 @@ struct HomeFeedView: View {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)
         }
-        .task(id: "\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision)") {
+        .task(id: "\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision):\(autoplayVideos)") {
             guard !Task.isCancelled, store.activeTab == 0, store.isForeground, !store.isStudioPresented, store.feedRevision == revision else { return }
             await warmNext(after: store.inlinePlaybackID)
         }
@@ -290,7 +291,7 @@ struct HomeFeedView: View {
         guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented, !Task.isCancelled else { return }
         guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }
         let next = Array(store.posts.dropFirst(index + 1).prefix(2))
-        let nextVideo = store.posts.dropFirst(index + 1).prefix(4).first { $0.type.lowercased() == "video" }
+        let nextVideo = autoplayVideos ? store.posts.dropFirst(index + 1).prefix(4).first { $0.type.lowercased() == "video" } : nil
         store.players.retain(Set([key] + [nextVideo?.stableID].compactMap { $0 }))
         let feedStore = store
         let resolver = store.resolver

@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import QuicktickNative
 
 final class QueryParserTests: XCTestCase {
@@ -23,6 +24,32 @@ final class QueryParserTests: XCTestCase {
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true, provider: "pornhub"), 0)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: false, provider: "pornhub"), 0)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: .nan, enabled: true, provider: "pornhub"), 0)
+    }
+
+    func testPornhubIntroMustHaveBufferedFramesAfterTenSeconds() {
+        let range = CMTimeRange(start: CMTime(seconds: 10, preferredTimescale: 600),
+                                duration: CMTime(seconds: 1.5, preferredTimescale: 600))
+        let introOnly = CMTimeRange(start: .zero, duration: CMTime(seconds: 9, preferredTimescale: 600))
+        XCTAssertTrue(VideoIntroPolicy.bufferedFrom(10, ranges: [range]))
+        XCTAssertFalse(VideoIntroPolicy.bufferedFrom(10, ranges: [introOnly]))
+        XCTAssertFalse(VideoIntroPolicy.bufferedFrom(10, ranges: []))
+    }
+
+    func testAutoplayDefaultsOnAndCanBeDisabledPersistently() {
+        let name = "QuicktickVideoAutoplayTests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: name) else { XCTFail("Missing isolated defaults"); return }
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertTrue(VideoPlaybackPreferences.autoplayEnabled(defaults))
+        defaults.set(false, forKey: VideoPlaybackPreferences.autoplayKey)
+        XCTAssertFalse(VideoPlaybackPreferences.autoplayEnabled(defaults))
+        XCTAssertFalse(VideoPlaybackPreferences.shouldResume(owner: "home", defaults: defaults))
+        XCTAssertFalse(VideoPlaybackPreferences.shouldResume(owner: "favorites", defaults: defaults))
+        XCTAssertTrue(VideoPlaybackPreferences.shouldResume(owner: "immersive", defaults: defaults))
+        XCTAssertTrue(VideoPlaybackPreferences.shouldResume(owner: "home-immersive", defaults: defaults))
+        XCTAssertTrue(VideoPlaybackPreferences.shouldResume(owner: "offline-immersive", defaults: defaults))
+        defaults.set(true, forKey: VideoPlaybackPreferences.autoplayKey)
+        XCTAssertTrue(VideoPlaybackPreferences.autoplayEnabled(defaults))
+        XCTAssertTrue(VideoPlaybackPreferences.shouldResume(owner: "home", defaults: defaults))
     }
 
     func testStudioPromptMetadataIsPersistedBesideImage() async throws {

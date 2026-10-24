@@ -267,6 +267,7 @@ private struct ImmersiveVisibleFrames: PreferenceKey {
 
 private struct ImmersiveItemView: View {
     @EnvironmentObject private var store: AppStore
+    @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     let post: Post
     let offline: Bool
     let active: Bool
@@ -278,6 +279,7 @@ private struct ImmersiveItemView: View {
     @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
     @State private var ready = false
+    @State private var introReady = true
     @State private var playing = true
     @State private var watched = 0.0
     @State private var reportedWatch = 0.0
@@ -314,7 +316,7 @@ private struct ImmersiveItemView: View {
                                            startPoint: .topLeading, endPoint: .bottomTrailing)
                         }
                         .ignoresSafeArea()
-                    if !ready {
+                    if !ready || !introReady {
                         Group {
                             if let image = previews.images[post.stableID] {
                                 Image(uiImage: image).resizable().scaledToFill()
@@ -353,8 +355,8 @@ private struct ImmersiveItemView: View {
                 if let player {
                     NativePlayerSurface(player: player, fill: geo.size.width <= 600 && store.immersionFraming, ready: $ready, accessibilityID: "immersive-video-surface")
                         .frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height)
-                        .opacity(ready ? 1 : 0)
-                        .animation(.easeOut(duration: 0.18), value: ready)
+                        .opacity(ready && introReady ? 1 : 0)
+                        .animation(.easeOut(duration: 0.18), value: ready && introReady)
                         .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "gif", active, let gifURL {
@@ -428,7 +430,7 @@ private struct ImmersiveItemView: View {
                 }
             }
             .overlay {
-                if active, post.isImmersiveMedia, !ready, gifURL == nil, error == nil {
+                if active, post.isImmersiveMedia, (!ready || !introReady), gifURL == nil, error == nil {
                     VStack(spacing: 5) {
                         InfinityLoader(size: 44)
                         Text("Loading media").font(.caption2.weight(.medium)).foregroundStyle(.white.opacity(0.82))
@@ -446,8 +448,12 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry)") {
-            guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else { endExposure(); player = nil; ready = false; gifURL = nil; return }
+        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros)") {
+            guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else {
+                endExposure(); player = nil; ready = false; introReady = true; gifURL = nil
+                if !active { playing = true }
+                return
+            }
             exposureStarted = .now; exposure = PlaybackExposure(); loopStart = 0; gifDecoded = false; gifClock = 0; lastGIFSample = .now
             progress = 0; duration = 0; scrubbing = false; error = nil
             await prepare()
@@ -469,9 +475,13 @@ private struct ImmersiveItemView: View {
                     // Read already available item metadata; remote track loading
                     // must never suspend playback health/error monitoring.
                     if let size = player.currentItem?.presentationSize, size.width > 0, size.height > 0, mediaSize != size { mediaSize = size }
-                    if !restoredResume, player.currentItem?.status == .readyToPlay, length.isFinite, length > 0 {
+                    if !restoredResume, introReady, player.currentItem?.status == .readyToPlay,
+                       length.isFinite, length > 0 {
                         restoredResume = true
-                        if let resume = PlaybackPosition.resume(store.resumePosition(post.stableID), duration: length), abs(seconds - resume) > 2 {
+                        // An additional resume seek races with the 10-second
+                        // Pornhub seek and can bounce the clip back to 0:00.
+                        let skippingIntro = post.provider.lowercased() == "pornhub" && skipVideoIntros
+                        if !skippingIntro, let resume = PlaybackPosition.resume(store.resumePosition(post.stableID), duration: length), abs(seconds - resume) > 2 {
                             player.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: CMTime(seconds: 0.25, preferredTimescale: 600), toleranceAfter: CMTime(seconds: 0.25, preferredTimescale: 600), completionHandler: { _ in })
                         }
                     }
@@ -492,7 +502,10 @@ private struct ImmersiveItemView: View {
                 }
             }
         }
-        .onDisappear { endExposure(); player = nil; ready = false; gifURL = nil }
+        .onDisappear {
+            endExposure(); player = nil; ready = false; introReady = true; gifURL = nil
+            playing = true
+        }
         .onChange(of: scrubbing) { _, _ in exposure = PlaybackExposure() }
         .onChange(of: store.muted) { _, value in player?.isMuted = value }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
@@ -506,7 +519,7 @@ private struct ImmersiveItemView: View {
             let pool = store.players
             let key = post.stableID
             let owner = playbackOwner
-            let start = VideoIntroPolicy.startTime(duration: length, enabled: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"), provider: post.provider)
+            let start = VideoIntroPolicy.startTime(duration: length, enabled: skipVideoIntros, provider: post.provider)
             player.seek(to: CMTime(seconds: start, preferredTimescale: 600)) { finished in
                 Task { @MainActor in
                     guard finished, playing, store.isForeground, pool.activeKey == key, pool.activeOwner == owner else { return }
@@ -556,7 +569,10 @@ private struct ImmersiveItemView: View {
             }
             guard !Task.isCancelled, active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else { return }
             if post.type.lowercased() == "gif" { gifURL = url; return }
-            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner)
+            introReady = !(post.provider.lowercased() == "pornhub" && skipVideoIntros)
+            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) {
+                introReady = true
+            }
             player = p; p.isMuted = store.muted
             if !playing { p.pause() }; error = nil
         } catch { if !Task.isCancelled { self.error = error.localizedDescription } }

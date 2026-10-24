@@ -104,6 +104,11 @@ final class AppStore: ObservableObject {
     @Published var visualAnalysisEnabled = (UserDefaults.standard.object(forKey: "quicktick-visual-analysis-v1") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(visualAnalysisEnabled, forKey: "quicktick-visual-analysis-v1"); scheduleIdleIntelligence() }
     }
+
+    func visualModelDidInstall() {
+        visualScanStatus = "MobileCLIP installed · refreshing real-life visual preferences when idle"
+        if visualAnalysisEnabled { scheduleIdleIntelligence() }
+    }
     let visual = VisualAnalysisService()
     @Published private(set) var visualScanStatus: String?
     @Published private(set) var manualVisualProgress: VisualRefreshProgress?

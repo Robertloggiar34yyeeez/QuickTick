@@ -4,12 +4,27 @@ import CoreGraphics
 
 /// Built-in on-device visual encoder. Called only by the serial, idle analyzer.
 enum VisualAppearanceEncoder {
+    // Untagged videos from these providers are often real-life media. Keep
+    // their domain `uncertain` (and therefore their taste profile separate)
+    // until the tags actually establish a medium, but let MobileCLIP learn
+    // visual similarity from their preview frames in the idle worker.
+    static func prefersMobileCLIP(domain: VisualDomain, provider: String) -> Bool {
+        if domain == .realLife { return true }
+        return domain == .uncertain && ["pornhub", "eporner", "redgifs"].contains(provider.lowercased())
+    }
     private final class Cancellation: @unchecked Sendable {
         let request: VNRequest
         init(_ request: VNRequest) { self.request = request }
     }
-    @concurrent static func embedding(_ image: DecodedMediaImage) async throws -> (vector: [Float], version: String) {
+    @concurrent static func embedding(_ image: DecodedMediaImage, domain: VisualDomain? = nil,
+                                      provider: String = "") async throws -> (vector: [Float], version: String) {
         try Task.checkCancellation()
+        if let domain, prefersMobileCLIP(domain: domain, provider: provider), MobileCLIPRealLifeEncoder.isInstalled() {
+            // Explicit download enables this encoder; anime, 3D, and other
+            // unclassified providers retain their existing Vision path.
+            let vector = try await MobileCLIPRealLifeEncoder.shared.embedding(image)
+            return (vector, MobileCLIPRealLifeEncoder.version)
+        }
         let request = VNGenerateImageFeaturePrintRequest()
         request.preferBackgroundProcessing = true
         request.usesCPUOnly = true

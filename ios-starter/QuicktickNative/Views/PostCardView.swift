@@ -6,6 +6,8 @@ import Combine
 
 struct PostCardView: View {
     @EnvironmentObject private var store: AppStore
+    @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
+    @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     let post: Post
     var available = CGSize(width: 400, height: 800)
     var playbackTab = 0
@@ -19,6 +21,8 @@ struct PostCardView: View {
     @State private var player: AVPlayer?
     @State private var gifURL: URL?
     @State private var ready = false
+    @State private var introReady = true
+    @State private var manualPlaybackRequested = false
     @State private var playing = false
     @State private var preparing = false
     @State private var mediaAspect: CGFloat = 4 / 3
@@ -99,13 +103,16 @@ struct PostCardView: View {
                 get: { store.fullScreenPlaybackID == post.stableID },
                 set: { if !$0 { store.fullScreenPlaybackID = nil } }
             ), onDismiss: {
-                if store.isForeground, store.activeTab == playbackTab, store.pausedPlaybackID != post.stableID { player?.play() }
+                if store.isForeground, store.activeTab == playbackTab,
+                   store.pausedPlaybackID != post.stableID,
+                   (autoplayVideos || manualPlaybackRequested) { player?.play() }
             }) {
                 if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(manualPlaybackRequested)") {
                 guard !Task.isCancelled else { return }
                 guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
+                guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
                 await preparePlayback()
             }
             .onDisappear {
@@ -120,8 +127,8 @@ struct PostCardView: View {
             }
             .onChange(of: comments) { _, shown in if shown { store.pausedPlaybackID = post.stableID; store.players.pause(post.stableID) } }
             .onChange(of: fullImage) { _, shown in if shown { store.players.pauseAll() } }
-            .onChange(of: player != nil) { _, exists in
-                guard exists, pendingVideoFullscreen, store.activeTab == playbackTab else { return }
+            .onChange(of: player != nil && introReady) { _, isPlayable in
+                guard isPlayable, pendingVideoFullscreen, store.activeTab == playbackTab else { return }
                 pendingVideoFullscreen = false
                 store.fullScreenPlaybackID = post.stableID
             }
@@ -132,9 +139,10 @@ struct PostCardView: View {
                 if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground {
                     store.recordComplete(post); store.recordReplay(post)
                     let length = player?.currentItem?.duration.seconds ?? 0
-                    let start = VideoIntroPolicy.startTime(duration: length, enabled: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"), provider: post.provider)
+                    let start = VideoIntroPolicy.startTime(duration: length, enabled: skipVideoIntros, provider: post.provider)
                     player?.seek(to: CMTime(seconds: start, preferredTimescale: 600))
-                    if store.pausedPlaybackID != post.stableID { player?.play() }
+                    if store.pausedPlaybackID != post.stableID,
+                       (autoplayVideos || manualPlaybackRequested) { player?.play() }
                 }
             }
     }
@@ -146,7 +154,7 @@ struct PostCardView: View {
                     PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
                     NativePlayerSurface(player: player, fill: false, ready: $ready)
                         .frame(width: mediaSize.width, height: mediaSize.height)
-                        .opacity(ready ? 1 : 0)
+                        .opacity(ready && introReady ? 1 : 0)
                 }.aspectRatio(mediaSize.width / max(1,mediaSize.height), contentMode: .fit)
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true, onSize: { nativeSize = $0; mediaAspect = $0.width / max(1,$0.height) })
@@ -214,7 +222,11 @@ struct PostCardView: View {
         .overlay(alignment: .bottomTrailing) {
             if post.isImmersiveMedia {
                 Button {
-                    if store.inlinePlaybackID == post.stableID {
+                    if !autoplayVideos && !manualPlaybackRequested {
+                        manualPlaybackRequested = true
+                        store.pausedPlaybackID = nil
+                        store.inlinePlaybackID = post.stableID
+                    } else if store.inlinePlaybackID == post.stableID {
                         store.pausedPlaybackID = store.pausedPlaybackID == post.stableID ? nil : post.stableID
                     } else { store.inlinePlaybackID = post.stableID }
                 } label: {
@@ -237,8 +249,15 @@ struct PostCardView: View {
 
     private func openMediaFullscreen() {
         if post.type.lowercased() == "video" {
-            if player != nil { store.fullScreenPlaybackID = post.stableID }
-            else { pendingVideoFullscreen = true; store.inlinePlaybackID = post.stableID }
+            if player != nil && introReady { store.fullScreenPlaybackID = post.stableID }
+            else {
+                pendingVideoFullscreen = true
+                if player == nil {
+                    manualPlaybackRequested = true
+                    store.pausedPlaybackID = nil
+                    store.inlinePlaybackID = post.stableID
+                }
+            }
         } else { fullImage = true }
     }
     private func preparePlayback() async {
@@ -261,8 +280,15 @@ struct PostCardView: View {
                 return
             }
             let p: AVPlayer
-            if store.pausedPlaybackID == post.stableID { p = store.players.player(for: post.stableID, url: url); p.pause() }
-            else { p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) }
+            if store.pausedPlaybackID == post.stableID {
+                p = store.players.player(for: post.stableID, url: url); p.pause()
+                introReady = true
+            } else {
+                introReady = !(post.provider.lowercased() == "pornhub" && skipVideoIntros)
+                p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) {
+                    introReady = true
+                }
+            }
             player = p; preparing = false
             // Start playback first; size discovery adjusts the card independently.
             if let asset = p.currentItem?.asset, let track = try? await asset.loadTracks(withMediaType: .video).first,
@@ -286,11 +312,16 @@ struct PostCardView: View {
         if watchSeconds >= 2 { store.recordWatch(post, seconds: watchSeconds, completion: completion) }
         watchSeconds = 0
     }
-    private func stopPlayback() { store.players.pause(post.stableID, owner: playbackOwner); player = nil; gifURL = nil; ready = false; playing = false }
+    private func stopPlayback() {
+        store.players.pause(post.stableID, owner: playbackOwner)
+        player = nil; gifURL = nil; ready = false; introReady = true; playing = false
+        manualPlaybackRequested = false
+    }
 }
 
 private struct FullScreenVideoView: View {
     @EnvironmentObject private var store: AppStore
+    @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     let player: AVPlayer
     let postID: String
     let onClose: () -> Void
@@ -319,7 +350,7 @@ private struct FullScreenVideoView: View {
                 else if status == .paused { store.pausedPlaybackID = postID }
             }
             .onChange(of: store.isForeground) { _, foreground in
-                if foreground, store.pausedPlaybackID != postID { player.play() }
+                if foreground, autoplayVideos, store.pausedPlaybackID != postID { player.play() }
             }
     }
 }

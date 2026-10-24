@@ -2,7 +2,7 @@ import SwiftUI
 
 enum AppTheme {
     enum AccentPalette: String, CaseIterable, Identifiable {
-        case violet, ocean, sunset, mint, rose, cobalt, amber, cherry, teal, lime, indigo, coral
+        case violet, ocean, sunset, mint, rose, cobalt, amber, cherry, teal, lime, indigo, coral, galaxy
         var id: String { rawValue }
         var name: String { rawValue.capitalized }
         var primary: Color {
@@ -19,6 +19,7 @@ enum AppTheme {
             case .lime: Color(red: 0.63, green: 0.84, blue: 0.28)
             case .indigo: Color(red: 0.44, green: 0.38, blue: 0.94)
             case .coral: Color(red: 0.99, green: 0.40, blue: 0.42)
+            case .galaxy: Color(red: 0.75, green: 0.43, blue: 1.00)
             }
         }
         var secondary: Color {
@@ -35,6 +36,14 @@ enum AppTheme {
             case .lime: Color(red: 0.10, green: 0.74, blue: 0.59)
             case .indigo: Color(red: 0.77, green: 0.40, blue: 1.00)
             case .coral: Color(red: 1.00, green: 0.66, blue: 0.36)
+            case .galaxy: Color(red: 0.23, green: 0.79, blue: 1.00)
+            }
+        }
+        var gradientColors: [Color] {
+            switch self {
+            case .galaxy:
+                [Color(red: 0.95, green: 0.35, blue: 0.82), primary, secondary]
+            default: [primary, secondary]
             }
         }
     }
@@ -42,16 +51,32 @@ enum AppTheme {
         AccentPalette(rawValue: UserDefaults.standard.string(forKey: "quicktick-accent-palette-v1") ?? "violet") ?? .violet
     }
     static var modernUI: Bool { (UserDefaults.standard.object(forKey: "quicktick-modern-ui-v1") as? Bool) ?? true }
-    static var background: Color { modernUI ? Color(red: 0.035, green: 0.035, blue: 0.065) : .black }
-    static var surface: Color { modernUI ? Color(red: 0.073, green: 0.073, blue: 0.11) : Color(white: 0.055) }
-    static var elevatedSurface: Color { modernUI ? Color(red: 0.10, green: 0.095, blue: 0.15) : Color(red: 0.09, green: 0.09, blue: 0.13) }
-    static let navigationSurface = Color(red: 0.045, green: 0.04, blue: 0.075)
-    static let border = Color.white.opacity(0.12)
-    static let secondaryLabel = Color.white.opacity(0.58)
+    static var isGalaxy: Bool { palette == .galaxy }
+    // Galaxy changes the actual surfaces across menus, not just button tint.
+    // Fixed colors avoid animated shaders or heavy effects on feed scrolling.
+    static var background: Color {
+        if isGalaxy { return Color(red: 0.020, green: 0.021, blue: 0.074) }
+        return modernUI ? Color(red: 0.035, green: 0.035, blue: 0.065) : .black
+    }
+    static var surface: Color {
+        if isGalaxy { return Color(red: 0.065, green: 0.052, blue: 0.143) }
+        return modernUI ? Color(red: 0.073, green: 0.073, blue: 0.11) : Color(white: 0.055)
+    }
+    static var elevatedSurface: Color {
+        if isGalaxy { return Color(red: 0.110, green: 0.078, blue: 0.212) }
+        return modernUI ? Color(red: 0.10, green: 0.095, blue: 0.15) : Color(red: 0.09, green: 0.09, blue: 0.13)
+    }
+    static var navigationSurface: Color {
+        isGalaxy ? Color(red: 0.040, green: 0.031, blue: 0.114) : Color(red: 0.045, green: 0.04, blue: 0.075)
+    }
+    static var border: Color {
+        isGalaxy ? Color(red: 0.57, green: 0.48, blue: 0.97).opacity(0.28) : Color.white.opacity(0.12)
+    }
+    static var secondaryLabel: Color { Color.white.opacity(isGalaxy ? 0.72 : 0.58) }
     static let spring = Animation.spring(response: 0.38, dampingFraction: 0.82)
     static var accent: Color { palette.primary }
     static var gradient: LinearGradient {
-        LinearGradient(colors: [palette.primary, palette.secondary], startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: palette.gradientColors, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     static var canvas: Color { background }
     static let small: CGFloat = 8

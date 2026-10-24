@@ -47,7 +47,7 @@ struct RootView: View {
                         .padding(.top, modernUI ? 8 : 4)
                         .padding(.bottom, 0)
                         .background {
-                            if modernUI {
+                            if modernUI && !AppTheme.isGalaxy {
                                 Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(edges: .bottom)
                             } else {
                                 AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
@@ -70,7 +70,8 @@ struct RootView: View {
                 if sideNavigation {
                     VStack(spacing: 6) { tabButtons(vertical: true) }
                         .padding(6)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        .background(AppTheme.isGalaxy ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
+                                    in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
                         .shadow(color: .black.opacity(0.4), radius: 18, y: 4)
                         .padding(.leading, 16)

@@ -135,11 +135,13 @@ struct RootView: View {
             .environmentObject(store)
             .tint(AppTheme.accent)
         }
+        .overlay(alignment: .topTrailing) { FloatingPiPView().environmentObject(store) }
     }
 
     @ViewBuilder private func tabButtons(vertical: Bool) -> some View {
-        ForEach(tabs.indices.filter { showAITab || $0 != 2 }, id: \.self) { index in
+        ForEach(tabs.indices, id: \.self) { index in
             if index == 2 {
+                if showAITab {
                 Button {
                     store.isStudioPresented = true
                     store.inlinePlaybackID = nil
@@ -158,6 +160,7 @@ struct RootView: View {
                 .buttonStyle(QuicktickPressStyle())
                 .accessibilityLabel("Create image")
                 .accessibilityIdentifier("tab-Create")
+                }
             } else {
                 let tabID = index < 2 ? index : index - 1
                 Button {

@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import AVFoundation
 
 struct VisualRefreshProgress: Equatable, Sendable {
     var completed: Int
@@ -49,7 +50,55 @@ final class AppStore: ObservableObject {
     } }
     @Published var pausedPlaybackID: String?
     @Published var fullScreenPlaybackID: String?
-    @Published var inlinePlaybackID: String? { didSet { if oldValue != inlinePlaybackID { idleTask?.cancel(); pausedPlaybackID = nil; if players.activeOwner != "immersive", players.activeOwner?.hasSuffix("-immersive") != true { players.transitionVisiblePost() } } } }
+    @Published private(set) var pipPlayer: AVPlayer?
+    @Published private(set) var pipPostID: String?
+    @Published var pipFullscreen = false
+    @Published var pipMuteFeed = UserDefaults.standard.bool(forKey: "quicktick-pip-mute-feed-v1") {
+        didSet {
+            UserDefaults.standard.set(pipMuteFeed, forKey: "quicktick-pip-mute-feed-v1")
+            updatePiPAudioMix()
+        }
+    }
+    func beginFloatingVideo(post: Post, source: AVPlayer) {
+        guard post.type.lowercased() == "video", let asset = source.currentItem?.asset else { return }
+        closeFloatingVideo()
+        let position = source.currentTime()
+        let floating = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+        floating.volume = 1
+        floating.isMuted = false
+        floating.automaticallyWaitsToMinimizeStalling = true
+        pipPostID = post.stableID
+        pipPlayer = floating
+        players.pause(post.stableID)
+        updatePiPAudioMix()
+        if position.isValid, position.seconds.isFinite, position.seconds > 0 {
+            floating.seek(to: position, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+                if finished { Task { @MainActor in if self.pipPlayer === floating { floating.play() } } }
+            }
+        } else { floating.play() }
+    }
+    func closeFloatingVideo() {
+        pipPlayer?.pause()
+        pipPlayer = nil
+        pipPostID = nil
+        pipFullscreen = false
+        updatePiPAudioMix()
+    }
+    private func updatePiPAudioMix() {
+        players.feedVolumeScale = pipPlayer == nil ? 1 : (pipMuteFeed ? 0 : 0.15)
+    }
+    // The Home stack is unmounted when another tab is opened. Remember the
+    // visible media across that gap while its geometry preferences reappear.
+    private(set) var retainedHomePlaybackID: String?
+    @Published var inlinePlaybackID: String? { didSet {
+        if activeTab == 0, let inlinePlaybackID { retainedHomePlaybackID = inlinePlaybackID }
+        if oldValue != inlinePlaybackID {
+            idleTask?.cancel(); pausedPlaybackID = nil
+            if players.activeOwner != "immersive", players.activeOwner?.hasSuffix("-immersive") != true {
+                players.transitionVisiblePost()
+            }
+        }
+    } }
     @Published var queryText = "" { didSet { if oldValue != queryText && !committingSearch { invalidateFeed() } } }
     @Published var feedSort = "recommended" { didSet { if oldValue != feedSort && !committingSearch { invalidateFeed() } } }
     @Published private(set) var feedRevision = UUID()

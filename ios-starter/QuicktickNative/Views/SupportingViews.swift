@@ -751,6 +751,7 @@ struct FirstRunSetupView: View {
 struct FavoritesView: View {
     @EnvironmentObject private var store: AppStore
     @State private var immersive = false
+    @State private var rhythm = false
     @State private var activeID: String?
     @State private var shuffleLikes = false
     @State private var randomizedIDs: [String] = []
@@ -826,6 +827,9 @@ struct FavoritesView: View {
         .navigationTitle("Favorites")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { rhythm = true } label: { Label("Rhythm", systemImage: "waveform.path") }
+                    .disabled(!saved.contains(where: { $0.providerKey == .rule34 }))
+                    .accessibilityIdentifier("favorites-rhythm")
                 Menu {
                     Button("Shuffle likes", systemImage: "shuffle") { shuffleFavorites() }
                     Button("Original order", systemImage: "list.bullet") {
@@ -847,6 +851,9 @@ struct FavoritesView: View {
                 .disabled(saved.isEmpty)
                 .accessibilityIdentifier("favorites-immersive")
             }
+        }
+        .fullScreenCover(isPresented: $rhythm) {
+            RhythmSessionView(posts: saved.filter { $0.providerKey == .rule34 }, offline: false)
         }
     }
 }

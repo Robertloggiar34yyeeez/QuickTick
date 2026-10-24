@@ -1048,6 +1048,18 @@ actor RecommendationEngine {
         "smile", "open_mouth", "blush", "high_resolution", "masterpiece", "best_quality"
     ]
 
+    // Keep franchise identity separate from incidental pose/appearance tags.
+    // A single Chun-Li like can support related candidates without allowing
+    // the entire Street Fighter family to monopolize a page.
+    private func diversityTopics(for post: Post, terms cached: [String]? = nil) -> Set<String> {
+        var topics = Set((cached ?? terms(for: post)).map(RecommendationTagRules.canonical))
+            .subtracting(Self.genericTasteTerms).subtracting(Self.broadDiversityTags)
+        let concepts = TasteConcepts.resolve(post.tags)
+        topics.formUnion(concepts.franchises.map { "franchise:" + $0 })
+        topics.formUnion(concepts.characters.map { "character:" + $0 })
+        return topics
+    }
+
     /// Subject- and tag-aware reranking with a longer memory than adjacent
     /// post overlap. This cannot relax explicit taste/dislike admission: it
     /// merely picks the next post among candidates already admitted.
@@ -1055,14 +1067,11 @@ actor RecommendationEngine {
                                recent: [Post]) -> [Post] {
         var pool = scored
         var chosen: [Post] = []
-        var window = recent.suffix(12).map {
-            Set(terms(for: $0).map(RecommendationTagRules.canonical))
-                .subtracting(Self.genericTasteTerms).subtracting(Self.broadDiversityTags)
-        }
+        var window = recent.suffix(20).map { diversityTopics(for: $0) }
         let target = min(96, pool.count)
         while chosen.count < target {
-            let lookAhead = min(64, pool.count)
-            let preceding = Array(window.suffix(12))
+            let lookAhead = min(128, pool.count)
+            let preceding = Array(window.suffix(20))
             let discoverySlot = (chosen.count + recent.count) % 6 == 5
             var bestIndex = 0
             var bestScore = -Double.infinity
@@ -1081,8 +1090,16 @@ actor RecommendationEngine {
                 // Repeated near-identical subjects incur a growing cost, not
                 // merely the previous post's once-off overlap penalty.
                 let saturation = min(48.0, Double(closeMatches) * 6.5 + Double(exactMatches) * 3.5)
+                // Franchise/character concentration compounds across the
+                // whole recent window, even when each image has different
+                // generic tags. This is a soft penalty, never a hard block.
+                let anchors = topics.filter { $0.hasPrefix("franchise:") || $0.hasPrefix("character:") }
+                let repeatCount = preceding.reduce(0) { total, seen in
+                    total + (anchors.isDisjoint(with: seen) ? 0 : 1)
+                }
+                let identitySaturation = min(75.0, Double(repeatCount * repeatCount) * 1.4)
                 let novelty = closest < 0.35 ? 8.0 : 0.0
-                let adjusted = pool[index].value - closest * 10 - saturation
+                let adjusted = pool[index].value - closest * 10 - saturation - identitySaturation
                     + (discoverySlot ? novelty : 0)
                 if adjusted > bestScore { bestScore = adjusted; bestIndex = index }
             }
@@ -1106,8 +1123,7 @@ actor RecommendationEngine {
             }
             let scored = allowed.enumerated().map { offset, post in
                 (post: post, value: 0.0, offset: offset,
-                 topics: Set(terms(for: post).map(RecommendationTagRules.canonical))
-                    .subtracting(Self.genericTasteTerms).subtracting(Self.broadDiversityTags))
+                 topics: diversityTopics(for: post))
             }
             return diversifyFast(scored, recent: recent)
         }
@@ -1123,8 +1139,7 @@ actor RecommendationEngine {
                                  cachedRecentTerms: recentTerms, alreadyApproved: true)
             let calibrated = RecommendationQualityModel.combined(metadata: metadata,
                 visual: visualScores[post.stableID])
-            let topics = Set(postTerms.map(RecommendationTagRules.canonical))
-                .subtracting(Self.genericTasteTerms).subtracting(Self.broadDiversityTags)
+            let topics = diversityTopics(for: post, terms: postTerms)
             scored.append((post: post, value: calibrated, offset: offset, topics: topics))
         }
         scored.sort { $0.value == $1.value ? $0.offset < $1.offset : $0.value > $1.value }

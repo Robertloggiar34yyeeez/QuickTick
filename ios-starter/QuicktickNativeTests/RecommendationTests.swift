@@ -328,6 +328,31 @@ final class RecommendationTests: XCTestCase {
             "Exploration must not bypass explicit identity relevance")
     }
 
+    func testOneFavoriteFranchiseCannotMonopolizeEligibleMixedInterestFeed() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let recent = (0..<14).map { index in
+            Post(key: "rule34:seen-\(index)", id: "seen-\(index)", provider: "rule34",
+                 tags: ["chun_li", "street_fighter", "qipao"])
+        }
+        let repeated = (0..<24).map { index in
+            Post(key: "rule34:chun-\(index)", id: "chun-\(index)", provider: "rule34",
+                 tags: ["chun_li", "street_fighter", "qipao"])
+        }
+        let otherLiked = (0..<8).map { index in
+            Post(key: "rule34:samus-\(index)", id: "samus-\(index)", provider: "rule34",
+                 tags: ["samus_aran", "metroid", "outdoors"])
+        }
+        let excluded = Post(key: "rule34:blocked", id: "blocked", provider: "rule34",
+                            tags: ["samus_aran", "metroid", "furry"])
+        let taste = TasteChoice(done: true, into: ["chun_li", "samus_aran"], notInto: ["furry"])
+        let ranked = await engine.rankFast(repeated + otherLiked + [excluded],
+                                           taste: taste, recent: recent, strict: true)
+        XCTAssertFalse(ranked.contains(excluded), "Explicit exclusions remain hard filters")
+        XCTAssertTrue(ranked.prefix(6).contains(where: { $0.tags.contains("samus_aran") }),
+                      "A different liked character should be surfaced despite a long franchise streak")
+        XCTAssertTrue(ranked.allSatisfy { $0.tags.contains("chun_li") || $0.tags.contains("samus_aran") })
+    }
+
     func testPairedDynamicsRemainScopedToSelectedCharacter() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let selected = TasteChoice(done: true, into: ["chun_li", "kratos"],

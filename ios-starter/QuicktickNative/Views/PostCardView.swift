@@ -219,6 +219,21 @@ struct PostCardView: View {
             }
         }
         .contentShape(Rectangle())
+        .overlay(alignment: .topTrailing) {
+            if post.type.lowercased() == "video", let player,
+               store.activeTab == playbackTab, store.pipPostID != post.stableID {
+                Button { store.beginFloatingVideo(post: post, source: player) } label: {
+                    Image(systemName: "pip.enter")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .padding(10)
+                .accessibilityLabel("Play in floating window")
+                .accessibilityIdentifier("pip-\(post.stableID)")
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             if post.isImmersiveMedia {
                 Button {

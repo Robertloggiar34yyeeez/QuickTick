@@ -11,6 +11,12 @@ struct SettingsView: View {
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
+    @AppStorage("quicktick-rhythm-finish-text-v1") private var rhythmFinishText = "Beautiful rhythm. Session complete."
+    @AppStorage("quicktick-rhythm-finish-style-v1") private var rhythmFinishStyle = "Glow"
+    @AppStorage("quicktick-rhythm-finish-animation-v1") private var rhythmFinishAnimation = "Scale"
+    @AppStorage("quicktick-rhythm-mode-v1") private var rhythmMode = "adaptive"
+    @AppStorage("quicktick-rhythm-metronome-v1") private var rhythmClicks = false
+    @AppStorage("quicktick-rhythm-haptics-v1") private var rhythmHaptics = true
     @State private var status = ""
     @State private var user = ""
     @State private var key = ""
@@ -192,6 +198,25 @@ struct SettingsView: View {
                 Text("For Pornhub videos longer than 12 seconds, the preview stays visible while the 0:10 position loads, then playback starts. Other sources begin at 0:00.")
                     .font(.footnote).foregroundStyle(.secondary)
             }.id(SettingsDestination.playback.rawValue)
+            SettingsGroup(title: "Rhythm & floating player", icon: "waveform.path") {
+                Picker("Default rhythm", selection: $rhythmMode) {
+                    ForEach(RhythmPattern.allCases) { mode in Text(mode.title).tag(mode.rawValue) }
+                }
+                Toggle("Metronome sounds", isOn: $rhythmClicks)
+                Toggle("Beat haptics", isOn: $rhythmHaptics)
+                TextField("Completion message", text: $rhythmFinishText, axis: .vertical)
+                    .lineLimit(2...4)
+                    .modifier(SettingsTextFieldSurface())
+                Picker("Completion appearance", selection: $rhythmFinishStyle) {
+                    ForEach(["Glow", "Glass", "Minimal"], id: \.self) { Text($0) }
+                }
+                Picker("Completion animation", selection: $rhythmFinishAnimation) {
+                    ForEach(["Scale", "Slide", "Fade"], id: \.self) { Text($0) }
+                }
+                Toggle("Mute feed audio during floating video", isOn: $store.pipMuteFeed)
+                Text("Otherwise feed audio is reduced to 15% while a floating video plays. Normal audio returns when it closes.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             }
             .frame(maxWidth: 780)
             .frame(maxWidth: .infinity)
@@ -531,6 +556,8 @@ private struct ManualVisualRefreshPanel: View {
     @ObservedObject var manager: DownloadManager
     @State private var previewURL: URL?
     @State private var previewReady = false
+    @State private var carouselURLs: [String] = []
+    @State private var carouselIndex = 0
     var body: some View {
         Group {
             Button { store.startManualVisualRefresh() } label: {
@@ -543,17 +570,40 @@ private struct ManualVisualRefreshPanel: View {
                     Text(progress.status).accessibilityIdentifier("manual-visual-status")
                 }.accessibilityIdentifier("manual-visual-progress")
                     .accessibilityValue("\(progress.completed) of \(progress.total) new posts analyzed")
+                if !carouselURLs.isEmpty {
+                    GeometryReader { area in
+                        ZStack {
+                            ForEach(-2...2, id: \.self) { slot in
+                                let offset = (carouselIndex + slot + carouselURLs.count * 4) % carouselURLs.count
+                                CachedMediaImage(url: carouselURLs[offset], pixels: 400, fill: true)
+                                    .frame(width: min(174, area.size.width * 0.54), height: 154)
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(slot == 0 ? 0.38 : 0.10)))
+                                    .scaleEffect(slot == 0 ? 1 : (abs(slot) == 1 ? 0.83 : 0.66))
+                                    .rotation3DEffect(.degrees(Double(slot) * -12), axis: (x: 0, y: 1, z: 0))
+                                    .offset(x: CGFloat(slot) * min(130, area.size.width * 0.34))
+                                    .opacity(abs(slot) == 2 ? 0.40 : 1)
+                                    .zIndex(Double(3 - abs(slot)))
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
+                    }
+                    .frame(height: 165)
+                    .background(AppTheme.navigationSurface, in: RoundedRectangle(cornerRadius: 20))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Visual taste download carousel")
+                    .accessibilityValue("Scanning \(progress.completed) of \(progress.total)")
+                    .accessibilityIdentifier("visual-refresh-carousel")
+                }
                 if let previewURL {
                     AnimatedGIFSurface(url: previewURL,
                         playing: store.isForeground && !reduceMotion && !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState.rawValue < 2,
-                        pixels: 160, frameLimit: 24) { _ in previewReady = true }
-                        .frame(maxWidth: .infinity).frame(height: 160).clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous)).allowsHitTesting(false)
+                        pixels: 120, frameLimit: 24) { _ in previewReady = true }
+                        .frame(maxWidth: .infinity).frame(height: 56).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous)).allowsHitTesting(false)
                         .accessibilityElement(children: .ignore)
                         .accessibilityValue(previewReady ? "Looping" : "Loading")
                         .accessibilityLabel("Looping downloaded GIF").accessibilityIdentifier("visual-refresh-gif")
-                } else {
-                    Label("Download a GIF to show a looping preview here", systemImage: "photo")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if progress.running {
                     Button("Stop update", role: .cancel) { store.cancelManualVisualRefresh() }
@@ -567,6 +617,20 @@ private struct ManualVisualRefreshPanel: View {
                     && (record.fileSize ?? 0) <= 8 * 1024 * 1024
             }
             previewReady = false; previewURL = record?.exportURL
+            carouselURLs = manager.records.filter { $0.state == .complete }
+                .compactMap { item in item.thumbnailLocalPath.map { URL(fileURLWithPath: $0).absoluteString }
+                    ?? (item.offlinePost?.type.lowercased() == "image" ? item.exportURL?.absoluteString : nil) }
+                .shuffled()
+            carouselIndex = 0
+        }
+        .task(id: store.isManualVisualScanRunning) {
+            guard store.isManualVisualScanRunning else { return }
+            while !Task.isCancelled && store.isManualVisualScanRunning {
+                do { try await Task.sleep(for: .milliseconds(850)) } catch { return }
+                guard !carouselURLs.isEmpty else { continue }
+                if reduceMotion { carouselIndex = (carouselIndex + 1) % carouselURLs.count }
+                else { withAnimation(.smooth(duration: 0.57)) { carouselIndex = (carouselIndex + 1) % carouselURLs.count } }
+            }
         }
     }
 }

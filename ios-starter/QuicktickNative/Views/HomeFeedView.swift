@@ -287,6 +287,13 @@ struct HomeFeedView: View {
     private func visibleCandidate(viewport: CGSize) -> String? {
         guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented else { return nil }
         if let fullScreen = store.fullScreenPlaybackID { return fullScreen }
+        // A remounted Home has an empty frame-preference dictionary until the
+        // first layout. Returning nil here cleared the just-restored player
+        // and sometimes left it paused permanently.
+        if visibleFrames.isEmpty, let retained = store.retainedHomePlaybackID,
+           playableIDs.contains(retained), store.posts.contains(where: { $0.stableID == retained }) {
+            return retained
+        }
         return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playableIDs)
     }
     private func warmNext(after key: String?) async {

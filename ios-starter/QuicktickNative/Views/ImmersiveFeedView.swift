@@ -77,38 +77,19 @@ struct ImmersiveFeedView: View {
                     }
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
-            }.scrollTargetBehavior(.paging)
-                .scrollPosition(id: $scrollTargetID, anchor: .top)
+            }
+                // One gesture owner makes a swipe atomic. Combining native
+                // paging, a high-priority drag and a writable scrollPosition
+                // could leave the content stranded between two pages.
+                // FullComicView has its own scroll view and is unaffected.
+                .scrollDisabled(true)
                 // ScrollView's settled target is the source of truth after a
                 // page swipe. Geometry callbacks can omit the target while a
                 // lazy cell mounts, leaving the previous video's rail active.
-                .onChange(of: scrollTargetID) { _, target in
-                    guard presentationActive, store.isForeground, let target,
-                          target != activeID,
-                          mediaPosts.contains(where: { $0.stableID == target }) else { return }
-                    if Date() < pageTransitionProtectedUntil, let activeID,
-                       target != activeID {
-                        scrollTargetID = activeID
-                        return
-                    }
-                    activeID = target
-                }
                 .coordinateSpace(name: "immersive-viewport")
-                .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
-                    guard presentationActive, store.isForeground else { return }
-                    let viewport = CGRect(origin: .zero, size: geo.size)
-                    if scrollTargetID == activeID && Date() < pageTransitionProtectedUntil { return }
-                    // The scroll target is authoritative while it remains on
-                    // screen. An intermediate geometry callback must not
-                    // revert a swipe to the outgoing, partially visible page.
-                    if let target = scrollTargetID, let rect = frames[target],
-                       rect.intersects(viewport) { return }
-                    // Geometry preference changes on every drag frame; publish
-                    // only to rescue a truly offscreen/stale scroll target.
-                    let key = VisiblePostSelector.immersive(frames: frames,
-                        viewport: viewport,
-                        current: activeID, keys: Set(frames.keys))
-                    if let key, key != activeID { activeID = key; scrollTargetID = key }
+                .onChange(of: activeID) { _, key in
+                    guard let key, mediaPosts.contains(where: { $0.stableID == key }) else { return }
+                    withAnimation(.easeOut(duration: 0.22)) { scrollProxy.scrollTo(key, anchor: .top) }
                 }
                 .scrollIndicators(.hidden)
                 .frame(width: geo.size.width, height: geo.size.height)
@@ -540,6 +521,11 @@ private struct ImmersiveItemView: View {
                 ImmersiveDownloadControl(manager: store.downloads, post: post, active: active && presentationActive)
             }
             if post.isImmersiveMedia {
+                if post.type.lowercased() == "video", let player {
+                    railButton("PiP", symbol: "pip.enter") {
+                        store.beginFloatingVideo(post: post, source: player)
+                    }
+                }
                 railButton("Mute", symbol: store.muted ? "speaker.slash" : "speaker.wave.2") { store.muted.toggle() }
             }
         }

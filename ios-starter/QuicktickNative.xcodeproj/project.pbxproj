@@ -570,6 +570,26 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "E33F6FBA6F590DDE5A8158BB";
 		};
+		"F10000000000000000000001" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Views/RhythmSessionView.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F10000000000000000000002" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F10000000000000000000001";
+		};
+		"F10000000000000000000003" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Views/FloatingPiPView.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F10000000000000000000004" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F10000000000000000000003";
+		};
 		"AA2684093B1B1CEEA5E31DCB" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -980,6 +1000,8 @@
 				"63B2F804C0104A71893515CD",
 				"7DCD0AC2B70A7CDAA6322831",
 				"D921DAE40319CAD5DCA2B27E",
+				"F10000000000000000000002",
+				"F10000000000000000000004",
 				"42CD694123D4126E623B20CE",
 				"30113E7177F6C4EB32F23552",
 			);
@@ -1388,6 +1410,8 @@
 				"C4F4353A94D2BB68F6663B08",
 				"CAC3892B6F49B3126EF8523B",
 				"E33F6FBA6F590DDE5A8158BB",
+				"F10000000000000000000001",
+				"F10000000000000000000003",
 				"AA2684093B1B1CEEA5E31DCB",
 				"E5CEA3CB4160770FAE556407",
 				"007FDB79ADCF25AE71095051",

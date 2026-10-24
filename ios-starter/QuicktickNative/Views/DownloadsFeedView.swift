@@ -9,6 +9,7 @@ struct DownloadsFeedView: View {
 private struct DownloadContent: View {
     @ObservedObject var manager: DownloadManager
     @State private var immersive = false
+    @State private var rhythm = false
     @State private var immersivePostID: String?
     var body: some View {
         Group {
@@ -83,7 +84,16 @@ private struct DownloadContent: View {
                 }
             }
         }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Downloads")
-            .toolbar { Button(immersive ? "Feed" : "Offline Immersive") { immersive.toggle() }.disabled(!immersive && !localPosts.contains(where: \.isImmersiveMedia)) }
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { rhythm = true } label: { Label("Rhythm", systemImage: "waveform.path") }
+                        .disabled(localPosts.isEmpty)
+                        .accessibilityIdentifier("downloads-rhythm")
+                    Button(immersive ? "Feed" : "Offline Immersive") { immersive.toggle() }
+                        .disabled(!immersive && !localPosts.contains(where: \.isImmersiveMedia))
+                }
+            }
+            .fullScreenCover(isPresented: $rhythm) { RhythmSessionView(posts: localPosts, offline: true) }
     }
     private var localPosts: [Post] {
         manager.records.compactMap(\.offlinePost)

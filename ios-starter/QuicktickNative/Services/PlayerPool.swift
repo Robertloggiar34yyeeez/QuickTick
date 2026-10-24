@@ -52,6 +52,9 @@ final class PlayerPool: ObservableObject {
     private(set) var activeOwner: String?
     var suspendedOwner: String? { suspendedPlayback?.owner }
     var capacity = 3
+    var feedVolumeScale: Float = 1 {
+        didSet { players.values.forEach { $0.volume = feedVolumeScale } }
+    }
     var onPlaybackStart: (() -> Void)?
     func isPreparing(_ key: String) -> Bool { warming.contains(key) }
     func transitionVisiblePost() {
@@ -71,6 +74,7 @@ final class PlayerPool: ObservableObject {
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 3
         let player = AVPlayer(playerItem: item)
+        player.volume = feedVolumeScale
         // Start explicitly below, but let AVFoundation resume after a network stall.
         player.automaticallyWaitsToMinimizeStalling = true
         players[key] = player; urls[key] = url; touch(key); trim()
@@ -95,6 +99,7 @@ final class PlayerPool: ObservableObject {
         p.automaticallyWaitsToMinimizeStalling = !url.isFileURL
         p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 2.5
         activeKey = key; activeOwner = owner; p.isMuted = muted
+        p.volume = feedVolumeScale
         if UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
            key.lowercased().hasPrefix("pornhub:"), !introSkipped.contains(key),
            p.currentItem != nil {

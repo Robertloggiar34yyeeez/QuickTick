@@ -15,12 +15,10 @@ struct ImmersiveFeedView: View {
         _activeID = activePostID
     }
     @Binding private var activeID: String?
-    // SwiftUI's scroll target is a restoration request, not playback truth.
-    // On some OS versions it remains on an offscreen page after paging.
-    @State private var scrollTargetID: String?
-    // A deliberate paging request must not be undone by interim geometry
-    // snapshots of the outgoing page while the scroll animation settles.
-    @State private var pageTransitionProtectedUntil = Date.distantPast
+    // A single mounted page is always aligned with the viewport. Native
+    // ScrollView target/geometry reconciliation could strand a page halfway
+    // through a snap or keep the outgoing post's actions accessible.
+    @State private var pageDirection = 1
     @State private var activeIndex = 0
     @State private var activeSince = Date.distantPast
     @State private var searchVisible = false
@@ -28,6 +26,7 @@ struct ImmersiveFeedView: View {
     @StateObject private var previews = ImmersivePreviewCache()
 
     private var mediaPosts: [Post] { collectionTab == 2 ? posts : posts.filter(\.isImmersiveMedia) }
+    private var visiblePost: Post? { mediaPosts.first(where: { $0.stableID == activeID }) }
     private var presentationActive: Bool {
         !store.isStudioPresented &&
             (collectionTab.map { store.activeTab == $0 }
@@ -37,25 +36,22 @@ struct ImmersiveFeedView: View {
 
     var body: some View {
         GeometryReader { geo in
-          ScrollViewReader { scrollProxy in
-            ScrollView(.vertical) {
-                LazyVStack(spacing: 0) {
-                    ForEach(mediaPosts, id: \.stableID) { post in
-                        ImmersiveItemView(post: post, offline: offline, active: activeID == post.stableID, presentationActive: presentationActive, playbackOwner: playbackOwner, collection: collectionTab != nil, previews: previews) { origin, translation in
-                            pageSwipe(from: origin, translation: translation, viewportHeight: geo.size.height, scrollProxy: scrollProxy)
-                        }
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .contentShape(Rectangle())
-                            .allowsHitTesting(activeID == post.stableID && presentationActive)
-                            .accessibilityHidden(activeID != post.stableID)
-                            .background {
-                                GeometryReader { page in
-                                    Color.clear.preference(key: ImmersiveVisibleFrames.self, value: [post.stableID: page.frame(in: .named("immersive-viewport"))])
-                                }
-                            }
-                            .id(post.stableID)
-                    }
-                }.scrollTargetLayout().frame(width: geo.size.width)
+            ZStack {
+                if let post = visiblePost {
+                    ImmersiveItemView(post: post, offline: offline, active: true,
+                                      presentationActive: presentationActive, playbackOwner: playbackOwner,
+                                      collection: collectionTab != nil, previews: previews,
+                                      onPageSwipe: { translation in
+                                          pageSwipe(from: post.stableID, translation: translation,
+                                                    viewportHeight: geo.size.height)
+                                      })
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .contentShape(Rectangle())
+                    .id(post.stableID)
+                    .transition(.asymmetric(
+                        insertion: .offset(y: geo.size.height * CGFloat(pageDirection)).combined(with: .opacity),
+                        removal: .offset(y: -geo.size.height * CGFloat(pageDirection)).combined(with: .opacity)))
+                }
                 if mediaPosts.isEmpty {
                     ContentUnavailableView {
                         Label(store.isLoading ? "Loading clips" : "No videos or GIFs", systemImage: "play.rectangle")
@@ -77,43 +73,10 @@ struct ImmersiveFeedView: View {
                     }
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
-            }.scrollTargetBehavior(.paging)
-                .scrollPosition(id: $scrollTargetID, anchor: .top)
-                // ScrollView's settled target is the source of truth after a
-                // page swipe. Geometry callbacks can omit the target while a
-                // lazy cell mounts, leaving the previous video's rail active.
-                .onChange(of: scrollTargetID) { _, target in
-                    guard presentationActive, store.isForeground, let target,
-                          target != activeID,
-                          mediaPosts.contains(where: { $0.stableID == target }) else { return }
-                    if Date() < pageTransitionProtectedUntil, let activeID,
-                       target != activeID {
-                        scrollTargetID = activeID
-                        return
-                    }
-                    activeID = target
-                }
-                .coordinateSpace(name: "immersive-viewport")
-                .onPreferenceChange(ImmersiveVisibleFrames.self) { frames in
-                    guard presentationActive, store.isForeground else { return }
-                    let viewport = CGRect(origin: .zero, size: geo.size)
-                    if scrollTargetID == activeID && Date() < pageTransitionProtectedUntil { return }
-                    // The scroll target is authoritative while it remains on
-                    // screen. An intermediate geometry callback must not
-                    // revert a swipe to the outgoing, partially visible page.
-                    if let target = scrollTargetID, let rect = frames[target],
-                       rect.intersects(viewport) { return }
-                    // Geometry preference changes on every drag frame; publish
-                    // only to rescue a truly offscreen/stale scroll target.
-                    let key = VisiblePostSelector.immersive(frames: frames,
-                        viewport: viewport,
-                        current: activeID, keys: Set(frames.keys))
-                    if let key, key != activeID { activeID = key; scrollTargetID = key }
-                }
-                .scrollIndicators(.hidden)
+            }
                 .frame(width: geo.size.width, height: geo.size.height)
+                .contentShape(Rectangle())
                 .clipped()
-          }
         }
         .navigationTitle(offline ? "Offline Immersive" : "Immersive")
         .navigationBarTitleDisplayMode(.inline)
@@ -150,18 +113,16 @@ struct ImmersiveFeedView: View {
         .task(id: presentationActive) {
             guard presentationActive else { return }
             if activeID == nil { activeID = mediaPosts.first?.stableID }
-            scrollTargetID = activeID
             activeSince = .now
         }
         .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")") { await prewarm() }
         .onChange(of: store.feedRevision) { _, _ in
             activeSince = .distantPast
-            activeIndex = 0; activeID = mediaPosts.first?.stableID; scrollTargetID = activeID
+            activeIndex = 0; activeID = mediaPosts.first?.stableID
         }
         .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
             if activeID == nil || !keys.contains(activeID ?? "") {
                 activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
-                scrollTargetID = activeID
                 if keys.isEmpty { activeIndex = 0 }
             }
         }
@@ -193,17 +154,15 @@ struct ImmersiveFeedView: View {
             else { Task { await store.selectFeedTab(0) } }
         }
     }
-    private func pageSwipe(from origin: String, translation: CGSize, viewportHeight: CGFloat, scrollProxy: ScrollViewProxy) {
+    private func pageSwipe(from origin: String, translation: CGSize, viewportHeight: CGFloat) {
         guard presentationActive, abs(translation.height) > max(55, viewportHeight * 0.12),
               abs(translation.height) > abs(translation.width) * 1.25,
               let index = mediaPosts.firstIndex(where: { $0.stableID == origin }) else { return }
         let next = index + (translation.height < 0 ? 1 : -1)
         guard mediaPosts.indices.contains(next) else { return }
         let key = mediaPosts[next].stableID
-        pageTransitionProtectedUntil = Date().addingTimeInterval(1.2)
-        activeID = key
-        scrollTargetID = key
-        withAnimation(.easeOut(duration: 0.22)) { scrollProxy.scrollTo(key, anchor: .top) }
+        pageDirection = translation.height < 0 ? 1 : -1
+        withAnimation(.easeOut(duration: 0.22)) { activeID = key }
     }
     private func prewarm() async {
         guard presentationActive, store.isForeground, !store.isManualVisualScanRunning, !Task.isCancelled else { return }
@@ -258,15 +217,9 @@ struct ImmersiveFeedView: View {
 
 }
 
-private struct ImmersiveVisibleFrames: PreferenceKey {
-    static let defaultValue: [String: CGRect] = [:]
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
-    }
-}
-
 private struct ImmersiveItemView: View {
     @EnvironmentObject private var store: AppStore
+    @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     let post: Post
     let offline: Bool
     let active: Bool
@@ -274,10 +227,11 @@ private struct ImmersiveItemView: View {
     let playbackOwner: String
     let collection: Bool
     @ObservedObject var previews: ImmersivePreviewCache
-    let onVerticalSwipe: (String, CGSize) -> Void
+    let onPageSwipe: (CGSize) -> Void
     @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
     @State private var ready = false
+    @State private var introReady = true
     @State private var playing = true
     @State private var watched = 0.0
     @State private var reportedWatch = 0.0
@@ -314,7 +268,7 @@ private struct ImmersiveItemView: View {
                                            startPoint: .topLeading, endPoint: .bottomTrailing)
                         }
                         .ignoresSafeArea()
-                    if !ready {
+                    if !ready || !introReady {
                         Group {
                             if let image = previews.images[post.stableID] {
                                 Image(uiImage: image).resizable().scaledToFill()
@@ -353,8 +307,8 @@ private struct ImmersiveItemView: View {
                 if let player {
                     NativePlayerSurface(player: player, fill: geo.size.width <= 600 && store.immersionFraming, ready: $ready, accessibilityID: "immersive-video-surface")
                         .frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height)
-                        .opacity(ready ? 1 : 0)
-                        .animation(.easeOut(duration: 0.18), value: ready)
+                        .opacity(ready && introReady ? 1 : 0)
+                        .animation(.easeOut(duration: 0.18), value: ready && introReady)
                         .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "gif", active, let gifURL {
@@ -362,11 +316,6 @@ private struct ImmersiveItemView: View {
                 }
                 Color.clear.contentShape(Rectangle())
                     .accessibilityIdentifier("immersive-media-\(post.stableID)")
-                    // The hit-tested media surface owns a deliberate vertical
-                    // page swipe. Native ScrollView paging remains available
-                    // elsewhere, while a double tap stays a Like gesture.
-                    .highPriorityGesture(DragGesture(minimumDistance: 35)
-                        .onEnded { onVerticalSwipe(post.stableID, $0.translation) })
                     .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { gesture in
                         switch gesture {
                         case .first:
@@ -377,6 +326,14 @@ private struct ImmersiveItemView: View {
                             if post.isImmersiveMedia { playing.toggle(); playing ? player?.play() : player?.pause() }
                         }
                     })
+                    // Recognize the pan on the actual touch surface. A parent
+                    // simultaneous gesture can lose to the surface's exclusive
+                    // single/double-tap recognizer on iPhone, leaving a swipe
+                    // on the same post. Once movement passes the tap threshold,
+                    // prioritize paging without changing the tap behavior.
+                    .highPriorityGesture(DragGesture(minimumDistance: 18).onEnded { drag in
+                        onPageSwipe(drag.translation)
+                    }, including: .all)
                 if likePulse {
                     Image(systemName: "heart.fill").font(.system(size: 88)).foregroundStyle(.white)
                         .shadow(color: .pink.opacity(0.8), radius: 20).transition(.scale.combined(with: .opacity))
@@ -428,9 +385,13 @@ private struct ImmersiveItemView: View {
                 }
             }
             .overlay {
-                if active, post.isImmersiveMedia, !ready, gifURL == nil, error == nil {
-                    ProgressView("Loading media").tint(.white).font(.caption)
-                        .padding(12).background(.black.opacity(0.45), in: Capsule()).allowsHitTesting(false)
+                if active, post.isImmersiveMedia, (!ready || !introReady), gifURL == nil, error == nil {
+                    VStack(spacing: 5) {
+                        InfinityLoader(size: 44)
+                        Text("Loading media").font(.caption2.weight(.medium)).foregroundStyle(.white.opacity(0.82))
+                    }
+                    .padding(14).background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 17))
+                    .allowsHitTesting(false)
                 }
             }
             .clipped()
@@ -442,8 +403,12 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry)") {
-            guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else { endExposure(); player = nil; ready = false; gifURL = nil; return }
+        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros)") {
+            guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else {
+                endExposure(); player = nil; ready = false; introReady = true; gifURL = nil
+                if !active { playing = true }
+                return
+            }
             exposureStarted = .now; exposure = PlaybackExposure(); loopStart = 0; gifDecoded = false; gifClock = 0; lastGIFSample = .now
             progress = 0; duration = 0; scrubbing = false; error = nil
             await prepare()
@@ -465,9 +430,13 @@ private struct ImmersiveItemView: View {
                     // Read already available item metadata; remote track loading
                     // must never suspend playback health/error monitoring.
                     if let size = player.currentItem?.presentationSize, size.width > 0, size.height > 0, mediaSize != size { mediaSize = size }
-                    if !restoredResume, player.currentItem?.status == .readyToPlay, length.isFinite, length > 0 {
+                    if !restoredResume, introReady, player.currentItem?.status == .readyToPlay,
+                       length.isFinite, length > 0 {
                         restoredResume = true
-                        if let resume = PlaybackPosition.resume(store.resumePosition(post.stableID), duration: length), abs(seconds - resume) > 2 {
+                        // An additional resume seek races with the 10-second
+                        // Pornhub seek and can bounce the clip back to 0:00.
+                        let skippingIntro = post.provider.lowercased() == "pornhub" && skipVideoIntros
+                        if !skippingIntro, let resume = PlaybackPosition.resume(store.resumePosition(post.stableID), duration: length), abs(seconds - resume) > 2 {
                             player.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: CMTime(seconds: 0.25, preferredTimescale: 600), toleranceAfter: CMTime(seconds: 0.25, preferredTimescale: 600), completionHandler: { _ in })
                         }
                     }
@@ -488,7 +457,10 @@ private struct ImmersiveItemView: View {
                 }
             }
         }
-        .onDisappear { endExposure(); player = nil; ready = false; gifURL = nil }
+        .onDisappear {
+            endExposure(); player = nil; ready = false; introReady = true; gifURL = nil
+            playing = true
+        }
         .onChange(of: scrubbing) { _, _ in exposure = PlaybackExposure() }
         .onChange(of: store.muted) { _, value in player?.isMuted = value }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
@@ -502,7 +474,8 @@ private struct ImmersiveItemView: View {
             let pool = store.players
             let key = post.stableID
             let owner = playbackOwner
-            player.seek(to: .zero) { finished in
+            let start = VideoIntroPolicy.startTime(duration: length, enabled: skipVideoIntros, provider: post.provider)
+            player.seek(to: CMTime(seconds: start, preferredTimescale: 600)) { finished in
                 Task { @MainActor in
                     guard finished, playing, store.isForeground, pool.activeKey == key, pool.activeOwner == owner else { return }
                     player.play()
@@ -522,6 +495,11 @@ private struct ImmersiveItemView: View {
                 ImmersiveDownloadControl(manager: store.downloads, post: post, active: active && presentationActive)
             }
             if post.isImmersiveMedia {
+                if post.type.lowercased() == "video", let player {
+                    railButton("PiP", symbol: "pip.enter") {
+                        store.beginFloatingVideo(post: post, source: player)
+                    }
+                }
                 railButton("Mute", symbol: store.muted ? "speaker.slash" : "speaker.wave.2") { store.muted.toggle() }
             }
         }
@@ -551,7 +529,10 @@ private struct ImmersiveItemView: View {
             }
             guard !Task.isCancelled, active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else { return }
             if post.type.lowercased() == "gif" { gifURL = url; return }
-            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner)
+            introReady = !(post.provider.lowercased() == "pornhub" && skipVideoIntros)
+            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) {
+                introReady = true
+            }
             player = p; p.isMuted = store.muted
             if !playing { p.pause() }; error = nil
         } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
@@ -645,9 +626,11 @@ private struct ImmersiveTimeline: View {
 
 private struct ImmersiveDownloadControl: View {
     @ObservedObject var manager: DownloadManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let post: Post
     let active: Bool
     @State private var showError = false
+    @State private var taps = 0
     private var record: DownloadRecord? { manager.records.first { $0.key == post.stableID } }
     private var status: String {
         switch record?.state {
@@ -660,17 +643,20 @@ private struct ImmersiveDownloadControl: View {
     }
     var body: some View {
         Button {
+            taps += 1
             if let record, record.state == .paused { manager.resume(record) }
             else if let record, record.state == .failed || record.state == .cancelled { manager.retry(record) }
             else { manager.download(post) }
         } label: {
             Group {
-                if record?.state == .downloading || record?.state == .queued { ProgressView().tint(.white) }
+                if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 28) }
                 else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 25, weight: .semibold)) }
             }.foregroundStyle(.white).frame(width: 48, height: 48).contentShape(Circle())
                 .background(.black.opacity(0.55), in: Circle())
                 .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
         }.buttonStyle(.plain).accessibilityLabel("Download").accessibilityValue(status)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: status)
+            .sensoryFeedback(.selection, trigger: taps)
             .accessibilityIdentifier(active ? "immersive-Download" : "inactive-Download-\(post.stableID)")
             .alert("Download failed", isPresented: $showError) {
                 Button("Retry") { if let record { manager.retry(record) } }

@@ -64,7 +64,10 @@ actor VisualAnalysisService {
               let data = try? Data(contentsOf: url), data.count <= 5 * 1024 * 1024 else { return }
         taxonomy = try? JSONDecoder().decode(VisualTagTaxonomy.self, from: data)
     }
-    func releaseModels() async { await animeTagger.release() }
+    func releaseModels() async {
+        await animeTagger.release()
+        await MobileCLIPRealLifeEncoder.shared.release()
+    }
     private let directory: URL
     init(directory: URL? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("QuicktickVisual-v1", isDirectory: true)
@@ -263,7 +266,11 @@ actor VisualAnalysisService {
     private func revision(_ post: Post) -> String {
         let sources = [post.mediaUrl, post.previewUrl, post.thumbUrl].map { FeedExclusions.canonicalMediaURL($0) ?? $0 }
         let content = (sources + [post.tags.sorted().joined(separator: " "), post.category ?? "", post.type, post.creator ?? ""]).joined(separator: "|")
-        return TasteConcepts.version + "|appearance-wd-v3-fp16|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
+        let realLifeModel = VisualDomain.classify(post).map {
+            VisualAppearanceEncoder.prefersMobileCLIP(domain: $0, provider: post.provider)
+        } == true && MobileCLIPRealLifeEncoder.isInstalled()
+        return TasteConcepts.version + "|appearance-wd-v3-fp16|" + (realLifeModel ? MobileCLIPRealLifeEncoder.version : "vision")
+            + "|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.
     func analyzeFavorite(_ post: Post, useVision: Bool) async {
@@ -327,7 +334,7 @@ actor VisualAnalysisService {
         if !before.embedding.isEmpty, lightVersions[post.stableID] == revision {
             enriched.embedding = before.embedding; enriched.attributes.merge(before.attributes, uniquingKeysWith: max)
             enriched.version = before.version
-        } else if !lightweight, let encoded = try? await VisualAppearanceEncoder.embedding(image) {
+        } else if !lightweight, let encoded = try? await VisualAppearanceEncoder.embedding(image, domain: before.domain, provider: post.provider) {
             enriched.embedding = encoded.vector; enriched.version = encoded.version
         }
         guard resourcesAllowAnalysis() else { return }

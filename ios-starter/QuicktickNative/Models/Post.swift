@@ -37,7 +37,11 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
     var nativeSize: CGSize? { guard let width, let height, width > 0, height > 0 else { return nil }; return CGSize(width: width, height: height) }
 
     var stableID: String { key.isEmpty ? "\(provider):\(id)" : key }
-    var providerKey: Provider? { Provider(rawValue: provider.lowercased().replacingOccurrences(of: " ", with: "")) }
+    var providerKey: Provider? {
+        Provider.identify(provider)
+            ?? Provider.identify(String(stableID.split(separator: ":", maxSplits: 1).first ?? ""))
+            ?? Provider.identifyPage(pageUrl)
+    }
 
     enum CodingKeys: String, CodingKey {
         case key, id, provider, score, tags, mediaUrl, previewUrl, thumbUrl, pageUrl, type, embedUrl, width, height, caption, creator, category, createdAt

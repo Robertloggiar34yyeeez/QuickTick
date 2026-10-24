@@ -111,6 +111,85 @@ final class RecommendationTests: XCTestCase {
         XCTAssertGreaterThan(first, second)
     }
 
+    func testRelationshipDynamicsHaveDistinctCanonicalMeaning() {
+        XCTAssertEqual(ActionSemantics.facet("femdom"), "power:female_dominant")
+        XCTAssertEqual(ActionSemantics.facet("female domination"), "power:female_dominant")
+        XCTAssertEqual(ActionSemantics.facet("male dom"), "power:male_dominant")
+        XCTAssertEqual(ActionSemantics.facet("praise kink"), "tone:praise")
+        XCTAssertEqual(ActionSemantics.facet("mommy_dom"), "persona:mommy")
+        XCTAssertNotEqual(ActionSemantics.facet("mommy"), ActionSemantics.facet("femdom"))
+        XCTAssertNotEqual(ActionSemantics.facet("praise"), ActionSemantics.facet("humiliation"))
+        XCTAssertNil(ActionSemantics.facet("artist:femdom"))
+        XCTAssertNil(ActionSemantics.facet("milf"), "Age-related tags do not imply a mommy persona")
+
+        let selected = ActionSemantics.facets(["femdom", "praise_kink"])
+        XCTAssertTrue(ActionSemantics.conflicts(selected: selected, observed: ActionSemantics.facets(["male_dom"])))
+        XCTAssertFalse(ActionSemantics.conflicts(selected: selected, observed: ActionSemantics.facets(["mommy_dom"])))
+        XCTAssertFalse(ActionSemantics.conflicts(selected: selected, observed: []), "Unknown is not contradictory")
+    }
+
+    func testRelationshipAliasesAndKeywordTitlesRespectExplicitNegatives() async {
+        let tagged = Post(key: "rule34:dynamic", id: "dynamic", provider: "rule34",
+                          tags: ["chun_li", "dominant_male", "mommy_dom"])
+        XCTAssertTrue(RecommendationTagRules.rejects(tagged, exclusions: ["male_domination"]))
+        XCTAssertTrue(RecommendationTagRules.rejects(tagged, exclusions: ["mommy_kink"]))
+        XCTAssertFalse(RecommendationTagRules.rejects(tagged, exclusions: ["praise_kink"]))
+
+        var video = Post(key: "pornhub:dynamic", id: "dynamic", provider: "pornhub")
+        video.caption = "Femdom and praise kink"
+        video.creator = "Not A Dominatrix"
+        let facets = ActionSemantics.facets(video)
+        XCTAssertTrue(facets.contains("power:female_dominant"))
+        XCTAssertTrue(facets.contains("tone:praise"))
+        XCTAssertTrue(RecommendationTagRules.rejects(video, exclusions: ["female_domination"]))
+        var creatorOnly = Post(key: "pornhub:creator", id: "creator", provider: "pornhub")
+        creatorOnly.caption = "An ordinary clip"
+        creatorOnly.creator = "FemdomArtist"
+        XCTAssertFalse(ActionSemantics.facets(creatorOnly).contains("power:female_dominant"))
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let taste = TasteChoice(done: true, into: ["femdom", "chun_li"], notInto: [])
+        let disliked = await engine.isHardDisliked(tagged, taste: taste)
+        XCTAssertTrue(disliked)
+    }
+
+    func testLearnedPowerDirectionOutranksMatchingCharacterAndArtist() {
+        let positive = (0..<4).map { i in
+            Post(key: "rule34:fav-\(i)", id: "fav-\(i)", provider: "rule34",
+                 tags: ["2d", "chun_li", "artist:shared", "female_domination", "praise_kink"])
+        }
+        var learned = ConditionalTasteModel()
+        learned.train(positive, taxonomy: nil)
+        let compatible = Post(key: "rule34:compatible", id: "compatible", provider: "rule34",
+                              tags: ["2d", "chun_li", "artist:shared", "femdom", "verbal_praise"])
+        let incompatible = Post(key: "rule34:incompatible", id: "incompatible", provider: "rule34",
+                                tags: ["2d", "chun_li", "artist:shared", "male_domination"])
+        XCTAssertGreaterThan(learned.score(compatible, taxonomy: nil), learned.score(incompatible, taxonomy: nil) + 12)
+        let dimensions = VisualFeatures.metadata(compatible)!.attributes
+        XCTAssertNotNil(dimensions["power:female_dominant"])
+        XCTAssertNotNil(dimensions["tone:praise"])
+    }
+
+    func testDislikedDynamicDoesNotEraseLikedCharacterOrMotherlyPersona() {
+        let preferred = Post(key: "rule34:preferred", id: "preferred", provider: "rule34",
+                             tags: ["2d", "chun_li", "female_domination", "mommy_kink", "praise_kink"])
+        let rejected = Post(key: "rule34:rejected", id: "rejected", provider: "rule34",
+                            tags: ["2d", "chun_li", "male_domination", "degradation"])
+        var context = ContextTasteProfile()
+        let preferredFeatures = VisualFeatures.metadata(preferred)!
+        let rejectedFeatures = VisualFeatures.metadata(rejected)!
+        for _ in 0..<3 { context.record(.like, features: preferredFeatures) }
+        context.record(.less, features: rejectedFeatures)
+        context.record(.less, features: rejectedFeatures)
+        XCTAssertGreaterThan(context.score(preferredFeatures), context.score(rejectedFeatures))
+        XCTAssertEqual(context.dimensions["character:chun_li"]?.negative ?? 0, 0,
+                       "Context dislikes must not blacklist the character")
+        XCTAssertGreaterThan(context.dimensions["power:male_dominant"]?.negative ?? 0, 0)
+        XCTAssertNil(rejectedFeatures.attributes["persona:mommy"])
+        let contextualQueries = context.discoveryQueries()
+        XCTAssertTrue(contextualQueries.contains(["chun-li", "femdom"]),
+                      "Discovery should use a provider tag, not an internal concept key")
+    }
+
     func testDecisiveFavoriteMediumDoesNotLeakUnrelatedRenderStyles() async {
         let liked = (0..<6).map { index in
             Post(key: "rule34:a\(index)", id: "a\(index)", provider: "rule34",
@@ -128,6 +207,20 @@ final class RecommendationTests: XCTestCase {
         XCTAssertTrue(rejectsPhoto)
         XCTAssertFalse(acceptsSketch)
         XCTAssertFalse(explicitPhoto)
+    }
+
+    func testSpecificFavoriteOutranksBroadMediumAndKeepsVarietyRelevant() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let choice = TasteChoice(done: true, into: ["2d", "chun_li"], notInto: [])
+        let unrelated = Post(key: "rule34:unrelated", id: "1", provider: "rule34",
+                             tags: ["2d", "different_character", "long_hair"])
+        let relevantOne = Post(key: "rule34:relevant1", id: "2", provider: "rule34",
+                               tags: ["2d", "chun_li", "indoors"])
+        let relevantTwo = Post(key: "rule34:relevant2", id: "3", provider: "rule34",
+                               tags: ["2d", "chun_li", "outdoors"])
+        let results = await engine.rankFast([unrelated, relevantOne, relevantTwo],
+                                             taste: choice, recent: [], strict: true)
+        XCTAssertEqual(Set(results.map(\.stableID)), Set([relevantOne.stableID, relevantTwo.stableID]))
     }
 
     func testImagePromptUsesActionsAndTaxonomyCreditedArtists() {
@@ -190,6 +283,94 @@ final class RecommendationTests: XCTestCase {
                       "A fictional character must not add bare animal keywords")
         XCTAssertTrue(keywords.allSatisfy { $0.tags.count == 1 && $0.tags[0] == $0.query },
                       "Keyword providers should not silently insert fictional identities")
+        XCTAssertGreaterThanOrEqual(characters.count, 15,
+            "Onboarding should offer diverse identities rather than one franchise or presentation")
+        XCTAssertGreaterThanOrEqual(Set(characters.map(\.context)).count, 8)
+        XCTAssertTrue(characters.contains { $0.id == "kratos" })
+        XCTAssertTrue(characters.contains { $0.id == "fishstick" })
+        XCTAssertTrue(StarterTastePick.dynamics.contains { $0.tag == "femdom" })
+        XCTAssertTrue(StarterTastePick.dynamics.contains { $0.tag == "male_dom" })
+        XCTAssertTrue(StarterTastePick.dynamics.contains { $0.tag == "praise_kink" })
+    }
+
+    func testLegacyTasteDecodesWithoutCharacterPairings() throws {
+        let legacy = Data(#"{"done":true,"into":["chun_li"],"notInto":[]}"#.utf8)
+        let decoded = try JSONDecoder().decode(TasteChoice.self, from: legacy)
+        XCTAssertTrue(decoded.characterTags.isEmpty)
+        let paired = TasteChoice(done: true, into: ["chun_li"],
+            characterTags: ["chun_li": ["femdom", "praise_kink"]])
+        XCTAssertEqual(try JSONDecoder().decode(TasteChoice.self,
+            from: JSONEncoder().encode(paired)), paired)
+    }
+
+    func testLongRepetitionRunDoesNotSuppressDifferentEligibleTopics() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let repeated = (0..<26).map { index in
+            Post(key: "rule34:repeat-\(index)", id: "repeat-\(index)",
+                 provider: "rule34", tags: ["chun_li", "qipao", "street_fighter"])
+        }
+        let discovered = (0..<10).map { index in
+            Post(key: "rule34:other-\(index)", id: "other-\(index)",
+                 provider: "rule34", tags: ["chun_li", "outdoors", "scene_\(index)"])
+        }
+        let recent = (0..<8).map { index in
+            Post(key: "rule34:recent-\(index)", id: "recent-\(index)",
+                 provider: "rule34", tags: ["chun_li", "qipao", "street_fighter"])
+        }
+        let taste = TasteChoice(done: true, into: ["chun_li"])
+        let ranked = await engine.rankFast(repeated + discovered, taste: taste,
+                                           recent: recent, strict: true)
+        XCTAssertEqual(ranked.count, repeated.count + discovered.count)
+        XCTAssertEqual(Set(ranked.map(\.stableID)).count, ranked.count)
+        XCTAssertTrue(ranked.prefix(5).contains(where: { $0.tags.contains("outdoors") }),
+            "Diverse posts about the same liked character must escape a saturated recent theme")
+        XCTAssertTrue(ranked.allSatisfy { $0.tags.contains("chun_li") },
+            "Exploration must not bypass explicit identity relevance")
+    }
+
+    func testOneFavoriteFranchiseCannotMonopolizeEligibleMixedInterestFeed() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let recent = (0..<14).map { index in
+            Post(key: "rule34:seen-\(index)", id: "seen-\(index)", provider: "rule34",
+                 tags: ["chun_li", "street_fighter", "qipao"])
+        }
+        let repeated = (0..<24).map { index in
+            Post(key: "rule34:chun-\(index)", id: "chun-\(index)", provider: "rule34",
+                 tags: ["chun_li", "street_fighter", "qipao"])
+        }
+        let otherLiked = (0..<8).map { index in
+            Post(key: "rule34:samus-\(index)", id: "samus-\(index)", provider: "rule34",
+                 tags: ["samus_aran", "metroid", "outdoors"])
+        }
+        let excluded = Post(key: "rule34:blocked", id: "blocked", provider: "rule34",
+                            tags: ["samus_aran", "metroid", "furry"])
+        let taste = TasteChoice(done: true, into: ["chun_li", "samus_aran"], notInto: ["furry"])
+        let ranked = await engine.rankFast(repeated + otherLiked + [excluded],
+                                           taste: taste, recent: recent, strict: true)
+        XCTAssertFalse(ranked.contains(excluded), "Explicit exclusions remain hard filters")
+        XCTAssertTrue(ranked.prefix(6).contains(where: { $0.tags.contains("samus_aran") }),
+                      "A different liked character should be surfaced despite a long franchise streak")
+        XCTAssertTrue(ranked.allSatisfy { $0.tags.contains("chun_li") || $0.tags.contains("samus_aran") })
+    }
+
+    func testPairedDynamicsRemainScopedToSelectedCharacter() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let selected = TasteChoice(done: true, into: ["chun_li", "kratos"],
+            characterTags: ["chun_li": ["femdom", "praise_kink"]])
+        let matching = Post(key: "rule34:paired", id: "paired", provider: "rule34",
+                            tags: ["chun_li", "femdom", "praise_kink"])
+        let opposite = Post(key: "rule34:opposite", id: "opposite", provider: "rule34",
+                            tags: ["chun_li", "male_dom"])
+        let otherCharacter = Post(key: "rule34:other", id: "other", provider: "rule34",
+                                  tags: ["kratos", "male_dom"])
+        let matchingScore = await engine.score(matching, taste: selected, recent: [])
+        let oppositeScore = await engine.score(opposite, taste: selected, recent: [])
+        XCTAssertGreaterThan(matchingScore, oppositeScore + 20)
+        let unrelatedWithPairs = await engine.score(otherCharacter, taste: selected, recent: [])
+        let unrelatedWithoutPairs = await engine.score(otherCharacter,
+            taste: TasteChoice(done: true, into: selected.into), recent: [])
+        XCTAssertEqual(unrelatedWithPairs, unrelatedWithoutPairs, accuracy: 0.001,
+            "A character-specific power choice may not penalize another selected identity")
     }
 
     func testDrainedInterestFallsBackToAdvancingBroadCursorWithoutResettingProfile() async {
@@ -324,6 +505,22 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(result.map(\.stableID), [related.stableID])
     }
 
+    func testGenericRepeatedFavoriteTagsNeverAdmitUnrelatedDiscovery() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let favorites = (0..<4).map { index in
+            Post(key: "rule34:liked-\(index)", id: "liked-\(index)", provider: "rule34",
+                 tags: ["2d", "chun_li", "1girl", "long_hair", "looking_at_viewer", "qipao"])
+        }
+        await engine.configureFavorites(favorites)
+        let irrelevant = Post(key: "rule34:generic", id: "generic", provider: "rule34",
+                              tags: ["2d", "1girl", "long_hair", "looking_at_viewer"])
+        let plausible = Post(key: "rule34:outfit", id: "outfit", provider: "rule34",
+                             tags: ["2d", "qipao"])
+        let relevant = await engine.rankFast([irrelevant, plausible],
+                                             taste: TasteChoice(), recent: [], strict: true)
+        XCTAssertEqual(relevant.map(\.stableID), [plausible.stableID])
+    }
+
     func testGenericPoseDoesNotAdmitAnUnrelatedIdentifiedCharacter() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let favorites = (0..<6).map { index in
@@ -344,6 +541,22 @@ final class RecommendationTests: XCTestCase {
         XCTAssertTrue(result.contains { $0.stableID == wanted.stableID })
         XCTAssertTrue(result.contains { $0.stableID == unknownIdentity.stableID },
                       "Unlabeled subjects can still match a loved action or outfit")
+    }
+
+    func testChosenCharacterRejectsConflictingIdentifiedCharacterEvenWithoutFavorites() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let taste = TasteChoice(done: true, into: ["chun_li", "looking_at_viewer"], notInto: [])
+        let unrelated = Post(key: "rule34:other-character", id: "other-character", provider: "rule34",
+                             tags: ["juri_han", "looking_at_viewer"])
+        let selected = Post(key: "rule34:selected-character", id: "selected-character", provider: "rule34",
+                            tags: ["chun_li", "looking_at_viewer"])
+        let unknown = Post(key: "rule34:unknown-character", id: "unknown-character", provider: "rule34",
+                           tags: ["looking_at_viewer", "qipao"])
+        let result = await engine.rankFast([unrelated, selected, unknown], taste: taste,
+                                           recent: [], strict: true)
+        XCTAssertFalse(result.contains { $0.stableID == unrelated.stableID })
+        XCTAssertTrue(result.contains { $0.stableID == selected.stableID })
+        XCTAssertTrue(result.contains { $0.stableID == unknown.stableID })
     }
 
     func testIdentityLedRetrievalNeverSearchesGenericPoseAlone() async {
@@ -524,5 +737,48 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(state.profiles["rule34"]?.recentQueries.last, "engineering -blocked")
         XCTAssertGreaterThan(state.profiles["rule34"]?.terms["engineering"] ?? 0, 0)
         for term in ["sort", "score", "desc", "rating", "explicit"] { XCTAssertNil(state.profiles["rule34"]?.terms[term]) }
+    }
+}
+
+final class RhythmPhraseTests: XCTestCase {
+    func testAdaptiveSessionVisitsAllFourDensitiesWithoutRestart() {
+        var sequence = RhythmPhraseSequencer()
+        sequence.reset(mode: .adaptive, mixed: true, quarterBeats: 2)
+        var observed: [RhythmDivision] = [sequence.current]
+        for _ in 0..<18 {
+            let old = sequence.current
+            for _ in 0..<(2 * old.rawValue) {
+                if sequence.tick(mixed: true, quarterBeats: 2, shuffle: false) {
+                    observed.append(sequence.current)
+                }
+            }
+        }
+        XCTAssertEqual(Array(observed.prefix(4)), [.regular, .duo, .triple, .quad])
+        XCTAssertEqual(Set(observed), Set(RhythmDivision.allCases))
+        for pair in zip(observed, observed.dropFirst()) {
+            XCTAssertNotEqual(pair.0, pair.1)
+        }
+    }
+
+    func testFixedDuoKeepsSubdivisionWhenMixDisabled() {
+        var sequence = RhythmPhraseSequencer()
+        sequence.reset(mode: .duo, mixed: false)
+        for _ in 0..<100 {
+            XCTAssertFalse(sequence.tick(mixed: false, quarterBeats: 4))
+            XCTAssertEqual(sequence.current, .duo)
+        }
+    }
+
+    func testDefaultFourBarPhraseDoesNotChangeWithEachMediaSwitch() {
+        var sequence = RhythmPhraseSequencer()
+        sequence.reset(mode: .adaptive, mixed: true, quarterBeats: 16)
+        for _ in 0..<15 {
+            XCTAssertFalse(sequence.tick(mixed: true, quarterBeats: 16, shuffle: false))
+            XCTAssertEqual(sequence.current, .regular)
+        }
+        XCTAssertTrue(sequence.tick(mixed: true, quarterBeats: 16, shuffle: false))
+        XCTAssertEqual(sequence.current, .duo)
+        for _ in 0..<31 { XCTAssertFalse(sequence.tick(mixed: true, quarterBeats: 16, shuffle: false)) }
+        XCTAssertEqual(sequence.current, .duo)
     }
 }

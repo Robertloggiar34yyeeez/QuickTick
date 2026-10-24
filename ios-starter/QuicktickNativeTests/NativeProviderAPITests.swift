@@ -73,6 +73,68 @@ private final class RateLimitProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class NativeProviderAPITests: XCTestCase {
+    func testDownloadsRecoverCanonicalProviderFromAliasesKeysAndOriginalPages() {
+        XCTAssertEqual(Post(key: "legacy:1", id: "1", provider: "RedGIFs.com").providerKey, .redgifs)
+        XCTAssertEqual(Post(key: "pornhub:2", id: "2", provider: "Unknown site").providerKey, .pornhub)
+        XCTAssertEqual(Post(key: "legacy:3", id: "3", provider: "Rule34.xxx").providerKey, .rule34)
+        XCTAssertEqual(Post(key: "legacy:4", id: "4", provider: "Hanime.tv").providerKey, .hanime)
+        var fromPage = Post(key: "legacy:5", id: "5", provider: "Imported")
+        fromPage.pageUrl = "https://www.eporner.com/video-abc"
+        XCTAssertEqual(fromPage.providerKey, .eporner)
+        fromPage.pageUrl = "https://www.pornhub.com.evil.invalid/view_video.php"
+        XCTAssertNil(fromPage.providerKey)
+    }
+
+    func testUnknownSiteCanDownloadValidDirectMediaWithoutProviderRequest() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let video = Post(key: "legacy:1", id: "1", provider: "Unknown site",
+                         mediaUrl: "https://files.example.invalid/clip.mp4", type: "video")
+        XCTAssertNil(video.providerKey)
+        let media = try await api.resolveMedia(video)
+        XCTAssertEqual(media.mediaUrl, video.mediaUrl)
+        XCTAssertEqual(media.type, "video")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().isEmpty)
+        XCTAssertEqual(NativeProviderAPI.mediaURL("//files.example.invalid/clip.mp4")?.absoluteString,
+                       "https://files.example.invalid/clip.mp4")
+        let page = Post(key: "legacy:2", id: "2", provider: "Unknown site",
+                        mediaUrl: "https://www.example.invalid/watch/clip", type: "video")
+        do {
+            _ = try await api.resolveMedia(page)
+            XCTFail("A web page must not be saved as a video when its provider is unknown")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("recognized source")) }
+    }
+
+    func testKeywordSearchRoutesToEveryNonRule34Provider() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let phrase = "cosplay scene"
+        let parsed = QueryParser.parse("\"cosplay scene\" -\"unwanted intro\"")
+        for provider in [Provider.eporner, .redgifs, .hanime, .pornhub] {
+            NativeProviderProtocol.log.reset()
+            _ = try await api.posts(provider: provider, query: parsed, page: 1)
+            let requests = NativeProviderProtocol.log.snapshot()
+            let search = requests.first { request in
+                switch provider {
+                case .eporner: request.url?.host == "www.eporner.com"
+                case .redgifs: request.url?.host == "api.redgifs.com" && request.url?.path.contains("search") == true
+                case .hanime: request.url?.host == "search.htv-services.com"
+                case .pornhub: request.url?.host == "www.pornhub.com"
+                default: false
+                }
+            }
+            let actual = try XCTUnwrap(search, "No keyword search request for \(provider.rawValue)")
+            if provider == .hanime {
+                XCTAssertEqual(actual.httpMethod, "POST")
+                let body = try NativeProviderAPI.hanimeSearchBody(query: parsed, page: 1, sort: "recommended")
+                let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+                XCTAssertEqual(json["search_text"] as? String, phrase)
+            } else {
+                let items = URLComponents(url: try XCTUnwrap(actual.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+                let parameter = provider == .eporner ? "query" : provider == .redgifs ? "search_text" : "search"
+                XCTAssertEqual(items.first(where: { $0.name == parameter })?.value, phrase)
+            }
+        }
+    }
     func testKeywordProviderExclusionsMatchTitlesAndCreatorWithoutSubstringErrors() {
         var unwanted = Post(key: "eporner:1", id: "1", provider: "Eporner",
                             tags: ["other"], type: "video")
@@ -89,6 +151,21 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(result.items.map(\.stableID), [allowed.stableID])
         XCTAssertFalse(NativeProviderAPI.containsKeyword("bat", in: allowed),
             "A negative keyword must not match inside 'battle'")
+    }
+
+    func testKeywordSearchCanReuseOnlyMatchingVisiblePostsWhenProviderIndexIsEmpty() {
+        var matching = Post(key: "eporner:1", id: "1", provider: "Eporner",
+                            tags: ["red_hair", "cosplay"], type: "video")
+        matching.caption = "Character cosplay"
+        let wrong = Post(key: "eporner:2", id: "2", provider: "Eporner",
+                         tags: ["blue_hair", "cosplay"], type: "video")
+        let otherSource = Post(key: "redgifs:3", id: "3", provider: "RedGIFs",
+                               tags: ["red_hair", "cosplay"], type: "video")
+        let result = NativeProviderAPI.matchingCachedPosts([wrong, otherSource, matching],
+            provider: .eporner,
+            query: ParsedQuery(included: ["red hair"], excluded: ["blue hair"]),
+            immersive: false)
+        XCTAssertEqual(result.map(\.stableID), [matching.stableID])
     }
 
 

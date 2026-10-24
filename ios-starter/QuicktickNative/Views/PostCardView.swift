@@ -6,6 +6,8 @@ import Combine
 
 struct PostCardView: View {
     @EnvironmentObject private var store: AppStore
+    @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
+    @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     let post: Post
     var available = CGSize(width: 400, height: 800)
     var playbackTab = 0
@@ -19,12 +21,16 @@ struct PostCardView: View {
     @State private var player: AVPlayer?
     @State private var gifURL: URL?
     @State private var ready = false
+    @State private var introReady = true
+    @State private var manualPlaybackRequested = false
     @State private var playing = false
     @State private var preparing = false
     @State private var mediaAspect: CGFloat = 4 / 3
     @State private var playbackError: String?
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
+    @State private var showLikeHeart = false
+    @State private var likeHeartSequence = 0
     private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
     private var fullBleed: Bool { playbackTab == 0 && !offline }
     private var cardRadius: CGFloat { fullBleed ? 0 : 22 }
@@ -78,7 +84,7 @@ struct PostCardView: View {
                     ActionIcon(title: "Like", symbol: store.favorites[post.stableID] == nil ? "heart" : "heart.fill", selected: store.favorites[post.stableID] != nil) { store.toggleFavorite(post) }
                     ActionIcon(title: "Less", symbol: "hand.thumbsdown") { store.less(post) }
                         .accessibilityIdentifier("dislike-\(post.stableID)")
-                    ActionIcon(title: "Download", symbol: "arrow.down.to.line") { store.download(post) }
+                    FeedDownloadControl(manager: store.downloads, post: post)
                     ActionIcon(title: "Comments", symbol: "bubble.left") { comments = true }
                     }
                 }
@@ -97,13 +103,16 @@ struct PostCardView: View {
                 get: { store.fullScreenPlaybackID == post.stableID },
                 set: { if !$0 { store.fullScreenPlaybackID = nil } }
             ), onDismiss: {
-                if store.isForeground, store.activeTab == playbackTab, store.pausedPlaybackID != post.stableID { player?.play() }
+                if store.isForeground, store.activeTab == playbackTab,
+                   store.pausedPlaybackID != post.stableID,
+                   (autoplayVideos || manualPlaybackRequested) { player?.play() }
             }) {
                 if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(manualPlaybackRequested)") {
                 guard !Task.isCancelled else { return }
                 guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
+                guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
                 await preparePlayback()
             }
             .onDisappear {
@@ -118,8 +127,8 @@ struct PostCardView: View {
             }
             .onChange(of: comments) { _, shown in if shown { store.pausedPlaybackID = post.stableID; store.players.pause(post.stableID) } }
             .onChange(of: fullImage) { _, shown in if shown { store.players.pauseAll() } }
-            .onChange(of: player != nil) { _, exists in
-                guard exists, pendingVideoFullscreen, store.activeTab == playbackTab else { return }
+            .onChange(of: player != nil && introReady) { _, isPlayable in
+                guard isPlayable, pendingVideoFullscreen, store.activeTab == playbackTab else { return }
                 pendingVideoFullscreen = false
                 store.fullScreenPlaybackID = post.stableID
             }
@@ -127,7 +136,14 @@ struct PostCardView: View {
             .onChange(of: store.muted) { _, value in player?.isMuted = value }
             .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
                 guard let item = note.object as? AVPlayerItem, item === player?.currentItem else { return }
-                if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground { store.recordComplete(post); store.recordReplay(post); player?.seek(to: .zero); if store.pausedPlaybackID != post.stableID { player?.play() } }
+                if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground {
+                    store.recordComplete(post); store.recordReplay(post)
+                    let length = player?.currentItem?.duration.seconds ?? 0
+                    let start = VideoIntroPolicy.startTime(duration: length, enabled: skipVideoIntros, provider: post.provider)
+                    player?.seek(to: CMTime(seconds: start, preferredTimescale: 600))
+                    if store.pausedPlaybackID != post.stableID,
+                       (autoplayVideos || manualPlaybackRequested) { player?.play() }
+                }
             }
     }
 
@@ -138,7 +154,7 @@ struct PostCardView: View {
                     PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
                     NativePlayerSurface(player: player, fill: false, ready: $ready)
                         .frame(width: mediaSize.width, height: mediaSize.height)
-                        .opacity(ready ? 1 : 0)
+                        .opacity(ready && introReady ? 1 : 0)
                 }.aspectRatio(mediaSize.width / max(1,mediaSize.height), contentMode: .fit)
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true, onSize: { nativeSize = $0; mediaAspect = $0.width / max(1,$0.height) })
@@ -152,14 +168,36 @@ struct PostCardView: View {
         .frame(width: mediaSize.width, height: mediaSize.height)
         .allowsHitTesting(false)
         .overlay {
-            if post.type.lowercased() == "video" {
+            if fullBleed {
+                // Keep the full-bleed media discoverable as an actual button
+                // for VoiceOver and UI automation. The exclusive gesture keeps
+                // double-tap Like distinct from single-tap fullscreen.
+                Button(action: openMediaFullscreen) {
+                    Color.clear.contentShape(Rectangle())
+                }
+                    .buttonStyle(.plain)
+                    .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { result in
+                        switch result {
+                        case .first:
+                            if store.favorites[post.stableID] == nil { store.toggleFavorite(post) }
+                            likeHeartSequence += 1
+                            let sequence = likeHeartSequence
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.65)) { showLikeHeart = true }
+                            Task {
+                                try? await Task.sleep(for: .milliseconds(650))
+                                guard sequence == likeHeartSequence else { return }
+                                withAnimation(.easeOut(duration: 0.25)) { showLikeHeart = false }
+                            }
+                        case .second:
+                            openMediaFullscreen()
+                        }
+                    })
+                    .accessibilityLabel("Open full screen \(post.type.lowercased() == "video" ? "video" : "image")")
+                    .accessibilityHint("Double tap the media to like")
+                    .accessibilityIdentifier("fullscreen-\(post.stableID)")
+            } else if post.type.lowercased() == "video" {
                 Button {
-                    if player != nil {
-                        store.fullScreenPlaybackID = post.stableID
-                    } else {
-                        pendingVideoFullscreen = true
-                        store.inlinePlaybackID = post.stableID
-                    }
+                    openMediaFullscreen()
                 } label: {
                     Color.clear.contentShape(Rectangle())
                 }
@@ -170,16 +208,45 @@ struct PostCardView: View {
                 Color.clear.contentShape(Rectangle()).onTapGesture { fullImage = true }
             }
         }
+        .overlay {
+            if showLikeHeart {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 85, weight: .bold))
+                    .foregroundStyle(.white)
+                    .shadow(color: AppTheme.accent.opacity(0.8), radius: 22)
+                    .transition(.scale(scale: 0.45).combined(with: .opacity))
+                    .allowsHitTesting(false)
+            }
+        }
         .contentShape(Rectangle())
+        .overlay(alignment: .topTrailing) {
+            if post.type.lowercased() == "video", let player,
+               store.activeTab == playbackTab, store.pipPostID != post.stableID {
+                Button { store.beginFloatingVideo(post: post, source: player) } label: {
+                    Image(systemName: "pip.enter")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .padding(10)
+                .accessibilityLabel("Play in floating window")
+                .accessibilityIdentifier("pip-\(post.stableID)")
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             if post.isImmersiveMedia {
                 Button {
-                    if store.inlinePlaybackID == post.stableID {
+                    if !autoplayVideos && !manualPlaybackRequested {
+                        manualPlaybackRequested = true
+                        store.pausedPlaybackID = nil
+                        store.inlinePlaybackID = post.stableID
+                    } else if store.inlinePlaybackID == post.stableID {
                         store.pausedPlaybackID = store.pausedPlaybackID == post.stableID ? nil : post.stableID
                     } else { store.inlinePlaybackID = post.stableID }
                 } label: {
                     HStack(spacing: 8) {
-                        if preparing { ProgressView() } else { Image(systemName: playing ? "pause.fill" : "play.fill") }
+                        if preparing { InfinityLoader(size: 24) } else { Image(systemName: playing ? "pause.fill" : "play.fill") }
                         Text(playing ? "Pause" : "Play")
                     }.font(.subheadline.weight(.semibold)).padding(12).frame(minHeight: 44).background(.ultraThinMaterial, in: Capsule())
                 }.disabled(preparing).buttonStyle(.plain).padding(10)
@@ -193,6 +260,20 @@ struct PostCardView: View {
                 }.buttonStyle(.plain).padding(10).accessibilityLabel("View full image")
             }
         }
+    }
+
+    private func openMediaFullscreen() {
+        if post.type.lowercased() == "video" {
+            if player != nil && introReady { store.fullScreenPlaybackID = post.stableID }
+            else {
+                pendingVideoFullscreen = true
+                if player == nil {
+                    manualPlaybackRequested = true
+                    store.pausedPlaybackID = nil
+                    store.inlinePlaybackID = post.stableID
+                }
+            }
+        } else { fullImage = true }
     }
     private func preparePlayback() async {
         preparing = true; playbackError = nil; playing = false
@@ -214,8 +295,15 @@ struct PostCardView: View {
                 return
             }
             let p: AVPlayer
-            if store.pausedPlaybackID == post.stableID { p = store.players.player(for: post.stableID, url: url); p.pause() }
-            else { p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) }
+            if store.pausedPlaybackID == post.stableID {
+                p = store.players.player(for: post.stableID, url: url); p.pause()
+                introReady = true
+            } else {
+                introReady = !(post.provider.lowercased() == "pornhub" && skipVideoIntros)
+                p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) {
+                    introReady = true
+                }
+            }
             player = p; preparing = false
             // Start playback first; size discovery adjusts the card independently.
             if let asset = p.currentItem?.asset, let track = try? await asset.loadTracks(withMediaType: .video).first,
@@ -239,11 +327,61 @@ struct PostCardView: View {
         if watchSeconds >= 2 { store.recordWatch(post, seconds: watchSeconds, completion: completion) }
         watchSeconds = 0
     }
-    private func stopPlayback() { store.players.pause(post.stableID, owner: playbackOwner); player = nil; gifURL = nil; ready = false; playing = false }
+    private func stopPlayback() {
+        store.players.pause(post.stableID, owner: playbackOwner)
+        player = nil; gifURL = nil; ready = false; introReady = true; playing = false
+        manualPlaybackRequested = false
+    }
+}
+
+/// Immediate tap feedback and live transfer state on every Home/Favorites card.
+/// Observing the manager makes the button stay accurate after scrolling away.
+private struct FeedDownloadControl: View {
+    @ObservedObject var manager: DownloadManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let post: Post
+    @State private var taps = 0
+    private var record: DownloadRecord? { manager.records.first { $0.key == post.stableID } }
+    private var working: Bool { record?.state == .queued || record?.state == .downloading }
+    private var saved: Bool { record?.state == .complete }
+    private var failed: Bool { record?.state == .failed || record?.state == .cancelled }
+
+    var body: some View {
+        Button {
+            taps += 1
+            if let record, record.state == .paused { manager.resume(record) }
+            else if let record, failed { manager.retry(record) }
+            else if !working && !saved { manager.download(post) }
+        } label: {
+            VStack(spacing: 3) {
+                Group {
+                    if working { InfinityLoader(size: 22) }
+                    else {
+                        Image(systemName: saved ? "checkmark.circle.fill" : failed ? "arrow.clockwise.circle" : "arrow.down.to.line")
+                            .font(.system(size: 19, weight: .semibold))
+                            .symbolEffect(.bounce, value: taps)
+                    }
+                }
+                .frame(height: 22)
+                Text(working ? "Saving" : saved ? "Saved" : failed ? "Retry" : "Download")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+            }
+            .foregroundStyle(saved ? AppTheme.accent : .white.opacity(0.83))
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(QuicktickPressStyle())
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: working)
+        .sensoryFeedback(.selection, trigger: taps)
+        .accessibilityLabel("Download")
+        .accessibilityValue(working ? "Downloading" : saved ? "Saved" : failed ? "Failed" : "Not downloaded")
+        .accessibilityIdentifier("card-download-\(post.stableID)")
+    }
 }
 
 private struct FullScreenVideoView: View {
     @EnvironmentObject private var store: AppStore
+    @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     let player: AVPlayer
     let postID: String
     let onClose: () -> Void
@@ -272,7 +410,7 @@ private struct FullScreenVideoView: View {
                 else if status == .paused { store.pausedPlaybackID = postID }
             }
             .onChange(of: store.isForeground) { _, foreground in
-                if foreground, store.pausedPlaybackID != postID { player.play() }
+                if foreground, autoplayVideos, store.pausedPlaybackID != postID { player.play() }
             }
     }
 }
@@ -375,12 +513,12 @@ private struct FullComicView: View {
                 Image(uiImage: preview).resizable().scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(alignment: .bottom) {
-                        ProgressView("Loading full resolution").tint(.white)
+                        HStack(spacing: 7) { InfinityLoader(size: 25); Text("Loading full resolution").font(.caption) }
                             .padding(10).background(.black.opacity(0.65), in: Capsule())
                             .padding(.bottom, 20)
                     }
             } else if let error { Text(error).foregroundStyle(.white).padding() }
-            else { ProgressView("Loading full image").tint(.white) }
+            else { VStack(spacing: 8) { InfinityLoader(size: 50); Text("Loading full image").font(.caption) }.foregroundStyle(.white) }
         }.overlay(alignment: .topTrailing) {
             Button { dismiss() } label: {
                 Image(systemName: "xmark").font(.system(size: 20, weight: .bold)).frame(width: 48, height: 48)

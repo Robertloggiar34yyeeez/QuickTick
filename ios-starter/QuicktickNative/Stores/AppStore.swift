@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import AVFoundation
 
 struct VisualRefreshProgress: Equatable, Sendable {
     var completed: Int
@@ -49,7 +50,55 @@ final class AppStore: ObservableObject {
     } }
     @Published var pausedPlaybackID: String?
     @Published var fullScreenPlaybackID: String?
-    @Published var inlinePlaybackID: String? { didSet { if oldValue != inlinePlaybackID { idleTask?.cancel(); pausedPlaybackID = nil; if players.activeOwner != "immersive", players.activeOwner?.hasSuffix("-immersive") != true { players.transitionVisiblePost() } } } }
+    @Published private(set) var pipPlayer: AVPlayer?
+    @Published private(set) var pipPostID: String?
+    @Published var pipFullscreen = false
+    @Published var pipMuteFeed = UserDefaults.standard.bool(forKey: "quicktick-pip-mute-feed-v1") {
+        didSet {
+            UserDefaults.standard.set(pipMuteFeed, forKey: "quicktick-pip-mute-feed-v1")
+            updatePiPAudioMix()
+        }
+    }
+    func beginFloatingVideo(post: Post, source: AVPlayer) {
+        guard post.type.lowercased() == "video", let asset = source.currentItem?.asset else { return }
+        closeFloatingVideo()
+        let position = source.currentTime()
+        let floating = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+        floating.volume = 1
+        floating.isMuted = false
+        floating.automaticallyWaitsToMinimizeStalling = true
+        pipPostID = post.stableID
+        pipPlayer = floating
+        players.pause(post.stableID)
+        updatePiPAudioMix()
+        if position.isValid, position.seconds.isFinite, position.seconds > 0 {
+            floating.seek(to: position, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+                if finished { Task { @MainActor in if self.pipPlayer === floating { floating.play() } } }
+            }
+        } else { floating.play() }
+    }
+    func closeFloatingVideo() {
+        pipPlayer?.pause()
+        pipPlayer = nil
+        pipPostID = nil
+        pipFullscreen = false
+        updatePiPAudioMix()
+    }
+    private func updatePiPAudioMix() {
+        players.feedVolumeScale = pipPlayer == nil ? 1 : (pipMuteFeed ? 0 : 0.15)
+    }
+    // The Home stack is unmounted when another tab is opened. Remember the
+    // visible media across that gap while its geometry preferences reappear.
+    private(set) var retainedHomePlaybackID: String?
+    @Published var inlinePlaybackID: String? { didSet {
+        if activeTab == 0, let inlinePlaybackID { retainedHomePlaybackID = inlinePlaybackID }
+        if oldValue != inlinePlaybackID {
+            idleTask?.cancel(); pausedPlaybackID = nil
+            if players.activeOwner != "immersive", players.activeOwner?.hasSuffix("-immersive") != true {
+                players.transitionVisiblePost()
+            }
+        }
+    } }
     @Published var queryText = "" { didSet { if oldValue != queryText && !committingSearch { invalidateFeed() } } }
     @Published var feedSort = "recommended" { didSet { if oldValue != feedSort && !committingSearch { invalidateFeed() } } }
     @Published private(set) var feedRevision = UUID()
@@ -103,6 +152,11 @@ final class AppStore: ObservableObject {
     private var generation = UUID()
     @Published var visualAnalysisEnabled = (UserDefaults.standard.object(forKey: "quicktick-visual-analysis-v1") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(visualAnalysisEnabled, forKey: "quicktick-visual-analysis-v1"); scheduleIdleIntelligence() }
+    }
+
+    func visualModelDidInstall() {
+        visualScanStatus = "MobileCLIP installed · refreshing real-life visual preferences when idle"
+        if visualAnalysisEnabled { scheduleIdleIntelligence() }
     }
     let visual = VisualAnalysisService()
     @Published private(set) var visualScanStatus: String?
@@ -175,8 +229,11 @@ final class AppStore: ObservableObject {
         do {
             let savedState = try localStorage.load()
             local = savedState
-            cloudSyncEnabled = savedState.cloudSyncEnabled ?? false
-            await api.setCloudSyncEnabled(cloudSyncEnabled)
+            // Website Sync is retired from the UI. Never silently keep sending
+            // an existing user's profile after the control has been removed.
+            cloudSyncEnabled = false
+            local.cloudSyncEnabled = false
+            await api.setCloudSyncEnabled(false)
             favorites = local.snapshot.favorites; exclusions = local.snapshot.exclusions.tags
             tasteSetup = local.snapshot.preferences.value
             immersionFraming = savedState.immersionFraming
@@ -341,12 +398,20 @@ final class AppStore: ObservableObject {
         committingSearch = false
     }
     func selectFeedTab(_ tab: Int) async {
-        guard (0...3).contains(tab) else { return }
+        if beginFeedTabSelection(tab) { await refresh(immersive: tab == 1) }
+    }
+
+    /// Commit tab state before returning to the button's touch handler.
+    /// Scheduling the entire selection inside an unstructured Task allowed a
+    /// rapid second tap to hit a dock that was being replaced by the first
+    /// selection, silently dropping the second button action.
+    @discardableResult
+    func beginFeedTabSelection(_ tab: Int) -> Bool {
+        guard (0...3).contains(tab) else { return false }
         if tab == activeTab {
             // Re-selecting the same tab refreshes its current query and sort.
             // Never discard an explicit user search to force Recommended.
-            if tab < 2 { await refresh(immersive: tab == 1) }
-            return
+            return tab < 2
         }
         if activeTab < 2 {
             savedFeeds[activeTab] = SavedFeed(provider: selectedProvider, query: queryText, sort: feedSort, publishedQuery: publishedQuery, publishedSort: publishedSort,
@@ -356,7 +421,7 @@ final class AppStore: ObservableObject {
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel()
         generation = UUID(); feedRevision = generation; isLoading = false
         fullScreenPlaybackID = nil; activeTab = tab
-        guard tab < 2 else { return }
+        guard tab < 2 else { return false }
         feedMediaOnly = tab == 1
         if let saved = savedFeeds[tab], saved.provider == selectedProvider {
             commitSearch(query: saved.query, sort: saved.sort)
@@ -365,26 +430,34 @@ final class AppStore: ObservableObject {
             publishedNextPage = nextPage; publishedQuery = saved.publishedQuery; publishedSort = saved.publishedSort
             hasMore = saved.hasMore; candidateContext = saved.context
             protectedImmersiveIDs = saved.protected; lastError = nil
-            if (posts.isEmpty && nextPage <= 1) || publishedQuery != queryText || publishedSort != feedSort { await refresh(immersive: tab == 1) }
-            return
+            return (posts.isEmpty && nextPage <= 1) || publishedQuery != queryText || publishedSort != feedSort
         }
         commitSearch(query: "", sort: "recommended")
         posts = []; encountered = []; nextPage = 1; candidateContext = nil; protectedImmersiveIDs = []
-        await refresh(immersive: tab == 1)
+        return true
     }
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
+        let previousVisible = posts
         let mediaOnly = immersive || activeTab == 1
         feedMediaOnly = mediaOnly
         protectedImmersiveIDs = []; immersivePlaybackID = nil
         generation = UUID(); feedRevision = generation; inlinePlaybackID = nil; players.pauseAll()
+        let token = generation
+        let requestedSort = feedSort
         #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { posts = (try? await UITestMediaFactory.shared.posts(sort: feedSort)) ?? []; hasMore = false; return }
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+            let fixture = (try? await UITestMediaFactory.shared.posts(sort: requestedSort)) ?? []
+            // Fixture creation suspends while media is prepared. An older
+            // Popular refresh must never publish after the user has already
+            // switched back to Recommended (or left the tab).
+            guard !Task.isCancelled, generation == token, feedSort == requestedSort else { return }
+            posts = fixture; hasMore = false
+            return
+        }
         #endif
         plannedAcquisition = nil
         let feedStarted = Date()
-        let token = generation
-        let requestedSort = feedSort
         let requestedQuery = queryText
         let provider = selectedProvider
         isLoading = true
@@ -406,7 +479,9 @@ final class AppStore: ObservableObject {
             var filtered: [Post] = []
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
             var broaden = false
-            for _ in 0..<5 {
+            // Keep an interactive refresh bounded; users can explicitly load
+            // more after three sparse/filtered pages without a long spinner.
+            for _ in 0..<3 {
                 guard generation == token, !Task.isCancelled else { return }
                 let response = personalized && !broaden
                     ? try await fetchBlendedCandidates(provider: provider, parsed: parsed,
@@ -439,7 +514,19 @@ final class AppStore: ObservableObject {
                 }
                 if !filtered.isEmpty || !hasMore { break }
             }
-            let immediate = filtered
+            var immediate = filtered
+            if immediate.isEmpty, provider != .rule34,
+               !parsed.included.isEmpty || !parsed.excluded.isEmpty {
+                // Some video providers search titles but omit searchable
+                // keywords/tags from their index. Keep *verified* matches
+                // already loaded when adding a tag from a visible post.
+                let cached = NativeProviderAPI.matchingCachedPosts(
+                    previousVisible, provider: provider, query: parsed, immersive: mediaOnly)
+                    .filter { !RecommendationTagRules.rejects($0, exclusions: Array(banned)) }
+                immediate = feedExclusions.filter(cached,
+                    favorites: Array(favorites.values), recommended: false,
+                    favoriteIDs: favoriteExclusionIDs)
+            }
             guard generation == token, !Task.isCancelled else { return }
             posts = immediate
             if personalized {
@@ -452,7 +539,13 @@ final class AppStore: ObservableObject {
             releasedLoading = true
             recommendationMode = "On-device recommendations"
             scheduleIdleIntelligence()
-            if generation == token, !restoreFailed { lastError = nil }
+            if generation == token, !restoreFailed {
+                if immediate.isEmpty {
+                    lastError = personalized
+                        ? "No fresh matches yet. Try Load more, another source, or refine your interests."
+                        : "No matches for these tags. Remove a keyword or exclusion to broaden your search."
+                } else { lastError = nil }
+            }
         } catch {
             if generation == token, !Task.isCancelled { recordFeedError(error, provider: provider) }
         }
@@ -581,15 +674,54 @@ final class AppStore: ObservableObject {
         let secondaryQuery = b.query
         let secondaryPageNumber = b.page
         let requestedGeneration = generation
-        // async let keeps both requests structured and cancels outstanding
-        // work when the parent refresh is cancelled.
-        async let primary: PostPage? = try? await api.posts(
-            provider: provider, query: primaryQuery, page: primaryPageNumber,
-            sort: sort, immersive: mediaOnly)
-        async let secondary: PostPage? = try? await api.posts(
-            provider: provider, query: secondaryQuery, page: secondaryPageNumber,
-            sort: sort, immersive: mediaOnly)
-        let (firstPage, secondPage) = await (primary, secondary)
+        // The first useful candidate page should not wait up to 15 seconds
+        // for a stalled secondary provider request. Allow a brief grace period
+        // for the other pool (to preserve ranking diversity), then cancel it.
+        // Sparse first pages still wait for the second pool.
+        enum CandidateBatch: Sendable {
+            case first(PostPage?)
+            case second(PostPage?)
+            case graceExpired
+        }
+        let client = api
+        let fetchStarted = Date()
+        let (firstPage, secondPage) = await withTaskGroup(
+            of: CandidateBatch.self, returning: (PostPage?, PostPage?).self
+        ) { group in
+            group.addTask {
+                .first(try? await client.posts(provider: provider, query: primaryQuery,
+                                              page: primaryPageNumber, sort: sort, immersive: mediaOnly))
+            }
+            group.addTask {
+                .second(try? await client.posts(provider: provider, query: secondaryQuery,
+                                               page: secondaryPageNumber, sort: sort, immersive: mediaOnly))
+            }
+            var primary: PostPage?
+            var secondary: PostPage?
+            var completed = 0
+            var graceStarted = false
+            while let result = await group.next() {
+                switch result {
+                case .first(let page): primary = page; completed += 1
+                case .second(let page): secondary = page; completed += 1
+                case .graceExpired: break
+                }
+                if completed == 2 { break }
+                if case .graceExpired = result { break }
+                let available = (primary?.items.count ?? 0) + (secondary?.items.count ?? 0)
+                if available >= 20 && !graceStarted {
+                    graceStarted = true
+                    group.addTask {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        return .graceExpired
+                    }
+                }
+            }
+            group.cancelAll()
+            return (primary, secondary)
+        }
+        FeedPerformance.emit("candidate_fetch", started: fetchStarted,
+                             count: (firstPage?.items.count ?? 0) + (secondPage?.items.count ?? 0))
         try Task.checkCancellation()
         guard firstPage != nil || secondPage != nil else {
             // Preserve meaningful HTTP/auth errors from the normal pathway.
@@ -735,6 +867,7 @@ final class AppStore: ObservableObject {
     private var protectedHomePostIDs: Set<String> = []
     func protectVisibleHomePosts(_ keys: Set<String>) {
         guard activeTab == 0 else { return }
+        guard keys != protectedHomePostIDs else { return }
         protectedHomePostIDs = keys
     }
 
@@ -815,15 +948,23 @@ final class AppStore: ObservableObject {
 
     func includeTag(_ tag: String) {
         let parsed = QueryParser.parse(queryText)
-        let next = (parsed.included + [tag]).uniqued() + parsed.excluded.filter { $0.caseInsensitiveCompare(tag) != .orderedSame }.map { "-\($0)" }
-        queryText = next.joined(separator: " ")
+        let normal = selectedProvider == .rule34 ? tag : tag.replacingOccurrences(of: "_", with: " ")
+        let included = (parsed.included + [normal]).uniqued()
+        let excluded = parsed.excluded.filter { $0.caseInsensitiveCompare(normal) != .orderedSame }
+        commitSearch(query: QueryParser.formatted(ParsedQuery(included: included, excluded: excluded)), sort: feedSort)
+        // Updating queryText alone invalidated the feed and left an empty
+        // screen saying "No more posts". Fetch immediately, keeping the
+        // old cards visible until the replacement results are ready.
+        Task { await refresh(immersive: activeTab == 1) }
     }
 
     func excludeTag(_ tag: String) {
         let parsed = QueryParser.parse(queryText)
-        let included = parsed.included.filter { $0.caseInsensitiveCompare(tag) != .orderedSame }
-        let excluded = (parsed.excluded + [tag]).uniqued().map { "-\($0)" }
-        queryText = (included + excluded).joined(separator: " ")
+        let normal = selectedProvider == .rule34 ? tag : tag.replacingOccurrences(of: "_", with: " ")
+        let included = parsed.included.filter { $0.caseInsensitiveCompare(normal) != .orderedSame }
+        let excluded = (parsed.excluded + [normal]).uniqued()
+        commitSearch(query: QueryParser.formatted(ParsedQuery(included: included, excluded: excluded)), sort: feedSort)
+        Task { await refresh(immersive: activeTab == 1) }
     }
 
     func tasteChoice(for provider: Provider) -> TasteChoice {
@@ -1136,10 +1277,15 @@ final class AppStore: ObservableObject {
         if generation == token, selectedProvider == provider, learnedInterests != interests { learnedInterests = interests }
     }
 
-    func setTaste(into: [String], notInto: [String]) {
+    func setTaste(into: [String], notInto: [String], characterTags: [String: [String]]? = nil) {
         let negative = TasteChoice.normalized(notInto)
         let positive = TasteChoice.normalized(into).filter { !negative.contains($0) }
-        tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(done: true, into: positive, notInto: negative)
+        let existing = tasteChoice(for: selectedProvider).characterTags
+        let contextual = characterTags ?? existing
+        let sanitized = contextual.filter { positive.contains(RecommendationTagRules.canonical($0.key)) }
+            .mapValues { TasteChoice.normalized($0).filter { !negative.contains($0) } }
+        tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(
+            done: true, into: positive, notInto: negative, characterTags: sanitized)
         local.snapshot.preferences.updatedAt = timestamp()
         persistLocal(); queueSync(); Task { await refresh() }
     }

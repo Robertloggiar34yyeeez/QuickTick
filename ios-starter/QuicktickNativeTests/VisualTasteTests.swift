@@ -3,6 +3,13 @@ import CoreGraphics
 @testable import QuicktickNative
 
 final class VisualTasteTests: XCTestCase {
+    func testGalaxyPaletteIsSelectableAndHasDistinctNebulaGradient() {
+        XCTAssertTrue(AppTheme.AccentPalette.allCases.contains(.galaxy))
+        XCTAssertEqual(AppTheme.AccentPalette(rawValue: "galaxy"), .galaxy)
+        XCTAssertEqual(AppTheme.AccentPalette.galaxy.gradientColors.count, 3)
+        XCTAssertEqual(AppTheme.AccentPalette.violet.gradientColors.count, 2)
+    }
+
     func testStudioFavoritePromptKeepsOneCharacterOneSceneAndOnePose() {
         let seed = StudioPromptSeed(
             characters: ["chun_li", "samus_aran"], artists: ["favorite_artist"],
@@ -22,13 +29,29 @@ final class VisualTasteTests: XCTestCase {
     }
 
     func testStudioAnimaResolutionsAreNativeAndAligned() {
+        XCTAssertEqual(StudioCanvasSize.allCases.map(\.label), ["Small", "Medium", "Large"])
+        XCTAssertEqual(StudioCanvasSize.allCases.map(\.longestEdge), [512, 768, 1024])
+        XCTAssertEqual(StudioCanvasSize.closest(to: 896), .medium)
         for ratio in StudioAspectRatio.allCases {
             let size = ratio.nativePixelDimensions(longestEdge: 896)
             XCTAssertEqual(max(size.width, size.height), 896)
-            XCTAssertEqual(size.width % 16, 0)
-            XCTAssertEqual(size.height % 16, 0)
+            XCTAssertEqual(size.width % 64, 0)
+            XCTAssertEqual(size.height % 64, 0)
             XCTAssertGreaterThanOrEqual(min(size.width, size.height), 256)
         }
+        XCTAssertEqual(StudioAspectRatio.story.nativePixelDimensions(longestEdge: 512).width, 320)
+        XCTAssertEqual(StudioAspectRatio.tall.nativePixelDimensions(longestEdge: 1024).width, 512)
+        XCTAssertEqual(StudioAspectRatio.tall.nativePixelDimensions(longestEdge: 1024).height, 1024)
+        let portrait = StudioAspectRatio.story.nativePixelDimensions(longestEdge: StudioCanvasSize.medium.longestEdge)
+        XCTAssertEqual(portrait.width, 448)
+        XCTAssertEqual(portrait.height, 768)
+    }
+
+    func testStyleLoRATriggerWordsDoNotDuplicatePromptTags() {
+        let result = StudioLoRATriggers.applying(["watercolor, painterly", "watercolor", "Painterly"],
+            to: "portrait of a character, painterly background")
+        XCTAssertEqual(result, "watercolor, portrait of a character, painterly background")
+        XCTAssertEqual(StudioLoRATriggers.applying([], to: "portrait"), "portrait")
     }
 
     func testArtistsCharactersAndAttributesLearnIndependently() throws {
@@ -105,6 +128,39 @@ final class VisualTasteTests: XCTestCase {
         XCTAssertEqual(restored, profile)
         let legacy = try JSONDecoder().decode(VisualProfile.self, from: Data("{\"clusters\":[[1,0]]}".utf8))
         XCTAssertTrue(legacy.negativeClusters.isEmpty); XCTAssertEqual(legacy.clusters.count, 1)
+    }
+    func testMobileCLIPOnlyTargetsExplicitPhotosOrUnknownRealLifeVideoProviders() {
+        XCTAssertTrue(VisualAppearanceEncoder.prefersMobileCLIP(domain: .realLife, provider: "rule34"))
+        for provider in ["pornhub", "ePorner", "redgifs"] {
+            XCTAssertTrue(VisualAppearanceEncoder.prefersMobileCLIP(domain: .uncertain, provider: provider))
+            XCTAssertFalse(VisualAppearanceEncoder.prefersMobileCLIP(domain: .anime, provider: provider))
+            XCTAssertFalse(VisualAppearanceEncoder.prefersMobileCLIP(domain: .threeD, provider: provider))
+        }
+        XCTAssertFalse(VisualAppearanceEncoder.prefersMobileCLIP(domain: .uncertain, provider: "rule34"))
+        let unknownVideo = Post(key: "unknown", id: "1", provider: "redgifs", tags: ["solo"], type: "video")
+        XCTAssertEqual(VisualDomain.classify(unknownVideo), .uncertain)
+        let taggedAnime = Post(key: "anime", id: "2", provider: "redgifs", tags: ["2d", "anime"], type: "video")
+        XCTAssertEqual(VisualDomain.classify(taggedAnime), .anime)
+    }
+    func testMobileCLIPMigrationNeverComparesOrBlendsVisionVectors() throws {
+        let vision = VisualFeatures(domain: .realLife, attributes: ["setting:portrait": 1], embedding: [1, 0, 0], version: "vision-featureprint-r2-v2")
+        let mobile = VisualFeatures(domain: .realLife, attributes: ["setting:portrait": 1], embedding: [0, 1, 0], version: MobileCLIPRealLifeEncoder.version)
+        var profile = VisualProfile()
+        profile.record(.like, features: vision)
+        profile.record(.less, features: VisualFeatures(domain: .realLife, embedding: [0, 0, 1]))
+        XCTAssertEqual(profile.embeddingSpace, "vision-featureprint")
+        XCTAssertEqual(profile.clusters, [[1, 0, 0]])
+        XCTAssertEqual(profile.negativeClusters.count, 1)
+        profile.record(.like, features: mobile)
+        XCTAssertEqual(profile.embeddingSpace, "mobileclip-s0-image")
+        XCTAssertEqual(profile.clusters, [[0, 1, 0]])
+        XCTAssertTrue(profile.negativeClusters.isEmpty)
+        XCTAssertEqual(profile.attributes["setting:portrait"]?.positive, 2)
+        XCTAssertGreaterThan(profile.score(mobile), profile.score(vision))
+        profile.record(.like, features: vision)
+        XCTAssertEqual(profile.clusters, [[0, 1, 0]])
+        let restored = try JSONDecoder().decode(VisualProfile.self, from: JSONEncoder().encode(profile))
+        XCTAssertEqual(restored, profile)
     }
     func testKnownLikedIdentityDoesNotCreateWholeImageNegativeCluster() {
         var profile = VisualProfile()

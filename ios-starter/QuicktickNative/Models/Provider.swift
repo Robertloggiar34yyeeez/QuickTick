@@ -11,12 +11,12 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         if let exact = Provider(rawValue: lowered) { return exact }
         let compact = lowered.filter { $0.isLetter || $0.isNumber }
         switch compact {
-        case "rule34", "rule34xxx": .rule34
-        case "redgifs", "redgifscom": .redgifs
-        case "pornhub", "pornhubcom": .pornhub
-        case "eporner", "epornercom": .eporner
-        case "hanime", "hanimetv": .hanime
-        default: nil
+        case "rule34", "rule34xxx": return .rule34
+        case "redgifs", "redgifscom": return .redgifs
+        case "pornhub", "pornhubcom": return .pornhub
+        case "eporner", "epornercom": return .eporner
+        case "hanime", "hanimetv": return .hanime
+        default: return nil
         }
     }
 

@@ -768,4 +768,17 @@ final class RhythmPhraseTests: XCTestCase {
             XCTAssertEqual(sequence.current, .duo)
         }
     }
+
+    func testDefaultFourBarPhraseDoesNotChangeWithEachMediaSwitch() {
+        var sequence = RhythmPhraseSequencer()
+        sequence.reset(mode: .adaptive, mixed: true, quarterBeats: 16)
+        for _ in 0..<15 {
+            XCTAssertFalse(sequence.tick(mixed: true, quarterBeats: 16, shuffle: false))
+            XCTAssertEqual(sequence.current, .regular)
+        }
+        XCTAssertTrue(sequence.tick(mixed: true, quarterBeats: 16, shuffle: false))
+        XCTAssertEqual(sequence.current, .duo)
+        for _ in 0..<31 { XCTAssertFalse(sequence.tick(mixed: true, quarterBeats: 16, shuffle: false)) }
+        XCTAssertEqual(sequence.current, .duo)
+    }
 }

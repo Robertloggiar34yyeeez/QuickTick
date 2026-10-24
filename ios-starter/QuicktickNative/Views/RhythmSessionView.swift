@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import AVFoundation
 import AudioToolbox
 import UIKit
 
@@ -68,6 +69,59 @@ struct RhythmPhraseSequencer {
     }
 }
 
+/// A short synthesized, high-presence click mixed through the app's audio
+/// session. System sound 1104 was barely audible and has no per-click gain.
+@MainActor
+final class RhythmClickSound: ObservableObject {
+    private let strong: AVAudioPlayer?
+    private let soft: AVAudioPlayer?
+
+    init() {
+        strong = try? AVAudioPlayer(data: Self.wave(pitch: 1_900))
+        soft = try? AVAudioPlayer(data: Self.wave(pitch: 1_400))
+        strong?.prepareToPlay()
+        soft?.prepareToPlay()
+    }
+
+    func play(accented: Bool, gain: Double) {
+        guard let player = accented ? strong : soft else {
+            AudioServicesPlaySystemSound(1104)
+            return
+        }
+        player.volume = Float(min(1, max(0, gain)))
+        player.currentTime = 0
+        player.play()
+    }
+
+    private static func wave(pitch: Double) -> Data {
+        let sampleRate = 44_100
+        let frames = Int(Double(sampleRate) * 0.095)
+        var wav = Data()
+        func bytes(_ s: String) { wav.append(contentsOf: s.utf8) }
+        func word(_ number: UInt16) {
+            var little = number.littleEndian
+            withUnsafeBytes(of: &little) { wav.append(contentsOf: $0) }
+        }
+        func dword(_ number: UInt32) {
+            var little = number.littleEndian
+            withUnsafeBytes(of: &little) { wav.append(contentsOf: $0) }
+        }
+        bytes("RIFF"); dword(UInt32(36 + frames * 2)); bytes("WAVE")
+        bytes("fmt "); dword(16); word(1); word(1)
+        dword(UInt32(sampleRate)); dword(UInt32(sampleRate * 2)); word(2); word(16)
+        bytes("data"); dword(UInt32(frames * 2))
+        for frame in 0..<frames {
+            let seconds = Double(frame) / Double(sampleRate)
+            let envelope = exp(-seconds * 47) * min(1, seconds * 16_000)
+            let tone = sin(2 * .pi * pitch * seconds) * 0.77
+                + sin(2 * .pi * pitch * 1.91 * seconds) * 0.23
+            let sample = Int16((max(-1, min(1, tone * envelope * 1.85)) * Double(Int16.max)).rounded())
+            word(UInt16(bitPattern: sample))
+        }
+        return wav
+    }
+}
+
 /// Local-only auto shuffle. The engine owns its timer and media player, never
 /// the feed's PlayerPool, so ending a session cannot disrupt feed autoplay.
 struct RhythmSessionView: View {
@@ -83,6 +137,8 @@ struct RhythmSessionView: View {
     @AppStorage("quicktick-rhythm-acceleration-v1") private var acceleration = 0.25
     @AppStorage("quicktick-rhythm-transition-v1") private var transitionSpeed = 0.25
     @AppStorage("quicktick-rhythm-metronome-v1") private var metronome = false
+    @AppStorage("quicktick-rhythm-click-volume-v1") private var clickVolume = 1.0
+    @AppStorage("quicktick-rhythm-bars-per-phrase-v1") private var barsPerPhrase = 4
     @AppStorage("quicktick-rhythm-haptics-v1") private var haptics = true
     @AppStorage("quicktick-rhythm-manual-v1") private var manual = false
     @AppStorage("quicktick-rhythm-mix-subdivisions-v1") private var mixSubdivisions = true
@@ -102,103 +158,73 @@ struct RhythmSessionView: View {
     @State private var player: AVPlayer?
     @State private var resolvedVideoID: String?
     @State private var showFineTune = false
+    @State private var controlsVisible = true
+    @StateObject private var clickSound = RhythmClickSound()
 
     private var mode: RhythmPattern { RhythmPattern(rawValue: pattern) ?? .adaptive }
     private var current: Post? { deck.indices.contains(index) ? deck[index] : nil }
     private var beatInterval: Double { 60 / Double(max(40, min(260, bpm))) / Double(phraseSequencer.current.rawValue) }
     private var phraseLength: Int {
-        // Randomness changes phrase length as well as media switch timing.
-        max(2, Int((5 - randomness * 2).rounded()))
+        // Four bars at 112 BPM last ~8.6 seconds; several images/videos
+        // should pass before a subdivision changes. Not every post is a phrase.
+        max(2, min(8, barsPerPhrase)) * 4
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
+            GeometryReader { geometry in
+              ZStack {
+                AppTheme.canvas.ignoresSafeArea()
                 if finished {
                     completionPanel
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     mediaPanel
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 24).stroke(AppTheme.border))
+                        .ignoresSafeArea(edges: .all)
                         .animation(reduceMotion ? nil : .easeInOut(duration: transitionSpeed), value: current?.stableID)
-                    HStack(spacing: 8) {
-                        ForEach(0..<8, id: \.self) { bar in
-                            Capsule()
-                                .fill(bar == beat ? AppTheme.accent : .white.opacity(0.15))
-                                .frame(height: bar == beat ? 28 : 12)
-                                .animation(reduceMotion ? nil : .spring(response: 0.18, dampingFraction: 0.58), value: beat)
-                        }
-                    }
-                    .frame(height: 30)
-                    .accessibilityLabel("\(phraseSequencer.current.title), beat \(beat + 1) of 8")
-                    HStack(spacing: 12) {
-                        Menu {
-                            Picker("Rhythm", selection: $pattern) {
-                                ForEach(RhythmPattern.allCases) { item in Text(item.title).tag(item.rawValue) }
+                    VStack(spacing: 12) {
+                        HStack(spacing: 10) {
+                            Button { dismiss() } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .frame(width: 46, height: 46)
                             }
-                        } label: {
-                            Label("\(mode.title) · \(phraseSequencer.current.title)", systemImage: "waveform.path")
-                                .frame(maxWidth: .infinity, minHeight: 44)
+                            .accessibilityLabel("Close Rhythm Mode")
+                            Spacer()
+                            Button {
+                                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { controlsVisible.toggle() }
+                            } label: {
+                                Image(systemName: controlsVisible ? "eye.slash" : "slider.horizontal.3")
+                                    .frame(width: 46, height: 46)
+                            }
+                            .accessibilityLabel(controlsVisible ? "Hide rhythm controls" : "Show rhythm controls")
+                            Button { finishSession() } label: {
+                                Label("Finish", systemImage: "checkmark.circle.fill")
+                                    .font(.subheadline.weight(.bold))
+                                    .padding(.horizontal, 15)
+                                    .frame(height: 46)
+                            }
+                            .accessibilityIdentifier("rhythm-finish")
                         }
-                        .buttonStyle(.bordered)
-                        .accessibilityIdentifier("rhythm-current-division")
-                        Text("\(bpm) BPM")
-                            .font(.subheadline.monospacedDigit().weight(.semibold))
-                            .foregroundStyle(AppTheme.secondaryLabel)
-                        Button {
-                            manual.toggle()
-                            nextSwitch = .now.addingTimeInterval(dwellTime())
-                        } label: {
-                            Image(systemName: manual ? "hand.tap.fill" : "hand.tap")
-                                .frame(width: 44, height: 44)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.white)
+                        .background {
+                            LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom)
+                                .padding(.horizontal, -18).padding(.top, -18).frame(height: 90, alignment: .top)
                         }
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel(manual ? "Manual tap mode on" : "Enable manual tap mode")
+                        Spacer(minLength: 0)
+                        if controlsVisible { rhythmHUD.transition(.move(edge: .bottom).combined(with: .opacity)) }
                     }
-                    if manual {
-                        Button { advance() } label: {
-                            Label("Tap to beat · Next", systemImage: "hand.tap")
-                                .frame(maxWidth: .infinity, minHeight: 48)
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    DisclosureGroup("Rhythm controls", isExpanded: $showFineTune) {
-                        VStack(spacing: 10) {
-                            labeledSlider("BPM", value: Binding(get: { Double(bpm) }, set: { bpm = Int($0) }), range: 40...260)
-                            labeledSlider("Randomness", value: $randomness, range: 0...1)
-                            labeledSlider("Acceleration", value: $acceleration, range: 0...1)
-                            labeledSlider("Transitions", value: $transitionSpeed, range: 0.08...0.65)
-                            Toggle("Metronome clicks", isOn: $metronome)
-                            Toggle("Beat haptics", isOn: $haptics)
-                            Toggle("Alternate Regular, Duo, Triple and Quad", isOn: $mixSubdivisions)
-                            Text("Each phrase lasts a few beats. Every rhythm appears in one session; the order varies over time.")
-                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
-                        }
-                        .font(.subheadline)
-                        .padding(.top, 8)
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .tint(AppTheme.accent)
-                    Button {
-                        running = false
-                        player?.pause()
-                        withAnimation(reduceMotion ? nil : .spring(response: 0.46)) { finished = true }
-                    } label: {
-                        Label("Finish", systemImage: "checkmark.circle.fill")
-                            .frame(maxWidth: .infinity, minHeight: 50)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(AppTheme.accent)
-                    .accessibilityIdentifier("rhythm-finish")
+                    .padding(.horizontal, 14)
+                    .padding(.top, 6)
+                    .padding(.bottom, 12)
                 }
+              }
+              .frame(width: geometry.size.width, height: geometry.size.height)
             }
-            .padding(16)
-            .background(AppTheme.canvas)
-            .navigationTitle("Rhythm Mode")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } } }
+            .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $showFineTune) { rhythmSettingsSheet }
         }
         .onAppear {
             guard !started else { return }
@@ -218,7 +244,7 @@ struct RhythmSessionView: View {
                 if phraseSequencer.tick(mixed: mixSubdivisions, quarterBeats: nextPhraseLength()) {
                     beat = 0
                 }
-                if metronome { AudioServicesPlaySystemSound(1104) }
+                if metronome { clickSound.play(accented: beat == 0, gain: clickVolume) }
                 if haptics { UIImpactFeedbackGenerator(style: beat == 0 ? .medium : .light).impactOccurred() }
                 if !manual && Date() >= nextSwitch { advance() }
                 do { try await Task.sleep(for: .seconds(max(0.075, beatInterval))) }
@@ -228,10 +254,102 @@ struct RhythmSessionView: View {
         .task(id: current?.stableID) { await prepareCurrentVideo() }
     }
 
+    private var rhythmHUD: some View {
+        VStack(spacing: 9) {
+            HStack {
+                Text("\(phraseSequencer.current.title.uppercased())  ·  \(barsPerPhrase) BARS")
+                    .font(.caption2.weight(.bold)).tracking(1.2)
+                Spacer()
+                Text("\(switches + 1)  ·  \(bpm) BPM")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+            }
+            .foregroundStyle(.white.opacity(0.86))
+            HStack(spacing: 7) {
+                ForEach(0..<8, id: \.self) { bar in
+                    Capsule()
+                        .fill(bar == beat ? AppTheme.accent : .white.opacity(0.24))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: bar == beat ? 26 : 9)
+                        .animation(reduceMotion ? nil : .spring(response: 0.18, dampingFraction: 0.64), value: beat)
+                }
+            }
+            .frame(height: 27)
+            .accessibilityLabel("\(phraseSequencer.current.title), beat \(beat + 1) of 8")
+            HStack(spacing: 8) {
+                Menu {
+                    Picker("Rhythm", selection: $pattern) {
+                        ForEach(RhythmPattern.allCases) { item in Text(item.title).tag(item.rawValue) }
+                    }
+                } label: {
+                    Label("\(mode.title) · \(phraseSequencer.current.title)", systemImage: "waveform.path")
+                        .lineLimit(1).minimumScaleFactor(0.76)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .accessibilityIdentifier("rhythm-current-division")
+                Button {
+                    manual.toggle()
+                    nextSwitch = .now.addingTimeInterval(dwellTime())
+                } label: { Image(systemName: manual ? "hand.tap.fill" : "hand.tap").frame(width: 44, height: 44) }
+                .accessibilityLabel(manual ? "Manual tap mode on" : "Enable manual tap mode")
+                Button { showFineTune = true } label: {
+                    Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Rhythm settings")
+            }
+            .buttonStyle(.bordered)
+            if manual {
+                Button { advance() } label: {
+                    Label("Tap to beat · Next", systemImage: "hand.tap")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }.buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(13)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 23, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 23).stroke(AppTheme.accent.opacity(0.35)))
+        .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
+    }
+
+    private var rhythmSettingsSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    labeledSlider("BPM", value: Binding(get: { Double(bpm) }, set: { bpm = Int($0) }), range: 40...260)
+                    labeledSlider("Randomness", value: $randomness, range: 0...1)
+                    labeledSlider("Acceleration", value: $acceleration, range: 0...1)
+                    labeledSlider("Transitions", value: $transitionSpeed, range: 0.08...0.65)
+                    labeledSlider("Bars per rhythm", value: Binding(get: { Double(barsPerPhrase) }, set: { barsPerPhrase = Int($0) }), range: 2...8)
+                    Text("\(barsPerPhrase) bars per phrase. Posts continue switching at their own pace.")
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    Toggle("Metronome clicks", isOn: $metronome)
+                    labeledSlider("Click volume", value: $clickVolume, range: 0.4...1)
+                    Toggle("Beat haptics", isOn: $haptics)
+                    Toggle("Alternate Regular, Duo, Triple and Quad", isOn: $mixSubdivisions)
+                }
+                .font(.subheadline)
+                .padding(20)
+            }
+            .background(AppTheme.canvas)
+            .navigationTitle("Rhythm settings")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showFineTune = false } } }
+        }
+        .presentationDetents([.medium, .large])
+        .tint(AppTheme.accent)
+    }
+
+    private func finishSession() {
+        running = false
+        player?.pause()
+        withAnimation(reduceMotion ? nil : .spring(response: 0.46)) { finished = true }
+    }
+
     @ViewBuilder private var mediaPanel: some View {
         if let post = current {
             ZStack {
-                AppTheme.elevatedSurface
+                Color.black
+                CachedMediaImage(url: post.cardPreviewURL, pixels: 700, comic: false, fill: true)
+                    .blur(radius: 34).scaleEffect(1.12).opacity(0.68)
+                Color.black.opacity(0.26)
                 if post.type.lowercased() == "video" {
                     if let player, resolvedVideoID == post.stableID {
                         VideoPlayer(player: player).id(post.stableID)
@@ -247,14 +365,7 @@ struct RhythmSessionView: View {
                                      pixels: 1200, comic: false, fill: false)
                 }
             }
-            .overlay(alignment: .topLeading) {
-                HStack(spacing: 6) {
-                    Image(systemName: "shuffle")
-                    Text("\(switches + 1) · \(post.provider.uppercased())")
-                }
-                .font(.caption.weight(.bold)).padding(10)
-                .background(.black.opacity(0.55), in: Capsule()).padding(12)
-            }
+            .clipped()
             .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.965)))
         } else {
             ContentUnavailableView("No media to shuffle", systemImage: "photo.stack",
@@ -295,8 +406,9 @@ struct RhythmSessionView: View {
     }
 
     private func nextPhraseLength() -> Int {
-        let spread = Int((randomness * 2).rounded())
-        return Int.random(in: max(2, phraseLength - spread)...max(2, phraseLength + spread))
+        let spreadInBars = Int((randomness * 1.5).rounded())
+        let bars = max(2, min(8, barsPerPhrase + Int.random(in: -spreadInBars...spreadInBars)))
+        return bars * 4
     }
 
     private func dwellTime() -> Double {

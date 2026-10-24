@@ -40,9 +40,7 @@ struct ImmersiveFeedView: View {
                 if let post = visiblePost {
                     ImmersiveItemView(post: post, offline: offline, active: true,
                                       presentationActive: presentationActive, playbackOwner: playbackOwner,
-                                      collection: collectionTab != nil, previews: previews) { origin, translation in
-                        pageSwipe(from: origin, translation: translation, viewportHeight: geo.size.height)
-                    }
+                                      collection: collectionTab != nil, previews: previews)
                     .frame(width: geo.size.width, height: geo.size.height)
                     .contentShape(Rectangle())
                     .id(post.stableID)
@@ -73,6 +71,16 @@ struct ImmersiveFeedView: View {
                 }
             }
                 .frame(width: geo.size.width, height: geo.size.height)
+                .contentShape(Rectangle())
+                // Attach the vertical pan at the viewport boundary. A drag
+                // attached only to the transparent media child was lost by
+                // UIKit's player/tap gesture arbitration on actual devices.
+                // Simultaneous recognition preserves rail, seek and edge-back
+                // interactions; only a clearly vertical completed swipe pages.
+                .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { drag in
+                    guard let origin = activeID else { return }
+                    pageSwipe(from: origin, translation: drag.translation, viewportHeight: geo.size.height)
+                }, including: .all)
                 .clipped()
         }
         .navigationTitle(offline ? "Offline Immersive" : "Immersive")
@@ -224,7 +232,6 @@ private struct ImmersiveItemView: View {
     let playbackOwner: String
     let collection: Bool
     @ObservedObject var previews: ImmersivePreviewCache
-    let onVerticalSwipe: (String, CGSize) -> Void
     @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
     @State private var ready = false
@@ -313,11 +320,6 @@ private struct ImmersiveItemView: View {
                 }
                 Color.clear.contentShape(Rectangle())
                     .accessibilityIdentifier("immersive-media-\(post.stableID)")
-                    // The hit-tested media surface owns a deliberate vertical
-                    // page swipe. Native ScrollView paging remains available
-                    // elsewhere, while a double tap stays a Like gesture.
-                    .highPriorityGesture(DragGesture(minimumDistance: 35)
-                        .onEnded { onVerticalSwipe(post.stableID, $0.translation) })
                     .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { gesture in
                         switch gesture {
                         case .first:

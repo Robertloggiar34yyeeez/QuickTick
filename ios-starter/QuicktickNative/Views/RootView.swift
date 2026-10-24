@@ -174,6 +174,11 @@ struct RootView: View {
                 let tabID = index < 2 ? index : index - 1
                 Button {
                     let isRefresh = tabID < 2 && store.activeTab == tabID
+                    // Apply the selection while the button action is still
+                    // running. With an async-only switch, the next rapid tap
+                    // could be lost while SwiftUI remounted the dock.
+                    tabSelectionTask?.cancel()
+                    let requiresRefresh = store.beginFeedTabSelection(tabID)
                     if isRefresh {
                         refreshSpinDegrees = 0
                         withAnimation(.smooth(duration: 0.18)) { refreshingTab = tabID }
@@ -183,12 +188,9 @@ struct RootView: View {
                             }
                         }
                     }
-                    // A quick Immersive → Home double tap must not let an
-                    // older asynchronous selection restore Immersive later.
-                    tabSelectionTask?.cancel()
                     tabSelectionTask = Task { @MainActor in
                         guard !Task.isCancelled else { return }
-                        await store.selectFeedTab(tabID)
+                        if requiresRefresh { await store.refresh(immersive: tabID == 1) }
                         guard !Task.isCancelled else { return }
                         if isRefresh {
                             try? await Task.sleep(for: .milliseconds(450))

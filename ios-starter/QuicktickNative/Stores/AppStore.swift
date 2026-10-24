@@ -398,12 +398,20 @@ final class AppStore: ObservableObject {
         committingSearch = false
     }
     func selectFeedTab(_ tab: Int) async {
-        guard (0...3).contains(tab) else { return }
+        if beginFeedTabSelection(tab) { await refresh(immersive: tab == 1) }
+    }
+
+    /// Commit tab state before returning to the button's touch handler.
+    /// Scheduling the entire selection inside an unstructured Task allowed a
+    /// rapid second tap to hit a dock that was being replaced by the first
+    /// selection, silently dropping the second button action.
+    @discardableResult
+    func beginFeedTabSelection(_ tab: Int) -> Bool {
+        guard (0...3).contains(tab) else { return false }
         if tab == activeTab {
             // Re-selecting the same tab refreshes its current query and sort.
             // Never discard an explicit user search to force Recommended.
-            if tab < 2 { await refresh(immersive: tab == 1) }
-            return
+            return tab < 2
         }
         if activeTab < 2 {
             savedFeeds[activeTab] = SavedFeed(provider: selectedProvider, query: queryText, sort: feedSort, publishedQuery: publishedQuery, publishedSort: publishedSort,
@@ -413,7 +421,7 @@ final class AppStore: ObservableObject {
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel()
         generation = UUID(); feedRevision = generation; isLoading = false
         fullScreenPlaybackID = nil; activeTab = tab
-        guard tab < 2 else { return }
+        guard tab < 2 else { return false }
         feedMediaOnly = tab == 1
         if let saved = savedFeeds[tab], saved.provider == selectedProvider {
             commitSearch(query: saved.query, sort: saved.sort)
@@ -422,12 +430,11 @@ final class AppStore: ObservableObject {
             publishedNextPage = nextPage; publishedQuery = saved.publishedQuery; publishedSort = saved.publishedSort
             hasMore = saved.hasMore; candidateContext = saved.context
             protectedImmersiveIDs = saved.protected; lastError = nil
-            if (posts.isEmpty && nextPage <= 1) || publishedQuery != queryText || publishedSort != feedSort { await refresh(immersive: tab == 1) }
-            return
+            return (posts.isEmpty && nextPage <= 1) || publishedQuery != queryText || publishedSort != feedSort
         }
         commitSearch(query: "", sort: "recommended")
         posts = []; encountered = []; nextPage = 1; candidateContext = nil; protectedImmersiveIDs = []
-        await refresh(immersive: tab == 1)
+        return true
     }
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }

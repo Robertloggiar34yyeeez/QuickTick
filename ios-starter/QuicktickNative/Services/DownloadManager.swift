@@ -63,13 +63,13 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         }
     }
     #endif
-    func download(_ post: Post) {
+    func download(_ post: Post, refreshSource: Bool = false) {
         guard !metadataFailed, tasks[post.stableID] == nil, !preparing.contains(post.stableID), records.first(where: { $0.key == post.stableID })?.state != .complete else { return }
         preparing.insert(post.stableID)
         Task {
             defer { preparing.remove(post.stableID) }
             do {
-                let media = try await resolver.resolve(post)
+                let media = try await resolver.resolve(post, refresh: refreshSource)
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--ui-testing"), let file = URL(string: media.mediaUrl), file.isFileURL {
                     let dir = root.appendingPathComponent(Self.safeName(post.stableID))
@@ -106,7 +106,17 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     func pause(_ record: DownloadRecord) { tasks[record.key]?.suspend(); update(record.key) { $0.state = .paused } }
     func resume(_ record: DownloadRecord) { tasks[record.key]?.resume(); update(record.key) { $0.state = .downloading } }
     func cancel(_ record: DownloadRecord) { tasks.removeValue(forKey: record.key)?.cancel(); update(record.key) { $0.state = .cancelled } }
-    func retry(_ record: DownloadRecord) { cancel(record); download(Post(key: record.key, id: record.postID, provider: record.provider, tags: record.tags, mediaUrl: record.remoteURL ?? "", thumbUrl: record.thumbnailRemoteURL, type: record.mediaType ?? (record.kind == .hlsPackage ? "hls" : "video"))) }
+    func retry(_ record: DownloadRecord) {
+        cancel(record)
+        // A previous signed CDN URL may have expired. Recover the provider
+        // stream on retry, retaining direct URLs for unknown/legacy sites.
+        let identity = Post(key: record.key, id: record.postID, provider: record.provider)
+        let retainedURL = identity.providerKey == nil ? (record.remoteURL ?? "") : ""
+        download(Post(key: record.key, id: record.postID, provider: record.provider, tags: record.tags,
+                      mediaUrl: retainedURL, thumbUrl: record.thumbnailRemoteURL,
+                      type: record.mediaType ?? (record.kind == .hlsPackage ? "hls" : "video")),
+                 refreshSource: identity.providerKey != nil)
+    }
     func delete(_ record: DownloadRecord) {
         tasks.removeValue(forKey: record.key)?.cancel()
         do {

@@ -75,7 +75,7 @@ actor MobileCLIPRealLifeEncoder {
         }
 
         try Task.checkCancellation()
-        let compiled = try MLModel.compileModel(at: package)
+        let compiled = try await MLModel.compileModel(at: package)
         // Ensure the downloaded package is loadable and matches the feature
         // contract used for inference before declaring installation complete.
         let verified = try MLModel(contentsOf: compiled)

@@ -42,7 +42,8 @@ enum NativeProviderAPI {
     static func mediaURL(_ raw: String, provider: Provider? = nil) -> URL? {
         guard !raw.isEmpty, !raw.hasPrefix("/api/") else { return nil }
         let base = provider.map(origin)
-        guard let url = URL(string: raw, relativeTo: base)?.absoluteURL,
+        let address = raw.hasPrefix("//") ? "https:" + raw : raw
+        guard let url = URL(string: address, relativeTo: base)?.absoluteURL,
               url.scheme == "https", let host = url.host,
               host.lowercased() != quicktickHost else { return nil }
         return url
@@ -375,10 +376,21 @@ private final class ProviderXML: NSObject, XMLParserDelegate {
 
 extension NativeProviderAPI {
     static func resolve(session: URLSession, credentials: ProviderCredentials, post: Post, redgifsToken: String?) async throws -> ResolvedMedia {
-        guard let provider = post.providerKey else { throw APIError.invalidResponse }
-        if let direct = mediaURL(post.mediaUrl, provider: provider) {
+        // A valid direct media URL can outlive its provider metadata (for
+        // example an imported/restored post with a legacy or unknown site).
+        // Only use this fallback for actual file/playlist paths, never an
+        // HTML post page masquerading as a downloadable video.
+        let direct = mediaURL(post.mediaUrl, provider: post.providerKey)
+        let directTypes: Set<String> = ["mp4", "m4v", "mov", "webm", "m3u8", "gif", "jpg", "jpeg", "png", "webp", "heic", "avif"]
+        if let direct, directTypes.contains(direct.pathExtension.lowercased()) {
             return ResolvedMedia(mediaUrl: direct.absoluteString, type: direct.pathExtension.lowercased() == "m3u8" ? "hls" : post.type)
         }
+        guard let provider = post.providerKey else {
+            throw APIError.server("This post has no recognized source or downloadable media URL. Try opening the original post again.")
+        }
+        // Some provider CDNs use opaque signed URLs without an extension.
+        // Keep supporting those only after the provider has been identified.
+        if let direct { return ResolvedMedia(mediaUrl: direct.absoluteString, type: post.type) }
         switch provider {
         case .rule34:
             let page = try await rule34(session: session, credentials: credentials, query: QueryParser.parse(""), page: 1, sort: "recent", immersive: false, id: post.id)

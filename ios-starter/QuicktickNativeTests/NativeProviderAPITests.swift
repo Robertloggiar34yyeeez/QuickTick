@@ -73,6 +73,38 @@ private final class RateLimitProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class NativeProviderAPITests: XCTestCase {
+    func testDownloadsRecoverCanonicalProviderFromAliasesKeysAndOriginalPages() {
+        XCTAssertEqual(Post(key: "legacy:1", id: "1", provider: "RedGIFs.com").providerKey, .redgifs)
+        XCTAssertEqual(Post(key: "pornhub:2", id: "2", provider: "Unknown site").providerKey, .pornhub)
+        XCTAssertEqual(Post(key: "legacy:3", id: "3", provider: "Rule34.xxx").providerKey, .rule34)
+        XCTAssertEqual(Post(key: "legacy:4", id: "4", provider: "Hanime.tv").providerKey, .hanime)
+        var fromPage = Post(key: "legacy:5", id: "5", provider: "Imported")
+        fromPage.pageUrl = "https://www.eporner.com/video-abc"
+        XCTAssertEqual(fromPage.providerKey, .eporner)
+        fromPage.pageUrl = "https://www.pornhub.com.evil.invalid/view_video.php"
+        XCTAssertNil(fromPage.providerKey)
+    }
+
+    func testUnknownSiteCanDownloadValidDirectMediaWithoutProviderRequest() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let video = Post(key: "legacy:1", id: "1", provider: "Unknown site",
+                         mediaUrl: "https://files.example.invalid/clip.mp4", type: "video")
+        XCTAssertNil(video.providerKey)
+        let media = try await api.resolveMedia(video)
+        XCTAssertEqual(media.mediaUrl, video.mediaUrl)
+        XCTAssertEqual(media.type, "video")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().isEmpty)
+        XCTAssertEqual(NativeProviderAPI.mediaURL("//files.example.invalid/clip.mp4")?.absoluteString,
+                       "https://files.example.invalid/clip.mp4")
+        let page = Post(key: "legacy:2", id: "2", provider: "Unknown site",
+                        mediaUrl: "https://www.example.invalid/watch/clip", type: "video")
+        do {
+            _ = try await api.resolveMedia(page)
+            XCTFail("A web page must not be saved as a video when its provider is unknown")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("recognized source")) }
+    }
+
     func testKeywordSearchRoutesToEveryNonRule34Provider() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let phrase = "cosplay scene"

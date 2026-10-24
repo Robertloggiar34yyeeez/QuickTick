@@ -11,8 +11,6 @@ struct SettingsView: View {
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
-    @FocusState private var syncFieldFocused: Bool
-    @State private var syncID = ""
     @State private var status = ""
     @State private var user = ""
     @State private var key = ""
@@ -21,6 +19,8 @@ struct SettingsView: View {
     @State private var remember = true
     @State private var onboarding = false
     @State private var sharedProfile: RecommendationTransfer?
+    @State private var exportProfileFile: RecommendationProfileFile?
+    @State private var exportingProfileFile = false
     @State private var importingProfile = false
     @State private var preparingProfile = false
     @State private var activeSection: SettingsDestination = .appearance
@@ -73,36 +73,9 @@ struct SettingsView: View {
                 Label("Color theme", systemImage: "paintpalette.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
                 SettingsPaletteSelector(selected: $accentPalette)
-                Text("Galaxy also colors surfaces, borders and navigation. Every theme follows you through tabs, menus and sheets.")
+                Text("Cosmic themes also color surfaces, borders and navigation—not just the buttons.")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             }.id(SettingsDestination.appearance.rawValue)
-            SettingsGroup(title: "Website Sync", icon: "arrow.triangle.2.circlepath") {
-                Toggle("Enable website Sync", isOn: Binding(get: { store.cloudSyncEnabled }, set: { enabled in
-                    Task { do { try await store.setCloudSyncEnabled(enabled) } catch { status = error.localizedDescription } }
-                })).accessibilityIdentifier("cloud-sync-toggle")
-                Text("Off by default. When enabled, encrypted Favorites, provider access and preferences are sent to your QuickTick website. Feeds and recommendations always run independently.").font(.footnote).foregroundStyle(.secondary)
-                HStack {
-                    Button("Copy my Sync ID") { UIPasteboard.general.string = store.syncID; status = "Sync ID copied." }
-                        .disabled(!store.cloudSyncEnabled || store.syncID.isEmpty)
-                    Spacer()
-                    Button("Sync now") { Task { do { try await store.syncNow(); await reloadAccessFields() } catch {} } }.disabled(!store.cloudSyncEnabled || store.isSyncing)
-                }.buttonStyle(.plain)
-                SecureField("Paste Sync ID from another device", text: $syncID)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
-                    .modifier(SettingsTextFieldSurface())
-                    .accessibilityIdentifier("sync-id-input").focused($syncFieldFocused).submitLabel(.done)
-                HStack {
-                    Button("Paste ID") { syncID = UIPasteboard.general.string ?? "" }
-                    Spacer()
-                    Button("Connect and merge") { syncFieldFocused = false; Task {
-                        do { try await store.connectSyncID(syncID); status = ""; await reloadAccessFields(); await store.refresh() }
-                        catch { status = error.localizedDescription }
-                    } }.disabled(!store.cloudSyncEnabled || store.isSyncing || syncID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }.buttonStyle(.plain)
-                if store.isSyncing { ProgressView("Syncing profile…") }
-                Text(status.isEmpty ? store.syncStatus : status).accessibilityIdentifier("sync-status").font(.footnote).foregroundStyle(store.syncFailed ? .orange : .secondary)
-                Text("Your Sync ID is the key to your profile. Downloads stay on this device.").font(.caption).foregroundStyle(.secondary)
-            }.id(SettingsDestination.sync.rawValue)
             SettingsGroup(title: "Provider access", icon: "lock.shield") {
                 TextField("Rule34 user ID", text: $user).textInputAutocapitalization(.never)
                     .modifier(SettingsTextFieldSurface())
@@ -157,8 +130,17 @@ struct SettingsView: View {
                     catch { store.profileTransferError = error.localizedDescription }
                 } } label: { Label(preparingProfile ? "Preparing profile…" : "Share / AirDrop profile", systemImage: "square.and.arrow.up") }
                     .disabled(preparingProfile || !store.bootstrapped).accessibilityIdentifier("share-recommendation-profile")
+                Button { preparingProfile = true; Task {
+                    defer { preparingProfile = false }
+                    do {
+                        exportProfileFile = RecommendationProfileFile(profile: try await store.exportRecommendationProfile())
+                        exportingProfileFile = true
+                    } catch { store.profileTransferError = error.localizedDescription }
+                } } label: { Label("Export .quicktickprofile file", systemImage: "doc.badge.arrow.up") }
+                    .disabled(preparingProfile || !store.bootstrapped)
+                    .accessibilityIdentifier("export-recommendation-file")
                 Button("Import recommendation profile") { importingProfile = true }.accessibilityIdentifier("import-recommendation-profile")
-                Text("Transfers your chosen and learned interests, exclusions and semantic interests. No logins, Sync ID, downloaded files or individual viewing/search history. The file contains private interests; share it only with your chosen device.")
+                Text("AirDrop or save a .quicktickprofile file, then open it on another device or use Import here. Only interests and exclusions transfer—never logins, downloads or viewing history. Treat the file as private.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             SettingsGroup(title: "Persistent exclusions", icon: "line.3.horizontal.decrease.circle") {
@@ -243,10 +225,13 @@ struct SettingsView: View {
                 case .failure(let error): store.profileTransferError = error.localizedDescription
                 }
             }
+            .fileExporter(isPresented: $exportingProfileFile, document: exportProfileFile,
+                          contentType: .quicktickProfile, defaultFilename: "QuickTick-Recommendations") { result in
+                if case .failure(let error) = result { store.profileTransferError = error.localizedDescription }
+            }
             .modifier(ProfileImportConfirmation())
             .task { await reloadAccessFields() }
             .onDisappear { store.cancelManualVisualRefresh() }
-            .onChange(of: store.isSyncing) { _, busy in if !busy { Task { await reloadAccessFields() } } }
     }
 
     private var settingsHero: some View {
@@ -294,7 +279,7 @@ struct SettingsView: View {
 }
 
 private enum SettingsDestination: String, CaseIterable, Identifiable {
-    case appearance, navigation, recommendations, playback, sync, access
+    case appearance, navigation, recommendations, playback, access
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -302,7 +287,6 @@ private enum SettingsDestination: String, CaseIterable, Identifiable {
         case .navigation: "Navigation"
         case .recommendations: "For you"
         case .playback: "Playback"
-        case .sync: "Sync"
         case .access: "Access"
         }
     }
@@ -312,7 +296,6 @@ private enum SettingsDestination: String, CaseIterable, Identifiable {
         case .navigation: "square.grid.2x2"
         case .recommendations: "sparkles"
         case .playback: "play.rectangle"
-        case .sync: "arrow.triangle.2.circlepath"
         case .access: "lock.shield"
         }
     }
@@ -320,9 +303,20 @@ private enum SettingsDestination: String, CaseIterable, Identifiable {
 
 private struct SettingsPaletteSelector: View {
     @Binding var selected: String
+    @State private var showingAll = false
+    private var visiblePalettes: [AppTheme.AccentPalette] {
+        if showingAll { return AppTheme.AccentPalette.allCases }
+        let current = AppTheme.AccentPalette(rawValue: selected) ?? .violet
+        var featured: [AppTheme.AccentPalette] = []
+        for palette in [current, .galaxy, .darkCosmos, .violet] where !featured.contains(palette) {
+            featured.append(palette)
+        }
+        return Array(featured.prefix(3))
+    }
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 86), spacing: 10)], spacing: 10) {
-            ForEach(AppTheme.AccentPalette.allCases) { palette in
+        VStack(spacing: 11) {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+            ForEach(visiblePalettes) { palette in
                 let chosen = selected == palette.rawValue
                 Button {
                     withAnimation(.smooth(duration: 0.26)) { selected = palette.rawValue }
@@ -333,7 +327,7 @@ private struct SettingsPaletteSelector: View {
                                                  startPoint: .topLeading, endPoint: .bottomTrailing))
                             .frame(height: 49)
                             .overlay {
-                                if palette == .galaxy {
+                                if [.galaxy, .darkCosmos, .auroraNight, .solarEclipse].contains(palette) {
                                     HStack(alignment: .top) {
                                         Image(systemName: "sparkle").font(.system(size: 13, weight: .light))
                                         Spacer()
@@ -366,6 +360,19 @@ private struct SettingsPaletteSelector: View {
                 .accessibilityAddTraits(chosen ? .isSelected : [])
                 .accessibilityIdentifier("accent-\(palette.rawValue)")
             }
+        }
+        Button {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { showingAll.toggle() }
+        } label: {
+            Label(showingAll ? "Show fewer themes" : "See all \(AppTheme.AccentPalette.allCases.count) themes",
+                  systemImage: showingAll ? "chevron.up" : "chevron.down")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.accent)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(QuicktickPressStyle())
+        .accessibilityIdentifier("show-all-themes")
         }
     }
 }
@@ -573,7 +580,7 @@ struct ProfileImportConfirmation: ViewModifier {
                 Button("Replace interests", role: .destructive) { Task { await store.importRecommendationProfile(profile) } }
             }
             Button("Cancel", role: .cancel) { store.pendingProfileImport = nil }
-        } message: { Text("Replaces chosen and learned interests and exclusions on this device. Favorites, downloads, logins and website Sync settings stay as they are.") }
+        } message: { Text("Replaces chosen and learned interests and exclusions on this device. Favorites, downloads and logins stay as they are. Only import a file from someone you trust.") }
         .alert("Profile transfer", isPresented: Binding(get: { enabled && store.profileTransferError != nil }, set: { if enabled && !$0 { store.profileTransferError = nil } })) {
             Button("OK", role: .cancel) { store.profileTransferError = nil }
         } message: { Text(store.profileTransferError ?? "") }

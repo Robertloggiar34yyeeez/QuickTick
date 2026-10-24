@@ -47,7 +47,7 @@ struct RootView: View {
                         .padding(.top, modernUI ? 8 : 4)
                         .padding(.bottom, 0)
                         .background {
-                            if modernUI && !AppTheme.isGalaxy {
+                            if modernUI && !AppTheme.isCosmic {
                                 Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(edges: .bottom)
                             } else {
                                 AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
@@ -62,6 +62,7 @@ struct RootView: View {
                         }
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("bottom-navigation-bar")
+                        .id(showAITab ? "five-tabs" : "four-tabs")
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -70,11 +71,12 @@ struct RootView: View {
                 if sideNavigation {
                     VStack(spacing: 6) { tabButtons(vertical: true) }
                         .padding(6)
-                        .background(AppTheme.isGalaxy ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
+                        .background(AppTheme.isCosmic ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
                                     in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
                         .shadow(color: .black.opacity(0.4), radius: 18, y: 4)
                         .padding(.leading, 16)
+                        .id(showAITab ? "five-side-tabs" : "four-side-tabs")
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
             }

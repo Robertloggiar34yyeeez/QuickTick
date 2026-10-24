@@ -1,6 +1,7 @@
 import Foundation
 import CoreTransferable
 import UniformTypeIdentifiers
+import SwiftUI
 
 extension UTType {
     static let quicktickProfile = UTType(exportedAs: "app.quicktick.recommendation-profile", conformingTo: .json)
@@ -19,8 +20,15 @@ struct RecommendationTransfer: Codable, Transferable, Sendable, Identifiable {
     var semanticProfiles: [String: SemanticInterest]
 
     static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .quicktickProfile)
-            .suggestedFileName("QuickTick-Recommendations.quicktickprofile")
+        // AirDrop/Files require a real file, not an opaque Codable payload.
+        FileRepresentation(exportedContentType: .quicktickProfile) { profile in
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("quicktick-profile-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let file = folder.appendingPathComponent("QuickTick-Recommendations.quicktickprofile")
+            try JSONEncoder().encode(profile.validated()).write(to: file, options: .atomic)
+            return SentTransferredFile(file)
+        }
     }
 
     init(preferences: TasteSetup, exclusions: [String], state: RecommendationState, semanticProfiles: [String: SemanticInterest]) {
@@ -76,6 +84,22 @@ struct RecommendationTransfer: Codable, Transferable, Sendable, Identifiable {
     }
 }
 
+/// Explicit Save to Files exporter. It uses the same JSON as AirDrop imports.
+struct RecommendationProfileFile: FileDocument {
+    static var readableContentTypes: [UTType] { [.quicktickProfile, .json] }
+    static var writableContentTypes: [UTType] { [.quicktickProfile] }
+    var profile: RecommendationTransfer
+
+    init(profile: RecommendationTransfer) { self.profile = profile }
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else { throw CocoaError(.fileReadCorruptFile) }
+        profile = try RecommendationTransferReader.decode(data)
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        try FileWrapper(regularFileWithContents: JSONEncoder().encode(profile.validated()))
+    }
+}
+
 actor RecommendationTransferReader {
     static func decode(_ data: Data) throws -> RecommendationTransfer {
         guard data.count <= 2 * 1024 * 1024 else { throw APIError.server("Recommendation profile exceeds the 2 MB limit.") }
@@ -84,8 +108,13 @@ actor RecommendationTransferReader {
     func read(_ url: URL) throws -> RecommendationTransfer {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
-        guard url.isFileURL, let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-              size <= 2 * 1024 * 1024 else { throw APIError.server("Select a QuickTick profile smaller than 2 MB.") }
+        guard url.isFileURL else { throw APIError.server("Select a QuickTick profile file.") }
+        // iCloud/AirDrop file providers can omit fileSize until opened. Keep
+        // the hard 2 MB limit on bytes actually read, not on optional metadata.
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           size > 2 * 1024 * 1024 {
+            throw APIError.server("Select a QuickTick profile smaller than 2 MB.")
+        }
         let file = try FileHandle(forReadingFrom: url)
         defer { try? file.close() }
         return try Self.decode(file.read(upToCount: 2 * 1024 * 1024 + 1) ?? Data())

@@ -712,7 +712,8 @@ struct FirstRunSetupView: View {
                 .foregroundStyle(.secondary)
             featureRow("hand.point.up.left", title: "Find something new", detail: "Search tags on Rule34; search words and titles on other providers.")
             featureRow("slider.horizontal.3", title: "Fine-tune", detail: "Change your interests, exclusions and provider access in Settings.")
-            featureRow("lock.shield", title: "Private by default", detail: "Your taste model stays on this device unless you enable optional Sync.")
+            featureRow("square.and.arrow.up", title: "Bring your taste along", detail: "On your old device, open Settings → Transfer recommendations → Share / AirDrop profile, or export a .quicktickprofile file. On your new device, open the file with QuickTick or choose Import in Settings, then confirm.")
+            featureRow("lock.shield", title: "Private by default", detail: "Your interests stay on this device until you deliberately share a profile file. Logins, downloads and browsing history are not included.")
         }
     }
 

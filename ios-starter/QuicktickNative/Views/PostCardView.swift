@@ -84,7 +84,7 @@ struct PostCardView: View {
                     ActionIcon(title: "Like", symbol: store.favorites[post.stableID] == nil ? "heart" : "heart.fill", selected: store.favorites[post.stableID] != nil) { store.toggleFavorite(post) }
                     ActionIcon(title: "Less", symbol: "hand.thumbsdown") { store.less(post) }
                         .accessibilityIdentifier("dislike-\(post.stableID)")
-                    ActionIcon(title: "Download", symbol: "arrow.down.to.line") { store.download(post) }
+                    FeedDownloadControl(manager: store.downloads, post: post)
                     ActionIcon(title: "Comments", symbol: "bubble.left") { comments = true }
                     }
                 }
@@ -316,6 +316,51 @@ struct PostCardView: View {
         store.players.pause(post.stableID, owner: playbackOwner)
         player = nil; gifURL = nil; ready = false; introReady = true; playing = false
         manualPlaybackRequested = false
+    }
+}
+
+/// Immediate tap feedback and live transfer state on every Home/Favorites card.
+/// Observing the manager makes the button stay accurate after scrolling away.
+private struct FeedDownloadControl: View {
+    @ObservedObject var manager: DownloadManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let post: Post
+    @State private var taps = 0
+    private var record: DownloadRecord? { manager.records.first { $0.key == post.stableID } }
+    private var working: Bool { record?.state == .queued || record?.state == .downloading }
+    private var saved: Bool { record?.state == .complete }
+    private var failed: Bool { record?.state == .failed || record?.state == .cancelled }
+
+    var body: some View {
+        Button {
+            taps += 1
+            if let record, record.state == .paused { manager.resume(record) }
+            else if let record, failed { manager.retry(record) }
+            else if !working && !saved { manager.download(post) }
+        } label: {
+            VStack(spacing: 3) {
+                Group {
+                    if working { InfinityLoader(size: 22) }
+                    else {
+                        Image(systemName: saved ? "checkmark.circle.fill" : failed ? "arrow.clockwise.circle" : "arrow.down.to.line")
+                            .font(.system(size: 19, weight: .semibold))
+                            .symbolEffect(.bounce, value: taps)
+                    }
+                }
+                .frame(height: 22)
+                Text(working ? "Saving" : saved ? "Saved" : failed ? "Retry" : "Download")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+            }
+            .foregroundStyle(saved ? AppTheme.accent : .white.opacity(0.83))
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(QuicktickPressStyle())
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: working)
+        .sensoryFeedback(.selection, trigger: taps)
+        .accessibilityLabel("Download")
+        .accessibilityValue(working ? "Downloading" : saved ? "Saved" : failed ? "Failed" : "Not downloaded")
+        .accessibilityIdentifier("card-download-\(post.stableID)")
     }
 }
 

@@ -666,9 +666,11 @@ private struct ImmersiveTimeline: View {
 
 private struct ImmersiveDownloadControl: View {
     @ObservedObject var manager: DownloadManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let post: Post
     let active: Bool
     @State private var showError = false
+    @State private var taps = 0
     private var record: DownloadRecord? { manager.records.first { $0.key == post.stableID } }
     private var status: String {
         switch record?.state {
@@ -681,6 +683,7 @@ private struct ImmersiveDownloadControl: View {
     }
     var body: some View {
         Button {
+            taps += 1
             if let record, record.state == .paused { manager.resume(record) }
             else if let record, record.state == .failed || record.state == .cancelled { manager.retry(record) }
             else { manager.download(post) }
@@ -692,6 +695,8 @@ private struct ImmersiveDownloadControl: View {
                 .background(.black.opacity(0.55), in: Circle())
                 .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
         }.buttonStyle(.plain).accessibilityLabel("Download").accessibilityValue(status)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: status)
+            .sensoryFeedback(.selection, trigger: taps)
             .accessibilityIdentifier(active ? "immersive-Download" : "inactive-Download-\(post.stableID)")
             .alert("Download failed", isPresented: $showError) {
                 Button("Retry") { if let record { manager.retry(record) } }

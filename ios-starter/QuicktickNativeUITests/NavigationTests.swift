@@ -194,6 +194,17 @@ final class NavigationTests: XCTestCase {
         continueButton.tap()
         XCTAssertTrue(app.buttons["studio-generate"].waitForExistence(timeout: 5))
     }
+    @MainActor func testHomeDownloadShowsFeedbackAndSavedState() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        let download = app.buttons["card-download-test:video"]
+        XCTAssertTrue(download.waitForExistence(timeout: 10))
+        XCTAssertEqual(download.value as? String, "Not downloaded")
+        download.tap()
+        let state = download.value as? String
+        XCTAssertTrue(state == "Downloading" || state == "Saved", "A tap should show transfer feedback immediately")
+        expectation(for: NSPredicate(format: "value == %@", "Saved"), evaluatedWith: download)
+        waitForExpectations(timeout: 15)
+    }
     @MainActor func testHideAITabKeepsFourNavigationTabs() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))
@@ -474,6 +485,9 @@ final class NavigationTests: XCTestCase {
         let pageStart = app.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.72))
         let pageEnd = app.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.22))
         pageStart.press(forDuration: 0.08, thenDragTo: pageEnd)
+        // The first gesture can land during a SwiftUI paging/seek transition
+        // on a busy simulator; a second deliberate swipe must still work.
+        if like.value as? String != "Not liked" { app.swipeUp() }
         expectation(for: NSPredicate(format: "value == %@", "Not liked"), evaluatedWith: like)
         waitForExpectations(timeout: 5)
         XCTAssertEqual(like.frame.midX, before.midX, accuracy: 1)

@@ -180,8 +180,11 @@ final class AppStore: ObservableObject {
         do {
             let savedState = try localStorage.load()
             local = savedState
-            cloudSyncEnabled = savedState.cloudSyncEnabled ?? false
-            await api.setCloudSyncEnabled(cloudSyncEnabled)
+            // Website Sync is retired from the UI. Never silently keep sending
+            // an existing user's profile after the control has been removed.
+            cloudSyncEnabled = false
+            local.cloudSyncEnabled = false
+            await api.setCloudSyncEnabled(false)
             favorites = local.snapshot.favorites; exclusions = local.snapshot.exclusions.tags
             tasteSetup = local.snapshot.preferences.value
             immersionFraming = savedState.immersionFraming

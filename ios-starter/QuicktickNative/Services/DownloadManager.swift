@@ -66,6 +66,17 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     func download(_ post: Post, refreshSource: Bool = false) {
         guard !metadataFailed, tasks[post.stableID] == nil, !preparing.contains(post.stableID), records.first(where: { $0.key == post.stableID })?.state != .complete else { return }
         preparing.insert(post.stableID)
+        // Publish the queued state *before* any resolver/network await. Home and
+        // Immersive can animate the tap immediately, even on a slow provider.
+        let pending: DownloadRecord = {
+            var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id,
+                title: post.tags.first ?? post.provider, tags: post.tags,
+                thumbnailRemoteURL: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl,
+                kind: .file, state: .queued, progress: 0, createdAt: .now)
+            record.mediaType = post.type
+            return record
+        }()
+        upsert(pending)
         Task {
             defer { preparing.remove(post.stableID) }
             do {
@@ -86,7 +97,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 guard let url = URL(string: media.mediaUrl), url.scheme == "https" else { throw URLError(.badURL) }
                 if let host = url.host, let provider = post.providerKey { try await ProviderRequestGate.shared.wait(host: host, provider: provider) }
                 let hls = media.type == "hls" || url.pathExtension.lowercased() == "m3u8"
-                var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: post.tags.first ?? post.provider, tags: post.tags, thumbnailRemoteURL: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl, kind: hls ? .hlsPackage : .file, state: .queued, progress: 0, createdAt: .now)
+                var record = pending
+                record.kind = hls ? .hlsPackage : .file
                 let task: URLSessionTask
                 if hls {
                     guard let transfer = hlsSession.makeAssetDownloadTask(asset: AVURLAsset(url: url), assetTitle: record.title, assetArtworkData: nil, options: nil) else { throw APIError.server("This HLS stream cannot be stored offline.") }

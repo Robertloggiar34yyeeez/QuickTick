@@ -11,6 +11,7 @@ import SwiftUI
     @Published private(set) var elapsed = 0.0
     @Published private(set) var duration = 0.0
     @Published private(set) var error: String?
+    @Published var volume: Float = 1 { didSet { player?.volume = volume } }
     private var player: AVPlayer?
     private var observer: Any?
     private var remoteInstalled = false
@@ -33,6 +34,7 @@ import SwiftUI
             try AVAudioSession.sharedInstance().setActive(true)
             installRemoteCommands()
             let player = AVPlayer(url: url)
+            player.volume = volume
             player.automaticallyWaitsToMinimizeStalling = true
             self.player = player
             currentPost = post
@@ -121,6 +123,7 @@ struct AudioPostPlayButton: View {
 
 struct BackgroundAudioMiniPlayer: View {
     @ObservedObject var audio: BackgroundAudioPlayer
+    @State private var volumeVisible = false
     var body: some View {
         if let post = audio.currentPost {
             VStack(spacing: 4) {
@@ -136,6 +139,11 @@ struct BackgroundAudioMiniPlayer: View {
                             .font(.system(size: 10)).foregroundStyle(AppTheme.secondaryLabel).lineLimit(1)
                     }
                     Spacer(minLength: 2)
+                    Button { volumeVisible.toggle() } label: {
+                        Image(systemName: audio.volume <= 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .foregroundStyle(volumeVisible ? AppTheme.accent : .white)
+                    }
+                    .accessibilityLabel("Audio volume")
                     Button { audio.skip(-15) } label: { Image(systemName: "gobackward.15") }
                         .accessibilityLabel("Back 15 seconds")
                     Button { audio.isPlaying ? audio.pause() : audio.resume() } label: {
@@ -145,6 +153,12 @@ struct BackgroundAudioMiniPlayer: View {
                         .accessibilityLabel("Close audio player")
                 }
                 .buttonStyle(.plain)
+                if volumeVisible {
+                    Slider(value: Binding(get: { Double(audio.volume) },
+                                          set: { audio.volume = Float($0) }), in: 0...1)
+                        .tint(AppTheme.accent)
+                        .accessibilityLabel("Volume")
+                }
                 if audio.duration > 0 {
                     Slider(value: Binding(get: { audio.elapsed }, set: { audio.seek(to: $0) }),
                            in: 0...max(0.1, audio.duration))

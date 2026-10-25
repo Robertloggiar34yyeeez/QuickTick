@@ -75,7 +75,7 @@ struct RhythmPhraseSequencer {
 /// This is deterministic for tests when randomUnit is provided.
 struct RhythmTempoPlanner {
     static let maximumTapsPerSecond = 4.2
-    static let maximumBPM = 136
+    static let maximumBPM = 136.0
     private(set) var currentBPM = 112.0
     private(set) var targetBPM = 112.0
     private(set) var section = 0
@@ -102,7 +102,8 @@ struct RhythmTempoPlanner {
         // Subdivisions never multiply the ramp speed. Short steps keep
         // triple/quad patterns smooth while allowing real slowdown sections.
         let rate = (0.08 + max(0, min(1, intensity)) * 0.09) / subdivisions
-        currentBPM = max(40, min(Self.maximumBPM, currentBPM + (targetBPM - currentBPM) * rate))
+        currentBPM = max(40.0, min(Self.maximumBPM,
+            currentBPM + (targetBPM - currentBPM) * rate))
     }
 
     static func interval(bpm: Double, division: RhythmDivision) -> Double {
@@ -136,7 +137,12 @@ struct RhythmTempoPlanner {
         let jitterAmount = mode == .chaos ? 0.19 : (mode == .adaptive ? 0.16 : 0.045)
         let jitter = mode == .custom ? 0 : (max(0, min(1, randomUnit)) - 0.5)
             * max(0, min(1, randomness)) * jitterAmount
-        return max(40, min(Self.maximumBPM, Double(max(40, min(136, baseBPM))) * (1 + (shape - 1) * range + jitter)))
+        // Keep Swift type inference bounded and arithmetic consistently Double.
+        let boundedBase = Double(max(40, min(136, baseBPM)))
+        let deviation = (shape - 1.0) * range
+        let multiplier = 1.0 + deviation + jitter
+        let requestedBPM = boundedBase * multiplier
+        return max(40.0, min(Self.maximumBPM, requestedBPM))
     }
 }
 

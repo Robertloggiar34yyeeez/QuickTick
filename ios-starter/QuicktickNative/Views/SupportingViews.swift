@@ -106,7 +106,7 @@ struct CommentsView: View {
         .presentationBackground(AppTheme.canvas)
         .task {
             do { page = try await store.api.comments(post) }
-            catch { error = error.localizedDescription }
+            catch { self.error = error.localizedDescription }
         }
     }
 

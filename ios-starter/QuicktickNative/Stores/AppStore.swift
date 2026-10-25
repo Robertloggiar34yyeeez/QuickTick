@@ -1216,6 +1216,11 @@ final class AppStore: ObservableObject {
         idleTask?.cancel(); stopActiveLearning()
         let id = UUID(); manualVisualID = id
         manualVisualProgress = VisualRefreshProgress(completed: 0, total: 0, status: "Checking for new posts…", running: true)
+        // An explicit scan must not wait forever for the very feed/player
+        // state it was supposed to pause. The automatic worker still uses
+        // the strict idle-only resource policy.
+        inlinePlaybackID = nil
+        fullScreenPlaybackID = nil
         players.pauseAll()
         manualVisualTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }
@@ -1230,15 +1235,23 @@ final class AppStore: ObservableObject {
             var lastProgress = Date.distantPast
             for post in history {
                 guard !Task.isCancelled, manualVisualID == id else { return }
-                while !VisualAnalysisService.resourcesAllowAnalysis(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
-                    thermal: ProcessInfo.processInfo.thermalState.rawValue,
-                    playback: players.activeKey != nil || !isForeground, loading: isLoading) {
+                if ProcessInfo.processInfo.isLowPowerModeEnabled || ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
+                    manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
+                        status: ProcessInfo.processInfo.isLowPowerModeEnabled
+                            ? "Turn off Low Power Mode, then tap Update visual taste again"
+                            : "Device is too warm. Retry when it cools down", running: false)
+                    return
+                }
+                while !isForeground {
                     let paused = VisualRefreshProgress(completed: checked, total: history.count,
-                        status: "Paused for playback, loading or power conditions", running: true)
+                        status: "Return to QuickTick to continue scanning", running: true)
                     if manualVisualProgress != paused { manualVisualProgress = paused }
                     do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
                     guard !Task.isCancelled, manualVisualID == id else { return }
                 }
+                // A feed request finishing in the background does not consume
+                // visual inference resources, and must not deadlock this user
+                // initiated operation. The player was paused above.
                 await visual.analyzeFavorite(post, useVision: true)
                 guard !Task.isCancelled, manualVisualID == id else { return }
                 checked += 1

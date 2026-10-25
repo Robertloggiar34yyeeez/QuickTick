@@ -74,6 +74,7 @@ struct RhythmPhraseSequencer {
 /// boundaries and the actual tempo glides towards them on each subdivision.
 /// This is deterministic for tests when randomUnit is provided.
 struct RhythmTempoPlanner {
+    static let maximumTapsPerSecond = 11.0
     private(set) var currentBPM = 112.0
     private(set) var targetBPM = 112.0
     private(set) var section = 0
@@ -103,24 +104,33 @@ struct RhythmTempoPlanner {
         currentBPM = max(40, min(240, currentBPM + (targetBPM - currentBPM) * rate))
     }
 
+    static func interval(bpm: Double, division: RhythmDivision) -> Double {
+        // BPM alone is misleading with Triple and Quad. Cap the actual
+        // audible/visible/haptic events, regardless of subdivision or mode.
+        max(1 / maximumTapsPerSecond, 60 / max(40, bpm) / Double(division.rawValue))
+    }
+
     static func target(mode: RhythmPattern, baseBPM: Int, section: Int,
                        intensity: Double, randomness: Double, randomUnit: Double = 0.5) -> Double {
         let cycle: [Double]
         switch mode {
         case .chill: cycle = [0.89, 0.78, 0.86, 0.94, 0.80, 0.88]
-        case .fast: cycle = [1.12, 1.22, 1.32, 1.17, 1.38, 1.12]
-        case .spam: cycle = [1.26, 1.42, 1.54, 1.32, 1.58, 1.23]
-        case .chaos: cycle = [1, 1.34, 0.78, 1.5, 0.86, 1.22]
-        case .progressive: cycle = [1, 1.08, 1.18, 1.32, 1.46, 1.22, 0.85, 0.96]
-        case .adaptive: cycle = [1, 1.10, 1.22, 1.37, 1.27, 1.09, 0.83, 0.96]
+        case .fast: cycle = [1.1, 1.18, 0.94, 1.26, 1.06, 1.2]
+        case .spam: cycle = [1.18, 1.3, 1.05, 1.34, 0.96, 1.24]
+        case .chaos: cycle = [0.84, 1.19, 0.76, 1.25, 0.79, 1.12]
+        case .progressive: cycle = [1, 1.07, 1.15, 1.26, 1.32, 1.08, 0.79, 0.91]
+        // The default mode does NOT climb predictably from a warmup: slower
+        // valleys outnumber short faster bursts, with random variation.
+        case .adaptive: cycle = [0.9, 0.75, 1.08, 0.82, 1.26, 0.72, 0.96, 1.16, 0.8, 1.07, 0.73, 0.93]
         case .custom: cycle = [1]
         default: cycle = [1, 1.06, 0.94, 1]
         }
         let amount = max(0, min(1, intensity))
         let shape = cycle[max(0, section) % cycle.count]
         let range = mode == .custom ? 0 : (0.4 + amount * 0.9)
+        let jitterAmount = mode == .chaos ? 0.19 : (mode == .adaptive ? 0.16 : 0.045)
         let jitter = mode == .custom ? 0 : (max(0, min(1, randomUnit)) - 0.5)
-            * max(0, min(1, randomness)) * (mode == .chaos ? 0.18 : 0.045)
+            * max(0, min(1, randomness)) * jitterAmount
         return max(40, min(240, Double(max(40, min(240, baseBPM))) * (1 + (shape - 1) * range + jitter)))
     }
 }
@@ -223,7 +233,7 @@ struct RhythmSessionView: View {
 
     private var mode: RhythmPattern { RhythmPattern(rawValue: pattern) ?? .adaptive }
     private var current: Post? { deck.indices.contains(index) ? deck[index] : nil }
-    private var beatInterval: Double { max(0.075, 60 / tempoPlanner.currentBPM / Double(phraseSequencer.current.rawValue)) }
+    private var beatInterval: Double { RhythmTempoPlanner.interval(bpm: tempoPlanner.currentBPM, division: phraseSequencer.current) }
     private var phraseLength: Int {
         // Four bars at 112 BPM last ~8.6 seconds; several images/videos
         // should pass before a subdivision changes. Not every post is a phrase.
@@ -394,7 +404,7 @@ struct RhythmSessionView: View {
                     labeledSlider("Base BPM", value: Binding(get: { Double(bpm) }, set: { bpm = Int($0) }), range: 40...240)
                     labeledSlider("Randomness", value: $randomness, range: 0...1)
                     labeledSlider("Acceleration", value: $acceleration, range: 0...1)
-                    Text("Adaptive, Progressive, Fast and Chaos build pace, then recover. Acceleration controls the size and speed of the changes; +/− adjusts your base tempo.")
+                    Text("Adaptive varies speed unpredictably with regular slowdowns. All modes are capped at 11 taps per second, including Quad. +/− adjusts your base tempo.")
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     labeledSlider("Transitions", value: $transitionSpeed, range: 0.08...0.65)
                     labeledSlider("Bars per rhythm", value: Binding(get: { Double(barsPerPhrase) }, set: { barsPerPhrase = Int($0) }), range: 2...8)

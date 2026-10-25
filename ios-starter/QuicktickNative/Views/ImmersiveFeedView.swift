@@ -206,7 +206,10 @@ struct ImmersiveFeedView: View {
                 }
             }
             group.addTask(priority: .utility) {
-                // Nearest first; do not compete with the visible player.
+                // Give the visible video time to open and start buffering
+                // before spending network bandwidth on the next preroll.
+                do { try await Task.sleep(for: .milliseconds(480)) } catch { return }
+                guard !Task.isCancelled else { return }
                 for i in playerRange where i > index && clips[i].type.lowercased() == "video" {
                     let post = clips[i]
                     let url: URL?

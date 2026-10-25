@@ -2,6 +2,39 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
+    func testOfflineAliasTableMatchesIdentityButNeverConflatesFranchiseCharacters() async {
+        XCTAssertEqual(TasteConcepts.canonical("Chun-Li (Street Fighter)"), "chun_li")
+        XCTAssertEqual(TasteConcepts.canonical("Han Juri"), "juri_han")
+        XCTAssertEqual(TasteConcepts.canonical("Cammy (Street Fighter)"), "cammy_white")
+        XCTAssertEqual(TasteConcepts.canonical("Aeris"), "aerith_gainsborough")
+        XCTAssertEqual(TasteConcepts.canonical("Rouge"), "rouge")
+        XCTAssertEqual(TasteConcepts.canonical("Shelly"), "shelly")
+        let chosen = Post(key: "rule34:choose", id: "choose", provider: "rule34",
+            tags: ["chun-li (street fighter)", "2d"])
+        let different = Post(key: "rule34:other-character", id: "other-character", provider: "rule34",
+            tags: ["juri_(street_fighter)", "2d"])
+        let variant = Post(key: "rule34:variant", id: "variant", provider: "rule34",
+            tags: ["chunli", "2d"])
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await engine.configureFavorites([chosen])
+        let result = await engine.rankFast([different, variant], taste: TasteChoice(done: true, into: ["chun_li"]),
+                                           recent: [], strict: true)
+        XCTAssertEqual(result.map(\.stableID), [variant.stableID])
+    }
+
+    func testRestoringOldRecommendationProfilesMigratesAliasWeights() async {
+        var previous = RecommendationState()
+        var profile = RecommendationProfile()
+        profile.terms = ["chunli": 7, "chun_li": 3, "juri": -8]
+        previous.profiles["rule34"] = profile
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await engine.load(previous)
+        let state = await engine.snapshot()
+        XCTAssertEqual(state.profiles["rule34"]?.terms["chun_li"], 7)
+        XCTAssertEqual(state.profiles["rule34"]?.terms["juri_han"], -8)
+        XCTAssertNil(state.profiles["rule34"]?.terms["chunli"])
+    }
+
     func testTasteEditorSuggestsSpecificLikedSubjectsBeforeGenericFeedTags() {
         let favorite = Post(key: "rule34:1", id: "1", provider: "Rule34", tags: ["chun_li", "cosplay", "1girl", "16:9"])
         let unrelated = Post(key: "rule34:2", id: "2", provider: "Rule34", tags: ["generic_background", "1girl"])
@@ -768,6 +801,20 @@ final class RecommendationTests: XCTestCase {
 }
 
 final class RhythmPhraseTests: XCTestCase {
+    func testEveryRhythmDensityIsCappedAtElevenTapsPerSecond() {
+        for division in RhythmDivision.allCases {
+            let interval = RhythmTempoPlanner.interval(bpm: 240, division: division)
+            XCTAssertGreaterThanOrEqual(interval, 1.0 / 11.0)
+            XCTAssertLessThanOrEqual(1.0 / interval, 11.000001)
+        }
+        let firstAdaptiveTarget = RhythmTempoPlanner.target(mode: .adaptive, baseBPM: 112,
+             section: 1, intensity: 0.9, randomness: 0, randomUnit: 0.5)
+        XCTAssertLessThan(firstAdaptiveTarget, 112, "Default Adaptive should slow early, not begin with a progressive sprint")
+        let laterBurst = RhythmTempoPlanner.target(mode: .adaptive, baseBPM: 112,
+             section: 4, intensity: 0.9, randomness: 0, randomUnit: 0.5)
+        XCTAssertGreaterThan(laterBurst, 112)
+    }
+
     func testTempoPlannerBuildsThenSlowsDownWithinOneSession() {
         var planner = RhythmTempoPlanner()
         planner.reset(baseBPM: 112)

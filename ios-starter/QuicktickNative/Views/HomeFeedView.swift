@@ -35,6 +35,8 @@ struct HomeFeedView: View {
     @State private var visibleTopSince = Date.distantPast
     @State private var isScrollMoving = false
     @State private var scrollRestTask: Task<Void, Never>?
+    @State private var lastMotionSample = Date.distantPast
+    @State private var lastIntelligencePause = Date.distantPast
     @State private var topOffset: CGFloat = 0
     @State private var pullRefreshInFlight = false
     @State private var pullRefreshGate = HomePullRefreshGate()
@@ -340,6 +342,15 @@ struct HomeFeedView: View {
     }
 
     private func noteScrollMotion() {
+        let now = Date()
+        // Scroll geometry can publish at display refresh frequency. Updating
+        // tasks and object graphs sixty times per second caused visible hitching.
+        if now.timeIntervalSince(lastIntelligencePause) >= 0.3 {
+            lastIntelligencePause = now
+            store.noteFeedMotion()
+        }
+        guard now.timeIntervalSince(lastMotionSample) >= 0.12 else { return }
+        lastMotionSample = now
         scrollRestTask?.cancel()
         if !isScrollMoving {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { isScrollMoving = true }
@@ -371,29 +382,12 @@ struct HomeFeedView: View {
     private func warmNext(after key: String?) async {
         guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented, !Task.isCancelled else { return }
         guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }
-        let next = Array(store.posts.dropFirst(index + 1).prefix(2))
-        let nextVideo = autoplayVideos ? store.posts.dropFirst(index + 1).prefix(4).first { $0.type.lowercased() == "video" } : nil
-        store.players.retain(Set([key] + [nextVideo?.stableID].compactMap { $0 }))
-        let feedStore = store
-        let resolver = store.resolver
-        // A slow thumbnail must never hold up video preparation.
-        await withTaskGroup(of: Void.self) { group in
-            if let post = nextVideo {
-                group.addTask {
-                    guard let media = try? await resolver.resolve(post), let url = media.mediaUrlURL else { return }
-                    await MainActor.run {
-                        guard !Task.isCancelled, feedStore.inlinePlaybackID == key, feedStore.activeTab == 0, feedStore.isForeground else { return }
-                        feedStore.players.prewarm(key: post.stableID, url: url)
-                    }
-                }
-            }
-            for post in next {
-                group.addTask(priority: .utility) {
-                    guard !Task.isCancelled else { return }
-                    _ = try? await MediaImagePipeline.shared.image(raw: post.cardPreviewURL, pixels: 1024)
-                }
-            }
-        }
+        // Home previews are the cheap look-ahead path. Creating/prerolling an
+        // offscreen AVPlayer downloaded multiple videos while the user swiped,
+        // fighting the visible player and the UI compositor for bandwidth.
+        store.players.retain([key])
+        guard let next = store.posts.dropFirst(index + 1).first else { return }
+        _ = try? await MediaImagePipeline.shared.image(raw: next.cardPreviewURL, pixels: 512)
     }
 
     private var searchBar: some View {

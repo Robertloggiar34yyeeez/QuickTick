@@ -570,7 +570,11 @@ actor RecommendationEngine {
         drainedCandidateQueries.removeAll()
         sessionTaste = SessionPreferenceModel()
         state = value.upgradedForCurrentRanking()
-        for key in state.profiles.keys { state.profiles[key] = normalized(state.profiles[key] ?? RecommendationProfile()) }
+        // Legacy profiles saved "chunli" and "chun_li" as separate tags.
+        // Merge exact aliases once on restore; never run a migration inside
+        // the fast candidate scoring loop.
+        for key in state.profiles.keys { state.profiles[key] = migratingAliases(normalized(state.profiles[key] ?? RecommendationProfile())) }
+        for key in state.scopedProfiles.keys { state.scopedProfiles[key] = migratingAliases(normalized(state.scopedProfiles[key] ?? RecommendationProfile())) }
     }
 
     func rebuildCandidateAcquisition() {
@@ -1389,6 +1393,38 @@ actor RecommendationEngine {
 
     private func profile(for source: String) -> RecommendationProfile {
         normalized(state.profiles[source] ?? RecommendationProfile())
+    }
+
+    private func migratingAliases(_ profile: RecommendationProfile) -> RecommendationProfile {
+        var result = profile
+        var weights: [String: Double] = [:]
+        for (raw, score) in profile.terms {
+            let key = RecommendationTagRules.canonical(raw)
+            if abs(score) > abs(weights[key] ?? 0) { weights[key] = score }
+        }
+        result.terms = weights
+        var relationships: [String: [String: Double]] = [:]
+        for (rawAnchor, edges) in profile.related {
+            let anchor = RecommendationTagRules.canonical(rawAnchor)
+            for (rawNeighbor, strength) in edges {
+                let neighbor = RecommendationTagRules.canonical(rawNeighbor)
+                if abs(strength) > abs(relationships[anchor]?[neighbor] ?? 0) {
+                    relationships[anchor, default: [:]][neighbor] = strength
+                }
+            }
+        }
+        result.related = relationships
+        var evidence: [String: RecommendationTermEvidence] = [:]
+        for (raw, score) in profile.termEvidence {
+            let key = RecommendationTagRules.canonical(raw)
+            var combined = evidence[key] ?? RecommendationTermEvidence()
+            combined.positive = max(combined.positive, score.positive)
+            combined.negative = max(combined.negative, score.negative)
+            combined.search = max(combined.search, score.search)
+            evidence[key] = combined
+        }
+        result.termEvidence = evidence
+        return result
     }
 
     private func normalized(_ value: RecommendationProfile) -> RecommendationProfile {

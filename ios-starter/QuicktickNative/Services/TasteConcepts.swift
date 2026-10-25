@@ -5,21 +5,62 @@ import Foundation
 enum TasteConcepts {
     // Versions the per-favorite metadata/appearance cache. New action facets
     // must be revisited after an in-place IPA upgrade.
-    static let version = "concepts-2026-10-25-irl-presentation-v5"
+    static let version = "concepts-2026-10-25-alias-identity-v6"
+    // Offline, reviewed exact aliases inspired by booru tag-alias records.
+    // Alias == same entity, NEVER "related franchise" or an inferred face.
+    // This deliberately does not turn a liked Street Fighter character into
+    // approval for every other character from the series. Provider queries
+    // retain their native spelling; canonical names are for local matching.
     static let aliases: [String: String] = [
         "chunli": "chun_li", "chun_li_(street_fighter)": "chun_li",
         "chun_li_(street_fighter_series)": "chun_li", "streetfighter": "street_fighter",
+        "chun_li_(sf)": "chun_li", "chun_li_(street_fighter_ii)": "chun_li",
+        "juri": "juri_han", "han_juri": "juri_han",
+        "juri_(street_fighter)": "juri_han", "juri_han_(street_fighter)": "juri_han",
+        "cammy": "cammy_white", "cammy_(street_fighter)": "cammy_white",
+        "cammy_white_(street_fighter)": "cammy_white",
+        "ryu_(street_fighter)": "ryu_street_fighter",
+        "ken_masters_(street_fighter)": "ken_masters",
+        "juri_han_(street_fighter_iv)": "juri_han",
         "street_fighter_(series)": "street_fighter", "brawlstars": "brawl_stars",
+        "street_fighter_series": "street_fighter",
         "brawl_stars_(game)": "brawl_stars", "fortnite_battle_royale": "fortnite",
         "shelly_(brawl_stars)": "shelly_brawl_stars", "colette_(brawl_stars)": "colette_brawl_stars",
+        "shelly_(brawlstars)": "shelly_brawl_stars",
+        "colette_(brawlstars)": "colette_brawl_stars",
         "fishstick_(fortnite)": "fishstick_fortnite",
+        "fishstick_(fortnite_battle_royale)": "fishstick_fortnite",
         "rouge_(sonic)": "rouge_the_bat", "rouge_the_bat_(sonic)": "rouge_the_bat",
         "rouge_the_bat_(sonic_the_hedgehog)": "rouge_the_bat",
+        "rouge_(sonic_the_hedgehog)": "rouge_the_bat",
         "princess_peach_(mario)": "princess_peach",
+        "peach_(mario)": "princess_peach", "peach_(super_mario_bros.)": "princess_peach",
         "kratos_(god_of_war)": "kratos",
         "shadow_(sonic)": "shadow_the_hedgehog",
+        "shadow_(sonic_the_hedgehog)": "shadow_the_hedgehog",
         "knuckles_(sonic)": "knuckles_the_echidna",
-        "sonic_the_hedgehog_(series)": "sonic_the_hedgehog"
+        "knuckles_(sonic_the_hedgehog)": "knuckles_the_echidna",
+        "sonic_the_hedgehog_(series)": "sonic_the_hedgehog",
+        "sonic_the_hedgehog_(franchise)": "sonic_the_hedgehog",
+        "tifa": "tifa_lockhart", "tifa_(final_fantasy_vii)": "tifa_lockhart",
+        "tifa_lockhart_(final_fantasy_vii)": "tifa_lockhart",
+        "aerith": "aerith_gainsborough", "aeris": "aerith_gainsborough",
+        "aeris_gainsborough": "aerith_gainsborough",
+        "aerith_(final_fantasy_vii)": "aerith_gainsborough",
+        "aerith_gainsborough_(final_fantasy_vii)": "aerith_gainsborough",
+        "samus": "samus_aran", "samus_(metroid)": "samus_aran",
+        "samus_aran_(metroid)": "samus_aran",
+        "lara_croft_(tomb_raider)": "lara_croft",
+        "kratos_(god_of_war_series)": "kratos",
+        "squall_(final_fantasy_viii)": "squall_leonhart",
+        "cloud_(final_fantasy_vii)": "cloud_strife",
+        "cloud_strife_(final_fantasy_vii)": "cloud_strife",
+        "2d_artwork": "2d", "2d_(artwork)": "2d",
+        "3d_artwork": "3d", "3d_(artwork)": "3d",
+        "looking_at_camera": "looking_at_viewer",
+        "eye_contact": "looking_at_viewer",
+        "bent_over": "leaning_over", "bending_forward": "leaning_over",
+        "lying_down": "lying", "seated": "sitting"
     ]
     static let franchises: Set<String> = [
         "street_fighter", "brawl_stars", "fortnite", "sonic_the_hedgehog",
@@ -27,8 +68,10 @@ enum TasteConcepts {
     ]
     static let characterFranchises: [String: Set<String>] = [
         "chun_li": ["street_fighter"], "cammy_white": ["street_fighter"],
-        "juri_han": ["street_fighter"],
+        "juri_han": ["street_fighter"], "ryu_street_fighter": ["street_fighter"],
+        "ken_masters": ["street_fighter"],
         "tifa_lockhart": ["final_fantasy"], "aerith_gainsborough": ["final_fantasy"],
+        "squall_leonhart": ["final_fantasy"], "cloud_strife": ["final_fantasy"],
         "samus_aran": ["metroid"], "lara_croft": ["tomb_raider"],
         "princess_peach": ["super_mario_bros"], "bowser": ["super_mario_bros"],
         "kratos": ["god_of_war"], "knuckles_the_echidna": ["sonic_the_hedgehog"],

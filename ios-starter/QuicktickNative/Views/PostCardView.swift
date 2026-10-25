@@ -113,6 +113,15 @@ struct PostCardView: View {
                 guard !Task.isCancelled else { return }
                 guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
                 guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
+                // Autoplay is optional during a fast Home swipe. Wait for a
+                // stable candidate before opening a stream; explicit Play and
+                // Immersive playback remain immediate.
+                if playbackTab == 0 && !manualPlaybackRequested {
+                    do { try await Task.sleep(for: .milliseconds(230)) } catch { return }
+                    guard !Task.isCancelled, store.inlinePlaybackID == post.stableID,
+                          store.activeTab == playbackTab, store.isForeground,
+                          !store.isManualVisualScanRunning else { return }
+                }
                 await preparePlayback()
             }
             .onDisappear {

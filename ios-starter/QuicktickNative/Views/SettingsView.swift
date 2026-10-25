@@ -586,10 +586,9 @@ private struct ManualVisualRefreshPanel: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var manager: DownloadManager
-    @State private var previewURL: URL?
-    @State private var previewReady = false
     @State private var carouselURLs: [String] = []
     @State private var carouselIndex = 0
+    @State private var carouselSlide = 0.0
     var body: some View {
         Group {
             Button { store.startManualVisualRefresh() } label: {
@@ -607,15 +606,16 @@ private struct ManualVisualRefreshPanel: View {
                         ZStack {
                             ForEach(-2...2, id: \.self) { slot in
                                 let offset = (carouselIndex + slot + carouselURLs.count * 4) % carouselURLs.count
+                                let position = Double(slot) + carouselSlide
                                 CachedMediaImage(url: carouselURLs[offset], pixels: 400, fill: true)
                                     .frame(width: min(174, area.size.width * 0.54), height: 154)
                                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(slot == 0 ? 0.38 : 0.10)))
-                                    .scaleEffect(slot == 0 ? 1 : (abs(slot) == 1 ? 0.83 : 0.66))
-                                    .rotation3DEffect(.degrees(Double(slot) * -12), axis: (x: 0, y: 1, z: 0))
-                                    .offset(x: CGFloat(slot) * min(130, area.size.width * 0.34))
-                                    .opacity(abs(slot) == 2 ? 0.40 : 1)
-                                    .zIndex(Double(3 - abs(slot)))
+                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(abs(position) < 0.5 ? 0.38 : 0.10)))
+                                    .scaleEffect(max(0.66, 1 - abs(position) * 0.17))
+                                    .rotation3DEffect(.degrees(position * -12), axis: (x: 0, y: 1, z: 0))
+                                    .offset(x: CGFloat(position) * min(130, area.size.width * 0.34))
+                                    .opacity(max(0.35, 1 - abs(position) * 0.29))
+                                    .zIndex(3 - abs(position))
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -628,40 +628,41 @@ private struct ManualVisualRefreshPanel: View {
                     .accessibilityValue("Scanning \(progress.completed) of \(progress.total)")
                     .accessibilityIdentifier("visual-refresh-carousel")
                 }
-                if let previewURL {
-                    AnimatedGIFSurface(url: previewURL,
-                        playing: store.isForeground && !reduceMotion && !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState.rawValue < 2,
-                        pixels: 120, frameLimit: 24) { _ in previewReady = true }
-                        .frame(maxWidth: .infinity).frame(height: 56).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous)).allowsHitTesting(false)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityValue(previewReady ? "Looping" : "Loading")
-                        .accessibilityLabel("Looping downloaded GIF").accessibilityIdentifier("visual-refresh-gif")
-                }
                 if progress.running {
                     Button("Stop update", role: .cancel) { store.cancelManualVisualRefresh() }
                         .accessibilityIdentifier("cancel-visual-refresh")
                 }
             }
         }.task(id: manager.records.count) {
-            // Local downloads only; never fetch or decode a video for decoration.
-            let record = manager.records.first { record in
-                record.state == .complete && (record.mediaType?.lowercased() == "gif" || URL(fileURLWithPath: record.localMediaPath ?? "").pathExtension.lowercased() == "gif")
-                    && (record.fileSize ?? 0) <= 8 * 1024 * 1024
-            }
-            previewReady = false; previewURL = record?.exportURL
+            // Thumbnails only: the old animated-GIF strip decoded media
+            // concurrently with Core ML and made manual scans stutter.
             carouselURLs = manager.records.filter { $0.state == .complete }
                 .compactMap { item in item.thumbnailLocalPath.map { URL(fileURLWithPath: $0).absoluteString }
                     ?? (item.offlinePost?.type.lowercased() == "image" ? item.exportURL?.absoluteString : nil) }
                 .shuffled()
-            carouselIndex = 0
+            carouselIndex = 0; carouselSlide = 0
         }
         .task(id: store.isManualVisualScanRunning) {
             guard store.isManualVisualScanRunning else { return }
             while !Task.isCancelled && store.isManualVisualScanRunning {
-                do { try await Task.sleep(for: .milliseconds(850)) } catch { return }
-                guard !carouselURLs.isEmpty else { continue }
-                if reduceMotion { carouselIndex = (carouselIndex + 1) % carouselURLs.count }
-                else { withAnimation(.smooth(duration: 0.57)) { carouselIndex = (carouselIndex + 1) % carouselURLs.count } }
+                guard carouselURLs.count > 1 else {
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    continue
+                }
+                if reduceMotion {
+                    carouselIndex = (carouselIndex + 1) % carouselURLs.count
+                    do { try await Task.sleep(for: .seconds(1.15)) } catch { return }
+                } else {
+                    // Animate the *positions* first, then rotate the image
+                    // indices with animations disabled at the invisible seam.
+                    withAnimation(.smooth(duration: 0.72)) { carouselSlide = -1 }
+                    do { try await Task.sleep(for: .milliseconds(760)) } catch { return }
+                    withTransaction(Transaction(animation: nil)) {
+                        carouselIndex = (carouselIndex + 1) % carouselURLs.count
+                        carouselSlide = 0
+                    }
+                    do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+                }
             }
         }
     }

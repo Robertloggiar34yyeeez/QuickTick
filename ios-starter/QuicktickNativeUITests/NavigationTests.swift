@@ -12,7 +12,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(nativeShare.isHittable)
         let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Native recommendation profile sharing"; capture.lifetime = .keepAlways; add(capture)
     }
-    @MainActor func testManualVisualRefreshShowsProgressAndLoopsDownloadedGIF() {
+    @MainActor func testManualVisualRefreshShowsProgressWithoutCompetingGIF() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-testing-download-images", "--ui-testing-download-gif"]
         app.launch()
@@ -26,13 +26,11 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(refresh.isHittable); refresh.tap()
         let progress = app.descendants(matching: .any).matching(identifier: "manual-visual-progress").firstMatch
         XCTAssertTrue(progress.waitForExistence(timeout: 10))
-        let gif = app.descendants(matching: .any).matching(identifier: "visual-refresh-gif").firstMatch
-        for _ in 0..<3 { if gif.isHittable { break }; app.swipeUp() }
-        XCTAssertTrue(gif.waitForExistence(timeout: 10))
-        expectation(for: NSPredicate(format: "value == %@", "Looping"), evaluatedWith: gif)
-        waitForExpectations(timeout: 15)
+        let carousel = app.descendants(matching: .any).matching(identifier: "visual-refresh-carousel").firstMatch
+        XCTAssertTrue(carousel.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "visual-refresh-gif").firstMatch.exists)
         let capture = XCTAttachment(screenshot: app.screenshot())
-        capture.name = "Manual visual refresh progress and local GIF loop"; capture.lifetime = .keepAlways; add(capture)
+        capture.name = "Manual visual refresh progress and lightweight carousel"; capture.lifetime = .keepAlways; add(capture)
     }
     @MainActor func testActiveLearningKeepsPlaybackAndDislikeResponsive() {
         let app = XCUIApplication()

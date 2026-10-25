@@ -97,7 +97,9 @@ final class PlayerPool: ObservableObject {
         warming.remove(key)
         p.cancelPendingPrerolls()
         p.automaticallyWaitsToMinimizeStalling = !url.isFileURL
-        p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 2.5
+        // Favor first frame latency for swipe-through playback. Longer
+        // buffering remains AVFoundation's responsibility after startup.
+        p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 1.0
         activeKey = key; activeOwner = owner; p.isMuted = muted
         p.volume = feedVolumeScale
         if UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),

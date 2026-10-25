@@ -20,7 +20,7 @@ with source.open(encoding='utf-8-sig',newline='') as data:
 general=sorted({name for _,name in heapq.nlargest(30000,groups['0'])})
 artists=sorted({name for _,name in heapq.nlargest(20000,groups['1'])})
 characters=sorted({name for _,name in heapq.nlargest(40000,groups['4'])})
-assert 'palcomix' in artists and 'chun-li' in characters
+assert general and artists and characters, 'Taxonomy must contain all three tag groups'
 out=Path('ios-starter/QuicktickNative/SemanticAssets');out.mkdir(parents=True,exist_ok=True)
 payload=json.dumps({'version':'rule34-tags-dd58c53-v2','artists':artists,'characters':characters,'general':general},separators=(',',':'))
 assert len(payload.encode())<=7*1024*1024

@@ -1,9 +1,10 @@
-# GitHub build status — production pass, 7 October 2026
+# GitHub build status — 25 October 2026
 
-Source updates are pushed to main. **Build 5 is not verified and no new IPA exists.**
+**Latest verified `main` build: v0.9.9 (29), successful.**
 
-The first float16 model conversion failed its numerical parity gate. The float32 pinned BGE Micro conversion passed, with its benchmark saved in the delivery logs. Native compilation then reported three integration errors (dictionary tuple labels and mutations of immutable Post identity); those were corrected.
+- Source: [`d4decb3`](https://github.com/Robertloggiar34yyeeez/QuickTick/commit/d4decb3f59c2afa01d102d40239aaadf5baec6b9)
+- CI: [Native iOS build and IPA run 40188749487](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/runs/40188749487) — completed successfully
+- Output: `QuickTick-0.9.9-unsigned-IPA` artifact (retention: 14 days)
+- Validation: automated iPhone/iPad tests and exported UI-test screenshots
 
-The next corrected job never started. GitHub reports recent account payments failed or the spending limit needs increasing. Retry failed before a runner started as well. User confirmed this exact billing annotation.
-
-Restore account billing in GitHub Billing & plans, then re-run the latest workflow. iPhone tests, iPad checks, archive, screenshots and IPA verification remain required. Previous build-4 success is historical evidence only and does not validate this source revision.
+The IPA is not Apple-signed and is not an App Store release. Real-device performance and network/provider behavior require separate testing. Older failure reports are historical and do not describe the latest `main` run.

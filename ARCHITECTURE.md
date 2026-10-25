@@ -8,4 +8,4 @@ RecommendationEngine and SemanticRecommender own persistent local behavior, BGE 
 
 QuicktickSyncService is the only optional website service. It retains the existing QT6 encryption contract. AppStore and the API transport require explicit cloudSyncEnabled opt-in, which defaults false when older files omit the flag. Existing IDs can be reconnected in Settings after enabling Sync. Download bytes remain local.
 
-Xcode owns native unit/UI regression tests and compiles the icon catalog. The same Swift sources additionally build with SwiftPM; xtool from the user's verified Drive archive builds/packages the unsigned device IPA. See DIRECT-API-0.6.25.md and tools/xtool-source-manifest.json for provenance.
+Xcode runs native unit/UI regression tests and builds the unsigned device archive in GitHub Actions. The current workflow packages the IPA from the Xcode archive; see .github/workflows/ios.yml for the active pipeline. Older architecture notes in this document are historical.

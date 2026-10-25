@@ -785,7 +785,7 @@ actor RecommendationEngine {
     func terms(for post: Post) -> [String] {
         let source = post.provider.lowercased()
         let raw = (post.tags + [post.caption, post.category].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        if source == Provider.rule34.rawValue {
+        if source == Provider.rule34.rawValue || source == Provider.kemono.rawValue {
             let values = raw.flatMap { value in
                 let tag = value.lowercased()
                 let canonical = RecommendationTagRules.canonical(tag)
@@ -1458,12 +1458,12 @@ actor RecommendationEngine {
     }
 
     private func isTermAllowed(source: String, term: String) -> Bool {
-        if source == Provider.rule34.rawValue { return !term.isEmpty }
+        if source == Provider.rule34.rawValue || source == Provider.kemono.rawValue { return !term.isEmpty }
         return term.count >= 3 && !stopwords.contains(term) && Int(term) == nil
     }
 
     private func tasteTokens(source: String, values: [String]) -> [String] {
-        if source == Provider.rule34.rawValue {
+        if source == Provider.rule34.rawValue || source == Provider.kemono.rawValue {
             var used = Set<String>()
             return values.map { RecommendationTagRules.canonical($0) }
                 .filter { !$0.isEmpty && used.insert($0).inserted }

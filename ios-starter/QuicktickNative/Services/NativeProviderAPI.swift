@@ -36,6 +36,8 @@ enum NativeProviderAPI {
         case .eporner: URL(string: "https://www.eporner.com")!
         case .pornhub: URL(string: "https://www.pornhub.com")!
         case .hanime: URL(string: "https://hanime.tv")!
+        case .coomer: URL(string: "https://coomer.st")!
+        case .kemono: URL(string: "https://kemono.cr")!
         }
     }
 
@@ -162,7 +164,7 @@ enum NativeProviderAPI {
         return PostPage(items: rows.filter { post in
             guard !post.id.isEmpty, seen.insert(post.stableID).inserted,
                   !immersive || post.isImmersiveMedia else { return false }
-            if post.providerKey == .rule34 {
+            if post.providerKey == .rule34 || post.providerKey == .kemono {
                 // Apply canonical aliases and whole families (furry/anthro)
                 // consistently with the feed and the user's explicit bans.
                 return !RecommendationTagRules.rejects(post, exclusions: query.excluded)
@@ -396,6 +398,10 @@ extension NativeProviderAPI {
             let page = try await rule34(session: session, credentials: credentials, query: QueryParser.parse(""), page: 1, sort: "recent", immersive: false, id: post.id)
             guard let media = page.items.first?.mediaUrl else { throw APIError.invalidResponse }
             return ResolvedMedia(mediaUrl: media, type: page.items.first?.type ?? "video")
+        case .coomer, .kemono:
+            // Posts retain a validated absolute archive attachment URL when
+            // available. A missing/removed file is not silently replaced by HTML.
+            throw APIError.server("This archive attachment is unavailable. Open the original post to check whether its file is still hosted.")
         case .redgifs:
             guard let redgifsToken else { throw APIError.invalidResponse }
             let value = try object(await data(session: session, url: url("https://api.redgifs.com/v2/gifs/\(post.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? "")"), provider: provider, headers: ["Authorization": "Bearer " + redgifsToken]))
@@ -457,6 +463,9 @@ extension NativeProviderAPI {
     static func quality(_ value: String) -> Int { Int(value.filter(\.isNumber)) ?? 0 }
 
     static func comments(session: URLSession, credentials: ProviderCredentials, post: Post) async throws -> CommentPage {
+        if post.providerKey == .coomer || post.providerKey == .kemono {
+            return try await archiveComments(session: session, post: post)
+        }
         guard post.providerKey == .rule34 else { return CommentPage(items: [], available: false, message: "This provider has no supported direct comments API.") }
         guard !credentials.rule34Key.isEmpty, !credentials.rule34User.isEmpty else { throw APIError.server("Add Rule34 API credentials to load comments.") }
         let bytes = try await data(session: session, url: url("https://api.rule34.xxx/index.php", [
@@ -486,4 +495,160 @@ actor RedgifsAuthentication {
         return token
     }
     func invalidate(expecting previous: String) { if token == previous { token = ""; expiry = .distantPast } }
+}
+
+
+extension NativeProviderAPI {
+    // Both public archives expose Kemono API v1-style post lists. Treat them
+    // as content sources, never as login credentials or automatic upload targets.
+    static func archivePosts(session: URLSession, provider: Provider,
+                             query: ParsedQuery, page: Int, immersive: Bool) async throws -> PostPage {
+        guard provider == .kemono || provider == .coomer else { throw APIError.invalidResponse }
+        let origin = origin(provider).absoluteString
+        let offset = max(0, min(10_000, page - 1)) * 150
+        var parameters: [URLQueryItem] = [.init(name: "o", value: String(offset))]
+        if !query.included.isEmpty {
+            parameters.append(.init(name: "q", value: query.included.joined(separator: " ")))
+        }
+        // The archive endpoint is publication-ordered; it does not expose
+        // a supported popularity sort, so QuickTick reranks locally.
+        let endpoint = try url(origin + "/api/v1/posts", parameters)
+        let data = try await self.data(session: session, url: endpoint, provider: provider,
+                                       headers: ["Accept": "text/css"])
+        let decoded = try JSONSerialization.jsonObject(with: data)
+        let raw: [[String: Any]]
+        if let array = decoded as? [[String: Any]] { raw = array }
+        else if let object = decoded as? [String: Any],
+                let posts = object["posts"] as? [[String: Any]] { raw = posts }
+        else { throw APIError.invalidResponse }
+        let normalized = raw.flatMap { archiveItems($0, provider: provider) }
+        let total = (decoded as? [String: Any]).map { number($0["true_count"]) } ?? 0
+        let hasMore = total > 0 ? Double(offset + raw.count) < total : raw.count >= 150
+        return self.page(normalized, hasMore: hasMore, query: query, immersive: immersive)
+    }
+
+    // Typed creator routes are embedded into the canonical post URL. Never
+    // use arbitrary URLs from feed JSON for API requests.
+    static func archivePostRoute(_ post: Post) -> (service: String, user: String, id: String)? {
+        guard let provider = post.providerKey, provider == .coomer || provider == .kemono,
+              let link = URL(string: post.pageUrl),
+              link.scheme == "https", link.host?.lowercased() == origin(provider).host,
+              link.pathComponents.count == 6,
+              link.pathComponents[2] == "user", link.pathComponents[4] == "post"
+        else { return nil }
+        let parts = link.pathComponents
+        let service = parts[1], user = parts[3], id = parts[5]
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        guard [service, user, id].allSatisfy({
+            !$0.isEmpty && $0.unicodeScalars.allSatisfy(allowed.contains)
+        }) else { return nil }
+        return (service, user, id)
+    }
+
+    static func archiveComments(session: URLSession, post: Post) async throws -> CommentPage {
+        guard let provider = post.providerKey, let route = archivePostRoute(post) else {
+            return CommentPage(items: [], available: false, message: "This archive post has no supported comments route.")
+        }
+        let endpoint = try url(origin(provider).absoluteString
+            + "/api/v1/\(route.service)/user/\(route.user)/post/\(route.id)/comments")
+        let bytes = try await data(session: session, url: endpoint, provider: provider,
+                                   headers: ["Accept": "text/css"])
+        let decoded = try JSONSerialization.jsonObject(with: bytes)
+        let comments: [[String: Any]]
+        if let array = decoded as? [[String: Any]] { comments = array }
+        else if let object = decoded as? [String: Any] { comments = rows(object["comments"]) }
+        else { throw APIError.invalidResponse }
+        let items = comments.prefix(150).enumerated().compactMap { index, entry -> PostComment? in
+            let textBody = text(entry["content"] ?? entry["body"])
+            guard !textBody.isEmpty else { return nil }
+            return PostComment(id: text(entry["id"]).isEmpty ? String(index) : text(entry["id"]),
+                               author: text(entry["author"] ?? entry["username"] ?? entry["user"]),
+                               body: textBody, score: number(entry["score"]),
+                               createdAt: text(entry["created_at"] ?? entry["published"]))
+        }
+        return CommentPage(items: items, available: true, message: nil)
+    }
+
+    static func archiveItems(_ row: [String: Any], provider: Provider) -> [Post] {
+        guard provider == .kemono || provider == .coomer else { return [] }
+        let service = text(row["service"]).lowercased(), user = text(row["user"])
+        let id = text(row["id"]), title = text(row["title"])
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        guard !service.isEmpty, !user.isEmpty, !id.isEmpty,
+              [service, user, id].allSatisfy({
+                $0.unicodeScalars.allSatisfy(allowed.contains)
+              }) else { return [] }
+
+        var attachments: [[String: Any]] = []
+        if let main = row["file"] as? [String: Any] { attachments.append(main) }
+        attachments.append(contentsOf: self.rows(row["attachments"]))
+        // Artist/title metadata is useful but does not prove the identities
+        // of people in real-life images or the content of opaque attachments.
+        let author = text(row["artist"] ?? row["creator"] ?? row["user"])
+        var tags = strings(row["tags"])
+        let words = title.lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" })
+            .map(String.init).filter { $0.count >= 3 && $0.count <= 40 }
+        tags.append(contentsOf: words.prefix(12))
+        if !author.isEmpty, author.count < 80 {
+            tags.append(author.lowercased().replacingOccurrences(of: " ", with: "_"))
+        }
+        // Sort/dedupe to keep visual and text taste snapshots stable.
+        tags = Array(Set(tags)).sorted().prefix(32).map { $0 }
+        let prefix = origin(provider).absoluteString
+        let pageURL = "\(prefix)/\(service)/user/\(user)/post/\(id)"
+        let published = text(row["published"])
+        let timestamp = ISO8601DateFormatter().date(from: published)?.timeIntervalSince1970
+        var seen = Set<String>()
+        var result: [Post] = []
+        for (index, file) in attachments.prefix(12).enumerated() {
+            let name = text(file["name"]), path = text(file["path"])
+            let ext = (name as NSString).pathExtension.lowercased().isEmpty
+                ? (path as NSString).pathExtension.lowercased() : (name as NSString).pathExtension.lowercased()
+            let kind: String
+            switch ext {
+            case "mp4", "webm", "mov", "m4v": kind = "video"
+            case "gif": kind = "gif"
+            case "jpg", "jpeg", "png", "webp", "avif", "heic": kind = "image"
+            default: continue
+            }
+            guard let media = archiveMediaURL(path: path, provider: provider), seen.insert(media.absoluteString).inserted else { continue }
+            let thumbnail = kind == "image"
+                ? archiveMediaURL(path: path, provider: provider, thumbnail: true)
+                : archiveMediaURL(path: text(file["thumbnail"]), provider: provider)
+            // A video thumbnail may not exist, but an absent poster should not
+            // prevent valid playback or download.
+            var post = Post(key: "\(provider.rawValue):\(service):\(user):\(id):\(index)",
+                            id: id, provider: provider.rawValue, tags: tags,
+                            mediaUrl: media.absoluteString,
+                            previewUrl: thumbnail?.absoluteString ?? "",
+                            thumbUrl: thumbnail?.absoluteString ?? "",
+                            pageUrl: pageURL, type: kind)
+            post.caption = title
+            post.creator = author
+            post.category = service
+            post.createdAt = timestamp
+            result.append(post)
+        }
+        return result
+    }
+
+    static func archiveMediaURL(path: String, provider: Provider, thumbnail: Bool = false) -> URL? {
+        guard provider == .coomer || provider == .kemono,
+              !path.isEmpty, !path.contains("\\"),
+              !path.contains("..") else { return nil }
+        let domain = provider == .coomer ? "coomer.st" : "kemono.cr"
+        var suffix = path
+        if let parsed = URL(string: path), parsed.scheme != nil {
+            guard parsed.scheme == "https", let host = parsed.host?.lowercased(),
+                  host == domain || host.hasSuffix("." + domain) else { return nil }
+            suffix = parsed.path
+        }
+        if suffix.hasPrefix("/data/") { suffix = String(suffix.dropFirst(5)) }
+        if suffix.hasPrefix("data/") { suffix = String(suffix.dropFirst(4)) }
+        guard suffix.hasPrefix("/"), !suffix.hasPrefix("//") else { return nil }
+        let base = thumbnail ? "https://img.\(domain)/thumbnail/data" : "https://\(domain)/data"
+        return URL(string: base + suffix)
+    }
 }

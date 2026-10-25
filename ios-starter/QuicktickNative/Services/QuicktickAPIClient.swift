@@ -86,6 +86,9 @@ actor QuicktickAPIClient {
     func posts(provider: Provider, query: ParsedQuery, page: Int, sort: String = "recommended", immersive: Bool = false) async throws -> PostPage {
         switch provider {
         case .rule34: return try await NativeProviderAPI.rule34(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
+        case .coomer, .kemono:
+            return try await NativeProviderAPI.archivePosts(session: session, provider: provider,
+                                                            query: query, page: page, immersive: immersive)
         case .eporner: return try await NativeProviderAPI.eporner(session: session, query: query, page: page, sort: sort, immersive: immersive)
         case .pornhub: return try await NativeProviderAPI.pornhub(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
         case .hanime: return try await NativeProviderAPI.hanime(session: session, query: query, page: page, sort: sort, immersive: immersive)

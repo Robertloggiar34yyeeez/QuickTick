@@ -5,6 +5,26 @@
 	};
 	"objectVersion" = "56";
 	"objects" = {
+		"0D61DB5189B0A1F740001010" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.json";
+			"path" = "QuicktickNativeTests/Fixtures/coomer.json";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"0D61DB5189B0A1F740001011" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0D61DB5189B0A1F740001010";
+		};
+		"0D61DB5189B0A1F740001012" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.json";
+			"path" = "QuicktickNativeTests/Fixtures/kemono.json";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"0D61DB5189B0A1F740001013" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0D61DB5189B0A1F740001012";
+		};
 		"0D61DB5189B0A1F740000101" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -1195,6 +1215,8 @@
 				"24BC0F43299D712E12B80244",
 				"8F563413A2CA200525C9C9B4",
 				"E7F09928DB5ADF1840E74BE3",
+				"0D61DB5189B0A1F740001011",
+				"0D61DB5189B0A1F740001013",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -1457,6 +1479,8 @@
 				"F422696745B42143030C181A",
 				"9193556AEBFB063734B2A162",
 				"A00D35EE326C2421B308F85E",
+				"0D61DB5189B0A1F740001010",
+				"0D61DB5189B0A1F740001012",
 				"513A7E7BC7F7B625B576DF22",
 				"9BC2EC51FF286958D8BCB38F",
 				"B1025898228F4D541E72B705",

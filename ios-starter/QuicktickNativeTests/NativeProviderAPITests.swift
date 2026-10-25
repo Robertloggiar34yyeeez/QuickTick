@@ -21,6 +21,12 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? url.path
         let payload: String
         if path == "/v2/auth/temporary" { payload = #"{"token":"synthetic-provider-token"}"# }
+        else if ["coomer.st", "kemono.cr"].contains(host), path == "/api/v1/posts" {
+            payload = #"{"posts":[{"id":"p100","service":"fanbox","user":"42","title":"Cosplay fantasy portrait","artist":"Fixture Artist","published":"2026-09-01T10:00:00Z","file":{"name":"portrait.jpg","path":"/ab/cd.jpg"},"attachments":[{"name":"clip.mp4","path":"/ab/ef.mp4"},{"name":"archive.zip","path":"/ab/ignored.zip"}]}]}"#
+        }
+        else if ["coomer.st", "kemono.cr"].contains(host), path.hasSuffix("/comments") {
+            payload = #"[{"id":"1","author":"Visitor","content":"Amazing post","created_at":"2026-09-01"}]"#
+        }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
         else if host == "api.rule34.xxx", path == "/autocomplete.php" { payload = #"[{"value":"engineering","label":"engineering (12)","count":12}]"# }
         else if host == "api.rule34.xxx" {
@@ -73,6 +79,49 @@ private final class RateLimitProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class NativeProviderAPITests: XCTestCase {
+    func testArchiveDomainsNormalizeSafely() {
+        XCTAssertEqual(Provider.identify("coomer.st"), .coomer)
+        XCTAssertEqual(Provider.identify("kemono.cr"), .kemono)
+        XCTAssertEqual(Provider.identifyPage("https://kemono.cr/fanbox/user/42/post/p100"), .kemono)
+        XCTAssertNil(Provider.identifyPage("https://kemono.cr.evil.invalid/fanbox/user/42"))
+        XCTAssertNil(NativeProviderAPI.archiveMediaURL(path: "https://evil.invalid/fake.jpg", provider: .kemono))
+        XCTAssertEqual(NativeProviderAPI.archiveMediaURL(path: "/ab/cd.jpg", provider: .coomer)?.absoluteString,
+                       "https://coomer.st/data/ab/cd.jpg")
+        XCTAssertEqual(NativeProviderAPI.archiveMediaURL(path: "/ab/cd.jpg", provider: .kemono, thumbnail: true)?.absoluteString,
+                       "https://img.kemono.cr/thumbnail/data/ab/cd.jpg")
+        XCTAssertEqual(VisualDomain.classify(Post(key: "c", id: "1", provider: "coomer", type: "video")), .realLife)
+        XCTAssertTrue(VisualAppearanceEncoder.prefersMobileCLIP(domain: .realLife, provider: "coomer"))
+    }
+
+    func testArchiveProvidersSupportPagedSearchMediaAndComments() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        for provider in [Provider.coomer, .kemono] {
+            NativeProviderProtocol.log.reset()
+            let page = try await api.posts(provider: provider,
+                query: ParsedQuery(included: ["cosplay"], excluded: []), page: 2)
+            XCTAssertEqual(page.items.count, 2)
+            XCTAssertEqual(Set(page.items.map(\.type)), ["image", "video"])
+            XCTAssertEqual(page.items[0].providerKey, provider)
+            XCTAssertEqual(page.items[0].mediaUrl,
+                           "https://\(provider == .kemono ? "kemono.cr" : "coomer.st")/data/ab/cd.jpg")
+            XCTAssertEqual(page.items[0].cardPreviewURL,
+                           "https://img.\(provider == .kemono ? "kemono.cr" : "coomer.st")/thumbnail/data/ab/cd.jpg")
+            let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot()
+                .first(where: { $0.url?.path == "/api/v1/posts" }))
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/css")
+            let q = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(q.first(where: { $0.name == "q" })?.value, "cosplay")
+            XCTAssertEqual(q.first(where: { $0.name == "o" })?.value, "150")
+            let resolved = try await api.resolveMedia(page.items[1])
+            XCTAssertTrue(resolved.mediaUrl.hasSuffix("/ab/ef.mp4"))
+            let comments = try await api.comments(page.items[0])
+            XCTAssertEqual(comments.items.first?.body, "Amazing post")
+            let filtered = NativeProviderAPI.page(page.items, hasMore: false,
+                query: ParsedQuery(included: [], excluded: ["cosplay"]), immersive: false)
+            XCTAssertTrue(filtered.items.isEmpty)
+        }
+    }
+
     func testDownloadsRecoverCanonicalProviderFromAliasesKeysAndOriginalPages() {
         XCTAssertEqual(Post(key: "legacy:1", id: "1", provider: "RedGIFs.com").providerKey, .redgifs)
         XCTAssertEqual(Post(key: "pornhub:2", id: "2", provider: "Unknown site").providerKey, .pornhub)

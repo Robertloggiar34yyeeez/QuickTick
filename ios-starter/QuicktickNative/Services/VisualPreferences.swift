@@ -12,6 +12,9 @@ enum VisualDomain: String, Codable, Sendable {
         if rendered { return .threeD }
         if photographic { return .realLife }
         if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"]) { return .anime }
+        // Creator archives need separate, truthful visual domains: Coomer
+        // content uses real-life taste unless metadata identifies another medium.
+        if post.providerKey == .coomer { return .realLife }
         return .uncertain
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 
 enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
-    case rule34, redgifs, pornhub, eporner, hanime
+    case rule34, redgifs, pornhub, eporner, hanime, coomer, kemono
     var id: String { rawValue }
     /// Older imports and restored downloads may use website names instead of
     /// the canonical provider ID. Restrict aliases to known sources rather
@@ -16,6 +16,8 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         case "pornhub", "pornhubcom": return .pornhub
         case "eporner", "epornercom": return .eporner
         case "hanime", "hanimetv": return .hanime
+        case "coomer", "coomerst": return .coomer
+        case "kemono", "kemonocr": return .kemono
         default: return nil
         }
     }
@@ -25,7 +27,8 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
               let host = url.host?.lowercased() else { return nil }
         for (domain, source) in [("rule34.xxx", Provider.rule34), ("redgifs.com", .redgifs),
                                   ("pornhub.com", .pornhub), ("eporner.com", .eporner),
-                                  ("hanime.tv", .hanime)] {
+                                  ("hanime.tv", .hanime), ("coomer.st", .coomer),
+                                  ("kemono.cr", .kemono)] {
             if host == domain || host.hasSuffix("." + domain) { return source }
         }
         return nil
@@ -37,6 +40,8 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .pornhub: "Pornhub"
         case .eporner: "Eporner"
         case .hanime: "Hanime"
+        case .coomer: "Coomer"
+        case .kemono: "Kemono"
         }
     }
 }

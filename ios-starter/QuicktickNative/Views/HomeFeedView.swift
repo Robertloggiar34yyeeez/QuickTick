@@ -313,8 +313,11 @@ struct HomeFeedView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 6) {
                     Menu { ForEach(Provider.allCases) { p in Button(p.displayName) { store.selectedProvider = p; Task { await store.refresh() } } } } label: {
-                        Text(store.selectedProvider.displayName).font(.caption.weight(.medium)).padding(.horizontal, 10).frame(height: 44)
-                            .background(AppTheme.surface, in: Capsule()).overlay(Capsule().stroke(.white.opacity(0.15)))
+                        ProviderLogoView(provider: store.selectedProvider)
+                            .frame(width: 52, height: 44)
+                            .background(AppTheme.surface, in: Capsule())
+                            .overlay(Capsule().stroke(.white.opacity(0.15)))
+                            .accessibilityLabel("Provider: \(store.selectedProvider.displayName)")
                     }
                     SettingsLauncher(isPresented: $showSettings)
                 }

@@ -266,6 +266,13 @@ actor VisualAnalysisService {
         let started = Date()
         defer { FeedPerformance.emit(heavy ? "visual_heavy_slice" : "visual_cached_slice", started: started, count: 1) }
         let before = state.features[work.post.stableID]
+        if work.post.isAudio {
+            if state.analysisVersions == nil { state.analysisVersions = [:] }
+            state.analysisVersions?[work.post.stableID] = revision(work.post)
+            state.pending?.removeAll { $0.post.stableID == work.post.stableID }
+            persist()
+            return false
+        }
         await analyze(work.post, favorite: state.liked.contains(work.post.stableID), useVision: heavy,
             disliked: state.disliked.contains(work.post.stableID), lightweight: !heavy, resolver: resolver)
         guard !Task.isCancelled else { return false }
@@ -283,7 +290,7 @@ actor VisualAnalysisService {
         let realLifeModel = VisualDomain.classify(post).map {
             VisualAppearanceEncoder.prefersMobileCLIP(domain: $0, provider: post.provider)
         } == true && MobileCLIPRealLifeEncoder.isInstalled()
-        return TasteConcepts.version + "|irl-frames-v1|appearance-wd-v3-fp16|" + (realLifeModel ? MobileCLIPRealLifeEncoder.version : "vision")
+        return TasteConcepts.version + "|kemono-wd-v1|irl-frames-v1|appearance-wd-v3-fp16|" + (realLifeModel ? MobileCLIPRealLifeEncoder.version : "vision")
             + "|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.
@@ -346,7 +353,9 @@ actor VisualAnalysisService {
         if preview == nil { preview = sampled.first }
         guard let image = preview, resourcesAllowAnalysis() else { return }
         var enriched = metadata
-        let taggerCoolingDown = !lightweight && before.domain == .anime ? await animeTagger.cooldownDelay() > 0 : false
+        let useWDTagger = before.domain == .anime ||
+            (post.providerKey == .kemono && before.domain == .uncertain)
+        let taggerCoolingDown = !lightweight && useWDTagger ? await animeTagger.cooldownDelay() > 0 : false
         enriched.pixelsAnalyzed = true
         enriched.version = "cached-appearance-v2"
         enriched.fingerprint = Self.fingerprint(image.image)
@@ -384,15 +393,17 @@ actor VisualAnalysisService {
             enriched.attributes.merge(IRLVideoFrameSamplingPlan.consensus(observations), uniquingKeysWith: max)
         }
         guard resourcesAllowAnalysis() else { return }
-        if !lightweight, !taggerCoolingDown, before.domain == .anime, let tagged = await animeTagger.analyze(image, domain: .anime) {
+        if !lightweight, !taggerCoolingDown, useWDTagger,
+           let tagged = await animeTagger.analyze(image, domain: before.domain),
+           (before.domain == .anime || tagged.attributes.count >= 4) {
             enriched.attributes.merge(tagged.attributes, uniquingKeysWith: max)
-            if enriched.subjects.isEmpty { enriched.subjects = tagged.subjects }
-            for subject in tagged.subjects where enriched.conceptEvidence?["character:" + subject] == nil {
+            if before.domain == .anime && enriched.subjects.isEmpty { enriched.subjects = tagged.subjects }
+            for subject in (before.domain == .anime ? tagged.subjects : []) where enriched.conceptEvidence?["character:" + subject] == nil {
                 if enriched.conceptEvidence == nil { enriched.conceptEvidence = [:] }
                 enriched.conceptEvidence?["character:" + subject] = ConceptEvidence(confidence: 0.9, origin: "wd-v3-high-confidence")
             }
             enriched.version += "+wd-vit-v3-7f6b584-fp16"
-            let mapped = TasteConcepts.resolve(tagged.subjects)
+            let mapped = TasteConcepts.resolve(before.domain == .anime ? tagged.subjects : [])
             enriched.franchises = Array(Set((enriched.franchises ?? []) + mapped.franchises)).sorted()
             for franchise in mapped.franchises {
                 enriched.conceptEvidence?["franchise:" + franchise] = ConceptEvidence(confidence: 0.85, origin: "wd-v3+reviewed_mapping")

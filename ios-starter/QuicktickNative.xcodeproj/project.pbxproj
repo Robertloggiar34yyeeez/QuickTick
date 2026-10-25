@@ -5,6 +5,26 @@
 	};
 	"objectVersion" = "56";
 	"objects" = {
+		"0D61DB5189B0A1F740003101" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/BackgroundAudioPlayer.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"0D61DB5189B0A1F740003102" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0D61DB5189B0A1F740003101";
+		};
+		"0D61DB5189B0A1F740003103" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Views/ProviderLogoView.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"0D61DB5189B0A1F740003104" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0D61DB5189B0A1F740003103";
+		};
 		"0D61DB5189B0A1F740001010" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "text.json";
@@ -1034,6 +1054,8 @@
 				"2D3743A9F46E29676DBA4572",
 				"6AE8F2C0D0AF140905FF1F4A",
 				"0D61DB5189B0A1F740000102",
+				"0D61DB5189B0A1F740003102",
+				"0D61DB5189B0A1F740003104",
 				"E4C45F22C51B7C28FCF2BCD2",
 				"B7284CD069DD4DD982E2A2B9",
 				"26064FE82E26D229EAB6F8FD",
@@ -1448,6 +1470,8 @@
 				"5F05EFB58E4E4FA628C806E8",
 				"677532C9CC544A755F43E9BF",
 				"0D61DB5189B0A1F740000101",
+				"0D61DB5189B0A1F740003101",
+				"0D61DB5189B0A1F740003103",
 				"D822C7777F40BFDA72C1B2CD",
 				"A6E137F8527E41A8AB2DF447",
 				"F8BDB3B414F6C5B7B93F13D5",

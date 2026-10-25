@@ -195,6 +195,7 @@ final class AppStore: ObservableObject {
     let api: QuicktickAPIClient
     let recommendations = RecommendationEngine()
     let players = PlayerPool()
+    let audio = BackgroundAudioPlayer()
     let recommendationPersistence = RecommendationPersistence()
     lazy var resolver = MediaResolver(api: api)
     lazy var downloads = DownloadManager(resolver: resolver)

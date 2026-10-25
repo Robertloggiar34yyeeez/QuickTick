@@ -22,7 +22,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         let payload: String
         if path == "/v2/auth/temporary" { payload = #"{"token":"synthetic-provider-token"}"# }
         else if ["coomer.st", "kemono.cr"].contains(host), path == "/api/v1/posts" {
-            payload = #"{"posts":[{"id":"p100","service":"fanbox","user":"42","title":"Cosplay fantasy portrait","artist":"Fixture Artist","published":"2026-09-01T10:00:00Z","file":{"name":"portrait.jpg","path":"/ab/cd.jpg"},"attachments":[{"name":"clip.mp4","path":"/ab/ef.mp4"},{"name":"archive.zip","path":"/ab/ignored.zip"}]}]}"#
+            payload = #"{"posts":[{"id":"p100","service":"fanbox","user":"42","title":"Cosplay fantasy portrait","artist":"Fixture Artist","published":"2026-09-01T10:00:00Z","file":{"name":"portrait.jpg","path":"/ab/cd.jpg"},"attachments":[{"name":"clip.mp4","path":"/ab/ef.mp4"},{"name":"sound.mp3","path":"/ab/sound.mp3"},{"name":"archive.zip","path":"/ab/ignored.zip"}]}]}"#
         }
         else if ["coomer.st", "kemono.cr"].contains(host), path.hasSuffix("/comments") {
             payload = #"[{"id":"1","author":"Visitor","content":"Amazing post","created_at":"2026-09-01"}]"#
@@ -81,6 +81,8 @@ private final class RateLimitProtocol: URLProtocol, @unchecked Sendable {
 final class NativeProviderAPITests: XCTestCase {
     func testArchiveDomainsNormalizeSafely() {
         XCTAssertEqual(Provider.identify("coomer.st"), .coomer)
+        XCTAssertEqual(NativeProviderAPI.type("https://coomer.st/data/sound.mp3"), "audio")
+        XCTAssertTrue(Post(key: "sound", id: "sound", provider: "coomer", type: "audio").isAudio)
         XCTAssertEqual(Provider.identify("kemono.cr"), .kemono)
         XCTAssertEqual(Provider.identifyPage("https://kemono.cr/fanbox/user/42/post/p100"), .kemono)
         XCTAssertNil(Provider.identifyPage("https://kemono.cr.evil.invalid/fanbox/user/42"))
@@ -90,6 +92,8 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(NativeProviderAPI.archiveMediaURL(path: "/ab/cd.jpg", provider: .kemono, thumbnail: true)?.absoluteString,
                        "https://img.kemono.cr/thumbnail/data/ab/cd.jpg")
         XCTAssertEqual(VisualDomain.classify(Post(key: "c", id: "1", provider: "coomer", type: "video")), .realLife)
+        XCTAssertEqual(VisualDomain.classify(Post(key: "art-label", id: "2", provider: "coomer", tags: ["anime"], type: "image")), .realLife)
+        XCTAssertNotNil(NativeProviderAPI.archiveMediaURL(path: "/ab/sound.mp3", provider: .coomer))
         XCTAssertTrue(VisualAppearanceEncoder.prefersMobileCLIP(domain: .realLife, provider: "coomer"))
     }
 
@@ -99,8 +103,8 @@ final class NativeProviderAPITests: XCTestCase {
             NativeProviderProtocol.log.reset()
             let page = try await api.posts(provider: provider,
                 query: ParsedQuery(included: ["cosplay"], excluded: []), page: 2)
-            XCTAssertEqual(page.items.count, 2)
-            XCTAssertEqual(Set(page.items.map(\.type)), ["image", "video"])
+            XCTAssertEqual(page.items.count, 3)
+            XCTAssertEqual(Set(page.items.map(\.type)), ["image", "video", "audio"])
             XCTAssertEqual(page.items[0].providerKey, provider)
             XCTAssertEqual(page.items[0].mediaUrl,
                            "https://\(provider == .kemono ? "kemono.cr" : "coomer.st")/data/ab/cd.jpg")
@@ -112,6 +116,9 @@ final class NativeProviderAPITests: XCTestCase {
             let q = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
             XCTAssertEqual(q.first(where: { $0.name == "q" })?.value, "cosplay")
             XCTAssertEqual(q.first(where: { $0.name == "o" })?.value, "150")
+            let sound = try XCTUnwrap(page.items.first(where: { $0.isAudio }))
+            XCTAssertTrue(sound.mediaUrl.hasSuffix("/ab/sound.mp3"))
+            XCTAssertTrue(sound.cardPreviewURL.isEmpty)
             let resolved = try await api.resolveMedia(page.items[1])
             XCTAssertTrue(resolved.mediaUrl.hasSuffix("/ab/ef.mp4"))
             let comments = try await api.comments(page.items[0])

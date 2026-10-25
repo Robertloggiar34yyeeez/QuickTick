@@ -15,6 +15,7 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
     var embedUrl: String? = nil
 
     var isImmersiveMedia: Bool { ["video", "gif"].contains(type.lowercased()) }
+    var isAudio: Bool { type.lowercased() == "audio" }
     var cardPreviewURL: String {
         if type.lowercased() == "image" {
             // Prefer the provider's bounded preview in scrolling feeds;

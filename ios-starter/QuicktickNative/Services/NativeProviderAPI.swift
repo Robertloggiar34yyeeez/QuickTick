@@ -127,7 +127,8 @@ enum NativeProviderAPI {
     static func type(_ value: String) -> String {
         switch URL(string: value)?.pathExtension.lowercased() {
         case "gif": "gif"
-        case "mp4", "webm", "mov", "m3u8": "video"
+        case "mp4", "webm", "mov", "m3u8", "m4v": "video"
+        case "mp3", "m4a", "aac", "wav", "aiff", "caf", "flac", "ogg", "opus": "audio"
         default: "image"
         }
     }
@@ -383,7 +384,7 @@ extension NativeProviderAPI {
         // Only use this fallback for actual file/playlist paths, never an
         // HTML post page masquerading as a downloadable video.
         let direct = mediaURL(post.mediaUrl, provider: post.providerKey)
-        let directTypes: Set<String> = ["mp4", "m4v", "mov", "webm", "m3u8", "gif", "jpg", "jpeg", "png", "webp", "heic", "avif"]
+        let directTypes: Set<String> = ["mp4", "m4v", "mov", "webm", "m3u8", "gif", "jpg", "jpeg", "png", "webp", "heic", "avif", "mp3", "m4a", "aac", "wav", "aiff", "caf", "flac", "ogg", "opus"]
         if let direct, directTypes.contains(direct.pathExtension.lowercased()) {
             return ResolvedMedia(mediaUrl: direct.absoluteString, type: direct.pathExtension.lowercased() == "m3u8" ? "hls" : post.type)
         }
@@ -610,13 +611,14 @@ extension NativeProviderAPI {
             switch ext {
             case "mp4", "webm", "mov", "m4v": kind = "video"
             case "gif": kind = "gif"
+            case "mp3", "m4a", "aac", "wav", "aiff", "caf", "flac", "ogg", "opus": kind = "audio"
             case "jpg", "jpeg", "png", "webp", "avif", "heic": kind = "image"
             default: continue
             }
             guard let media = archiveMediaURL(path: path, provider: provider), seen.insert(media.absoluteString).inserted else { continue }
             let thumbnail = kind == "image"
                 ? archiveMediaURL(path: path, provider: provider, thumbnail: true)
-                : archiveMediaURL(path: text(file["thumbnail"]), provider: provider)
+                : (kind == "video" ? archiveMediaURL(path: text(file["thumbnail"]), provider: provider) : nil)
             // A video thumbnail may not exist, but an absent poster should not
             // prevent valid playback or download.
             var post = Post(key: "\(provider.rawValue):\(service):\(user):\(id):\(index)",

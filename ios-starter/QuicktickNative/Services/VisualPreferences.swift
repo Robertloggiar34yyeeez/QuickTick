@@ -3,6 +3,7 @@ import Foundation
 enum VisualDomain: String, Codable, Sendable {
     case anime, threeD, realLife, mixed, uncertain
     static func classify(_ post: Post) -> Self? {
+        if post.providerKey == .coomer && !post.isAudio { return .realLife }
         let tags = Set((post.tags + [post.category].compactMap { $0 }).map { $0.lowercased().replacingOccurrences(of: " ", with: "_") })
         let normalized = Set(tags.map(RecommendationTagRules.canonical))
         let flat = !normalized.isDisjoint(with: ["2d", "2d_art", "illustration", "drawing", "manga", "2d_animation", "medium:2d"])
@@ -12,9 +13,6 @@ enum VisualDomain: String, Codable, Sendable {
         if rendered { return .threeD }
         if photographic { return .realLife }
         if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"]) { return .anime }
-        // Creator archives need separate, truthful visual domains: Coomer
-        // content uses real-life taste unless metadata identifies another medium.
-        if post.providerKey == .coomer { return .realLife }
         return .uncertain
     }
 }

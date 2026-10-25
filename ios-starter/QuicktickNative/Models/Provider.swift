@@ -33,6 +33,17 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         }
         return nil
     }
+    var monogram: String {
+        switch self {
+        case .rule34: "34"
+        case .redgifs: "RG"
+        case .pornhub: "PH"
+        case .eporner: "EP"
+        case .hanime: "HA"
+        case .coomer: "CO"
+        case .kemono: "KE"
+        }
+    }
     var displayName: String {
         switch self {
         case .rule34: "Rule34"

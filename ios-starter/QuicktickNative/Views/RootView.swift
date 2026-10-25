@@ -44,6 +44,9 @@ struct RootView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if !sideNavigation {
+                    BackgroundAudioMiniPlayer(audio: store.audio)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 3)
                     // Full-width dock with a raised, high-contrast creation
                     // action in the center. Preserve safe-area touch targets.
                     HStack(spacing: 0) { tabButtons(vertical: false) }
@@ -82,6 +85,13 @@ struct RootView: View {
                         .padding(.leading, 16)
                         .id(aiTabVisible ? "five-side-tabs" : "four-side-tabs")
                         .transition(.move(edge: .leading).combined(with: .opacity))
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if sideNavigation {
+                    BackgroundAudioMiniPlayer(audio: store.audio)
+                        .frame(maxWidth: 350)
+                        .padding(.bottom, 10)
                 }
             }
             .animation(reduceMotion ? nil : .spring(response: 0.48, dampingFraction: 0.84), value: sideNavigation)

@@ -63,7 +63,7 @@ struct PostCardView: View {
                         .font(.system(size: 11, weight: .bold, design: .rounded))
                         .tracking(1.4).foregroundStyle(.white.opacity(0.85))
                     Text("·").foregroundStyle(AppTheme.secondaryLabel)
-                    Text(post.isImmersiveMedia ? "Motion" : "Image")
+                    Text(post.isAudio ? "Audio" : (post.isImmersiveMedia ? "Motion" : "Image"))
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
                     Button { tags = true } label: {
@@ -110,7 +110,7 @@ struct PostCardView: View {
                 if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
             }
             .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(manualPlaybackRequested)") {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, !post.isAudio else { return }
                 guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
                 guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
                 // Autoplay is optional during a fast Home swipe. Wait for a
@@ -158,7 +158,22 @@ struct PostCardView: View {
 
     @ViewBuilder private var media: some View {
         Group {
-            if let player, store.fullScreenPlaybackID != post.stableID {
+            if post.isAudio {
+                ZStack {
+                    AppTheme.gradient.opacity(0.20)
+                    VStack(spacing: 10) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 44, weight: .light))
+                            .foregroundStyle(AppTheme.accent)
+                        Text(post.caption?.isEmpty == false ? (post.caption ?? "Audio") : "Audio")
+                            .font(.headline).foregroundStyle(.white)
+                            .lineLimit(2).multilineTextAlignment(.center)
+                        Text(post.creator ?? post.provider)
+                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                            .lineLimit(1)
+                    }.padding()
+                }
+            } else if let player, store.fullScreenPlaybackID != post.stableID {
                 ZStack {
                     PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
                     NativePlayerSurface(player: player, fill: false, ready: $ready)
@@ -177,7 +192,13 @@ struct PostCardView: View {
         .frame(width: mediaSize.width, height: mediaSize.height)
         .allowsHitTesting(false)
         .overlay {
-            if fullBleed {
+            if post.isAudio {
+                Button { store.audio.toggle(post) } label: {
+                    Color.clear.contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Play or pause audio")
+            } else if fullBleed {
                 // Keep the full-bleed media discoverable as an actual button
                 // for VoiceOver and UI automation. The exclusive gesture keeps
                 // double-tap Like distinct from single-tap fullscreen.
@@ -244,7 +265,10 @@ struct PostCardView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            if post.isImmersiveMedia {
+            if post.isAudio {
+                AudioPostPlayButton(audio: store.audio, post: post)
+                    .padding(10)
+            } else if post.isImmersiveMedia {
                 Button {
                     if !autoplayVideos && !manualPlaybackRequested {
                         manualPlaybackRequested = true

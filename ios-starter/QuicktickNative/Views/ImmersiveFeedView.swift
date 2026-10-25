@@ -94,10 +94,11 @@ struct ImmersiveFeedView: View {
                         Menu { ForEach(Provider.allCases) { provider in
                             Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
                         }; Divider(); Button("Personalize recommendations") { preferencesVisible = true } } label: {
-                            Text(store.selectedProvider.displayName).font(.caption.weight(.semibold))
-                                .padding(.horizontal, 12).frame(height: 44)
+                            ProviderLogoView(provider: store.selectedProvider)
+                                .frame(width: 52, height: 44)
                                 .background(.black.opacity(0.55), in: Capsule())
                                 .overlay(Capsule().stroke(.white.opacity(0.15)))
+                                .accessibilityLabel("Provider: \(store.selectedProvider.displayName)")
                         }
                     }
                     if !offline && collectionTab == nil {

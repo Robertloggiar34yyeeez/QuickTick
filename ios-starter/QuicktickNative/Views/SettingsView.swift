@@ -24,6 +24,9 @@ struct SettingsView: View {
     @State private var username = ""
     @State private var remember = true
     @State private var onboarding = false
+    @State private var viewedProvider: Provider = .rule34
+    @State private var providerProfiles: [String: RecommendationProfile] = [:]
+    @State private var visualInterests: [String: [String]] = [:]
     @State private var sharedProfile: RecommendationTransfer?
     @State private var exportProfileFile: RecommendationProfileFile?
     @State private var exportingProfileFile = false
@@ -36,6 +39,93 @@ struct SettingsView: View {
 
     var body: some View {
         settingsPage
+    }
+
+    private var swipeableProviderProfiles: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Provider profiles").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("Swipe left or right")
+                    .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+            }
+            TabView(selection: $viewedProvider) {
+                ForEach(Provider.allCases) { provider in
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack(spacing: 10) {
+                            ProviderLogoView(provider: provider)
+                                .frame(width: 38, height: 38)
+                                .background(AppTheme.elevatedSurface,
+                                            in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(provider.displayName).font(.headline)
+                                Text(provider == store.selectedProvider ?
+                                     "Current feed" : "Separate learned profile")
+                                    .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                            }
+                            Spacer()
+                            if provider == store.selectedProvider {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(AppTheme.accent)
+                            }
+                        }
+                        let terms = providerProfiles[provider.rawValue]?.terms ?? [:]
+                        let learned = terms.filter { $0.value > 0 }
+                            .sorted { $0.value > $1.value }.prefix(8).map(\.key)
+                        let chosen = store.tasteSetup.sources[provider.rawValue]?.into ?? []
+                        let visuals = visualInterests[provider.rawValue] ?? []
+                        let visible = Array(Set(learned + chosen + visuals))
+                            .filter(TasteTagSuggestions.isUseful).sorted().prefix(9)
+                        if visible.isEmpty {
+                            Text("No interests yet. Like posts to build this profile.")
+                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        } else {
+                            Text(visible.map {
+                                $0.replacingOccurrences(of: "_", with: " ")
+                            }.joined(separator: " · "))
+                                .font(.caption).lineLimit(3)
+                        }
+                        HStack {
+                            Text("\(learned.count) learned interests")
+                                .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                            Spacer()
+                            if provider != store.selectedProvider {
+                                Button("Use \(provider.displayName)") {
+                                    store.selectedProvider = provider
+                                    Task { await store.refresh() }
+                                }
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.accent)
+                            }
+                        }
+                    }
+                    .padding(13).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                    .overlay(RoundedRectangle(cornerRadius: 17).stroke(AppTheme.border))
+                    .tag(provider)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(height: 182)
+            HStack(spacing: 5) {
+                ForEach(Provider.allCases) { provider in
+                    Capsule()
+                        .fill(provider == viewedProvider ? AppTheme.accent : AppTheme.elevatedSurface)
+                        .frame(width: provider == viewedProvider ? 19 : 6, height: 6)
+                }
+            }
+            .accessibilityLabel("Provider profile pages")
+        }
+        .task {
+            viewedProvider = store.selectedProvider
+            let snapshot = await store.recommendations.snapshot()
+            providerProfiles = snapshot.profiles
+            var visualProfiles: [String: [String]] = [:]
+            for provider in Provider.allCases {
+                visualProfiles[provider.rawValue] = await store.visual.discoveryTerms(provider: provider)
+            }
+            visualInterests = visualProfiles
+        }
     }
 
     private var settingsPage: some View {
@@ -109,6 +199,7 @@ struct SettingsView: View {
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
             }.disabled(store.isSyncing).id(SettingsDestination.access.rawValue)
             SettingsGroup(title: "Learned interests · \(store.selectedProvider.displayName)", icon: "sparkles") {
+                swipeableProviderProfiles
                 Button { onboarding = true } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "slider.horizontal.3")

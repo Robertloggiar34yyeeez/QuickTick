@@ -6,8 +6,11 @@ import SwiftUI
 struct HomePullRefreshGate {
     private var beganAtTop: Bool?
 
-    mutating func observe(startOffset: CGFloat) {
-        if beganAtTop == nil { beganAtTop = (-18...48).contains(startOffset) }
+    mutating func observe(startOffset: CGFloat?) {
+        // LazyVStack unmounts the header well below the fold. An absent
+        // preference must NOT use a zero offset: zero means "at the top" and
+        // accidentally turns an ordinary upward journey into a full refresh.
+        if beganAtTop == nil { beganAtTop = startOffset.map { (-18...48).contains($0) } ?? false }
     }
 
     mutating func finish(translation: CGSize) -> Bool {
@@ -37,7 +40,7 @@ struct HomeFeedView: View {
     @State private var scrollRestTask: Task<Void, Never>?
     @State private var lastMotionSample = Date.distantPast
     @State private var lastIntelligencePause = Date.distantPast
-    @State private var topOffset: CGFloat = 0
+    @State private var topOffset: CGFloat?
     @State private var pullRefreshInFlight = false
     @State private var pullRefreshGate = HomePullRefreshGate()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -396,8 +399,13 @@ struct HomeFeedView: View {
 }
 
 private struct HomeTopOffsetPreference: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    // nil means the top header is not mounted/visible in this lazy list.
+    // Previously 0 was the default, so a drag begun halfway down the feed
+    // could be mistaken for a valid top-origin pull-to-refresh gesture.
+    static let defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = nextValue() ?? value
+    }
 }
 
 struct HomeVisibleFrames: PreferenceKey {

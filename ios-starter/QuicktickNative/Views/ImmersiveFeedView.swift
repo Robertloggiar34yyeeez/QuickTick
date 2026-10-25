@@ -175,18 +175,20 @@ struct ImmersiveFeedView: View {
     }
     private func prewarm() async {
         guard presentationActive, store.isForeground, !store.isManualVisualScanRunning, !Task.isCancelled else { return }
-        guard offline || collectionTab != nil || store.feedMediaOnly else { return }
+        // Home can open this viewer with feedMediaOnly == false. That must not
+        // disable its upcoming-clip preload once Immersive is on screen.
         let clips = mediaPosts
         guard let activeID, let index = clips.firstIndex(where: { $0.stableID == activeID }) else {
             if clips.isEmpty && !offline && collectionTab == nil && !store.isLoading && store.hasMore { await store.loadMore(immersive: true) }
             return
         }
-        // Prioritize the immediate next clip instead of two competing downloads.
-        // Retain the previous player for a quick reverse swipe.
-        let playerRange = max(0, index - 1)...min(clips.count - 1, index + 1)
-        let previewRange = max(0, index - 1)...min(clips.count - 1, index + 1)
-        store.players.retain(Set(playerRange.map { clips[$0].stableID }))
-        previews.retain(Set(previewRange.map { clips[$0].stableID }))
+        // Keep the previous clip for instant reverse swipes and prepare only
+        // one next clip, so Immersive stays responsive without Home's former
+        // aggressive offscreen video loading.
+        let warmIndices = ImmersivePreloadPlan.retainedIndices(current: index, count: clips.count)
+        let nextIndex = ImmersivePreloadPlan.nextIndex(current: index, count: clips.count)
+        store.players.retain(Set(warmIndices.map { clips[$0].stableID }))
+        previews.retain(Set(warmIndices.map { clips[$0].stableID }))
         let offlineMode = offline
         let presentingTab = collectionTab ?? (offline ? 3 : (onClose != nil ? 0 : 1))
         let feedStore = store
@@ -197,28 +199,36 @@ struct ImmersiveFeedView: View {
             // Fetch the visible poster first; decoding future posters must
             // not compete at the same priority with the current media startup.
             group.addTask(priority: .userInitiated) { await previewCache.load(clips[index]) }
-            // Keep one upcoming thumbnail warm; decoding old posters and a
-            // second future poster during every page swipe caused CPU spikes.
-            for i in previewRange where i > index {
+            // A ready poster prevents a blank transition even if the next
+            // CDN stream still needs a moment to produce its first frame.
+            if let i = nextIndex {
                 let post = clips[i]
-                group.addTask(priority: .utility) {
+                group.addTask(priority: .userInitiated) {
                     await previewCache.load(post)
                 }
             }
-            group.addTask(priority: .utility) {
-                // Give the visible video time to open and start buffering
-                // before spending network bandwidth on the next preroll.
-                do { try await Task.sleep(for: .milliseconds(480)) } catch { return }
-                guard !Task.isCancelled else { return }
-                for i in playerRange where i > index && clips[i].type.lowercased() == "video" {
-                    let post = clips[i]
+            if let i = nextIndex, ["video", "gif"].contains(clips[i].type.lowercased()) {
+                let post = clips[i]
+                group.addTask(priority: .utility) {
+                    // Resolve immediately. Previously a 480 ms sleep happened
+                    // before provider resolution, often leaving no warm clip
+                    // by the time the next swipe arrived.
                     let url: URL?
                     if offlineMode { url = URL(string: post.mediaUrl) }
                     else { url = try? await resolver.resolve(post).mediaUrlURL }
-                    guard !Task.isCancelled else { return }
-                    let stillPresenting = await MainActor.run { feedStore.isForeground && !feedStore.isManualVisualScanRunning && feedStore.activeTab == presentingTab }
+                    guard !Task.isCancelled, let url else { return }
+                    let stillPresenting = await MainActor.run {
+                        feedStore.isForeground && !feedStore.isManualVisualScanRunning &&
+                            feedStore.activeTab == presentingTab
+                    }
                     guard stillPresenting, !Task.isCancelled else { return }
-                    if let url { await pool.prewarm(key: post.stableID, url: url) }
+                    if post.type.lowercased() == "video" {
+                        await pool.prewarm(key: post.stableID, url: url)
+                    } else {
+                        // Share downloaded GIF bytes with the active decoder;
+                        // avoid decoding offscreen animation frames.
+                        await MediaImagePipeline.shared.prefetchGIF(url: url)
+                    }
                 }
             }
             if !offline, collectionTab == nil, index >= clips.count - 8 {
@@ -227,6 +237,18 @@ struct ImmersiveFeedView: View {
         }
     }
 
+}
+
+enum ImmersivePreloadPlan {
+    static func retainedIndices(current: Int, count: Int) -> [Int] {
+        guard count > 0, (0..<count).contains(current) else { return [] }
+        return Array(max(0, current - 1)...min(count - 1, current + 1))
+    }
+
+    static func nextIndex(current: Int, count: Int) -> Int? {
+        guard count > 0, (0..<count).contains(current), current + 1 < count else { return nil }
+        return current + 1
+    }
 }
 
 /// UIKit owns the media-area tap/pan arbitration. SwiftUI's exclusive double

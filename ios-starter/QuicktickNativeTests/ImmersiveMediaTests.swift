@@ -3,6 +3,17 @@ import AVFoundation
 @testable import QuicktickNative
 
 final class ImmersiveMediaTests: XCTestCase {
+    func testImmersivePreloadsOneUpcomingPostAndRetainsPreviousForReverseSwipe() {
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 0, count: 5), [0, 1])
+        XCTAssertEqual(ImmersivePreloadPlan.nextIndex(current: 0, count: 5), 1)
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 2, count: 5), [1, 2, 3])
+        XCTAssertEqual(ImmersivePreloadPlan.nextIndex(current: 2, count: 5), 3)
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 4, count: 5), [3, 4])
+        XCTAssertNil(ImmersivePreloadPlan.nextIndex(current: 4, count: 5))
+        XCTAssertTrue(ImmersivePreloadPlan.retainedIndices(current: 0, count: 0).isEmpty)
+        XCTAssertNil(ImmersivePreloadPlan.nextIndex(current: -1, count: 5))
+    }
+
     func testPagingGapKeepsCurrentPlayerButDeletedPostDoesNot() {
         let viewport = CGRect(x: 0, y: 0, width: 400, height: 800)
         let halfway = ["first": CGRect(x: 0, y: -400, width: 400, height: 800), "next": CGRect(x: 0, y: 400, width: 400, height: 800)]

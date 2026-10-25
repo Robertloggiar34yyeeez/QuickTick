@@ -437,11 +437,19 @@ actor RecommendationEngine {
         }
         // Compile the strict-serving anchors once per Favorites change, not
         // hundreds of times while evaluating each feed candidate.
-        for (source, weights) in savedFavoriteAffinity {
-            let terms = Set(weights.compactMap { term, strength -> String? in
+        for (source, countsForSource) in counts {
+            let terms = Set(countsForSource.compactMap { term, occurrences -> String? in
                 let canonical = RecommendationTagRules.canonical(term)
-                guard strength >= 2.5, !Self.genericTasteTerms.contains(canonical),
-                      !Self.lowSignalDiscoveryTags.contains(canonical) else { return nil }
+                // The old threshold normalized against the *entire* library.
+                // Three separate likes of a character stopped qualifying once
+                // a user had dozens of other Favorites, silently opening the
+                // Recommended serving gate to unrelated discovery posts.
+                guard occurrences >= 3,
+                      !Self.genericTasteTerms.contains(canonical),
+                      !Self.lowSignalDiscoveryTags.contains(canonical),
+                      !(sourcesWithFictionalCharacters.contains(source) &&
+                        (TasteConcepts.franchises.contains(canonical) || canonical.hasPrefix("franchise:")))
+                else { return nil }
                 return canonical
             })
             reinforcedFavoriteTerms[source] = terms

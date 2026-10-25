@@ -671,6 +671,29 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(later.map(\.stableID), [related.stableID])
     }
 
+    func testLargeFavoriteLibraryStillEnforcesThreeIndependentSpecificLikes() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let recurring = (0..<3).map { index in
+            Post(key: "rule34:chun-\(index)", id: "chun-\(index)", provider: "rule34",
+                 tags: ["chun_li", "qipao", "street_fighter"])
+        }
+        let diverse = (0..<45).map { index in
+            Post(key: "rule34:diverse-\(index)", id: "diverse-\(index)", provider: "rule34",
+                 tags: ["one_off_interest_\(index)"])
+        }
+        await engine.configureFavorites(recurring + diverse)
+        let unrelated = Post(key: "rule34:unrelated", id: "unrelated", provider: "rule34",
+                             tags: ["landscape", "no_related_interests"])
+        let related = Post(key: "rule34:related", id: "related", provider: "rule34",
+                           tags: ["chun_li", "qipao"])
+        let wrongCharacter = Post(key: "rule34:wrong", id: "wrong", provider: "rule34",
+                                  tags: ["juri_han", "street_fighter"])
+        let served = await engine.rankFast([unrelated, related, wrongCharacter],
+                                           taste: TasteChoice(), recent: [], strict: true)
+        XCTAssertEqual(served.map(\.stableID), [related.stableID],
+                       "Library size and a shared franchise must not reopen the unrelated-post gate")
+    }
+
     func testPositiveAndNegativeTagsGuideRatherThanReplaceLearnedProfile() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         var state = RecommendationState(); var profile = RecommendationProfile()
@@ -894,6 +917,15 @@ final class RhythmPhraseTests: XCTestCase {
 }
 
 final class HomePullRefreshTests: XCTestCase {
+    func testUnmountedHeaderNeverCountsAsTopOfFeed() {
+        var gate = HomePullRefreshGate()
+        gate.observe(startOffset: nil) // Lazy list dropped the header's preference.
+        gate.observe(startOffset: 15)  // Header becomes visible later in the gesture.
+        XCTAssertFalse(gate.finish(translation: CGSize(width: 0, height: 600)))
+        gate.observe(startOffset: 15)  // A *new* drag begins at the real top.
+        XCTAssertTrue(gate.finish(translation: CGSize(width: 0, height: 140)))
+    }
+
     func testSwipeStartingBelowTheHeaderNeverRefreshesEvenWhenItEndsAtTop() {
         var gate = HomePullRefreshGate()
         gate.observe(startOffset: -450)

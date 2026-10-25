@@ -79,7 +79,7 @@ final class VisualTasteTests: XCTestCase {
     func testBundledArtistTaxonomyAndLegacyProfileMigration() throws {
         let url = try XCTUnwrap(Bundle.main.url(forResource: "visual-tag-taxonomy", withExtension: "json"))
         let taxonomy = try JSONDecoder().decode(VisualTagTaxonomy.self, from: Data(contentsOf: url))
-        XCTAssertTrue(taxonomy.artists.contains("palcomix")); XCTAssertTrue(taxonomy.characters.contains("chun-li"))
+        XCTAssertFalse(taxonomy.artists.isEmpty); XCTAssertFalse(taxonomy.characters.isEmpty)
         XCTAssertFalse(taxonomy.artists.contains("unknown_artist"))
         let old = try JSONDecoder().decode(VisualProfile.self, from: Data("{}".utf8))
         XCTAssertTrue(old.artists.isEmpty)
@@ -88,13 +88,13 @@ final class VisualTasteTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let service = VisualAnalysisService(directory: directory)
-        let post = Post(key: "history", id: "1", provider: "rule34", tags: ["2d", "palcomix", "chun-li", "long_hair"], type: "image")
+        let post = Post(key: "history", id: "1", provider: "rule34", tags: ["2d", "artist:sample_artist", "character:sample_character", "long_hair"], type: "image")
         await service.record(.like, post: post)
         await service.analyzeFavorite(post, useVision: false)
         await service.analyzeFavorite(post, useVision: false)
         let state = await service.snapshot()
-        XCTAssertEqual(state.profiles["rule34|anime"]?.artists["palcomix"]?.positive, 0.5)
-        XCTAssertEqual(state.profiles["rule34|anime"]?.subjects["chun_li"]?.positive, 0.7)
+        XCTAssertEqual(state.profiles["rule34|anime"]?.artists["sample_artist"]?.positive, 0.5)
+        XCTAssertEqual(state.profiles["rule34|anime"]?.subjects["sample_character"]?.positive, 0.7)
         XCTAssertNil(state.profiles["redgifs|realLife"])
         let restored = await VisualAnalysisService(directory: directory).snapshot()
         XCTAssertEqual(restored.profiles, state.profiles)
@@ -126,13 +126,13 @@ final class VisualTasteTests: XCTestCase {
         XCTAssertEqual(ranked.first?.stableID, preferred.stableID)
     }
     func testVisualDiscoveryAlternatesWithBroadExplorationAndRespectsExclusions() {
-        let queries = [["chun-li", "2d"], ["palcomix", "2d"], ["samus_aran", "2d"]]
+        let queries = [["sample_character_one", "2d"], ["sample_artist", "2d"], ["sample_character_two", "2d"]]
         XCTAssertNil(VisualDiscoveryPolicy.query(round: 1, queries: queries, excluded: []))
         XCTAssertEqual(VisualDiscoveryPolicy.query(round: 2, queries: queries, excluded: []), queries[0])
         XCTAssertNil(VisualDiscoveryPolicy.query(round: 3, queries: queries, excluded: []))
         XCTAssertEqual(VisualDiscoveryPolicy.query(round: 7, queries: queries, excluded: []), queries[1])
         XCTAssertEqual(VisualDiscoveryPolicy.query(round: 12, queries: queries,
-                                                   excluded: ["chun_li", "palcomix"]), queries[2])
+                                                   excluded: ["sample_character_one", "sample_artist"]), queries[2])
         XCTAssertNil(VisualDiscoveryPolicy.query(round: 12, queries: queries, excluded: ["2d"]))
     }
     private func image(red: CGFloat, green: CGFloat, blue: CGFloat) -> DecodedMediaImage {

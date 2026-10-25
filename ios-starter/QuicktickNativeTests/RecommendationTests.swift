@@ -289,9 +289,9 @@ final class RecommendationTests: XCTestCase {
         XCTAssertFalse(keywords.isEmpty)
         XCTAssertEqual(Set(characters.map(\.id)).count, characters.count)
         XCTAssertEqual(Set(keywords.map(\.id)).count, keywords.count)
-        let chunLi = characters.first { $0.id == "chun_li" }
-        XCTAssertEqual(chunLi?.query, "chun_li")
-        XCTAssertTrue(chunLi?.tags.contains("street_fighter") == true,
+        let mario = characters.first { $0.id == "mario" }
+        XCTAssertEqual(mario?.query, "mario_(mario)")
+        XCTAssertTrue(mario?.tags.contains("super_mario_bros") == true,
                       "A selected character also seeds related franchise discovery")
         let rouge = characters.first { $0.id == "rouge" }
         XCTAssertEqual(rouge?.tags.first, "rouge_the_bat")

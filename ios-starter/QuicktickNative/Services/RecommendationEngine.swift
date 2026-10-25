@@ -1054,8 +1054,8 @@ actor RecommendationEngine {
     ]
 
     // Keep franchise identity separate from incidental pose/appearance tags.
-    // A single Chun-Li like can support related candidates without allowing
-    // the entire Street Fighter family to monopolize a page.
+    // A single character like can support related candidates without allowing
+    // its entire franchise to monopolize a page.
     private func diversityTopics(for post: Post, terms cached: [String]? = nil) -> Set<String> {
         var topics = Set((cached ?? terms(for: post)).map(RecommendationTagRules.canonical))
             .subtracting(Self.genericTasteTerms).subtracting(Self.broadDiversityTags)

@@ -8,6 +8,11 @@ xcuserdata/
 *.p12
 *.mobileprovision
 *.key
+*.p8
+*.pem
+*.pfx
+*.cer
+*.quicktickprofile
 .env
 .env.*
 !.env.example
@@ -17,6 +22,7 @@ scripts/parser-deps/
 __pycache__/
 *.pyc
 deliverables/
+logs/
 native-repository/
 app-state-v*.json
 recommendations-v*.json

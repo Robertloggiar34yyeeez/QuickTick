@@ -881,7 +881,6 @@ final class AppStore: ObservableObject {
         if let key { protectedImmersiveIDs.insert(key) }
         let token = generation
         tailRankTask?.cancel()
-        guard candidateContext != nil else { return }
         // Do not sort and republish the full tail on every paging frame.
         // Wait for the active page to settle, then rerank only unseen content.
         tailRankTask = Task(priority: .utility) {
@@ -892,10 +891,7 @@ final class AppStore: ObservableObject {
     }
     func adaptRecommendationTail(token: UUID) async {
         let tab = activeTab
-        // Only personalized discovery has a tail to rerank. In a plain
-        // search/test feed this could silently remove upcoming clips after
-        // a favorite, leaving immersive paging with just one visible post.
-        guard candidateContext != nil, (tab == 0 || tab == 1), feedSort == "recommended",
+        guard tab == 0 || tab == 1, feedSort == "recommended",
               Date().timeIntervalSince(lastFeedMotion) >= 0.45 else { return }
         let source = posts
         let originalInlinePlaybackID = inlinePlaybackID
@@ -914,7 +910,15 @@ final class AppStore: ObservableObject {
         let protected = (tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs).union([active])
         let prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
         let prefix = Array(source.prefix(prefixCount))
-        let tail = feedExclusions.filter(Array(source.dropFirst(prefixCount)), favorites: Array(favorites.values), existing: prefix, recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
+        // Only personalized acquisition needs duplicate/similarity pruning.
+        // Applying it again to an ordinary search or static fixture can
+        // silently delete the very next playable clip while the user swipes.
+        // The ranker still applies explicit dislikes in both cases.
+        let unseen = Array(source.dropFirst(prefixCount))
+        let tail = candidateContext != nil
+            ? feedExclusions.filter(unseen, favorites: Array(favorites.values), existing: prefix,
+                                    recommended: true, favoriteIDs: favoriteExclusionIDs)
+            : unseen
         let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: prefix, visualScores: visualScores)
         let stillProtected = tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs
         guard !Task.isCancelled, generation == token, activeTab == tab, feedSort == "recommended",

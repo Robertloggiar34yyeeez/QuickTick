@@ -353,6 +353,19 @@ final class FeedReliabilityTests: XCTestCase {
         await store.adaptRecommendationTail(token: store.feedRevision)
         XCTAssertEqual(Array(store.posts.prefix(2)), [first, current])
     }
+    @MainActor func testOrdinaryImmersiveFeedKeepsNextClipDuringBackgroundRanking() async {
+        let store = AppStore(); store.selectedProvider = .eporner; store.activeTab = 1
+        // Two independent posts may resolve to one CDN video URL. A normal
+        // (non-personalized) feed must not lose the only next page mid-swipe.
+        let first = Post(key: "clip-a", id: "1", provider: "Eporner", tags: ["portrait"],
+                         mediaUrl: "https://cdn.example.invalid/shared.mp4", type: "video")
+        let next = Post(key: "clip-b", id: "2", provider: "Eporner", tags: ["portrait"],
+                        mediaUrl: first.mediaUrl, type: "video")
+        store.posts = [first, next]
+        store.protectImmersivePost(first.stableID)
+        await store.adaptRecommendationTail(token: store.feedRevision)
+        XCTAssertEqual(store.posts.map(\.stableID), [first.stableID, next.stableID])
+    }
     @MainActor func testSearchCommitRetainsFeedUntilNewResponse() {
         let store = AppStore()
         let current = Post(key: "current", id: "1", provider: "Eporner", type: "video")

@@ -31,10 +31,17 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             let file = root.appendingPathComponent("downloads.json")
             if FileManager.default.fileExists(atPath: file.path) {
                 let data = try Data(contentsOf: file)
+                let savedRecords: [DownloadRecord]
                 if let catalog = try? JSONDecoder().decode(DownloadCatalog.self, from: data) {
                     guard catalog.version == 1 else { throw APIError.server("Unsupported download catalog version") }
-                    records = catalog.records
-                } else { records = try JSONDecoder().decode([DownloadRecord].self, from: data) }
+                    savedRecords = catalog.records
+                } else { savedRecords = try JSONDecoder().decode([DownloadRecord].self, from: data) }
+                let paths = DownloadPathStorage(root: root)
+                records = savedRecords.map { paths.restore($0) }
+                // Older builds serialized the app container's absolute UUID path.
+                // iOS can change that UUID on an update even though the files survive.
+                // Rewrite recovered entries as container-relative references now.
+                if savedRecords != records || records.contains(where: { paths.persist($0) != $0 }) { save() }
             }
         } catch { metadataFailed = true; storageError = "Download metadata could not be read. The original file is preserved." }
         Task { [weak self] in
@@ -147,7 +154,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         save()
     }
     private func save() {
-        do { try JSONEncoder().encode(DownloadCatalog(records: records)).write(to: root.appendingPathComponent("downloads.json"), options: .atomic) }
+        do {
+            let paths = DownloadPathStorage(root: root)
+            try JSONEncoder().encode(DownloadCatalog(records: records.map { paths.persist($0) }))
+                .write(to: root.appendingPathComponent("downloads.json"), options: .atomic)
+        }
         catch { metadataFailed = true; storageError = error.localizedDescription }
     }
     nonisolated private static func safeName(_ value: String) -> String { value.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression) }
@@ -225,6 +236,107 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         guard let identifier = session.configuration.identifier else { return }
         Task { @MainActor in BackgroundDownloadEvents.complete(identifier) }
+    }
+}
+
+/// Persist references relative to the app's *current* container, not to its
+/// replaceable /Containers/Data/Application/<UUID> absolute path. The in-memory
+/// records always contain fully resolved file paths for playback and sharing.
+struct DownloadPathStorage {
+    private static let downloadsPrefix = "quicktick-downloads:"
+    private static let containerPrefix = "quicktick-container:"
+
+    let root: URL
+    let container: URL
+
+    init(root: URL, container: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.root = root.standardizedFileURL
+        self.container = container.standardizedFileURL
+    }
+
+    func persist(_ record: DownloadRecord) -> DownloadRecord {
+        var result = record
+        result.localMediaPath = portable(record.localMediaPath)
+        result.thumbnailLocalPath = portable(record.thumbnailLocalPath)
+        return result
+    }
+
+    func restore(_ record: DownloadRecord) -> DownloadRecord {
+        var result = record
+        result.localMediaPath = resolve(record.localMediaPath, key: record.key, media: record.kind == .file)
+        result.thumbnailLocalPath = resolve(record.thumbnailLocalPath, key: record.key, media: false, thumbnail: true)
+        return result
+    }
+
+    private func portable(_ path: String?) -> String? {
+        guard let path, path.hasPrefix("/") else { return path }
+        let canonical = URL(fileURLWithPath: path).standardizedFileURL.path
+        if let suffix = relativePath(canonical, inside: root.path) { return Self.downloadsPrefix + suffix }
+        if let suffix = relativePath(canonical, inside: container.path) { return Self.containerPrefix + suffix }
+        return path // Files outside this container must never be silently relocated.
+    }
+
+    private func resolve(_ path: String?, key: String, media: Bool, thumbnail: Bool = false) -> String? {
+        guard let path else { return nil }
+        if let relative = path.stripPrefix(Self.downloadsPrefix), let url = safeChild(relative, of: root) { return url.path }
+        if let relative = path.stripPrefix(Self.containerPrefix), let url = safeChild(relative, of: container) { return url.path }
+        if FileManager.default.fileExists(atPath: path) { return path }
+
+        // Recover media and thumbnails from older catalogs that still point to
+        // a *previous* app container UUID. Files stay under the same download key.
+        let folder = root.appendingPathComponent(Self.safeName(key), isDirectory: true)
+        if thumbnail {
+            let candidate = folder.appendingPathComponent("thumbnail.jpg")
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate.path }
+        } else if media {
+            let filename = URL(fileURLWithPath: path).lastPathComponent
+            if filename.hasPrefix("media.") {
+                let exact = folder.appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: exact.path) { return exact.path }
+            }
+            // Older builds may have saved a different media extension.
+            if let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) {
+                let candidates = names.filter { $0.hasPrefix("media.") }.sorted()
+                if candidates.count == 1 { return folder.appendingPathComponent(candidates[0]).path }
+            }
+        }
+
+        // AVAssetDownloadTask controls the location of HLS .movpkg packages.
+        // Apple prohibits moving them into our download folder, so recover
+        // their former container-relative location without touching the asset.
+        if let relative = Self.previousContainerRelativePath(path),
+           let candidate = safeChild(relative, of: container),
+           FileManager.default.fileExists(atPath: candidate.path) { return candidate.path }
+        return path // Keep the original reference if its file is genuinely absent.
+    }
+
+    private func relativePath(_ path: String, inside directory: String) -> String? {
+        guard path.hasPrefix(directory + "/") else { return nil }
+        return String(path.dropFirst(directory.count + 1))
+    }
+
+    private func safeChild(_ relative: String, of directory: URL) -> URL? {
+        let components = relative.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.isEmpty, components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { return nil }
+        return directory.appendingPathComponent(relative)
+    }
+
+    private static func previousContainerRelativePath(_ path: String) -> String? {
+        guard let range = path.range(of: "/Containers/Data/Application/") else { return nil }
+        let suffix = path[range.upperBound...].split(separator: "/", omittingEmptySubsequences: false)
+        guard suffix.count > 2, UUID(uuidString: String(suffix[0])) != nil else { return nil }
+        let relative = suffix.dropFirst().joined(separator: "/")
+        return relative.hasPrefix("Library/") || relative.hasPrefix("Documents/") ? relative : nil
+    }
+
+    private static func safeName(_ value: String) -> String {
+        value.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression)
+    }
+}
+
+private extension String {
+    func stripPrefix(_ prefix: String) -> String? {
+        hasPrefix(prefix) ? String(dropFirst(prefix.count)) : nil
     }
 }
 

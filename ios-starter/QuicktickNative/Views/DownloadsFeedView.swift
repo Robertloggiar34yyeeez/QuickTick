@@ -64,6 +64,10 @@ private struct DownloadContent: View {
                                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                                     Text(record.formattedSize).font(.caption.monospacedDigit())
                                     ProgressView(value: record.progress).tint(AppTheme.accent)
+                                    if record.state == .complete && record.offlinePost == nil {
+                                        Text("Saved file unavailable. Try restoring it from the source.")
+                                            .foregroundStyle(.orange).font(.caption)
+                                    }
                                     if let error = record.errorMessage { Text(error).foregroundStyle(.orange).font(.caption) }
                                 }
                             }
@@ -71,6 +75,10 @@ private struct DownloadContent: View {
                                 if record.state == .downloading { Button("Pause") { manager.pause(record) }; Button("Cancel") { manager.cancel(record) } }
                                 if record.state == .paused { Button("Resume") { manager.resume(record) }; Button("Cancel") { manager.cancel(record) } }
                                 if record.state == .failed || record.state == .cancelled { Button("Retry") { manager.retry(record) } }
+                                if record.state == .complete && record.offlinePost == nil {
+                                    Button("Restore") { manager.retry(record) }
+                                        .accessibilityIdentifier("restore-download-\(record.key)")
+                                }
                                 Spacer(); Button("Delete", role: .destructive) { manager.delete(record) }
                             }.buttonStyle(.bordered)
                         }

@@ -1086,7 +1086,7 @@ final class AppStore: ObservableObject {
                     let heavy = players.activeKey == nil && inlinePlaybackID == nil && activeTab != 1
                         && fullScreenPlaybackID == nil && Date().timeIntervalSince(lastFeedMotion) >= 1.5
                     let token = generation
-                    if await visual.processNext(heavy: heavy), !Task.isCancelled {
+                    if await visual.processNext(heavy: heavy, resolver: resolver), !Task.isCancelled {
                         let scores = await visual.scores(Array(posts.prefix(128)))
                         let fingerprints = await visual.fingerprints()
                         guard !Task.isCancelled else { return }
@@ -1252,7 +1252,7 @@ final class AppStore: ObservableObject {
                 // A feed request finishing in the background does not consume
                 // visual inference resources, and must not deadlock this user
                 // initiated operation. The player was paused above.
-                await visual.analyzeFavorite(post, useVision: true)
+                await visual.analyzeFavorite(post, useVision: true, resolver: resolver)
                 guard !Task.isCancelled, manualVisualID == id else { return }
                 checked += 1
                 if Date().timeIntervalSince(lastProgress) >= 0.2 || checked == history.count {

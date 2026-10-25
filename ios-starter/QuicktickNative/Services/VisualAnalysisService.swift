@@ -259,7 +259,7 @@ actor VisualAnalysisService {
     }
     /// Lightweight cache-only attributes can run during browsing. Heavy models
     /// and bounded thumbnail requests require an uncontended resource window.
-    func processNext(heavy: Bool) async -> Bool {
+    func processNext(heavy: Bool, resolver: MediaResolver? = nil) async -> Bool {
         restore()
         guard !analyzing, resourcesAllowAnalysis(), let work = state.pending?.filter({ $0.retryAfter <= .now })
             .sorted(by: { a, b in a.priority == b.priority ? (a.priority >= 4 ? a.created > b.created : a.created < b.created) : a.priority > b.priority }).first else { return false }
@@ -267,7 +267,7 @@ actor VisualAnalysisService {
         defer { FeedPerformance.emit(heavy ? "visual_heavy_slice" : "visual_cached_slice", started: started, count: 1) }
         let before = state.features[work.post.stableID]
         await analyze(work.post, favorite: state.liked.contains(work.post.stableID), useVision: heavy,
-            disliked: state.disliked.contains(work.post.stableID), lightweight: !heavy)
+            disliked: state.disliked.contains(work.post.stableID), lightweight: !heavy, resolver: resolver)
         guard !Task.isCancelled else { return false }
         let complete = state.analysisVersions?[work.post.stableID] == revision(work.post)
         if complete { state.pending?.removeAll { $0.post.stableID == work.post.stableID } }
@@ -283,12 +283,12 @@ actor VisualAnalysisService {
         let realLifeModel = VisualDomain.classify(post).map {
             VisualAppearanceEncoder.prefersMobileCLIP(domain: $0, provider: post.provider)
         } == true && MobileCLIPRealLifeEncoder.isInstalled()
-        return TasteConcepts.version + "|appearance-wd-v3-fp16|" + (realLifeModel ? MobileCLIPRealLifeEncoder.version : "vision")
+        return TasteConcepts.version + "|irl-frames-v1|appearance-wd-v3-fp16|" + (realLifeModel ? MobileCLIPRealLifeEncoder.version : "vision")
             + "|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.
-    func analyzeFavorite(_ post: Post, useVision: Bool) async {
-        await analyze(post, favorite: true, useVision: useVision)
+    func analyzeFavorite(_ post: Post, useVision: Bool, resolver: MediaResolver? = nil) async {
+        await analyze(post, favorite: true, useVision: useVision, resolver: resolver)
     }
     func analyzeCachedPost(_ post: Post, useVision: Bool) async {
         await analyze(post, favorite: false, useVision: useVision)
@@ -300,7 +300,7 @@ actor VisualAnalysisService {
         restore(); loadTaxonomy()
         return posts.filter { state.analysisVersions?[$0.stableID] != revision($0) }.sorted { $0.stableID < $1.stableID }
     }
-    private func analyze(_ post: Post, favorite: Bool, useVision: Bool, disliked: Bool = false, lightweight: Bool = false) async {
+    private func analyze(_ post: Post, favorite: Bool, useVision: Bool, disliked: Bool = false, lightweight: Bool = false, resolver: MediaResolver? = nil) async {
         guard !analyzing, resourcesAllowAnalysis() else { return }
         analyzing = true; defer { analyzing = false }
         restore()
@@ -337,8 +337,14 @@ actor VisualAnalysisService {
             lastPreviewAttempt = .now
             preview = await VisualPreviewLoader.shared.image(post)
         }
-        guard let image = preview else { return }
-        guard resourcesAllowAnalysis() else { return }
+        // Decode only for liked/disliked real-life videos in the serial heavy
+        // worker. Never request frame decoding during paging or playback.
+        let shouldSample = !lightweight && (favorite || disliked) &&
+            IRLVideoFrameSamplingPlan.eligible(post, domain: metadata.domain)
+        let sampled = shouldSample && resourcesAllowAnalysis()
+            ? await IRLVideoFrameSampler.shared.frames(for: post, resolver: resolver) : []
+        if preview == nil { preview = sampled.first }
+        guard let image = preview, resourcesAllowAnalysis() else { return }
         var enriched = metadata
         let taggerCoolingDown = !lightweight && before.domain == .anime ? await animeTagger.cooldownDelay() > 0 : false
         enriched.pixelsAnalyzed = true
@@ -350,6 +356,32 @@ actor VisualAnalysisService {
             enriched.version = before.version
         } else if !lightweight, let encoded = try? await VisualAppearanceEncoder.embedding(image, domain: before.domain, provider: post.provider) {
             enriched.embedding = encoded.vector; enriched.version = encoded.version
+        }
+        if !sampled.isEmpty, !lightweight, resourcesAllowAnalysis() {
+            var vectors: [[Float]] = []
+            var observations: [[String: Double]] = []
+            for frame in sampled.prefix(3) {
+                guard resourcesAllowAnalysis() else { break }
+                var attributes = VisualAppearanceEncoder.attributes(frame.image)
+                attributes.merge(await VisualAppearanceEncoder.sceneAttributes(frame), uniquingKeysWith: max)
+                observations.append(attributes)
+                guard resourcesAllowAnalysis() else { break }
+                if let encoded = try? await VisualAppearanceEncoder.embedding(frame, domain: before.domain, provider: post.provider) {
+                    // Never mix Vision and MobileCLIP embedding spaces.
+                    if enriched.embedding.isEmpty { enriched.version = encoded.version }
+                    if enriched.version == encoded.version { vectors.append(encoded.vector) }
+                }
+            }
+            if vectors.count >= 2 {
+                let allVectors = (enriched.embedding.isEmpty ? [] : [enriched.embedding]) + vectors
+                let centroid = IRLVideoFrameSamplingPlan.centroid(allVectors)
+                if !centroid.isEmpty {
+                    enriched.embedding = centroid
+                    enriched.sampledVideoFrames = vectors.count
+                }
+            }
+            // Only repeated, confident presentation clues survive a scene cut.
+            enriched.attributes.merge(IRLVideoFrameSamplingPlan.consensus(observations), uniquingKeysWith: max)
         }
         guard resourcesAllowAnalysis() else { return }
         if !lightweight, !taggerCoolingDown, before.domain == .anime, let tagged = await animeTagger.analyze(image, domain: .anime) {
@@ -367,7 +399,8 @@ actor VisualAnalysisService {
             }
         }
         guard resourcesAllowAnalysis() else { return }
-        if !lightweight, before.domain == .realLife {
+        if !lightweight, (before.domain == .realLife ||
+            IRLVideoFrameSamplingPlan.eligible(post, domain: before.domain)) {
             // Vision labels describe presentation. Faces are never identity evidence.
             enriched.attributes.merge(await VisualAppearanceEncoder.sceneAttributes(image), uniquingKeysWith: max)
         }

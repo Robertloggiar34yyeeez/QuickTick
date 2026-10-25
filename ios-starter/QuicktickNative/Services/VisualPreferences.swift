@@ -12,12 +12,6 @@ enum VisualDomain: String, Codable, Sendable {
         if rendered { return .threeD }
         if photographic { return .realLife }
         if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"]) { return .anime }
-        // Real-world video services frequently omit typed photo tags. Without
-        // this fallback they were classified as uncertain and missed the
-        // MobileCLIP real-life appearance path entirely. Never override
-        // explicit illustration/3D tags above.
-        if post.type.lowercased() == "video",
-           ["redgifs", "pornhub", "eporner"].contains(post.provider.lowercased()) { return .realLife }
         return .uncertain
     }
 }
@@ -38,6 +32,8 @@ struct VisualFeatures: Codable, Sendable, Equatable {
     var conceptEvidence: [String: ConceptEvidence]? = nil
     var creators: [String]? = nil
     var embedding: [Float] = []
+    // Only added by deferred real-life video sampling, legacy saves decode as nil.
+    var sampledVideoFrames: Int? = nil
     var fingerprint: UInt64?
     var pixelsAnalyzed = false
     var version = "metadata-vision-v1"

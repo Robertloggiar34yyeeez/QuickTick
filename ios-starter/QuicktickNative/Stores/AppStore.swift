@@ -910,15 +910,14 @@ final class AppStore: ObservableObject {
         let protected = (tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs).union([active])
         let prefixCount = max(activeIndex, source.lastIndex(where: { protected.contains($0.stableID) }) ?? activeIndex) + 1
         let prefix = Array(source.prefix(prefixCount))
-        // Only personalized acquisition needs duplicate/similarity pruning.
-        // Applying it again to an ordinary search or static fixture can
-        // silently delete the very next playable clip while the user swipes.
-        // The ranker still applies explicit dislikes in both cases.
+        // Normal Home feeds still dedupe cached visual matches. Only an
+        // ordinary Immersive feed must preserve its next playable clip: a
+        // background duplicate pass could otherwise leave a one-item pager.
+        // The ranker continues honoring explicit dislikes in both cases.
         let unseen = Array(source.dropFirst(prefixCount))
-        let tail = candidateContext != nil
-            ? feedExclusions.filter(unseen, favorites: Array(favorites.values), existing: prefix,
-                                    recommended: true, favoriteIDs: favoriteExclusionIDs)
-            : unseen
+        let tail = tab == 1 && candidateContext == nil ? unseen
+            : feedExclusions.filter(unseen, favorites: Array(favorites.values), existing: prefix,
+                                    recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
         let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: prefix, visualScores: visualScores)
         let stillProtected = tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs
         guard !Task.isCancelled, generation == token, activeTab == tab, feedSort == "recommended",

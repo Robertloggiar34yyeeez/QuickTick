@@ -7,7 +7,7 @@ struct GIFFrames: @unchecked Sendable {
     let images: [UIImage]
     let duration: Double
     let nativeSize: CGSize
-    static func decode(_ data: Data) -> GIFFrames? {
+    static func decode(_ data: Data, pixels: Int = 360, frameLimit: Int = 60) -> GIFFrames? {
         guard data.count <= 32 * 1024 * 1024, let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let count = CGImageSourceGetCount(source)
         guard count > 0 else { return nil }
@@ -18,13 +18,14 @@ struct GIFFrames: @unchecked Sendable {
             duration += max(0.02, (gif?[kCGImagePropertyGIFUnclampedDelayTime] as? Double) ?? (gif?[kCGImagePropertyGIFDelayTime] as? Double) ?? 0.1)
             ends.append(duration)
         }
-        let samples = min(60, max(count, Int(ceil(min(duration, 30) * 15))))
+        let samples = min(max(1, frameLimit), max(count, Int(ceil(min(duration, 30) * 15))))
         var images: [UIImage] = []; var decoded: [Int: UIImage] = [:]; var index = 0
         for sample in 0..<samples {
+            guard !Task.isCancelled else { return nil }
             let time = Double(sample) / Double(samples) * duration
             while index < count - 1 && ends[index] <= time { index += 1 }
             if decoded[index] == nil {
-                let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 360, kCGImageSourceCreateThumbnailWithTransform: true]
+                let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: max(1, pixels), kCGImageSourceCreateThumbnailWithTransform: true]
                 guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary) else { return nil }
                 decoded[index] = UIImage(cgImage: image)
             }
@@ -38,13 +39,17 @@ struct GIFFrames: @unchecked Sendable {
 
 private actor GIFFrameDecoder {
     static let shared = GIFFrameDecoder()
-    func decode(_ data: Data) throws -> GIFFrames? { try Task.checkCancellation(); return GIFFrames.decode(data) }
+    func decode(_ data: Data, pixels: Int, frameLimit: Int) throws -> GIFFrames? {
+        try Task.checkCancellation(); return GIFFrames.decode(data, pixels: pixels, frameLimit: frameLimit)
+    }
 }
 
 struct AnimatedGIFSurface: View {
     let url: URL
     var playing = true
     var naturalAspect = false
+    var pixels = 360
+    var frameLimit = 60
     var onSize: ((CGSize) -> Void)?
     @State private var frames: GIFFrames?
     @State private var failed = false
@@ -60,7 +65,7 @@ struct AnimatedGIFSurface: View {
         }.task(id: url) {
             do {
                 let data = try await MediaImagePipeline.shared.data(url: url)
-                let decoded = try await GIFFrameDecoder.shared.decode(data)
+                let decoded = try await GIFFrameDecoder.shared.decode(data, pixels: pixels, frameLimit: frameLimit)
                 guard !Task.isCancelled else { return }
                 frames = decoded; failed = decoded == nil; if let size = decoded?.nativeSize { onSize?(size) }
             } catch { if !Task.isCancelled { failed = true } }

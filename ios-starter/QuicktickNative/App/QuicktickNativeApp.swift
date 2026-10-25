@@ -6,6 +6,13 @@ struct QuicktickNativeApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var store = AppStore()
 
+    init() {
+        // Work around ggml-metal's unstable tensor/fused kernels on newer
+        // iPhones before the optional Anima Metal backend is initialized.
+        setenv("GGML_METAL_TENSOR_DISABLE", "1", 1)
+        setenv("GGML_METAL_FUSION_DISABLE", "1", 1)
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

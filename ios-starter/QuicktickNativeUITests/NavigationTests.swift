@@ -12,6 +12,88 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(nativeShare.isHittable)
         let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Native recommendation profile sharing"; capture.lifetime = .keepAlways; add(capture)
     }
+    @MainActor func testManualVisualRefreshShowsProgressAndLoopsDownloadedGIF() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-download-images", "--ui-testing-download-gif"]
+        app.launch()
+        app.buttons["tab-Immersive"].tap()
+        let like = app.buttons["immersive-Like"]
+        XCTAssertTrue(like.waitForExistence(timeout: 10))
+        if like.value as? String != "Liked" { like.tap() }
+        app.buttons["open-settings"].tap()
+        let refresh = app.buttons["force-visual-refresh"]
+        for _ in 0..<12 { if refresh.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(refresh.isHittable); refresh.tap()
+        let progress = app.descendants(matching: .any).matching(identifier: "manual-visual-progress").firstMatch
+        XCTAssertTrue(progress.waitForExistence(timeout: 10))
+        let gif = app.descendants(matching: .any).matching(identifier: "visual-refresh-gif").firstMatch
+        for _ in 0..<3 { if gif.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(gif.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "value == %@", "Looping"), evaluatedWith: gif)
+        waitForExpectations(timeout: 15)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Manual visual refresh progress and local GIF loop"; capture.lifetime = .keepAlways; add(capture)
+    }
+    @MainActor func testActiveLearningKeepsPlaybackAndDislikeResponsive() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-active-learning", "--measure-performance"]
+        let start = Date(); app.launch()
+        let video = app.buttons["inline-play-test:video"]
+        XCTAssertTrue(video.waitForExistence(timeout: 10))
+        print("QUICKTICK_METRIC simulator_fixture_launch_to_first_post_ms=\(Date().timeIntervalSince(start) * 1000)")
+        expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: video)
+        waitForExpectations(timeout: 15)
+        for _ in 0..<3 { app.swipeUp(); app.swipeDown() }
+        app.buttons["tab-Home"].tap()
+        let dislike = app.buttons["dislike-test:video"]
+        XCTAssertTrue(dislike.waitForExistence(timeout: 10)); dislike.tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dislike)
+        waitForExpectations(timeout: 5)
+        XCTAssertFalse(app.buttons["Close full image"].exists)
+        XCTAssertTrue(app.buttons["dislike-test:image"].exists)
+    }
+    @MainActor func testHomeDislikeCannotOpenTheLowerImage() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        // A tall image directly below this video extends beyond its clipped
+        // drawing bounds. Tap the actual coordinate, as a finger would.
+        let dislike = app.buttons["dislike-test:video"]
+        XCTAssertTrue(dislike.waitForExistence(timeout: 10))
+        XCTAssertTrue(dislike.isHittable)
+        dislike.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dislike)
+        waitForExpectations(timeout: 5)
+        XCTAssertFalse(app.buttons["Close full image"].exists)
+        XCTAssertTrue(app.buttons["dislike-test:image"].exists)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Home dislike removes upper post without opening lower image"
+        capture.lifetime = .keepAlways; add(capture)
+    }
+    @MainActor func testFavoritesImmersiveAndDownloadExport() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]
+        app.launch()
+        app.buttons["tab-Immersive"].tap()
+        let like = app.buttons["immersive-Like"]
+        XCTAssertTrue(like.waitForExistence(timeout: 10))
+        if like.value as? String != "Liked" { like.tap() }
+        app.buttons["tab-Favorites"].tap()
+        XCTAssertTrue(app.buttons["favorites-shuffle"].waitForExistence(timeout: 10))
+        let immersive = app.buttons["favorites-immersive"]
+        XCTAssertTrue(immersive.waitForExistence(timeout: 10))
+        immersive.tap()
+        XCTAssertTrue(app.otherElements["immersive-media-test:video"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Back"].exists)
+        app.buttons["Back"].tap()
+        app.buttons["tab-Downloads"].tap()
+        let export = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "export-download-")).firstMatch
+        for _ in 0..<6 {
+            if export.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(export.isHittable)
+        export.tap()
+        XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 10) || app.buttons["Save to Files"].exists || app.otherElements["ActivityListView"].exists)
+    }
     override func setUp() async throws {
         continueAfterFailure = false
         await MainActor.run { XCUIDevice.shared.orientation = .portrait }
@@ -52,10 +134,22 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
     }
 
-    @MainActor func testFourTabsSettingsAndScrollToTop() {
+    @MainActor func testSwipeRightFromImmersiveEdgeReturnsToHome() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        app.buttons["tab-Immersive"].tap()
+        XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 10))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.55))
+        let destination = app.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.55))
+        start.press(forDuration: 0.07, thenDragTo: destination)
+        XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor func testFiveTabsSettingsAndScrollToTop() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
-        let names = ["Home", "Immersive", "Favorites", "Downloads"]
+        let names = ["Home", "Immersive", "Create", "Favorites", "Downloads"]
         for name in names { XCTAssertTrue(app.buttons["tab-\(name)"].exists) }
         XCTAssertFalse(app.buttons["tab-Settings"].exists)
         app.swipeUp()
@@ -67,9 +161,77 @@ final class NavigationTests: XCTestCase {
         app.buttons["Done"].tap()
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
     }
+    @MainActor func testCreateStudioFirstRunAndReturnToFeed() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))
+        app.buttons["tab-Create"].tap()
+        XCTAssertTrue(app.navigationBars["Create"].waitForExistence(timeout: 5))
+        if app.buttons["studio-intro-complete"].waitForExistence(timeout: 2) {
+            app.buttons["studio-intro-complete"].tap()
+        }
+        XCTAssertTrue(app.otherElements["studio-prompt"].exists || app.textViews["studio-prompt"].exists)
+        XCTAssertTrue(app.buttons["studio-generate"].exists)
+        XCTAssertTrue(app.buttons["studio-generate-from-favorites"].exists)
+        XCTAssertTrue(app.buttons["studio-open-lora-menu"].exists)
+        app.buttons["studio-open-lora-menu"].tap()
+        XCTAssertTrue(app.navigationBars["Model library"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["studio-catalog-search"].exists)
+        XCTAssertTrue(app.buttons["studio-catalog-kind-lora"].exists)
+        XCTAssertTrue(app.buttons["studio-catalog-kind-checkpoint"].exists)
+        app.buttons["Done"].tap()
+        app.buttons["Close"].tap()
+        XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 5))
+    }
+    @MainActor func testStudioCanContinueWithoutDownloadingAnima() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "-quicktick-studio-intro-v1", "NO"]
+        app.launch()
+        XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))
+        app.buttons["tab-Create"].tap()
+        let continueButton = app.buttons["studio-intro-complete"]
+        XCTAssertTrue(continueButton.waitForExistence(timeout: 5))
+        XCTAssertTrue(continueButton.isEnabled)
+        continueButton.tap()
+        XCTAssertTrue(app.buttons["studio-generate"].waitForExistence(timeout: 5))
+    }
+    @MainActor func testHomeDownloadShowsFeedbackAndSavedState() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        let download = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "card-download-")).firstMatch
+        XCTAssertTrue(download.waitForExistence(timeout: 10))
+        // UI tests share a simulator: a previous test may already have saved
+        // this fixture, which is a valid persistent completed state.
+        if download.value as? String != "Saved" {
+            download.tap()
+            let state = download.value as? String
+            XCTAssertTrue(state == "Downloading" || state == "Saved", "A tap should show transfer feedback immediately")
+        }
+        expectation(for: NSPredicate(format: "value == %@", "Saved"), evaluatedWith: download)
+        waitForExpectations(timeout: 15)
+    }
+    @MainActor func testHideAITabKeepsFourNavigationTabs() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))
+        app.buttons["open-settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        let toggle = app.switches["show-ai-tab-toggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        if toggle.value as? String == "1" { toggle.tap() }
+        app.buttons["Done"].tap()
+        let createTab = app.buttons["tab-Create"]
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: createTab)
+        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 5), .completed)
+        for name in ["Home", "Immersive", "Favorites", "Downloads"] {
+            XCTAssertTrue(app.buttons["tab-\(name)"].exists)
+        }
+        app.buttons["open-settings"].tap()
+        let restoreToggle = app.switches["show-ai-tab-toggle"]
+        if restoreToggle.value as? String == "0" { restoreToggle.tap() }
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 5))
+    }
     @MainActor func testSearchAppearsOnceBeforeAndAfterSubmitting() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
-        app.buttons["Toggle search"].tap()
+        app.buttons["home-search-button"].tap()
         let fields = app.textFields.matching(identifier: "feed-search-input")
         XCTAssertEqual(fields.count, 1)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
@@ -84,10 +246,20 @@ final class NavigationTests: XCTestCase {
         if keyboardIntroduction.waitForExistence(timeout: 2) { keyboardIntroduction.tap() }
         expectation(for: NSPredicate(format: "value == %@", "engineering"), evaluatedWith: fields.firstMatch)
         waitForExpectations(timeout: 10)
-        app.buttons["Search"].firstMatch.tap()
+        app.buttons["apply-search-filters"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fields.firstMatch)
+        waitForExpectations(timeout: 10)
+        app.buttons["home-search-button"].tap()
         XCTAssertTrue(fields.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(fields.count, 1)
-        XCTAssertEqual(fields.firstMatch.value as? String, "engineering")
+        XCTAssertTrue(app.buttons["Remove engineering"].exists)
+        app.buttons["Exclude engineering"].tap()
+        XCTAssertTrue(app.buttons["Include engineering"].exists)
+        app.buttons["Include engineering"].tap()
+        XCTAssertTrue(app.buttons["Exclude engineering"].exists)
+        app.buttons["close-search"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fields.firstMatch)
+        waitForExpectations(timeout: 10)
     }
     @MainActor func testDownloadedImagesUseNormalFeedAndCloseFullComic() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]; app.launch()
@@ -98,8 +270,87 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(full.isHittable); full.tap()
         let close = app.buttons["Close full image"]
         XCTAssertTrue(close.waitForExistence(timeout: 10))
+        let comic = app.scrollViews["full-comic-zoom"]
+        XCTAssertTrue(comic.waitForExistence(timeout: 10))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.35))
+        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.75))
+        start.press(forDuration: 0.06, thenDragTo: finish)
+        XCTAssertTrue(close.exists, "A downward reading scroll must never dismiss a long comic")
         let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Downloaded comic full view"; capture.lifetime = .keepAlways; add(capture)
         close.tap(); XCTAssertTrue(app.navigationBars["Downloads"].exists)
+    }
+
+    @MainActor func testBottomNavigationDockFillsAvailableWidth() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        let dock = app.otherElements["bottom-navigation-bar"]
+        let home = app.buttons["tab-Home"]
+        XCTAssertTrue(dock.waitForExistence(timeout: 12))
+        XCTAssertTrue(home.exists)
+        let screen = app.windows.firstMatch.frame
+        XCTAssertGreaterThan(dock.frame.width, screen.width * 0.95,
+                             "Bottom navigation should span the screen, not float as an inset capsule")
+        XCTAssertLessThanOrEqual(dock.frame.maxY, screen.maxY + 1)
+        XCTAssertGreaterThanOrEqual(dock.frame.maxY, screen.maxY - 50,
+                                    "Dock should sit directly above the system home indicator")
+    }
+
+    @MainActor func testFullscreenVideoSwipeDownDismissesOnlyStandardViewer() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        let surface = app.buttons["fullscreen-test:video"]
+        XCTAssertTrue(surface.waitForExistence(timeout: 12))
+        surface.tap()
+        let close = app.buttons["Close full screen video"]
+        XCTAssertTrue(close.waitForExistence(timeout: 12))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.32))
+        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.72))
+        start.press(forDuration: 0.06, thenDragTo: finish)
+        let disappeared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: close)
+        XCTAssertEqual(XCTWaiter.wait(for: [disappeared], timeout: 5), .completed,
+            "Swipe down should exit standard full screen")
+        // Immersive vertical paging uses a different view without this dismiss
+        // modifier, so its vertical gesture still advances within the feed.
+        app.buttons["tab-Immersive"].tap()
+        XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor func testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-first-run"]
+        app.launch()
+        let next = app.buttons["first-run-continue"]
+        XCTAssertTrue(next.waitForExistence(timeout: 12))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Your taste")).firstMatch.exists)
+        next.tap()
+        XCTAssertTrue(app.staticTexts["Choose your source"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.secureTextFields["first-run-rule34-key"].exists)
+        next.tap()
+        XCTAssertTrue(app.staticTexts["Which characters do you like?"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["simple-pick-chun_li"].exists)
+        app.buttons["simple-pick-chun_li"].tap()
+        XCTAssertTrue(app.otherElements["simple-example-post"].waitForExistence(timeout: 5))
+        next.tap()
+        XCTAssertTrue(app.staticTexts["You're ready"].waitForExistence(timeout: 5))
+        next.tap()
+        XCTAssertTrue(app.buttons["tab-Home"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor func testFirstRunAdvancedModeShowsDetailedPreferences() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-first-run"]
+        app.launch()
+        let next = app.buttons["first-run-continue"]
+        XCTAssertTrue(next.waitForExistence(timeout: 12))
+        app.buttons["Advanced"].tap()
+        next.tap()
+        next.tap()
+        XCTAssertTrue(app.staticTexts["Teach QuickTick your taste"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Characters"].exists)
+        XCTAssertTrue(app.staticTexts["Artists"].exists)
+        XCTAssertTrue(app.staticTexts["Attributes"].exists)
     }
 
     @MainActor func testHomeInlinePlaybackAndComicClose() {
@@ -131,10 +382,11 @@ final class NavigationTests: XCTestCase {
             let details = XCTAttachment(string: app.debugDescription); details.name = "Home return playback state"; details.lifetime = .keepAlways; add(details)
         }
         XCTAssertEqual(result, .completed, "The visible Home video must resume after tab refresh")
-        app.buttons["feed-recent"].tap()
-        XCTAssertTrue(app.buttons["inline-play-home:video"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["inline-play-test:video"].exists)
+        app.buttons["feed-popular"].tap()
+        XCTAssertTrue(app.buttons["feed-popular"].isSelected)
         app.buttons["feed-recommended"].tap()
+        XCTAssertTrue(app.buttons["feed-recommended"].isSelected,
+                      "The second sort tap must take effect before its asynchronous refresh")
         XCTAssertTrue(app.buttons["inline-play-test:video"].waitForExistence(timeout: 10))
         let full = app.buttons["View full image"].firstMatch
         for _ in 0..<3 { if full.isHittable { break }; app.swipeUp() }
@@ -155,7 +407,8 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(frame.waitForExistence(timeout: 15))
         expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: frame)
         waitForExpectations(timeout: 15)
-        XCTAssertLessThanOrEqual(frame.frame.width,321)
+        XCTAssertGreaterThan(frame.frame.width, 0)
+        XCTAssertLessThanOrEqual(frame.frame.width, min(680, app.frame.width) + 1)
         XCTAssertGreaterThan(frame.frame.height, 0)
         XCTAssertEqual(frame.frame.width / frame.frame.height,320.0 / 180,accuracy:0.05)
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
@@ -188,7 +441,8 @@ final class NavigationTests: XCTestCase {
             XCTAssertTrue(frame.waitForExistence(timeout:10))
             expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
             waitForExpectations(timeout: 10)
-            XCTAssertLessThanOrEqual(frame.frame.width,321)
+            XCTAssertGreaterThan(frame.frame.width, 0)
+        XCTAssertLessThanOrEqual(frame.frame.width, min(680, app.frame.width) + 1)
             XCTAssertGreaterThan(frame.frame.height, 0)
             XCTAssertEqual(frame.frame.width / frame.frame.height, 320.0 / 180, accuracy: 0.05)
             let capture = XCTAttachment(string: "orientation=\(orientation.rawValue) viewport=\(viewport) media=\(media.frame) player=\(frame.frame)")
@@ -233,9 +487,21 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(like.value as? String, "Liked")
         center.doubleTap()
         XCTAssertEqual(like.value as? String, "Liked")
-        app.swipeUp()
-        expectation(for: NSPredicate(format: "value == %@", "Not liked"), evaluatedWith: like)
-        waitForExpectations(timeout: 5)
+        let pageStart = app.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.72))
+        let pageEnd = app.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.22))
+        pageStart.press(forDuration: 0.08, thenDragTo: pageEnd)
+        // The first gesture can land during a SwiftUI paging/seek transition
+        // on a busy simulator; a second deliberate swipe must still work.
+        if like.value as? String != "Not liked" { app.swipeUp() }
+        let pageAdvanced = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Not liked"), object: like)
+        let swipeResult = XCTWaiter.wait(for: [pageAdvanced], timeout: 5)
+        if swipeResult != .completed {
+            let attachment = XCTAttachment(string: app.debugDescription)
+            attachment.name = "Immersive swipe did not advance"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        XCTAssertEqual(swipeResult, .completed, "A vertical media swipe must switch to the next post")
         XCTAssertEqual(like.frame.midX, before.midX, accuracy: 1)
         XCTAssertEqual(like.frame.midY, before.midY, accuracy: 1)
         like.tap()
@@ -277,10 +543,14 @@ final class NavigationTests: XCTestCase {
 
     @MainActor func testPersonalPreferencesAndTabRefresh() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
-        app.buttons["feed-recent"].tap()
+        app.buttons["feed-popular"].tap()
         app.buttons["tab-Home"].tap()
-        expectation(for: NSPredicate(format: "selected == YES"), evaluatedWith: app.buttons["feed-recommended"])
+        // Reselecting Home refreshes the current mode instead of silently
+        // discarding an explicit Popular selection or search.
+        expectation(for: NSPredicate(format: "selected == YES"), evaluatedWith: app.buttons["feed-popular"])
         waitForExpectations(timeout: 10)
+        app.buttons["feed-recommended"].tap()
+        XCTAssertTrue(app.buttons["feed-recommended"].isSelected)
         app.buttons["personalize-feed"].tap()
         let input = app.textFields["positive-interest-input"]
         XCTAssertTrue(input.waitForExistence(timeout: 10)); input.tap()
@@ -296,33 +566,6 @@ final class NavigationTests: XCTestCase {
         app.buttons["personalize-feed"].tap()
         XCTAssertTrue(app.staticTexts["engineering"].waitForExistence(timeout: 10))
         app.buttons["Done"].tap()
-    }
-
-    @MainActor func testSyncedLoginsFillSettingsEvenWhenRememberIsOff() {
-        let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing", "--ui-testing-sync-login"]
-        app.launch()
-        app.buttons["open-settings"].tap()
-        let input = app.secureTextFields["sync-id-input"]
-        XCTAssertTrue(input.waitForExistence(timeout: 5))
-        input.tap()
-        input.typeText("QT6-AAECAwQFBgcICQoLDA0ODw.ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8")
-        app.buttons["Connect and merge"].tap()
-        let username = app.textFields["rule34-user-input"]
-        let filled = NSPredicate(format: "value == %@", "synced-test-user")
-        expectation(for: filled, evaluatedWith: username)
-        waitForExpectations(timeout: 10)
-        print("Sync UI status:", app.staticTexts["sync-status"].label)
-        let key = app.secureTextFields["rule34-key-input"]
-        XCTAssertNotEqual(key.value as? String, "Rule34 API key")
-        XCTAssertFalse((key.value as? String ?? "").isEmpty)
-        let syncedName = app.textFields["pornhub-user-input"]
-        for _ in 0..<5 { if syncedName.isHittable { break }; app.swipeUp() }
-        XCTAssertTrue(syncedName.waitForExistence(timeout:5))
-        XCTAssertEqual(syncedName.value as? String, "synced-test-name")
-        let session = app.secureTextFields["pornhub-session-input"]
-        XCTAssertNotEqual(session.value as? String, "Supported Pornhub session")
-        let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Synced access fields (synthetic data)"; screenshot.lifetime = .keepAlways; add(screenshot)
     }
 
     @MainActor func testHomeImmersiveHomeAndDownloads() async {

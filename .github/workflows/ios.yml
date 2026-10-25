@@ -1,58 +1,128 @@
 name: Native iOS build and IPA
 on:
   push:
+    branches-ignore: ['ipa-uploaded/**']
     paths-ignore: ['.github/workflows/keep-three-builds.yml']
   pull_request:
   workflow_dispatch:
+concurrency:
+  group: quicktick-ios-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
   ios:
-    runs-on: macos-15-intel
-    timeout-minutes: 90
+    # Mirage's native sdcpp XCFramework ships arm64 device/simulator slices.
+    # The Intel runner cannot link its x86_64 simulator tests.
+    runs-on: macos-15
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
-      - name: Select Swift 6.2 toolchain for xtool
+      - uses: actions/checkout@v5
+      - name: Select Xcode 26.3 toolchain
         run: sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
-      - uses: actions/setup-python@v5
+      - name: Verify Mirage-compatible Apple Silicon runner
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+      - uses: actions/cache/restore@v5
+        id: mirage-lora-cache
+        with:
+          path: ios-starter/MirageRuntime/Frameworks/sdcpp.xcframework
+          key: mirage-lora-ios-arm64-${{ hashFiles('scripts/build-mirage-lora.sh', 'scripts/mirage-lora-native.patch') }}
+      - name: Build native Mirage with LoRA support
+        if: steps.mirage-lora-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ninja >/dev/null; then brew install ninja; fi
+          bash scripts/build-mirage-lora.sh
+      - uses: actions/cache/save@v5
+        if: steps.mirage-lora-cache.outputs.cache-hit != 'true'
+        with:
+          path: ios-starter/MirageRuntime/Frameworks/sdcpp.xcframework
+          key: mirage-lora-ios-arm64-${{ hashFiles('scripts/build-mirage-lora.sh', 'scripts/mirage-lora-native.patch') }}
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ~/.cache/huggingface
           key: bge-micro-3edf6d7-v1
+      - uses: actions/cache/restore@v5
+        id: semantic-model-cache
+        with:
+          path: ios-starter/QuicktickNative/SemanticAssets
+          key: bge-coreml-macos15-arm64-${{ hashFiles('scripts/prepare-semantic-model.py') }}
       - name: Prepare pinned on-device embedding model
+        if: steps.semantic-model-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
           # 2.2.2 is the last PyTorch release with Intel macOS wheels.
           python -m pip install 'torch==2.2.2' 'transformers==4.46.3' 'coremltools==8.3.0' 'numpy==1.26.4'
           python scripts/prepare-semantic-model.py
+      - uses: actions/cache/save@v5
+        if: steps.semantic-model-cache.outputs.cache-hit != 'true'
+        with:
+          path: ios-starter/QuicktickNative/SemanticAssets
+          key: bge-coreml-macos15-arm64-${{ hashFiles('scripts/prepare-semantic-model.py') }}
+      - name: Prepare pinned offline artist and character taxonomy
+        run: python scripts/prepare-visual-taxonomy.py
+      - uses: actions/cache/restore@v5
+        id: wd-cache
+        with:
+          path: |
+            ios-starter/QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc
+            ios-starter/QuicktickNative/SemanticAssets/wd-v3-labels.json
+            ios-starter/QuicktickNative/SemanticAssets/wd-v3-model-card.md
+          key: wd-vit-v3-7f6b584-fp16-coreml8.3-arm64-v5
+      - name: Prepare pinned anime-only WD Tagger v3
+        if: steps.wd-cache.outputs.cache-hit != 'true'
+        id: wd-model
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install 'torch==2.2.2' 'torchvision==0.17.2' 'timm==1.0.12' 'transformers==4.46.3' 'coremltools==8.3.0' 'numpy==1.26.4'
+          python scripts/prepare-wd-tagger.py
+      - uses: actions/cache/save@v5
+        if: steps.wd-cache.outputs.cache-hit != 'true' && steps.wd-model.outcome == 'success'
+        with:
+          path: |
+            ios-starter/QuicktickNative/SemanticAssets/WDTaggerV3.mlmodelc
+            ios-starter/QuicktickNative/SemanticAssets/wd-v3-labels.json
+            ios-starter/QuicktickNative/SemanticAssets/wd-v3-model-card.md
+          key: wd-vit-v3-7f6b584-fp16-coreml8.3-arm64-v5
       - name: Archive real iPhone build without signing
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p logs
           xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination 'generic/platform=iOS' -archivePath build/QuicktickNative.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive | tee logs/xcodebuild-archive.txt
-      - uses: actions/cache/restore@v4
-        id: xtool-cache
-        with:
-          path: tools/xtool-source/.build
-          key: xtool-d802c719-macos15-intel-xcode26.3-v1
-      - name: Package unsigned IPA with verified user-provided xtool source
-        id: xtool-package
+      - name: Package unsigned IPA from verified Xcode archive
+        id: ipa-package
         shell: bash
-        run: bash scripts/package-with-xtool.sh
-      - uses: actions/cache/save@v4
-        if: steps.xtool-cache.outputs.cache-hit != 'true'
+        run: bash scripts/package-archive-ipa.sh
+      - uses: actions/upload-artifact@v6
         with:
-          path: tools/xtool-source/.build
-          key: xtool-d802c719-macos15-intel-xcode26.3-v1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: QuickTick-0.6.26-unsigned-IPA
+          name: QuickTick-0.9.9-unsigned-IPA
           path: build/export/
           if-no-files-found: error
           retention-days: 14
+      - name: Optional private Drive IPA upload confirmation
+        id: drive-upload
+        # Previously this 20-minute private upload gate prevented *all* device
+        # tests despite a successful IPA archive. Opt in explicitly when needed.
+        if: ${{ vars.REQUIRE_PRIVATE_DRIVE_UPLOAD == 'true' }}
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do
+            if git ls-remote --exit-code origin "refs/heads/ipa-uploaded/v096-$SOURCE_SHA" >/dev/null 2>&1; then exit 0; fi
+            sleep 10
+          done
+          echo "Private Drive IPA upload gate not released"; exit 1
       - name: Build and test native iOS app
         shell: bash
         run: |
@@ -60,17 +130,41 @@ jobs:
           mkdir -p logs
           xcodebuild -version | tee logs/xcode-version.txt
           DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')
-          xcrun simctl boot "$DEVICE" || true
-          xcrun simctl bootstatus "$DEVICE" -b
-          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -resultBundlePath logs/QuicktickTests.xcresult test | tee logs/xcodebuild-test.txt
-      - uses: actions/upload-artifact@v4
+          boot_clean_iphone() {
+            xcrun simctl shutdown "$DEVICE" || true
+            xcrun simctl erase "$DEVICE"
+            xcrun simctl boot "$DEVICE"
+            xcrun simctl bootstatus "$DEVICE" -b
+          }
+          run_iphone_tests() {
+            local bundle="$1" log="$2"
+            shift 2
+            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO "$@" -resultBundlePath "logs/$bundle.xcresult" test | tee "logs/$log.txt"
+          }
+          failures=0
+          boot_clean_iphone
+          run_iphone_tests QuicktickUnitTests xcodebuild-unit-test -only-testing:QuicktickNativeTests || failures=1
+          # XCTest's accessibility service can become unresponsive after a long
+          # series of UI cases. Run the sensitive end-to-end scenarios with
+          # fresh simulator state; do not skip or relax their assertions.
+          boot_clean_iphone
+          run_iphone_tests QuicktickOnboardingTests xcodebuild-onboarding-test -only-testing:QuicktickNativeUITests/NavigationTests/testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key || failures=1
+          boot_clean_iphone
+          run_iphone_tests QuicktickPreferencesTests xcodebuild-preferences-test -only-testing:QuicktickNativeUITests/NavigationTests/testPersonalPreferencesAndTabRefresh || failures=1
+          boot_clean_iphone
+          run_iphone_tests QuicktickImmersiveTests xcodebuild-immersive-test -only-testing:QuicktickNativeUITests/NavigationTests/testImmersiveRailSnapsAndDoubleTapLikes || failures=1
+          boot_clean_iphone
+          run_iphone_tests QuicktickTests xcodebuild-test -only-testing:QuicktickNativeUITests -skip-testing:QuicktickNativeUITests/NavigationTests/testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key -skip-testing:QuicktickNativeUITests/NavigationTests/testPersonalPreferencesAndTabRefresh -skip-testing:QuicktickNativeUITests/NavigationTests/testImmersiveRailSnapsAndDoubleTapLikes || failures=1
+          exit "$failures"
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: iphone-test-log
-          path: logs/xcodebuild-test.txt
+          path: |
+            logs/xcodebuild-*.txt
           retention-days: 14
       - name: Check native iPad layouts and playback
-        if: ${{ !cancelled() && steps.xtool-package.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.ipa-package.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -83,15 +177,14 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if [ -d logs/QuicktickTests.xcresult ]; then
-            xcrun xcresulttool export attachments --path logs/QuicktickTests.xcresult --output-path logs/screenshots || true
-            xcrun xcresulttool export diagnostics --path logs/QuicktickTests.xcresult --output-path logs/diagnostics/iphone || true
-          fi
-          if [ -d logs/QuicktickIPadTests.xcresult ]; then
-            xcrun xcresulttool export attachments --path logs/QuicktickIPadTests.xcresult --output-path logs/ipad-screenshots || true
-            xcrun xcresulttool export diagnostics --path logs/QuicktickIPadTests.xcresult --output-path logs/diagnostics/ipad || true
-          fi
-      - uses: actions/upload-artifact@v4
+          mkdir -p logs/screenshots logs/diagnostics
+          for suite in QuicktickOnboardingTests QuicktickPreferencesTests QuicktickImmersiveTests QuicktickTests QuicktickIPadTests; do
+            if [ -d "logs/$suite.xcresult" ]; then
+              xcrun xcresulttool export attachments --path "logs/$suite.xcresult" --output-path "logs/screenshots/$suite" || true
+              xcrun xcresulttool export diagnostics --path "logs/$suite.xcresult" --output-path "logs/diagnostics/$suite" || true
+            fi
+          done
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: native-test-results

@@ -26,7 +26,24 @@ actor UITestMediaFactory {
         var video = Post(key: "\(prefix):video",id: "1",provider: "Rule34",tags: ["test_tag"],mediaUrl: clip.absoluteString,thumbUrl: image.absoluteString,type: "video");video.width=320;video.height=180
         var comic = Post(key: "\(prefix):image",id: "2",provider: "Rule34",tags: ["still_tag"],mediaUrl: image.absoluteString,type: "image");comic.width=320;comic.height=1600
         var next = Post(key:"\(prefix):next",id:"3",provider:video.provider,tags:video.tags,mediaUrl:video.mediaUrl,thumbUrl:video.thumbUrl,type:"video");next.width=320;next.height=180
-        return [video,comic,next]
+        var result = [video,comic,next]
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing-download-gif") {
+            let gif = folder.appendingPathComponent("loop.gif")
+            if let context = CGContext(data: nil, width: 160, height: 120, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+               let destination = CGImageDestinationCreateWithURL(gif as CFURL, UTType.gif.identifier as CFString, 2, nil) {
+                CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+                for value in [CGFloat(0.2), CGFloat(0.8)] {
+                    context.setFillColor(CGColor(red: value, green: 0.4, blue: 0.7, alpha: 1))
+                    context.fill(CGRect(x: 0, y: 0, width: 160, height: 120))
+                    if let frame = context.makeImage() { CGImageDestinationAddImage(destination, frame,
+                        [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.15]] as CFDictionary) }
+                }
+                CGImageDestinationFinalize(destination)
+            }
+            result.append(Post(key: "\(prefix):gif", id: "4", provider: "Rule34", mediaUrl: gif.absoluteString, type: "gif"))
+        }
+        return result
     }
 }
 #endif

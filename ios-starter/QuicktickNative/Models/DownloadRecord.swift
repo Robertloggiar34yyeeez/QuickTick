@@ -31,6 +31,12 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         return ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
     }
 
+    // The share sheet exports the existing file/package without decoding or copying it.
+    var exportURL: URL? {
+        guard state == .complete, let path = localMediaPath, FileManager.default.fileExists(atPath: path) else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
     var offlinePost: Post? {
         guard state == .complete, let path = localMediaPath, FileManager.default.fileExists(atPath: path) else { return nil }
         let media = URL(fileURLWithPath: path)

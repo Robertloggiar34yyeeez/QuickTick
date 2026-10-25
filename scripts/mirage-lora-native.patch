@@ -1,0 +1,55 @@
+diff --git a/Sources/CMirage/include/MirageC.h b/Sources/CMirage/include/MirageC.h
+index 443a87c..46c6c69 100644
+--- a/Sources/CMirage/include/MirageC.h
++++ b/Sources/CMirage/include/MirageC.h
+@@ -40,6 +40,11 @@ typedef struct {
+ 
+ // MARK: - Generation parameters
+ 
++typedef struct {
++    const char* path;                    ///< Absolute path to .safetensors LoRA weights.
++    float strength;                      ///< LoRA multiplier.
++} mirage_lora;
++
+ typedef struct {
+     const char* prompt;                 ///< User prompt, UTF-8.
+     const char* negative_prompt;        ///< Optional negative prompt. NULL = none.
+@@ -49,6 +54,8 @@ typedef struct {
+     float   cfg_scale;                  ///< Classifier-free guidance scale. Turbo models use 1.0.
+     int64_t seed;                       ///< RNG seed. -1 picks a random one.
+     int32_t batch_size;                 ///< Number of images per call. Default 1.
++    const mirage_lora* loras;            ///< Optional array, borrowed for the call.
++    uint32_t lora_count;                ///< Number of items in loras.
+ } mirage_gen_params;
+ 
+ /// One generated image as a tightly-packed RGBA8 buffer the Swift side can
+diff --git a/Sources/CMirage/sd/MirageC.cpp b/Sources/CMirage/sd/MirageC.cpp
+index dc0659e..d78b383 100644
+--- a/Sources/CMirage/sd/MirageC.cpp
++++ b/Sources/CMirage/sd/MirageC.cpp
+@@ -196,6 +196,25 @@ extern "C" mirage_image* mirage_generate(mirage_ctx* ctx, const mirage_gen_param
+     g.seed = params->seed;
+     g.batch_count = params->batch_size > 0 ? params->batch_size : 1;
+ 
++    std::vector<sd_lora_t> loraWeights;
++    if (params->lora_count > 0) {
++        if (!params->loras || params->lora_count > 4) {
++            set_last_error("mirage_generate: invalid LoRA count or array");
++            return nullptr;
++        }
++        loraWeights.reserve(params->lora_count);
++        for (uint32_t i = 0; i < params->lora_count; ++i) {
++            const auto& lora = params->loras[i];
++            if (!lora.path || !lora.path[0] || lora.strength < 0.f || lora.strength > 2.f) {
++                set_last_error("mirage_generate: invalid LoRA path or strength");
++                return nullptr;
++            }
++            loraWeights.push_back(sd_lora_t{false, lora.strength, lora.path});
++        }
++    }
++    g.loras = loraWeights.empty() ? nullptr : loraWeights.data();
++    g.lora_count = static_cast<uint32_t>(loraWeights.size());
++
+     sd_image_t* result = nullptr;
+     int num_images = 0;
+     if (!generate_image(ctx->sd, &g, &result, &num_images) || !result || num_images <= 0) {

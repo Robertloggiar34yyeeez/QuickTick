@@ -1,6 +1,7 @@
 import Foundation
 import CoreTransferable
 import UniformTypeIdentifiers
+import SwiftUI
 
 extension UTType {
     static let quicktickProfile = UTType(exportedAs: "app.quicktick.recommendation-profile", conformingTo: .json)
@@ -19,8 +20,15 @@ struct RecommendationTransfer: Codable, Transferable, Sendable, Identifiable {
     var semanticProfiles: [String: SemanticInterest]
 
     static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .quicktickProfile)
-            .suggestedFileName("QuickTick-Recommendations.quicktickprofile")
+        // AirDrop/Files require a real file, not an opaque Codable payload.
+        FileRepresentation(exportedContentType: .quicktickProfile) { profile in
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("quicktick-profile-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let file = folder.appendingPathComponent("QuickTick-Recommendations.quicktickprofile")
+            try JSONEncoder().encode(profile.validated()).write(to: file, options: .atomic)
+            return SentTransferredFile(file)
+        }
     }
 
     init(preferences: TasteSetup, exclusions: [String], state: RecommendationState, semanticProfiles: [String: SemanticInterest]) {
@@ -45,12 +53,17 @@ struct RecommendationTransfer: Codable, Transferable, Sendable, Identifiable {
         guard format == "QuickTick recommendation profile", version == 1,
               semanticVersion == "bge-micro-v2-3edf6d7-96-v1", (1...2).contains(preferences.version),
               Set(preferences.sources.keys).isSubset(of: providers), Set(profiles.keys).isSubset(of: providers),
-              Set(semanticProfiles.keys).isSubset(of: providers), strings(exclusions, limit: 512) else {
+              semanticProfiles.keys.allSatisfy({ key in providers.contains(key) || key.split(separator: "|").count == 2 && providers.contains(String(key.split(separator: "|").first ?? "")) && VisualDomain(rawValue: String(key.split(separator: "|").last ?? "")) != nil }), strings(exclusions, limit: 512) else {
             throw APIError.server("This is not a supported QuickTick recommendation profile.")
         }
         for taste in preferences.sources.values {
             guard strings(taste.into, limit: 40), strings(taste.notInto, limit: 40),
-                  taste.into.allSatisfy({ $0.count <= 80 }), taste.notInto.allSatisfy({ $0.count <= 80 }) else { throw APIError.invalidResponse }
+                  taste.into.allSatisfy({ $0.count <= 80 }), taste.notInto.allSatisfy({ $0.count <= 80 }),
+                  taste.characterTags.count <= 40,
+                  taste.characterTags.allSatisfy({ entry in
+                      entry.key.count <= 80 && strings(entry.value, limit: 16)
+                          && entry.value.allSatisfy { $0.count <= 80 }
+                  }) else { throw APIError.invalidResponse }
         }
         for p in profiles.values {
             guard numbers(p.terms, limit: 140), numbers(p.negativeThemes, limit: 512), p.related.count <= 140,
@@ -71,6 +84,22 @@ struct RecommendationTransfer: Codable, Transferable, Sendable, Identifiable {
     }
 }
 
+/// Explicit Save to Files exporter. It uses the same JSON as AirDrop imports.
+struct RecommendationProfileFile: FileDocument {
+    static var readableContentTypes: [UTType] { [.quicktickProfile, .json] }
+    static var writableContentTypes: [UTType] { [.quicktickProfile] }
+    var profile: RecommendationTransfer
+
+    init(profile: RecommendationTransfer) { self.profile = profile }
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else { throw CocoaError(.fileReadCorruptFile) }
+        profile = try RecommendationTransferReader.decode(data)
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        try FileWrapper(regularFileWithContents: JSONEncoder().encode(profile.validated()))
+    }
+}
+
 actor RecommendationTransferReader {
     static func decode(_ data: Data) throws -> RecommendationTransfer {
         guard data.count <= 2 * 1024 * 1024 else { throw APIError.server("Recommendation profile exceeds the 2 MB limit.") }
@@ -79,15 +108,20 @@ actor RecommendationTransferReader {
     func read(_ url: URL) throws -> RecommendationTransfer {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
-        guard url.isFileURL, let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-              size <= 2 * 1024 * 1024 else { throw APIError.server("Select a QuickTick profile smaller than 2 MB.") }
+        guard url.isFileURL else { throw APIError.server("Select a QuickTick profile file.") }
+        // iCloud/AirDrop file providers can omit fileSize until opened. Keep
+        // the hard 2 MB limit on bytes actually read, not on optional metadata.
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           size > 2 * 1024 * 1024 {
+            throw APIError.server("Select a QuickTick profile smaller than 2 MB.")
+        }
         let file = try FileHandle(forReadingFrom: url)
         defer { try? file.close() }
         return try Self.decode(file.read(upToCount: 2 * 1024 * 1024 + 1) ?? Data())
     }
 }
 
-enum RecommendationEvent: Sendable, Equatable {
+enum RecommendationEvent: Codable, Sendable, Equatable {
     case impression
     case like
     case unlike
@@ -139,17 +173,81 @@ struct RecommendationProfile: Codable, Sendable, Equatable {
     }
 }
 
+/// Small, fully local novelty model. Persisting what was *offered* (not just
+/// watched) prevents page-one refreshes from serving the same cards again.
+struct RecommendationNoveltyModel: Codable, Sendable, Equatable {
+    var offered: [String] = []
+    mutating func record(_ ids: [String]) {
+        let incoming = Set(ids)
+        offered.removeAll { incoming.contains($0) }
+        offered.append(contentsOf: ids)
+        if offered.count > 8192 { offered = Array(offered.suffix(8192)) }
+    }
+    func contains(_ id: String) -> Bool { offered.contains(id) }
+}
+
+/// Explicitly reversible negative feedback from fast vertical scrolling.
+/// It is intentionally separate from irreversible thumbs-down and event-based
+/// learning so scrolling back never produces a contradictory positive signal.
+struct ReversibleSkipModel: Codable, Sendable, Equatable {
+    struct Evidence: Codable, Sendable, Equatable {
+        let id: String
+        let provider: String
+        let terms: [String]
+    }
+    var evidence: [Evidence] = []
+    mutating func mark(_ sample: Evidence) {
+        evidence.removeAll { $0.id == sample.id }
+        evidence.append(sample)
+        if evidence.count > 128 { evidence.removeFirst(evidence.count - 128) }
+    }
+    @discardableResult
+    mutating func neutralize(_ id: String) -> Bool {
+        let old = evidence.count
+        evidence.removeAll { $0.id == id }
+        return evidence.count != old
+    }
+    func contains(_ id: String) -> Bool { evidence.contains { $0.id == id } }
+}
+
 struct RecommendationState: Codable, Sendable, Equatable {
-    var version: Int = 3
+    static let currentVersion = 5
+    var version: Int = currentVersion
     var profiles: [String: RecommendationProfile] = [:]
     var candidatePages: [String: Int] = [:]
+    var contextualProfiles: [String: ContextTasteProfile] = [:]
+    var scopedProfiles: [String: RecommendationProfile] = [:]
+    var feedbackLedger: [String] = []
+    var novelty = RecommendationNoveltyModel()
+    var reversibleSkips = ReversibleSkipModel()
     init() {}
-    enum CodingKeys: String, CodingKey { case version, profiles, candidatePages }
+    enum CodingKeys: String, CodingKey { case version, profiles, candidatePages, contextualProfiles, scopedProfiles, feedbackLedger, novelty, reversibleSkips }
     init(from decoder: Decoder) throws {
         let fields = try decoder.container(keyedBy: CodingKeys.self)
         version = try fields.decodeIfPresent(Int.self, forKey: .version) ?? 3
         profiles = try fields.decodeIfPresent([String: RecommendationProfile].self, forKey: .profiles) ?? [:]
         candidatePages = try fields.decodeIfPresent([String: Int].self, forKey: .candidatePages) ?? [:]
+        contextualProfiles = try fields.decodeIfPresent([String: ContextTasteProfile].self, forKey: .contextualProfiles) ?? [:]
+        scopedProfiles = try fields.decodeIfPresent([String: RecommendationProfile].self, forKey: .scopedProfiles) ?? [:]
+        feedbackLedger = try fields.decodeIfPresent([String].self, forKey: .feedbackLedger) ?? []
+        novelty = try fields.decodeIfPresent(RecommendationNoveltyModel.self, forKey: .novelty) ?? RecommendationNoveltyModel()
+        reversibleSkips = try fields.decodeIfPresent(ReversibleSkipModel.self, forKey: .reversibleSkips) ?? ReversibleSkipModel()
+    }
+
+    func upgradedForCurrentRanking() -> Self {
+        guard version < Self.currentVersion else { return self }
+        var result = self
+        result.version = Self.currentVersion
+        return result.rebuildingCandidates()
+    }
+
+    func rebuildingCandidates() -> Self {
+        var result = self
+        // Invalidate only acquisition/candidate exposure. User intent,
+        // explicit dislikes, watched history and visual profiles survive.
+        result.candidatePages.removeAll()
+        result.novelty.offered.removeAll()
+        return result
     }
 }
 

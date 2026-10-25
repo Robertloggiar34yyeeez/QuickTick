@@ -2,24 +2,125 @@ import SwiftUI
 
 struct CommentsView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
     let post: Post
     @State private var page: CommentPage?
     @State private var error: String?
+
     var body: some View {
         NavigationStack {
-            List {
-                if let error { Text(error).foregroundStyle(.orange) }
-                else if let page {
-                    if !page.available { Text(page.message ?? "Comments are unavailable for this provider.") }
-                    ForEach(page.items) { comment in
-                        VStack(alignment: .leading) { Text(comment.author).font(.headline); Text(comment.body); Text(comment.createdAt).font(.caption).foregroundStyle(.secondary) }
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 35, height: 35)
+                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 12))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Comments")
+                            .font(.system(size: 19, weight: .bold, design: .rounded))
+                        if let page, page.available {
+                            Text("\(page.items.count) replies")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.secondaryLabel)
+                        }
                     }
-                    if page.available && page.items.isEmpty { Text("No comments.") }
-                } else { ProgressView() }
-            }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Comments")
-        }.task {
-            do { page = try await store.api.comments(post) } catch { self.error = error.localizedDescription }
+                    Spacer()
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(AppTheme.secondaryLabel)
+                            .frame(width: 32, height: 32)
+                            .background(AppTheme.elevatedSurface, in: Circle())
+                    }
+                    .accessibilityLabel("Close comments")
+                }
+                .padding(.horizontal, 19)
+                .padding(.top, 21)
+                .padding(.bottom, 12)
+
+                Rectangle().fill(AppTheme.border).frame(height: 1)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        if let error {
+                            statusView(icon: "wifi.exclamationmark", title: "Comments unavailable", detail: error)
+                        } else if let page {
+                            if !page.available {
+                                statusView(icon: "bubble.left", title: "Comments unavailable",
+                                           detail: page.message ?? "This source does not provide comments.")
+                            } else if page.items.isEmpty {
+                                statusView(icon: "bubble.left", title: "No comments yet",
+                                           detail: "There are no comments to show.")
+                            }
+                            ForEach(page.items) { comment in
+                                HStack(alignment: .top, spacing: 11) {
+                                    Text(String(comment.author.prefix(1)).uppercased())
+                                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                                        .foregroundStyle(AppTheme.accent)
+                                        .frame(width: 35, height: 35)
+                                        .background(AppTheme.accent.opacity(0.12), in: Circle())
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                            Text(comment.author.isEmpty ? "Anonymous" : comment.author)
+                                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                                .lineLimit(1)
+                                            Spacer(minLength: 5)
+                                            Text(comment.createdAt)
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundStyle(AppTheme.secondaryLabel)
+                                                .lineLimit(1)
+                                        }
+                                        Text(comment.body)
+                                            .font(.system(size: 14))
+                                            .foregroundStyle(.white.opacity(0.9))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                .padding(13)
+                                .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 17).stroke(AppTheme.border, lineWidth: 1))
+                            }
+                        } else {
+                            HStack(spacing: 12) {
+                                ProgressView().tint(AppTheme.accent)
+                                Text("Loading comments…")
+                                    .font(.subheadline)
+                                    .foregroundStyle(AppTheme.secondaryLabel)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 130)
+                        }
+                    }
+                    .frame(maxWidth: 650)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 13)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .background(AppTheme.canvas)
+            .toolbar(.hidden, for: .navigationBar)
         }
+        .presentationDetents([.fraction(0.38), .large])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(28)
+        .presentationBackground(AppTheme.canvas)
+        .task {
+            do { page = try await store.api.comments(post) }
+            catch { error = error.localizedDescription }
+        }
+    }
+
+    private func statusView(icon: String, title: String, detail: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 25, weight: .light))
+                .foregroundStyle(AppTheme.accent)
+            Text(title).font(.headline)
+            Text(detail).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, minHeight: 150)
+        .padding(22)
     }
 }
 

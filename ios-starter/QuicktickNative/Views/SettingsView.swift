@@ -89,7 +89,7 @@ struct SettingsView: View {
                 Label("Color theme", systemImage: "paintpalette.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
                 SettingsPaletteSelector(selected: $accentPalette)
-                Text("Cosmic themes also color surfaces, borders and navigation—not just the buttons.")
+                Text("Choose OLED Black for true-black screens, or explore five new dark finishes. Every theme updates menus, cards and navigation.")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             }.id(SettingsDestination.appearance.rawValue)
             SettingsGroup(title: "Provider access", icon: "lock.shield") {
@@ -365,7 +365,7 @@ private struct SettingsPaletteSelector: View {
         if showingAll { return AppTheme.AccentPalette.allCases }
         let current = AppTheme.AccentPalette(rawValue: selected) ?? .violet
         var featured: [AppTheme.AccentPalette] = []
-        for palette in [current, .galaxy, .darkCosmos, .violet] where !featured.contains(palette) {
+        for palette in [current, .oledBlack, .galaxy, .darkCosmos, .violet] where !featured.contains(palette) {
             featured.append(palette)
         }
         return Array(featured.prefix(3))
@@ -384,7 +384,7 @@ private struct SettingsPaletteSelector: View {
                                                  startPoint: .topLeading, endPoint: .bottomTrailing))
                             .frame(height: 49)
                             .overlay {
-                                if [.galaxy, .darkCosmos, .auroraNight, .solarEclipse].contains(palette) {
+                                if [.galaxy, .darkCosmos, .auroraNight, .solarEclipse, .oledBlack, .graphite, .midnightBlue, .emeraldNoir, .crimsonNoir].contains(palette) {
                                     HStack(alignment: .top) {
                                         Image(systemName: "sparkle").font(.system(size: 13, weight: .light))
                                         Spacer()

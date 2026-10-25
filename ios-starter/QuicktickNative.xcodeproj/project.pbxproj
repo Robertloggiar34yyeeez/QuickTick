@@ -5,6 +5,36 @@
 	};
 	"objectVersion" = "56";
 	"objects" = {
+		"0D61DB5189B0A1F740000101" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/IRLVideoFrameSampler.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"0D61DB5189B0A1F740000102" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0D61DB5189B0A1F740000101";
+		};
+		"0D61DB5189B0A1F740000103" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNativeTests/IRLVideoFrameSamplerTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"0D61DB5189B0A1F740000104" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0D61DB5189B0A1F740000103";
+		};
+		"0D61DB5189B0A1F740000105" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNativeTests/RecommendationExperienceRegressionTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"0D61DB5189B0A1F740000106" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0D61DB5189B0A1F740000105";
+		};
 		"A1B2C3D4E5F6012345678901" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -983,6 +1013,7 @@
 				"45331AC05FB4F8990DB8EF4A",
 				"2D3743A9F46E29676DBA4572",
 				"6AE8F2C0D0AF140905FF1F4A",
+				"0D61DB5189B0A1F740000102",
 				"E4C45F22C51B7C28FCF2BCD2",
 				"B7284CD069DD4DD982E2A2B9",
 				"26064FE82E26D229EAB6F8FD",
@@ -1150,6 +1181,8 @@
 				"822622462A5CC158D7A9B906",
 				"BFD69E6457B16CA77FD5DF7D",
 				"D9A4DA6067AC04000E1A9187",
+				"0D61DB5189B0A1F740000104",
+				"0D61DB5189B0A1F740000106",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -1392,6 +1425,7 @@
 				"69C8057082F6B7A8ACC94A3D",
 				"5F05EFB58E4E4FA628C806E8",
 				"677532C9CC544A755F43E9BF",
+				"0D61DB5189B0A1F740000101",
 				"D822C7777F40BFDA72C1B2CD",
 				"A6E137F8527E41A8AB2DF447",
 				"F8BDB3B414F6C5B7B93F13D5",
@@ -1437,6 +1471,8 @@
 				"CE84D0A97A98DC466C6E2D76",
 				"073C0CC6C30BC6A644063462",
 				"31F72C8511E9D56C6D964112",
+				"0D61DB5189B0A1F740000103",
+				"0D61DB5189B0A1F740000105",
 				"E9C974562A88FC7884953A1A",
 				"D24E64E264913BD5E956E1C5",
 				"A1C8F094F9709BD7577142CF",

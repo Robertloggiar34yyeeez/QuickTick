@@ -881,6 +881,7 @@ final class AppStore: ObservableObject {
         if let key { protectedImmersiveIDs.insert(key) }
         let token = generation
         tailRankTask?.cancel()
+        guard candidateContext != nil else { return }
         // Do not sort and republish the full tail on every paging frame.
         // Wait for the active page to settle, then rerank only unseen content.
         tailRankTask = Task(priority: .utility) {
@@ -891,7 +892,10 @@ final class AppStore: ObservableObject {
     }
     func adaptRecommendationTail(token: UUID) async {
         let tab = activeTab
-        guard tab == 0 || tab == 1, feedSort == "recommended",
+        // Only personalized discovery has a tail to rerank. In a plain
+        // search/test feed this could silently remove upcoming clips after
+        // a favorite, leaving immersive paging with just one visible post.
+        guard candidateContext != nil, (tab == 0 || tab == 1), feedSort == "recommended",
               Date().timeIntervalSince(lastFeedMotion) >= 0.45 else { return }
         let source = posts
         let originalInlinePlaybackID = inlinePlaybackID

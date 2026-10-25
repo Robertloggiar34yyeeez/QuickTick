@@ -824,11 +824,11 @@ final class RecommendationTests: XCTestCase {
 }
 
 final class RhythmPhraseTests: XCTestCase {
-    func testEveryRhythmDensityIsCappedAtElevenTapsPerSecond() {
+    func testEveryRhythmDensityIsCappedAtComfortableTapsPerSecond() {
         for division in RhythmDivision.allCases {
             let interval = RhythmTempoPlanner.interval(bpm: 240, division: division)
-            XCTAssertGreaterThanOrEqual(interval, 1.0 / 11.0)
-            XCTAssertLessThanOrEqual(1.0 / interval, 11.000001)
+            XCTAssertGreaterThanOrEqual(interval, 1.0 / RhythmTempoPlanner.maximumTapsPerSecond)
+            XCTAssertLessThanOrEqual(1.0 / interval, RhythmTempoPlanner.maximumTapsPerSecond + 0.000001)
         }
         let firstAdaptiveTarget = RhythmTempoPlanner.target(mode: .adaptive, baseBPM: 112,
              section: 1, intensity: 0.9, randomness: 0, randomUnit: 0.5)

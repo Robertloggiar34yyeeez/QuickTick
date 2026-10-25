@@ -122,7 +122,7 @@ struct RhythmTempoPlanner {
         case .progressive: cycle = [1, 1.07, 1.15, 1.26, 1.32, 1.08, 0.79, 0.91]
         // The default mode does NOT climb predictably from a warmup: slower
         // valleys outnumber short faster bursts, with random variation.
-        case .adaptive: cycle = [0.76, 0.85, 0.97, 1.08, 0.88, 0.74, 0.94, 1.04, 0.81, 0.90, 1.06, 0.78]
+        case .adaptive: cycle = [0.76, 0.85, 0.97, 1.08, 1.18, 0.74, 0.94, 1.04, 0.81, 0.90, 1.06, 0.78]
         case .custom: cycle = [1]
         default: cycle = [1, 1.06, 0.94, 1]
         }

@@ -28,7 +28,7 @@ struct NativeSearchBar: View {
                         selectedTagGrid
                         Text("Tap a tag name to remove it. Tap its block icon to include or exclude it.").font(.caption).foregroundStyle(.secondary)
                     } else {
-                        Text("Search titles, descriptions and keywords with natural phrases. Unlike Rule34, these providers use free-text search rather than tag-only queries.")
+                        Text("Search titles and keywords. Use quotes for phrases (\"red hair\") and -\"phrase\" to exclude them. Providers use free-text search, not Rule34 tags.")
                             .font(.subheadline).foregroundStyle(.secondary)
                         Button("Clear keywords") { form.text = "" }
                             .font(.caption).disabled(form.text.isEmpty)

@@ -7,10 +7,13 @@ struct RootView: View {
     @State private var brieflyNamedTab: Int?
     @State private var tabNameTask: Task<Void, Never>?
     @State private var refreshingTab: Int?
+    @State private var tabSelectionTask: Task<Void, Never>?
     @State private var refreshSpinDegrees = 0.0
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
+    @State private var aiTabSessionOverride: Bool?
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
+    @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
     @State private var showSettings = false
     @State private var showStudio = false
     @State private var homeAnchor: String?
@@ -19,6 +22,8 @@ struct RootView: View {
     // restored feeds. Create is a separate destination between tabs 1 and 2.
     private let tabs = [("Home", "house.fill"), ("Immersive", "play.fill"),
                         ("Create", "plus"), ("Favorites", "heart"), ("Downloads", "arrow.down.to.line")]
+    private var aiTabVisible: Bool { aiTabSessionOverride ?? showAITab }
+    private var visibleTabIndices: [Int] { aiTabVisible ? [0, 1, 2, 3, 4] : [0, 1, 3, 4] }
 
     var body: some View {
         GeometryReader { geometry in
@@ -46,7 +51,7 @@ struct RootView: View {
                         .padding(.top, modernUI ? 8 : 4)
                         .padding(.bottom, 0)
                         .background {
-                            if modernUI {
+                            if modernUI && !AppTheme.isCosmic {
                                 Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(edges: .bottom)
                             } else {
                                 AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
@@ -61,6 +66,7 @@ struct RootView: View {
                         }
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("bottom-navigation-bar")
+                        .id(aiTabVisible ? "five-tabs" : "four-tabs")
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -69,10 +75,12 @@ struct RootView: View {
                 if sideNavigation {
                     VStack(spacing: 6) { tabButtons(vertical: true) }
                         .padding(6)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        .background(AppTheme.isCosmic ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
+                                    in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
                         .shadow(color: .black.opacity(0.4), radius: 18, y: 4)
                         .padding(.leading, 16)
+                        .id(aiTabVisible ? "five-side-tabs" : "four-side-tabs")
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
             }
@@ -93,8 +101,11 @@ struct RootView: View {
             // Keep the dock transaction in sync across both layouts.
             brieflyNamedTab = nil
         }
-        .onDisappear { tabNameTask?.cancel() }
-        .tint(.white)
+        .onDisappear { tabNameTask?.cancel(); tabSelectionTask?.cancel() }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: accentPalette)
+        // A single environment tint reaches NavigationStacks, toolbars,
+        // menus and all presented settings/model-library sheets.
+        .tint(AppTheme.accent)
         .background(AppTheme.background)
         .modifier(ProfileImportConfirmation(enabled: !showSettings && firstRunCompleted))
         .fullScreenCover(isPresented: Binding(
@@ -107,12 +118,21 @@ struct RootView: View {
         )) {
             FirstRunSetupView()
                 .environmentObject(store)
+                .tint(AppTheme.accent)
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
-                SettingsView()
+                SettingsView(showAITab: Binding(
+                    get: { aiTabVisible },
+                    set: { enabled in
+                        // Update this view's mounted dock in the same turn as
+                        // the tap, then persist the preference for next launch.
+                        aiTabSessionOverride = enabled
+                        showAITab = enabled
+                    }))
                     .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showSettings = false } } }
             }
+            .tint(AppTheme.accent)
         }
         .fullScreenCover(isPresented: $showStudio, onDismiss: { store.isStudioPresented = false }) {
             NavigationStack {
@@ -124,11 +144,13 @@ struct RootView: View {
                     }
             }
             .environmentObject(store)
+            .tint(AppTheme.accent)
         }
+        .overlay(alignment: .topTrailing) { FloatingPiPView().environmentObject(store) }
     }
 
     @ViewBuilder private func tabButtons(vertical: Bool) -> some View {
-        ForEach(tabs.indices.filter { showAITab || $0 != 2 }, id: \.self) { index in
+        ForEach(visibleTabIndices, id: \.self) { index in
             if index == 2 {
                 Button {
                     store.isStudioPresented = true
@@ -152,21 +174,28 @@ struct RootView: View {
                 let tabID = index < 2 ? index : index - 1
                 Button {
                     let isRefresh = tabID < 2 && store.activeTab == tabID
+                    // Apply the selection while the button action is still
+                    // running. With an async-only switch, the next rapid tap
+                    // could be lost while SwiftUI remounted the dock.
+                    tabSelectionTask?.cancel()
+                    let requiresRefresh = store.beginFeedTabSelection(tabID)
                     if isRefresh {
                         refreshSpinDegrees = 0
-                        withAnimation(.easeIn(duration: 0.15)) { refreshingTab = tabID }
+                        withAnimation(.smooth(duration: 0.18)) { refreshingTab = tabID }
                         if !reduceMotion {
-                            withAnimation(.linear(duration: 0.72).repeatForever(autoreverses: false)) {
+                            withAnimation(.linear(duration: 1.05).repeatForever(autoreverses: false)) {
                                 refreshSpinDegrees = 360
                             }
                         }
                     }
-                    Task {
-                        await store.selectFeedTab(tabID)
+                    tabSelectionTask = Task { @MainActor in
+                        guard !Task.isCancelled else { return }
+                        if requiresRefresh { await store.refresh(immersive: tabID == 1) }
+                        guard !Task.isCancelled else { return }
                         if isRefresh {
                             try? await Task.sleep(for: .milliseconds(450))
                             if refreshingTab == tabID {
-                                withAnimation(.easeOut(duration: 0.24)) { refreshingTab = nil }
+                                withAnimation(.smooth(duration: 0.28)) { refreshingTab = nil }
                                 refreshSpinDegrees = 0
                             }
                         }
@@ -174,11 +203,18 @@ struct RootView: View {
                 } label: {
                     Group {
                         if refreshingTab == tabID {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 19, weight: .semibold, design: .rounded))
-                                .symbolRenderingMode(.hierarchical)
-                                .rotationEffect(.degrees(refreshSpinDegrees))
-                                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                            ZStack {
+                                Circle().stroke(.white.opacity(0.16), lineWidth: 2.5)
+                                Circle()
+                                    .trim(from: 0.04, to: 0.73)
+                                    .stroke(AngularGradient(colors: [.white.opacity(0.07), .white.opacity(0.45), .white], center: .center),
+                                            style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
+                                    .rotationEffect(.degrees(refreshSpinDegrees))
+                                Circle().fill(.white).frame(width: 3.5, height: 3.5)
+                            }
+                            .frame(width: 23, height: 23)
+                            .accessibilityLabel("Refreshing feed")
+                            .transition(.opacity.combined(with: .scale(scale: 0.65)))
                         } else if store.activeTab == tabID && brieflyNamedTab == tabID {
                             Text(tabs[index].0)
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -204,7 +240,7 @@ struct RootView: View {
                 }
                 .buttonStyle(QuicktickPressStyle())
                 .animation(reduceMotion ? nil : AppTheme.spring, value: store.activeTab)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: refreshingTab)
+                .animation(reduceMotion ? nil : .smooth(duration: 0.26), value: refreshingTab)
                 .accessibilityLabel(tabs[index].0)
                 .accessibilityIdentifier("tab-\(tabs[index].0)")
                 .accessibilityAddTraits(store.activeTab == tabID ? .isSelected : [])

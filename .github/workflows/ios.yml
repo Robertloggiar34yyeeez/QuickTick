@@ -2,6 +2,7 @@ name: Native iOS build and IPA
 on:
   push:
     branches-ignore: ['ipa-uploaded/**']
+    paths-ignore: ['.github/workflows/keep-three-builds.yml']
   pull_request:
   workflow_dispatch:
 concurrency:

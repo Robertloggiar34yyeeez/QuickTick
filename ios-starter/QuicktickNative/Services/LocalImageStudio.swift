@@ -11,6 +11,7 @@ import Darwin
 enum StudioError: LocalizedError {
     case unsupportedModel, invalidArchive, invalidResponse, unavailableModel, noImage, imageFiltered, invalidFile, downloadBusy, renderBusy
     case insufficientMemory(required: Int64, available: Int64)
+    case optimizedRenderFailed(String)
     var errorDescription: String? {
         switch self {
         case .unsupportedModel: "The archive does not contain a compiled Core ML Stable Diffusion pipeline. CivitAI .safetensors checkpoints and LoRAs need conversion before they can run here."
@@ -24,6 +25,8 @@ enum StudioError: LocalizedError {
         case .renderBusy: "Another on-device image render is still running. Wait for it to finish before creating the next image."
         case .insufficientMemory(let needed, let available):
             "Anima needs about \(ByteCountFormatter.string(fromByteCount: needed, countStyle: .memory)) free memory; only \(ByteCountFormatter.string(fromByteCount: available, countStyle: .memory)) is available. Close other apps or use a lighter device model."
+        case .optimizedRenderFailed(let reason):
+            "Draw Things failed: \(reason). Mirage was not started automatically, to avoid another heavy render. You can retry or switch off Draw Things to use Mirage."
         }
     }
 }
@@ -47,7 +50,7 @@ enum StudioAnimaMemoryBudget {
 }
 
 enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
-    case square, portrait, landscape, story
+    case square, portrait, landscape, story, tall
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -55,6 +58,7 @@ enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
         case .portrait: "3:4"
         case .landscape: "4:3"
         case .story: "9:16"
+        case .tall: "1:2"
         }
     }
     var dimensions: (Int, Int) {
@@ -63,6 +67,7 @@ enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
         case .portrait: (3, 4)
         case .landscape: (4, 3)
         case .story: (9, 16)
+        case .tall: (1, 2)
         }
     }
 
@@ -70,8 +75,12 @@ enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
         let edge = max(512, min(1024, longestEdge))
         let (widthUnits, heightUnits) = dimensions
         let divisor = max(widthUnits, heightUnits)
-        return (max(256, edge * widthUnits / divisor / 16 * 16),
-                max(256, edge * heightUnits / divisor / 16 * 16))
+        // Draw Things' Metal pipeline requires *both* dimensions to be a
+        // multiple of 64. Rounding to 16 made 9:16 fail after diffusion.
+        func aligned(_ units: Int) -> Int {
+            max(256, Int((Double(edge * units) / Double(divisor) / 64).rounded()) * 64)
+        }
+        return (aligned(widthUnits), aligned(heightUnits))
     }
 
     func crop(_ source: CGImage) -> CGImage {
@@ -84,6 +93,36 @@ enum StudioAspectRatio: String, CaseIterable, Identifiable, Sendable {
                           y: CGFloat(source.height - cropHeight) / 2,
                           width: CGFloat(cropWidth), height: CGFloat(cropHeight))
         return source.cropping(to: rect) ?? source
+    }
+}
+
+enum StudioCanvasSize: String, CaseIterable, Identifiable, Sendable {
+    case small, medium, large
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+    var longestEdge: Int {
+        switch self {
+        case .small: 512
+        case .medium: 768
+        case .large: 1024
+        }
+    }
+    static func closest(to pixels: Int) -> StudioCanvasSize {
+        allCases.min { abs($0.longestEdge - pixels) < abs($1.longestEdge - pixels) } ?? .small
+    }
+}
+
+enum StudioLoRATriggers {
+    static func applying(_ triggerWords: [String], to prompt: String) -> String {
+        var unique = Set<String>()
+        let alreadyWritten = prompt.lowercased()
+        let additional = triggerWords.flatMap { $0.split(separator: ",").map(String.init) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { word in
+                let key = word.lowercased()
+                return !key.isEmpty && !alreadyWritten.contains(key) && unique.insert(key).inserted
+            }
+        return (additional + [prompt]).joined(separator: ", ")
     }
 }
 
@@ -363,6 +402,16 @@ actor CivitaiStudioCatalog {
 
 /// All downloads and generated images stay in Application Support. The large
 /// reference archive is fetched only on request, never during feed scrolling.
+struct StudioGenerationMetadata: Codable, Sendable {
+    let prompt: String
+    let negativePrompt: String
+    let steps: Int
+    let guidance: Double
+    let seed: UInt32
+    let aspect: String
+    let longestEdge: Int
+}
+
 actor LocalImageStudio {
     static let shared = LocalImageStudio()
     private let root: URL
@@ -474,7 +523,6 @@ actor LocalImageStudio {
         guard !renderInProgress else { throw StudioError.renderBusy }
         renderInProgress = true
         defer { renderInProgress = false }
-        guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
         guard !upscale || hasAnimeUpscaler() else { throw StudioError.unavailableModel }
         // Pass LoRAs through the patched native bridge's structured API.
         // Reject paths outside our managed assets folder and invalid strengths.
@@ -496,6 +544,37 @@ actor LocalImageStudio {
             guard hasAnimaBundle() else { throw StudioError.unavailableModel }
             diffusionURL = anima.appendingPathComponent(StudioAnimaBundle.components[0].file)
         }
+        let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
+#if canImport(_MediaGenerationKit) && canImport(ModelOp) && canImport(ModelZoo) && canImport(DataModels)
+        if UserDefaults.standard.bool(forKey: "quicktick-drawthings-experimental-v1") {
+            // The optimized engine owns the whole attempt. Its last sampler
+            // callback can fire before VAE decoding or image encoding fails.
+            // Silently retrying a multi-GB Mirage render here masks the real
+            // error, exhausts the iOS jetsam budget and poisons later retries.
+            // Mirage remains selectable explicitly in the model panel.
+            let encodedImage: URL
+            do {
+                let bridge = DrawThingsAnimaBridge.shared
+                guard await bridge.isReady(checkpoint: checkpoint) else { throw DrawThingsAnimaBridge.Error.missingConvertedModel }
+                encodedImage = try await bridge.generate(
+                    prompt: String(prompt.prefix(1000)), negative: String(negative.prefix(1200)),
+                    steps: max(4, min(40, steps)), guidance: guidance, seed: seed,
+                    width: width, height: height, checkpoint: checkpoint, loras: loras, onProgress: onProgress)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                NSLog("[QuickTick Anima] backend=drawthings failed: %@", String(reflecting: error))
+                throw StudioError.optimizedRenderFailed(error.localizedDescription)
+            }
+            defer { try? FileManager.default.removeItem(at: encodedImage) }
+            try Task.checkCancellation()
+            NSLog("[QuickTick Anima] backend=drawthings success; saving image")
+            // Keep final image saving outside the inference catch as well: an
+            // image-output error is not a reason to rerun the diffusion model.
+            return try finishEncodedImage(encodedImage, upscale: upscale, onPreview: onPreview)
+        }
+#endif
+        guard hasAnimaAuxiliaryFiles() else { throw StudioError.unavailableModel }
         // Check the remaining *process* memory before every render. A new
         // context is required while Mirage cannot reliably reuse one across
         // generations on all iPhones. Leave room for Metal activations and
@@ -511,7 +590,6 @@ actor LocalImageStudio {
         let available = Int64(os_proc_available_memory())
         try StudioAnimaMemoryBudget.check(available: available, required: memoryRequired)
         let parts = StudioAnimaBundle.components
-        let (width, height) = aspect.nativePixelDimensions(longestEdge: longestEdge)
         let result = try await Self.renderWithFreshAnimaEngine(
             models: ModelFiles(diffusionModel: diffusionURL,
                                vae: anima.appendingPathComponent(parts[2].file),
@@ -597,9 +675,7 @@ actor LocalImageStudio {
     }
 
     private func installLocalZip(_ zip: URL, name: String) throws -> URL {
-        let archive: Archive
-        do { archive = try Archive(url: zip, accessMode: .read) }
-        catch { throw StudioError.invalidArchive }
+        guard let archive = try? Archive(url: zip, accessMode: .read) else { throw StudioError.invalidArchive }
         var expanded: UInt64 = 0, entries = 0
         for entry in archive {
             entries += 1
@@ -742,6 +818,39 @@ actor LocalImageStudio {
 
     /// Publish the real diffusion result before the optional (potentially long)
     /// 4× pass. A failed enhancement must never discard a successful render.
+    private func finishEncodedImage(_ encoded: URL, upscale: Bool,
+                                    onPreview: @Sendable (URL) -> Void) throws -> StudioRenderOutput {
+        try Task.checkCancellation()
+        try FileManager.default.createDirectory(at: gallery, withIntermediateDirectories: true)
+        let originalURL = gallery.appendingPathComponent(UUID().uuidString + ".png")
+        // Draw Things already encoded this PNG. Preserve its bytes and iOS
+        // file protection instead of decoding and re-encoding under pressure.
+        let png = try Data(contentsOf: encoded, options: .mappedIfSafe)
+        try png.write(to: originalURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        onPreview(originalURL)
+        guard upscale else { return StudioRenderOutput(url: originalURL, enhanced: false, enhancementWarning: nil) }
+        do {
+            guard hasAnimeUpscaler() else { throw StudioError.unavailableModel }
+            try Task.checkCancellation()
+            guard let source = CGImageSourceCreateWithURL(originalURL as CFURL, nil),
+                  let original = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                throw StudioError.noImage
+            }
+            let enlarged = try StudioAnimeUpscaler.upscale(original, using: animeUpscalerURL)
+            try Task.checkCancellation()
+            let enhancedURL = try saveImage(enlarged)
+            try? FileManager.default.removeItem(at: originalURL)
+            return StudioRenderOutput(url: enhancedURL, enhanced: true, enhancementWarning: nil)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return StudioRenderOutput(url: originalURL, enhanced: false,
+                                      enhancementWarning: error.localizedDescription)
+        }
+    }
+
+    /// Publish the real diffusion result before the optional (potentially long)
+    /// 4× pass. A failed enhancement must never discard a successful render.
     private func finishImage(_ original: CGImage, upscale: Bool,
                              onPreview: @Sendable (URL) -> Void) throws -> StudioRenderOutput {
         try Task.checkCancellation()
@@ -782,5 +891,26 @@ actor LocalImageStudio {
         ((try? FileManager.default.contentsOfDirectory(at: gallery, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
             .filter { $0.pathExtension.lowercased() == "png" }
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
+    }
+
+    /// Keep prompts beside their PNGs, not in UserDefaults. Older PNGs remain
+    /// viewable and shareable even when they predate this metadata format.
+    func saveGenerationMetadata(_ metadata: StudioGenerationMetadata, for image: URL) throws {
+        guard image.deletingLastPathComponent().standardizedFileURL == gallery.standardizedFileURL,
+              image.pathExtension.lowercased() == "png",
+              FileManager.default.fileExists(atPath: image.path) else { return }
+        let sidecar = image.deletingPathExtension().appendingPathExtension("json")
+        try JSONEncoder().encode(metadata).write(to: sidecar, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    func generationMetadata(for images: [URL]) -> [String: StudioGenerationMetadata] {
+        var result: [String: StudioGenerationMetadata] = [:]
+        for image in images where image.deletingLastPathComponent().standardizedFileURL == gallery.standardizedFileURL {
+            let sidecar = image.deletingPathExtension().appendingPathExtension("json")
+            guard let data = try? Data(contentsOf: sidecar),
+                  let metadata = try? JSONDecoder().decode(StudioGenerationMetadata.self, from: data) else { continue }
+            result[image.lastPathComponent] = metadata
+        }
+        return result
     }
 }

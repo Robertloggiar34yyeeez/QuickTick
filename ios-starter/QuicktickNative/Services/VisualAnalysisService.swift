@@ -17,6 +17,20 @@ struct PendingVisualWork: Codable, Sendable {
     var created = Date()
 }
 
+/// A visual preference can focus occasional discovery, but it must not keep
+/// requesting the same character/artist instead of broadening a varied feed.
+/// Exclusions also apply at retrieval time, not only after results arrive.
+enum VisualDiscoveryPolicy {
+    static func query(round: Int, queries: [[String]], excluded: Set<String>) -> [String]? {
+        guard round > 0, round % 5 == 2 else { return nil }
+        let eligible = queries.filter { terms in
+            !terms.isEmpty && terms.allSatisfy { !excluded.contains(RecommendationTagRules.canonical($0)) }
+        }
+        guard !eligible.isEmpty else { return nil }
+        return eligible[(round / 5) % eligible.count]
+    }
+}
+
 /// One bounded worker; metadata feedback is independent of model execution.
 actor VisualAnalysisService {
     struct State: Codable, Sendable {
@@ -64,7 +78,10 @@ actor VisualAnalysisService {
               let data = try? Data(contentsOf: url), data.count <= 5 * 1024 * 1024 else { return }
         taxonomy = try? JSONDecoder().decode(VisualTagTaxonomy.self, from: data)
     }
-    func releaseModels() async { await animeTagger.release() }
+    func releaseModels() async {
+        await animeTagger.release()
+        await MobileCLIPRealLifeEncoder.shared.release()
+    }
     private let directory: URL
     init(directory: URL? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("QuicktickVisual-v1", isDirectory: true)
@@ -263,7 +280,11 @@ actor VisualAnalysisService {
     private func revision(_ post: Post) -> String {
         let sources = [post.mediaUrl, post.previewUrl, post.thumbUrl].map { FeedExclusions.canonicalMediaURL($0) ?? $0 }
         let content = (sources + [post.tags.sorted().joined(separator: " "), post.category ?? "", post.type, post.creator ?? ""]).joined(separator: "|")
-        return TasteConcepts.version + "|appearance-wd-v3-fp16|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
+        let realLifeModel = VisualDomain.classify(post).map {
+            VisualAppearanceEncoder.prefersMobileCLIP(domain: $0, provider: post.provider)
+        } == true && MobileCLIPRealLifeEncoder.isInstalled()
+        return TasteConcepts.version + "|appearance-wd-v3-fp16|" + (realLifeModel ? MobileCLIPRealLifeEncoder.version : "vision")
+            + "|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.
     func analyzeFavorite(_ post: Post, useVision: Bool) async {
@@ -327,7 +348,7 @@ actor VisualAnalysisService {
         if !before.embedding.isEmpty, lightVersions[post.stableID] == revision {
             enriched.embedding = before.embedding; enriched.attributes.merge(before.attributes, uniquingKeysWith: max)
             enriched.version = before.version
-        } else if !lightweight, let encoded = try? await VisualAppearanceEncoder.embedding(image) {
+        } else if !lightweight, let encoded = try? await VisualAppearanceEncoder.embedding(image, domain: before.domain, provider: post.provider) {
             enriched.embedding = encoded.vector; enriched.version = encoded.version
         }
         guard resourcesAllowAnalysis() else { return }
@@ -379,7 +400,11 @@ actor VisualAnalysisService {
     }
     func scores(_ posts: [Post]) -> [String: Double] {
         restore()
-        return Dictionary(posts.prefix(128).compactMap { post -> (String, Double)? in
+        // The fast ranker considers up to 384 candidates, and the semantic
+        // shortlist up to 512. Scoring only the first 128 silently disabled
+        // visual taste for the rest even when their metadata or cached pixels
+        // were ready. This remains cache/metadata-only: no model or I/O.
+        return Dictionary(posts.prefix(512).compactMap { post -> (String, Double)? in
             guard let metadata = VisualFeatures.metadata(post, taxonomy: taxonomy),
                   let p = state.profiles[profileKey(post)] else { return nil }
             let cached = state.features[post.stableID]

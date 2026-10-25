@@ -24,9 +24,7 @@ enum StudioAnimeUpscaler {
     }
 
     static func install(zip: URL, in root: URL) throws -> URL {
-        let archive: Archive
-        do { archive = try Archive(url: zip, accessMode: .read) }
-        catch { throw StudioError.invalidArchive }
+        guard let archive = try? Archive(url: zip, accessMode: .read) else { throw StudioError.invalidArchive }
         var total: UInt64 = 0
         var count = 0
         for entry in archive {

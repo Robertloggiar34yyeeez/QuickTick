@@ -27,7 +27,8 @@ enum RecommendationTagRules {
         // category or credited creator. Preserve whole-word boundaries, so
         // banning "bat" does not hide "battle".
         if post.providerKey != .rule34 {
-            return exclusions.contains { NativeProviderAPI.containsKeyword($0, in: post) }
+            return !ActionSemantics.facets(post).isDisjoint(with: ActionSemantics.facets(exclusions))
+                || exclusions.contains { NativeProviderAPI.containsKeyword($0, in: post) }
         }
         // Semantically equivalent provider tags must share explicit blocks:
         // e.g. blocking "leaning over" also excludes tagged "bent_over".

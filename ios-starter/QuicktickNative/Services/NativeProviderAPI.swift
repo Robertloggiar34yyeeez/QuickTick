@@ -42,7 +42,8 @@ enum NativeProviderAPI {
     static func mediaURL(_ raw: String, provider: Provider? = nil) -> URL? {
         guard !raw.isEmpty, !raw.hasPrefix("/api/") else { return nil }
         let base = provider.map(origin)
-        guard let url = URL(string: raw, relativeTo: base)?.absoluteURL,
+        let address = raw.hasPrefix("//") ? "https:" + raw : raw
+        guard let url = URL(string: address, relativeTo: base)?.absoluteURL,
               url.scheme == "https", let host = url.host,
               host.lowercased() != quicktickHost else { return nil }
         return url
@@ -143,6 +144,17 @@ enum NativeProviderAPI {
         guard needle.count <= tokens.count else { return false }
         return (0...(tokens.count - needle.count)).contains { offset in
             Array(tokens[offset..<(offset + needle.count)]) == needle
+        }
+    }
+    /// A keyword source may index only titles while the post exposes richer
+    /// metadata. Retain verifiable on-screen matches when that remote search
+    /// returns no rows; never show unrelated cached posts as search results.
+    static func matchingCachedPosts(_ posts: [Post], provider: Provider,
+                                    query: ParsedQuery, immersive: Bool) -> [Post] {
+        posts.filter { post in
+            post.providerKey == provider && (!immersive || post.isImmersiveMedia)
+                && query.included.allSatisfy { containsKeyword($0, in: post) }
+                && !query.excluded.contains { containsKeyword($0, in: post) }
         }
     }
     static func page(_ rows: [Post], hasMore: Bool, query: ParsedQuery, immersive: Bool) -> PostPage {
@@ -251,12 +263,15 @@ enum NativeProviderAPI {
         return self.page(posts, hasMore: number(result["pages"]) > 0 ? page < Int(number(result["pages"])) : !raw.isEmpty, query: query, immersive: immersive)
     }
 
-    static func hanime(session: URLSession, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
+    static func hanimeSearchBody(query: ParsedQuery, page: Int, sort: String) throws -> Data {
         let body: [String: Any] = ["search_text": query.included.joined(separator: " "), "tags": [], "tags_mode": "AND", "brands": [], "blacklist": [],
                                    "order_by": sort == "recent" ? "released_at_unix" : "views", "ordering": "desc", "page": max(0, page - 1)]
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+    static func hanime(session: URLSession, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
         let result: [String: Any]
         do {
-            result = try object(await data(session: session, url: url("https://search.htv-services.com/"), provider: .hanime, method: "POST", body: JSONSerialization.data(withJSONObject: body)))
+            result = try object(await data(session: session, url: url("https://search.htv-services.com/"), provider: .hanime, method: "POST", body: hanimeSearchBody(query: query, page: page, sort: sort)))
         } catch {
             if (error as? APIError)?.retryAfter != nil { throw error }
             guard query.included.isEmpty, !Task.isCancelled else { throw error }
@@ -361,10 +376,21 @@ private final class ProviderXML: NSObject, XMLParserDelegate {
 
 extension NativeProviderAPI {
     static func resolve(session: URLSession, credentials: ProviderCredentials, post: Post, redgifsToken: String?) async throws -> ResolvedMedia {
-        guard let provider = post.providerKey else { throw APIError.invalidResponse }
-        if let direct = mediaURL(post.mediaUrl, provider: provider) {
+        // A valid direct media URL can outlive its provider metadata (for
+        // example an imported/restored post with a legacy or unknown site).
+        // Only use this fallback for actual file/playlist paths, never an
+        // HTML post page masquerading as a downloadable video.
+        let direct = mediaURL(post.mediaUrl, provider: post.providerKey)
+        let directTypes: Set<String> = ["mp4", "m4v", "mov", "webm", "m3u8", "gif", "jpg", "jpeg", "png", "webp", "heic", "avif"]
+        if let direct, directTypes.contains(direct.pathExtension.lowercased()) {
             return ResolvedMedia(mediaUrl: direct.absoluteString, type: direct.pathExtension.lowercased() == "m3u8" ? "hls" : post.type)
         }
+        guard let provider = post.providerKey else {
+            throw APIError.server("This post has no recognized source or downloadable media URL. Try opening the original post again.")
+        }
+        // Some provider CDNs use opaque signed URLs without an extension.
+        // Keep supporting those only after the provider has been identified.
+        if let direct { return ResolvedMedia(mediaUrl: direct.absoluteString, type: post.type) }
         switch provider {
         case .rule34:
             let page = try await rule34(session: session, credentials: credentials, query: QueryParser.parse(""), page: 1, sort: "recent", immersive: false, id: post.id)

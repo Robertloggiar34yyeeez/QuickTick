@@ -63,7 +63,7 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             result.creators = [(post.providerKey?.rawValue ?? post.provider.lowercased()) + ":" + creator.lowercased()]
         }
         result.attributes["motion:" + (post.isImmersiveMedia ? "moving" : "still")] = 1
-        for facet in ActionSemantics.facets(post.tags) {
+        for facet in ActionSemantics.facets(post) {
             // An unspecified action stays unknown, not negative evidence.
             result.attributes[facet] = 0.95
         }
@@ -146,8 +146,12 @@ struct VisualProfile: Codable, Sendable, Equatable {
     var negativeClusters: [[Float]] = []
     var negativeContextClusters: [String: [[Float]]] = [:]
     var exposureClusters: [[Float]] = []
+    // Embeddings from Apple Vision and MobileCLIP live in different vector
+    // spaces, even if they happen to have identical dimensions. Never compare
+    // or learn from the two spaces in the same visual cluster.
+    var embeddingSpace: String? = nil
     init() {}
-    enum CodingKeys: String, CodingKey { case attributes, subjects, artists, franchises, interactions, negativePresentations, clusters, negativeClusters, negativeContextClusters, exposureClusters }
+    enum CodingKeys: String, CodingKey { case attributes, subjects, artists, franchises, interactions, negativePresentations, clusters, negativeClusters, negativeContextClusters, exposureClusters, embeddingSpace }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         attributes = try c.decodeIfPresent([String: VisualEvidence].self, forKey: .attributes) ?? [:]
@@ -160,6 +164,11 @@ struct VisualProfile: Codable, Sendable, Equatable {
         negativeClusters = try c.decodeIfPresent([[Float]].self, forKey: .negativeClusters) ?? []
         negativeContextClusters = try c.decodeIfPresent([String: [[Float]]].self, forKey: .negativeContextClusters) ?? [:]
         exposureClusters = try c.decodeIfPresent([[Float]].self, forKey: .exposureClusters) ?? []
+        embeddingSpace = try c.decodeIfPresent(String.self, forKey: .embeddingSpace)
+    }
+
+    static func space(for features: VisualFeatures) -> String {
+        features.version.hasPrefix("mobileclip-s0-image-") ? "mobileclip-s0-image" : "vision-featureprint"
     }
     mutating func record(_ event: RecommendationEvent, features: VisualFeatures, identityEvidence: Bool = true) {
         let positive: Double, negative: Double, exposure: Double
@@ -212,29 +221,42 @@ struct VisualProfile: Codable, Sendable, Equatable {
             if identityEvidence { update(&franchises[franchise, default: VisualEvidence()], confidence: 0.5, penalize: (negativePresentations[key]?.count ?? 0) >= 4) }
         }
         if !features.embedding.isEmpty, features.embedding.count <= 2048, features.embedding.allSatisfy(\.isFinite) {
-            func learn(_ values: inout [[Float]]) {
-                if let i = values.indices.max(by: { SemanticRecommender.cosine(values[$0], features.embedding) < SemanticRecommender.cosine(values[$1], features.embedding) }),
-                   SemanticRecommender.cosine(values[i], features.embedding) > 0.82 {
-                    values[i] = SemanticRecommender.blend(values[i], features.embedding, alpha: 0.12)
-                } else if values.count < 8 { values.append(features.embedding) }
+            let incoming = Self.space(for: features)
+            if embeddingSpace == nil {
+                let noLegacyVectors = clusters.isEmpty && negativeClusters.isEmpty && exposureClusters.isEmpty && negativeContextClusters.isEmpty
+                embeddingSpace = noLegacyVectors ? incoming : "vision-featureprint"
             }
-            if positive > 0 { learn(&clusters) }
-            if exposure > 0 { learn(&exposureClusters) }
-            if negative > 0 {
-                let likedSubjects = features.subjects.filter { (subjects[$0]?.positive ?? 0) > 0 }.map { "subject:" + $0 }
-                let likedArtists = (features.artists ?? []).filter { (artists[$0]?.positive ?? 0) > 0 }.map { "artist:" + $0 }
-                let likedFranchises = (features.franchises ?? []).filter { (franchises[$0]?.positive ?? 0) > 0 }.map { "franchise:" + $0 }
-                let keys = likedSubjects + likedArtists + likedFranchises
-                if keys.isEmpty { learn(&negativeClusters) }
-                else {
-                    for key in keys.prefix(4) {
-                        var values = negativeContextClusters[key] ?? []
-                        learn(&values)
-                        negativeContextClusters[key] = values
-                    }
-                    if negativeContextClusters.count > 64 {
-                        let keep = Set(negativeContextClusters.keys.sorted().prefix(64))
-                        negativeContextClusters = negativeContextClusters.filter { keep.contains($0.key) }
+            if incoming == "mobileclip-s0-image", embeddingSpace != incoming {
+                // Migrate only the visual clusters; preserve all explicit
+                // metadata, context evidence, and dislikes learned before.
+                clusters = []; negativeClusters = []; negativeContextClusters = [:]; exposureClusters = []
+                embeddingSpace = incoming
+            }
+            if embeddingSpace == incoming {
+                func learn(_ values: inout [[Float]]) {
+                    if let i = values.indices.max(by: { SemanticRecommender.cosine(values[$0], features.embedding) < SemanticRecommender.cosine(values[$1], features.embedding) }),
+                       SemanticRecommender.cosine(values[i], features.embedding) > 0.82 {
+                        values[i] = SemanticRecommender.blend(values[i], features.embedding, alpha: 0.12)
+                    } else if values.count < 8 { values.append(features.embedding) }
+                }
+                if positive > 0 { learn(&clusters) }
+                if exposure > 0 { learn(&exposureClusters) }
+                if negative > 0 {
+                    let likedSubjects = features.subjects.filter { (subjects[$0]?.positive ?? 0) > 0 }.map { "subject:" + $0 }
+                    let likedArtists = (features.artists ?? []).filter { (artists[$0]?.positive ?? 0) > 0 }.map { "artist:" + $0 }
+                    let likedFranchises = (features.franchises ?? []).filter { (franchises[$0]?.positive ?? 0) > 0 }.map { "franchise:" + $0 }
+                    let keys = likedSubjects + likedArtists + likedFranchises
+                    if keys.isEmpty { learn(&negativeClusters) }
+                    else {
+                        for key in keys.prefix(4) {
+                            var values = negativeContextClusters[key] ?? []
+                            learn(&values)
+                            negativeContextClusters[key] = values
+                        }
+                        if negativeContextClusters.count > 64 {
+                            let keep = Set(negativeContextClusters.keys.sorted().prefix(64))
+                            negativeContextClusters = negativeContextClusters.filter { keep.contains($0.key) }
+                        }
                     }
                 }
             }
@@ -267,12 +289,13 @@ struct VisualProfile: Codable, Sendable, Equatable {
         let artistContext = (features.artists ?? []).reduce(0.0) { score, artist in
             score + features.attributes.keys.reduce(0.0) { $0 + (interactions["artist:" + artist + "|" + $1]?.affinity ?? 0) }
         }
-        let similarity = clusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
-        let baseline = exposureClusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
-        let avoidance = negativeClusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
+        let comparable = (embeddingSpace ?? "vision-featureprint") == Self.space(for: features)
+        let similarity = comparable ? (clusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0) : 0
+        let baseline = comparable ? (exposureClusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0) : 0
+        let avoidance = comparable ? (negativeClusters.map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0) : 0
         let keys = features.subjects.map { "subject:" + $0 } + (features.artists ?? []).map { "artist:" + $0 } + (features.franchises ?? []).map { "franchise:" + $0 }
-        let contextual = keys.flatMap { negativeContextClusters[$0] ?? [] }
-            .map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0
+        let contextual = comparable ? (keys.flatMap { negativeContextClusters[$0] ?? [] }
+            .map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0) : 0
         // Similarity lowers rank but is never a hard blacklist.
         let visual = similarity * 3 + max(-0.5, similarity - baseline) * 2
             - max(0, avoidance - 0.78) * 14 - max(0, contextual - 0.84) * 17

@@ -15,6 +15,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "A1B2C3D4E5F6012345678901";
 		};
+		"A1B2C3D4E5F6012345678921" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/DrawThingsAnimaBridge.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"A1B2C3D4E5F6012345678922" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "A1B2C3D4E5F6012345678921";
+		};
 		"A1B2C3D4E5F6012345678911" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -40,28 +50,14 @@
 			"repositoryURL" = "https://github.com/apple-aiml-research/ml-stable-diffusion.git";
 			"requirement" = { "kind" = "exactVersion"; "version" = "1.1.1"; };
 		};
-		"A1B2C3D4E5F6012345678906" = {
-			"isa" = "XCRemoteSwiftPackageReference";
-			"repositoryURL" = "https://github.com/tuist/ZIPFoundation.git";
-			"requirement" = { "kind" = "exactVersion"; "version" = "0.9.21"; };
-		};
 		"A1B2C3D4E5F6012345678907" = {
 			"isa" = "XCSwiftPackageProductDependency";
 			"package" = "A1B2C3D4E5F6012345678905";
 			"productName" = "StableDiffusion";
 		};
-		"A1B2C3D4E5F6012345678908" = {
-			"isa" = "XCSwiftPackageProductDependency";
-			"package" = "A1B2C3D4E5F6012345678906";
-			"productName" = "ZIPFoundation";
-		};
 		"A1B2C3D4E5F6012345678909" = {
 			"isa" = "PBXBuildFile";
 			"productRef" = "A1B2C3D4E5F6012345678907";
-		};
-		"A1B2C3D4E5F601234567890A" = {
-			"isa" = "PBXBuildFile";
-			"productRef" = "A1B2C3D4E5F6012345678908";
 		};
 		"A1B2C3D4E5F6012345678913" = {
 			"isa" = "XCLocalSwiftPackageReference";
@@ -75,6 +71,20 @@
 		"A1B2C3D4E5F6012345678915" = {
 			"isa" = "PBXBuildFile";
 			"productRef" = "A1B2C3D4E5F6012345678914";
+		};
+		"A1B2C3D4E5F6012345678923" = {
+			"isa" = "XCRemoteSwiftPackageReference";
+			"repositoryURL" = "https://github.com/drawthingsai/draw-things-community.git";
+			"requirement" = { "kind" = "revision"; "revision" = "0621d8198f3ed505bb7cefc71b84f8f0e1ce5936"; };
+		};
+		"A1B2C3D4E5F6012345678924" = {
+			"isa" = "XCSwiftPackageProductDependency";
+			"package" = "A1B2C3D4E5F6012345678923";
+			"productName" = "_MediaGenerationKit";
+		};
+		"A1B2C3D4E5F6012345678925" = {
+			"isa" = "PBXBuildFile";
+			"productRef" = "A1B2C3D4E5F6012345678924";
 		};
 		"734399CC5ADF15F31FBB8FDF" = {
 			"isa" = "PBXFileReference";
@@ -390,6 +400,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "D822C7777F40BFDA72C1B2CD";
 		};
+		"A6E137F8527E41A8AB2DF447" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/MobileCLIPRealLifeEncoder.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"B7284CD069DD4DD982E2A2B9" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "A6E137F8527E41A8AB2DF447";
+		};
 		"F8BDB3B414F6C5B7B93F13D5" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -549,6 +569,26 @@
 		"D921DAE40319CAD5DCA2B27E" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "E33F6FBA6F590DDE5A8158BB";
+		};
+		"F10000000000000000000001" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Views/RhythmSessionView.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F10000000000000000000002" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F10000000000000000000001";
+		};
+		"F10000000000000000000003" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Views/FloatingPiPView.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F10000000000000000000004" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F10000000000000000000003";
 		};
 		"AA2684093B1B1CEEA5E31DCB" = {
 			"isa" = "PBXFileReference";
@@ -912,6 +952,7 @@
 			"buildActionMask" = "2147483647";
 			"files" = (
 				"A1B2C3D4E5F6012345678902",
+				"A1B2C3D4E5F6012345678922",
 				"A1B2C3D4E5F6012345678912",
 				"A1B2C3D4E5F6012345678904",
 				"D4FD1C87D8933489852E04A7",
@@ -943,6 +984,7 @@
 				"2D3743A9F46E29676DBA4572",
 				"6AE8F2C0D0AF140905FF1F4A",
 				"E4C45F22C51B7C28FCF2BCD2",
+				"B7284CD069DD4DD982E2A2B9",
 				"26064FE82E26D229EAB6F8FD",
 				"F14C6A43112B24F26460B552",
 				"28D46C280CFD47768D4BD6F3",
@@ -958,6 +1000,8 @@
 				"63B2F804C0104A71893515CD",
 				"7DCD0AC2B70A7CDAA6322831",
 				"D921DAE40319CAD5DCA2B27E",
+				"F10000000000000000000002",
+				"F10000000000000000000004",
 				"42CD694123D4126E623B20CE",
 				"30113E7177F6C4EB32F23552",
 			);
@@ -985,8 +1029,8 @@
 			"buildActionMask" = "2147483647";
 			"files" = (
 				"A1B2C3D4E5F6012345678909",
-				"A1B2C3D4E5F601234567890A",
 				"A1B2C3D4E5F6012345678915",
+				"A1B2C3D4E5F6012345678925",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -1073,8 +1117,8 @@
 			"productType" = "com.apple.product-type.application";
 			"packageProductDependencies" = (
 				"A1B2C3D4E5F6012345678907",
-				"A1B2C3D4E5F6012345678908",
 				"A1B2C3D4E5F6012345678914",
+				"A1B2C3D4E5F6012345678924",
 			);
 		};
 		"4CB2C25FF89E59DDC261D6C0" = {
@@ -1313,6 +1357,7 @@
 			"isa" = "PBXGroup";
 			"children" = (
 				"A1B2C3D4E5F6012345678901",
+				"A1B2C3D4E5F6012345678921",
 				"A1B2C3D4E5F6012345678911",
 				"A1B2C3D4E5F6012345678903",
 				"734399CC5ADF15F31FBB8FDF",
@@ -1348,6 +1393,7 @@
 				"5F05EFB58E4E4FA628C806E8",
 				"677532C9CC544A755F43E9BF",
 				"D822C7777F40BFDA72C1B2CD",
+				"A6E137F8527E41A8AB2DF447",
 				"F8BDB3B414F6C5B7B93F13D5",
 				"18B638CEFC354F26447C14C5",
 				"13794F0D382C0189DE2F508A",
@@ -1364,6 +1410,8 @@
 				"C4F4353A94D2BB68F6663B08",
 				"CAC3892B6F49B3126EF8523B",
 				"E33F6FBA6F590DDE5A8158BB",
+				"F10000000000000000000001",
+				"F10000000000000000000003",
 				"AA2684093B1B1CEEA5E31DCB",
 				"E5CEA3CB4160770FAE556407",
 				"007FDB79ADCF25AE71095051",
@@ -1459,8 +1507,8 @@
 			"productRefGroup" = "0A3E27B8CA818264D75C8D81";
 			"packageReferences" = (
 				"A1B2C3D4E5F6012345678905",
-				"A1B2C3D4E5F6012345678906",
 				"A1B2C3D4E5F6012345678913",
+				"A1B2C3D4E5F6012345678923",
 			);
 			"projectDirPath" = "";
 			"projectRoot" = "";

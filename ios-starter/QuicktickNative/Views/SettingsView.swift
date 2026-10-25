@@ -4,10 +4,19 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
-    @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
+    // Share the same state as the dock, so toggling this setting immediately
+    // updates the visible tabs even before the Settings sheet dismisses.
+    @Binding var showAITab: Bool
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
-    @FocusState private var syncFieldFocused: Bool
-    @State private var syncID = ""
+    @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
+    @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
+    @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
+    @AppStorage("quicktick-rhythm-finish-text-v1") private var rhythmFinishText = "Beautiful rhythm. Session complete."
+    @AppStorage("quicktick-rhythm-finish-style-v1") private var rhythmFinishStyle = "Glow"
+    @AppStorage("quicktick-rhythm-finish-animation-v1") private var rhythmFinishAnimation = "Scale"
+    @AppStorage("quicktick-rhythm-mode-v1") private var rhythmMode = "adaptive"
+    @AppStorage("quicktick-rhythm-metronome-v1") private var rhythmClicks = false
+    @AppStorage("quicktick-rhythm-haptics-v1") private var rhythmHaptics = true
     @State private var status = ""
     @State private var user = ""
     @State private var key = ""
@@ -16,79 +25,107 @@ struct SettingsView: View {
     @State private var remember = true
     @State private var onboarding = false
     @State private var sharedProfile: RecommendationTransfer?
+    @State private var exportProfileFile: RecommendationProfileFile?
+    @State private var exportingProfileFile = false
     @State private var importingProfile = false
     @State private var preparingProfile = false
+    @State private var activeSection: SettingsDestination = .appearance
+    @State private var mobileCLIPInstalled = MobileCLIPRealLifeEncoder.isInstalled()
+    @State private var mobileCLIPInstalling = false
+    @State private var mobileCLIPError: String?
+
     var body: some View {
+        settingsPage
+    }
+
+    private var settingsPage: some View {
+        ScrollViewReader { scroll in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 12) {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 21, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 46, height: 46)
-                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 15))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Make QuickTick yours")
-                            .font(.system(.title3, design: .rounded).weight(.bold))
-                        Text("Preferences, privacy and visual recommendations")
-                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                settingsHero
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 9) {
+                        ForEach(SettingsDestination.allCases) { destination in
+                            Button {
+                                activeSection = destination
+                                withAnimation(.smooth(duration: 0.36)) { scroll.scrollTo(destination.rawValue, anchor: .top) }
+                            } label: {
+                                Label(destination.title, systemImage: destination.symbol)
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(activeSection == destination ? .white : .white.opacity(0.76))
+                                    .padding(.horizontal, 14)
+                                    .frame(height: 37)
+                                    .background(activeSection == destination ? AppTheme.gradient : LinearGradient(colors: [AppTheme.elevatedSurface, AppTheme.elevatedSurface], startPoint: .leading, endPoint: .trailing), in: Capsule())
+                                    .overlay(Capsule().stroke(.white.opacity(activeSection == destination ? 0.28 : 0.10)))
+                            }
+                            .buttonStyle(QuicktickPressStyle())
+                        }
                     }
+                    .padding(.vertical, 3)
                 }
-                .padding(.top, 12)
+                .accessibilityIdentifier("settings-category-chips")
             if let storageWarning = store.storageWarning { SettingsGroup(title: "Storage needs attention", icon: "exclamationmark.triangle") { Text(storageWarning).foregroundStyle(.orange) } }
             SettingsGroup(title: "Navigation", icon: "square.grid.2x2") {
-                Toggle("Show AI tab", isOn: $showAITab)
-                    .accessibilityIdentifier("show-ai-tab-toggle")
+                HStack(spacing: 12) {
+                    Text("Show AI tab")
+                    Spacer(minLength: 8)
+                    // Keep the switch's accessible frame on the actual
+                    // control, rather than the entire scroll-view row. UI
+                    // automation and normal taps now hit the same target.
+                    Toggle("Show AI tab", isOn: $showAITab)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .accessibilityIdentifier("show-ai-tab-toggle")
+                        .frame(minWidth: 52, minHeight: 44)
+                }
                 Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
                     .font(.footnote).foregroundStyle(.secondary)
-            }
+            }.id(SettingsDestination.navigation.rawValue)
             SettingsGroup(title: "Appearance", icon: "paintbrush.pointed") {
                 Toggle("Modern interface", isOn: $modernUI)
                     .accessibilityIdentifier("modern-ui-toggle")
                 Text(modernUI ? "Rounded surfaces, compact chips and animated navigation." : "Previous QuickTick interface restored.")
                     .font(.footnote).foregroundStyle(.secondary)
-            }
-            SettingsGroup(title: "Website Sync", icon: "arrow.triangle.2.circlepath") {
-                Toggle("Enable website Sync", isOn: Binding(get: { store.cloudSyncEnabled }, set: { enabled in
-                    Task { do { try await store.setCloudSyncEnabled(enabled) } catch { status = error.localizedDescription } }
-                })).accessibilityIdentifier("cloud-sync-toggle")
-                Text("Off by default. When enabled, encrypted Favorites, provider access and preferences are sent to your QuickTick website. Feeds and recommendations always run independently.").font(.footnote).foregroundStyle(.secondary)
-                HStack {
-                    Button("Copy my Sync ID") { UIPasteboard.general.string = store.syncID; status = "Sync ID copied." }
-                        .disabled(!store.cloudSyncEnabled || store.syncID.isEmpty)
-                    Spacer()
-                    Button("Sync now") { Task { do { try await store.syncNow(); await reloadAccessFields() } catch {} } }.disabled(!store.cloudSyncEnabled || store.isSyncing)
-                }.buttonStyle(.plain)
-                SecureField("Paste Sync ID from another device", text: $syncID)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
-                    .accessibilityIdentifier("sync-id-input").focused($syncFieldFocused).submitLabel(.done)
-                HStack {
-                    Button("Paste ID") { syncID = UIPasteboard.general.string ?? "" }
-                    Spacer()
-                    Button("Connect and merge") { syncFieldFocused = false; Task {
-                        do { try await store.connectSyncID(syncID); status = ""; await reloadAccessFields(); await store.refresh() }
-                        catch { status = error.localizedDescription }
-                    } }.disabled(!store.cloudSyncEnabled || store.isSyncing || syncID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }.buttonStyle(.plain)
-                if store.isSyncing { ProgressView("Syncing profile…") }
-                Text(status.isEmpty ? store.syncStatus : status).accessibilityIdentifier("sync-status").font(.footnote).foregroundStyle(store.syncFailed ? .orange : .secondary)
-                Text("Your Sync ID is the key to your profile. Downloads stay on this device.").font(.caption).foregroundStyle(.secondary)
-            }
+                Label("Color theme", systemImage: "paintpalette.fill")
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
+                SettingsPaletteSelector(selected: $accentPalette)
+                Text("Cosmic themes also color surfaces, borders and navigation—not just the buttons.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            }.id(SettingsDestination.appearance.rawValue)
             SettingsGroup(title: "Provider access", icon: "lock.shield") {
                 TextField("Rule34 user ID", text: $user).textInputAutocapitalization(.never)
+                    .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("rule34-user-input").accessibilityLabel("Rule34 user ID")
                 SecureField("Rule34 API key", text: $key)
+                    .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("rule34-key-input").accessibilityLabel("Rule34 API key")
                 Toggle("Remember Rule34 credentials", isOn: $remember)
                 TextField("Pornhub username", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("pornhub-user-input").accessibilityLabel("Pornhub username")
                 SecureField("Supported Pornhub session", text: $session)
+                    .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("pornhub-session-input").accessibilityLabel("Supported Pornhub session")
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
-            }.disabled(store.isSyncing)
+            }.disabled(store.isSyncing).id(SettingsDestination.access.rawValue)
             SettingsGroup(title: "Learned interests · \(store.selectedProvider.displayName)", icon: "sparkles") {
                 LabeledContent("Engine", value: store.recommendationMode)
-                Text(store.learnedInterests.isEmpty ? "Interact with posts or search to learn interests." : store.learnedInterests.joined(separator: " · "))
+                if store.learnedInterests.isEmpty {
+                    Text("Interact with posts or search to learn interests.")
+                        .foregroundStyle(AppTheme.secondaryLabel)
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 115), spacing: 7)], spacing: 7) {
+                        ForEach(Array(store.learnedInterests.prefix(24)), id: \.self) { interest in
+                            Text(interest.replacingOccurrences(of: "_", with: " "))
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                                .padding(.horizontal, 11)
+                                .frame(maxWidth: .infinity, minHeight: 34)
+                                .background(AppTheme.accent.opacity(0.14), in: Capsule())
+                                .overlay(Capsule().stroke(AppTheme.accent.opacity(0.24)))
+                        }
+                    }
+                }
                 Button("Edit Into / Not Into") { onboarding = true }
                 Button {
                     Task { await store.rebuildRecommended() }
@@ -101,7 +138,7 @@ struct SettingsView: View {
                 if let status = store.recommendationRescanStatus { Text(status).font(.caption).foregroundStyle(AppTheme.accent) }
                 Button("Reset learned history", role: .destructive) { Task { await store.resetRecommendations() } }
                 if let resetStatus = store.resetStatus { Text(resetStatus).font(.caption) }
-            }
+            }.id(SettingsDestination.recommendations.rawValue)
             SettingsGroup(title: "Transfer recommendations", icon: "square.and.arrow.up") {
                 Button { preparingProfile = true; Task {
                     defer { preparingProfile = false }
@@ -109,8 +146,17 @@ struct SettingsView: View {
                     catch { store.profileTransferError = error.localizedDescription }
                 } } label: { Label(preparingProfile ? "Preparing profile…" : "Share / AirDrop profile", systemImage: "square.and.arrow.up") }
                     .disabled(preparingProfile || !store.bootstrapped).accessibilityIdentifier("share-recommendation-profile")
+                Button { preparingProfile = true; Task {
+                    defer { preparingProfile = false }
+                    do {
+                        exportProfileFile = RecommendationProfileFile(profile: try await store.exportRecommendationProfile())
+                        exportingProfileFile = true
+                    } catch { store.profileTransferError = error.localizedDescription }
+                } } label: { Label("Export .quicktickprofile file", systemImage: "doc.badge.arrow.up") }
+                    .disabled(preparingProfile || !store.bootstrapped)
+                    .accessibilityIdentifier("export-recommendation-file")
                 Button("Import recommendation profile") { importingProfile = true }.accessibilityIdentifier("import-recommendation-profile")
-                Text("Transfers your chosen and learned interests, exclusions and semantic interests. No logins, Sync ID, downloaded files or individual viewing/search history. The file contains private interests; share it only with your chosen device.")
+                Text("AirDrop or save a .quicktickprofile file, then open it on another device or use Import here. Only interests and exclusions transfer—never logins, downloads or viewing history. Treat the file as private.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             SettingsGroup(title: "Persistent exclusions", icon: "line.3.horizontal.decrease.circle") {
@@ -119,15 +165,74 @@ struct SettingsView: View {
             SettingsGroup(title: "Visual intelligence", icon: "eye") {
                 Toggle("Learn visual taste while browsing", isOn: $store.visualAnalysisEnabled)
                 Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
+                Button {
+                    guard !mobileCLIPInstalling, !mobileCLIPInstalled else { return }
+                    mobileCLIPInstalling = true; mobileCLIPError = nil
+                    Task {
+                        do {
+                            try await MobileCLIPRealLifeEncoder.shared.install()
+                            mobileCLIPInstalled = true
+                            store.visualModelDidInstall()
+                        } catch { mobileCLIPError = error.localizedDescription }
+                        mobileCLIPInstalling = false
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        if mobileCLIPInstalling { InfinityLoader(size: 22) }
+                        else { Image(systemName: mobileCLIPInstalled ? "checkmark.circle.fill" : "arrow.down.circle") }
+                        Text(mobileCLIPInstalled ? "MobileCLIP ready" : (mobileCLIPInstalling ? "Installing MobileCLIP…" : "Install MobileCLIP · 23 MB"))
+                        Spacer()
+                    }
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .disabled(mobileCLIPInstalling || mobileCLIPInstalled)
+                .accessibilityIdentifier("install-mobileclip-button")
+                Text("Optional Apple on-device model for real-life visual similarity. Keeps anime and photo tastes separate; existing tags still determine specific themes. Runs during idle visual analysis, never during video playback.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let mobileCLIPError {
+                    Text("MobileCLIP installation failed: \(mobileCLIPError)")
+                        .font(.footnote).foregroundStyle(.orange)
+                }
                 ManualVisualRefreshPanel(manager: store.downloads)
             }
             SettingsGroup(title: "Playback", icon: "play.rectangle") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
                 Toggle("Mute", isOn: $store.muted)
+                Toggle("Autoplay in Home & cards", isOn: $autoplayVideos)
+                    .accessibilityIdentifier("autoplay-videos-toggle")
+                Text("When off, videos in Home and other card views stay on previews until you tap Play. Immersive always autoplays as you swipe.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
+                    .accessibilityIdentifier("skip-video-intros-toggle")
+                Text("For Pornhub videos longer than 12 seconds, the preview stays visible while the 0:10 position loads, then playback starts. Other sources begin at 0:00.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }.id(SettingsDestination.playback.rawValue)
+            SettingsGroup(title: "Rhythm & floating player", icon: "waveform.path") {
+                Picker("Default rhythm", selection: $rhythmMode) {
+                    ForEach(RhythmPattern.allCases) { mode in Text(mode.title).tag(mode.rawValue) }
+                }
+                Toggle("Metronome sounds", isOn: $rhythmClicks)
+                Toggle("Beat haptics", isOn: $rhythmHaptics)
+                TextField("Completion message", text: $rhythmFinishText, axis: .vertical)
+                    .lineLimit(2...4)
+                    .modifier(SettingsTextFieldSurface())
+                Picker("Completion appearance", selection: $rhythmFinishStyle) {
+                    ForEach(["Glow", "Glass", "Minimal"], id: \.self) { Text($0) }
+                }
+                Picker("Completion animation", selection: $rhythmFinishAnimation) {
+                    ForEach(["Scale", "Slide", "Fade"], id: \.self) { Text($0) }
+                }
+                Toggle("Mute feed audio during floating video", isOn: $store.pipMuteFeed)
+                Text("Otherwise feed audio is reduced to 15% while a floating video plays. Normal audio returns when it closes.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 30)
+            .frame(maxWidth: 780)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 18)
+            .padding(.bottom, 44)
+        }
         }
         .scrollDismissesKeyboard(.interactively)
         .background(AppTheme.canvas)
@@ -135,6 +240,7 @@ struct SettingsView: View {
         .toolbarBackground(AppTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .preferredColorScheme(.dark)
+        .tint(AppTheme.accent)
             .sheet(isPresented: $onboarding) { TasteOnboardingView() }
             .sheet(item: $sharedProfile) { profile in
                 NavigationStack {
@@ -154,15 +260,167 @@ struct SettingsView: View {
                 case .failure(let error): store.profileTransferError = error.localizedDescription
                 }
             }
+            .fileExporter(isPresented: $exportingProfileFile, document: exportProfileFile,
+                          contentType: .quicktickProfile, defaultFilename: "QuickTick-Recommendations") { result in
+                if case .failure(let error) = result { store.profileTransferError = error.localizedDescription }
+            }
             .modifier(ProfileImportConfirmation())
             .task { await reloadAccessFields() }
             .onDisappear { store.cancelManualVisualRefresh() }
-            .onChange(of: store.isSyncing) { _, busy in if !busy { Task { await reloadAccessFields() } } }
     }
+
+    private var settingsHero: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("YOUR QUICKTICK")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(2.1)
+                    .foregroundStyle(AppTheme.accent)
+                Text("Your space.")
+                    .font(.system(size: 33, weight: .bold, design: .rounded))
+                    .tracking(-1.0)
+                Text("One look, everywhere.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.secondaryLabel)
+                HStack(spacing: 8) {
+                    Label("Private by default", systemImage: "lock.shield")
+                    Label("Made for you", systemImage: "sparkles")
+                }
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.82))
+                .padding(.top, 5)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 27, weight: .light))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.white)
+                .frame(width: 76, height: 76)
+                .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+                .shadow(color: AppTheme.accent.opacity(0.28), radius: 20, y: 7)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 26).stroke(AppTheme.accent.opacity(0.18)))
+        .padding(.top, 12)
+    }
+
     private func reloadAccessFields() async {
         let credentials = await store.api.credentials
         user = credentials.rule34User; key = credentials.rule34Key; session = credentials.pornhubSession
         username = store.syncedPornhubUsername; remember = store.rememberedProviderAccess
+    }
+}
+
+private enum SettingsDestination: String, CaseIterable, Identifiable {
+    case appearance, navigation, recommendations, playback, access
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .appearance: "Appearance"
+        case .navigation: "Navigation"
+        case .recommendations: "For you"
+        case .playback: "Playback"
+        case .access: "Access"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .appearance: "paintpalette"
+        case .navigation: "square.grid.2x2"
+        case .recommendations: "sparkles"
+        case .playback: "play.rectangle"
+        case .access: "lock.shield"
+        }
+    }
+}
+
+private struct SettingsPaletteSelector: View {
+    @Binding var selected: String
+    @State private var showingAll = false
+    private var visiblePalettes: [AppTheme.AccentPalette] {
+        if showingAll { return AppTheme.AccentPalette.allCases }
+        let current = AppTheme.AccentPalette(rawValue: selected) ?? .violet
+        var featured: [AppTheme.AccentPalette] = []
+        for palette in [current, .galaxy, .darkCosmos, .violet] where !featured.contains(palette) {
+            featured.append(palette)
+        }
+        return Array(featured.prefix(3))
+    }
+    var body: some View {
+        VStack(spacing: 11) {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+            ForEach(visiblePalettes) { palette in
+                let chosen = selected == palette.rawValue
+                Button {
+                    withAnimation(.smooth(duration: 0.26)) { selected = palette.rawValue }
+                } label: {
+                    VStack(spacing: 7) {
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .fill(LinearGradient(colors: palette.gradientColors,
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(height: 49)
+                            .overlay {
+                                if [.galaxy, .darkCosmos, .auroraNight, .solarEclipse].contains(palette) {
+                                    HStack(alignment: .top) {
+                                        Image(systemName: "sparkle").font(.system(size: 13, weight: .light))
+                                        Spacer()
+                                        Image(systemName: "star.fill").font(.system(size: 5))
+                                    }
+                                    .foregroundStyle(.white.opacity(0.88))
+                                    .padding(10)
+                                    .allowsHitTesting(false)
+                                }
+                            }
+                            .overlay {
+                                if chosen {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 22, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .shadow(color: .black.opacity(0.4), radius: 4)
+                                }
+                            }
+                            .overlay(RoundedRectangle(cornerRadius: 13).stroke(.white.opacity(chosen ? 0.9 : 0.14), lineWidth: chosen ? 2 : 1))
+                        Text(palette.name)
+                            .font(.system(size: 11, weight: chosen ? .bold : .medium, design: .rounded))
+                            .foregroundStyle(chosen ? .white : AppTheme.secondaryLabel)
+                            .lineLimit(1)
+                    }
+                    .padding(5)
+                    .background(chosen ? AppTheme.accent.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 16))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityLabel("\(palette.name) accent")
+                .accessibilityAddTraits(chosen ? .isSelected : [])
+                .accessibilityIdentifier("accent-\(palette.rawValue)")
+            }
+        }
+        Button {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { showingAll.toggle() }
+        } label: {
+            Label(showingAll ? "Show fewer themes" : "See all \(AppTheme.AccentPalette.allCases.count) themes",
+                  systemImage: showingAll ? "chevron.up" : "chevron.down")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.accent)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(QuicktickPressStyle())
+        .accessibilityIdentifier("show-all-themes")
+        }
+    }
+}
+
+private struct SettingsTextFieldSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.plain)
+            .font(.subheadline)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background(AppTheme.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 13))
+            .overlay(RoundedRectangle(cornerRadius: 13).stroke(AppTheme.border))
     }
 }
 
@@ -274,23 +532,31 @@ private struct SettingsGroup<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Label(title, systemImage: icon)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.88))
-                .padding(.leading, 3)
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 11) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
+                    .frame(width: 36, height: 36)
+                    .background(AppTheme.accent.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 0)
+            }
+            VStack(alignment: .leading, spacing: 14) {
                 content
             }
             .font(.subheadline)
-            .textFieldStyle(.roundedBorder)
             .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
             .tint(AppTheme.accent)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
         }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
     }
 }
 
@@ -300,6 +566,8 @@ private struct ManualVisualRefreshPanel: View {
     @ObservedObject var manager: DownloadManager
     @State private var previewURL: URL?
     @State private var previewReady = false
+    @State private var carouselURLs: [String] = []
+    @State private var carouselIndex = 0
     var body: some View {
         Group {
             Button { store.startManualVisualRefresh() } label: {
@@ -312,17 +580,40 @@ private struct ManualVisualRefreshPanel: View {
                     Text(progress.status).accessibilityIdentifier("manual-visual-status")
                 }.accessibilityIdentifier("manual-visual-progress")
                     .accessibilityValue("\(progress.completed) of \(progress.total) new posts analyzed")
+                if !carouselURLs.isEmpty {
+                    GeometryReader { area in
+                        ZStack {
+                            ForEach(-2...2, id: \.self) { slot in
+                                let offset = (carouselIndex + slot + carouselURLs.count * 4) % carouselURLs.count
+                                CachedMediaImage(url: carouselURLs[offset], pixels: 400, fill: true)
+                                    .frame(width: min(174, area.size.width * 0.54), height: 154)
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(slot == 0 ? 0.38 : 0.10)))
+                                    .scaleEffect(slot == 0 ? 1 : (abs(slot) == 1 ? 0.83 : 0.66))
+                                    .rotation3DEffect(.degrees(Double(slot) * -12), axis: (x: 0, y: 1, z: 0))
+                                    .offset(x: CGFloat(slot) * min(130, area.size.width * 0.34))
+                                    .opacity(abs(slot) == 2 ? 0.40 : 1)
+                                    .zIndex(Double(3 - abs(slot)))
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
+                    }
+                    .frame(height: 165)
+                    .background(AppTheme.navigationSurface, in: RoundedRectangle(cornerRadius: 20))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Visual taste download carousel")
+                    .accessibilityValue("Scanning \(progress.completed) of \(progress.total)")
+                    .accessibilityIdentifier("visual-refresh-carousel")
+                }
                 if let previewURL {
                     AnimatedGIFSurface(url: previewURL,
                         playing: store.isForeground && !reduceMotion && !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState.rawValue < 2,
-                        pixels: 160, frameLimit: 24) { _ in previewReady = true }
-                        .frame(maxWidth: .infinity).frame(height: 160).clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous)).allowsHitTesting(false)
+                        pixels: 120, frameLimit: 24) { _ in previewReady = true }
+                        .frame(maxWidth: .infinity).frame(height: 56).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous)).allowsHitTesting(false)
                         .accessibilityElement(children: .ignore)
                         .accessibilityValue(previewReady ? "Looping" : "Loading")
                         .accessibilityLabel("Looping downloaded GIF").accessibilityIdentifier("visual-refresh-gif")
-                } else {
-                    Label("Download a GIF to show a looping preview here", systemImage: "photo")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if progress.running {
                     Button("Stop update", role: .cancel) { store.cancelManualVisualRefresh() }
@@ -336,6 +627,20 @@ private struct ManualVisualRefreshPanel: View {
                     && (record.fileSize ?? 0) <= 8 * 1024 * 1024
             }
             previewReady = false; previewURL = record?.exportURL
+            carouselURLs = manager.records.filter { $0.state == .complete }
+                .compactMap { item in item.thumbnailLocalPath.map { URL(fileURLWithPath: $0).absoluteString }
+                    ?? (item.offlinePost?.type.lowercased() == "image" ? item.exportURL?.absoluteString : nil) }
+                .shuffled()
+            carouselIndex = 0
+        }
+        .task(id: store.isManualVisualScanRunning) {
+            guard store.isManualVisualScanRunning else { return }
+            while !Task.isCancelled && store.isManualVisualScanRunning {
+                do { try await Task.sleep(for: .milliseconds(850)) } catch { return }
+                guard !carouselURLs.isEmpty else { continue }
+                if reduceMotion { carouselIndex = (carouselIndex + 1) % carouselURLs.count }
+                else { withAnimation(.smooth(duration: 0.57)) { carouselIndex = (carouselIndex + 1) % carouselURLs.count } }
+            }
         }
     }
 }
@@ -349,7 +654,7 @@ struct ProfileImportConfirmation: ViewModifier {
                 Button("Replace interests", role: .destructive) { Task { await store.importRecommendationProfile(profile) } }
             }
             Button("Cancel", role: .cancel) { store.pendingProfileImport = nil }
-        } message: { Text("Replaces chosen and learned interests and exclusions on this device. Favorites, downloads, logins and website Sync settings stay as they are.") }
+        } message: { Text("Replaces chosen and learned interests and exclusions on this device. Favorites, downloads and logins stay as they are. Only import a file from someone you trust.") }
         .alert("Profile transfer", isPresented: Binding(get: { enabled && store.profileTransferError != nil }, set: { if enabled && !$0 { store.profileTransferError = nil } })) {
             Button("OK", role: .cancel) { store.profileTransferError = nil }
         } message: { Text(store.profileTransferError ?? "") }

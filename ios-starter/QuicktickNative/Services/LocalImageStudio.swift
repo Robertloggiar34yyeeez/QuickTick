@@ -283,7 +283,7 @@ struct StudioPromptSeed: Sendable, Equatable {
             return natural[attribute] ?? attribute.replacingOccurrences(of: "_", with: " ")
         }
         // A single favorite supplies the subject. Mixing the traits of many
-        // different favorites is how we got e.g. "Chun-Li, blonde hair".
+        // Mixing incompatible traits from different saved identities can produce contradictory prompts.
         // A single coherent setting also avoids "indoors, outdoors".
         let character = characters.first.map { $0.replacingOccurrences(of: "_", with: " ") }
         var phrases = ["masterpiece", "best quality", "detailed anime illustration"]

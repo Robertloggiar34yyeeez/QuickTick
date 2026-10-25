@@ -1,4 +1,4 @@
-"""Validate a GitHub-built unsigned IPA before mounted Drive delivery."""
+"""Validate a GitHub-built unsigned IPA and its checksum."""
 import sys,zipfile,plistlib,hashlib,struct,json
 from pathlib import Path
 ipa=Path(sys.argv[1]); checksum=Path(sys.argv[2]).read_text().split()[0].lower()

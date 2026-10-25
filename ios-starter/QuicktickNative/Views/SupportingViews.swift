@@ -122,9 +122,9 @@ struct StarterTastePick: Identifiable, Sendable {
     let symbol: String
     var suggestedAttributes: [String] = []
     static let characters: [Self] = [
-        .init(id: "chun_li", title: "Chun-Li", context: "Street Fighter", query: "chun_li", tags: ["chun_li", "street_fighter"], symbol: "figure.martial.arts", suggestedAttributes: ["qipao", "muscular_female", "thick_thighs"]),
-        .init(id: "cammy", title: "Cammy", context: "Street Fighter", query: "cammy_white", tags: ["cammy_white", "street_fighter"], symbol: "figure.martial.arts"),
-        .init(id: "juri", title: "Juri", context: "Street Fighter", query: "juri_han", tags: ["juri_han", "street_fighter"], symbol: "figure.martial.arts"),
+        .init(id: "mario", title: "Mario", context: "Super Mario", query: "mario_(mario)", tags: ["mario_(mario)", "super_mario_bros"], symbol: "gamecontroller"),
+        .init(id: "sonic", title: "Sonic", context: "Sonic", query: "sonic_the_hedgehog", tags: ["sonic_the_hedgehog"], symbol: "hare"),
+        .init(id: "link", title: "Link", context: "Zelda", query: "link_(zelda)", tags: ["link_(zelda)", "the_legend_of_zelda"], symbol: "shield"),
         .init(id: "tifa", title: "Tifa Lockhart", context: "Final Fantasy", query: "tifa_lockhart", tags: ["tifa_lockhart", "final_fantasy"], symbol: "star.circle"),
         .init(id: "aerith", title: "Aerith Gainsborough", context: "Final Fantasy", query: "aerith_gainsborough", tags: ["aerith_gainsborough", "final_fantasy"], symbol: "star.circle"),
         .init(id: "rouge", title: "Rouge the Bat", context: "Sonic", query: "rouge_the_bat", tags: ["rouge_the_bat", "sonic_the_hedgehog"], symbol: "gamecontroller", suggestedAttributes: ["furry", "wings", "bodysuit"]),
@@ -675,7 +675,7 @@ struct FirstRunSetupView: View {
                 .foregroundStyle(.secondary)
             if isRule34 {
                 input("Characters", subtitle: "The fictional identities you like, not their animal names",
-                    placeholder: "chun_li, rouge_the_bat", text: $characters)
+                    placeholder: "mario_(mario), sonic_the_hedgehog", text: $characters)
                 input("Artists", subtitle: "Especially artists you trust for 3D",
                     placeholder: "artist_one, artist_two", text: $artists)
                 input("Attributes", subtitle: "Visual styles and details",

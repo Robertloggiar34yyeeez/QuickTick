@@ -22,9 +22,18 @@ struct HomeFeedView: View {
 
     var body: some View {
         GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                feedScroll(viewport: viewport, proxy: proxy)
+            }
+        }
+    }
+
+    // Keep the root body small: the Home feed has independent scroll,
+    // navigation, playback and gesture modifiers, and Swift 6 cannot reliably
+    // type-check all of those inside one nested GeometryReader expression.
+    private func feedScroll(viewport: GeometryProxy, proxy: ScrollViewProxy) -> some View {
         let revision = store.feedRevision
-        ScrollViewReader { proxy in
-        ScrollView {
+        let scrollContent = ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -140,6 +149,7 @@ struct HomeFeedView: View {
                 }
             }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.bottom, 18)
         }
+        return scrollContent
         // A regular feed must keep free scroll offsets through rotation and
         // keyboard changes. Restore its anchor only when this host mounts;
         // continuously binding a .top target fought scrollTo and focus changes.
@@ -292,8 +302,6 @@ struct HomeFeedView: View {
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
         .onChange(of: store.posts) { _, posts in
             playableIDs = Set(posts.filter(\.isImmersiveMedia).map(\.stableID))
-        }
-        }
         }
     }
 

@@ -125,6 +125,27 @@ struct ConditionalTasteModel: Sendable {
 /// similarities between skipped posts earn a larger temporary avoidance
 /// penalty; shared background tags and already loved attributes do not.
 struct PassiveSkipPolicy {
+    /// A consistent fast skip of the SAME combination of presentation clues
+    /// is much stronger evidence than skipping a shared background tag.
+    /// Treat this as a reversible session avoidance, never a permanent block.
+    static func repeatedlySkippedPresentation(terms: Set<String>, samples: [ReversibleSkipModel.Evidence],
+                                               favored: [String: Double], ignored: Set<String>) -> Bool {
+        let contextualPrefixes = ["camera:", "scene:", "setting:", "pose:", "gaze:",
+                                  "act:", "position:", "power:", "role:", "tone:", "persona:"]
+        let candidate = Set(terms.map(RecommendationTagRules.canonical).filter { term in
+            contextualPrefixes.contains(where: term.hasPrefix) && !ignored.contains(term)
+                && (favored[term] ?? 0) < 2.5
+        })
+        guard candidate.count >= 2 else { return false }
+        var distinctIDs: Set<String> = []
+        for sample in samples.reversed() {
+            let overlap = candidate.intersection(sample.terms.map(RecommendationTagRules.canonical))
+            if overlap.count >= 2 { distinctIDs.insert(sample.id) }
+            if distinctIDs.count >= 3 { return true }
+        }
+        return false
+    }
+
     static func penalty(terms: Set<String>, samples: [ReversibleSkipModel.Evidence],
                         favored: [String: Double], ignored: Set<String>) -> Double {
         var counts: [String: Int] = [:]
@@ -940,6 +961,16 @@ actor RecommendationEngine {
 
     func isHardDisliked(_ post: Post, taste: TasteChoice) -> Bool {
         let source = post.provider.lowercased()
+        let recentSkips = state.reversibleSkips.evidence.suffix(36).filter { $0.provider == source }
+        let avoided: Bool
+        if recentSkips.count >= 3 {
+            let approvedIdentities = (favoriteCharacters[source] ?? []).union(favoriteArtists[source] ?? [])
+            let ignored = Self.genericTasteTerms.union(Self.lowSignalDiscoveryTags)
+                .union(Self.broadDiversityTags).union(approvedIdentities)
+            avoided = PassiveSkipPolicy.repeatedlySkippedPresentation(
+                terms: Set(terms(for: post)), samples: recentSkips,
+                favored: savedFavoriteAffinity[source] ?? [:], ignored: ignored)
+        } else { avoided = false }
         return fictionalWildlifeConfusion(post, taste: taste)
             || ActionSemantics.conflicts(selected: ActionSemantics.facets(taste.into),
                                           observed: ActionSemantics.facets(post))
@@ -948,6 +979,7 @@ actor RecommendationEngine {
             || stronglyUnsupportedMedium(post, taste: taste)
             || RecommendationTagRules.rejects(post, exclusions: taste.notInto)
             || RecommendationTagRules.rejects(post, exclusions: repeatedlyRejectedTerms(source: source))
+            || avoided
     }
 
     func score(_ post: Post, taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:],
@@ -1274,6 +1306,10 @@ actor RecommendationEngine {
         })
         // Tokenize once, rather than for every comparison in the diversity loop.
         let termCache = Dictionary((candidates + recent).map { ($0.stableID, terms(for: $0)) }, uniquingKeysWith: { first, _ in first })
+        let identityCache = Dictionary((candidates + recent).map { post -> (String, Set<String>) in
+            let topics = diversityTopics(for: post, terms: termCache[post.stableID])
+            return (post.stableID, Set(topics.filter { $0.hasPrefix("character:") || $0.hasPrefix("franchise:") }))
+        }, uniquingKeysWith: { first, _ in first })
         var unique = Set<String>()
         var pool: [(post: Post, base: Double, tags: Double, seen: Double)] = []
         for (offset, post) in candidates.enumerated() {
@@ -1297,6 +1333,7 @@ actor RecommendationEngine {
         while chosen.count < target, !pool.isEmpty {
             guard !Task.isCancelled else { return candidates }
             let context = Array((recent + chosen).suffix(8))
+            let recentIdentities = (recent + chosen).suffix(20).compactMap { identityCache[$0.stableID] }
             let contextTerms = Set(context.flatMap { termCache[$0.stableID] ?? [] })
             let lastTerms = Set(context.last.flatMap { termCache[$0.stableID] } ?? [])
             var bestIndex = 0
@@ -1319,6 +1356,12 @@ actor RecommendationEngine {
                     if similar > 0.94 { diversity += weights.nearDuplicate }
                 }
                 if let creator = entry.post.creator, !creator.isEmpty, context.suffix(3).contains(where: { $0.creator == creator }) { diversity += weights.creatorRepeat }
+                if let identity = identityCache[entry.post.stableID], !identity.isEmpty {
+                    let repeats = recentIdentities.filter { !$0.isDisjoint(with: identity) }.count
+                    // The semantic reranker must respect the same long-window
+                    // character/franchise variety as the fast initial feed.
+                    diversity += min(19, Double(repeats * repeats) * 1.9)
+                }
                 var value = entry.base - diversity
                 // Every eighth slot favors an unseen lower-affinity candidate, bounded by negative preferences.
                 if chosen.count % 8 == 7, entry.seen == 0 { value += weights.exploration * (1 - (semanticScores[entry.post.stableID]?.recent ?? 0)) }

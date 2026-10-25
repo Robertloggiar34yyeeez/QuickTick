@@ -125,6 +125,32 @@ final class IntelligentRecommendationTests: XCTestCase {
         XCTAssertLessThan(loved, untrusted)
     }
 
+    func testThreeDistinctSkipsAvoidSameIRLCameraAndSceneWithoutBlockingAllPOV() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        var sampled: [Post] = []
+        for index in 0..<3 {
+            var sample = post("irl-skip-\(index)", [], provider: "redgifs")
+            sample.caption = "POV cosplay clips"
+            sampled.append(sample)
+        }
+        var repeated = post("irl-repeat", [], provider: "redgifs")
+        repeated.caption = "Cosplay POV highlights"
+        var other = post("irl-variety", [], provider: "redgifs")
+        other.caption = "POV beach scenery"
+        await engine.recordReversibleSkip(sampled[0])
+        await engine.recordReversibleSkip(sampled[1])
+        let before = await engine.isHardDisliked(repeated, taste: TasteChoice())
+        XCTAssertFalse(before)
+        await engine.recordReversibleSkip(sampled[2])
+        let nowBlocked = await engine.isHardDisliked(repeated, taste: TasteChoice())
+        let unrelatedBlocked = await engine.isHardDisliked(other, taste: TasteChoice())
+        XCTAssertTrue(nowBlocked)
+        XCTAssertFalse(unrelatedBlocked)
+        _ = await engine.neutralizeReversibleSkip(sampled[2].stableID)
+        let restored = await engine.isHardDisliked(repeated, taste: TasteChoice())
+        XCTAssertFalse(restored)
+    }
+
     func testIRLVideoCaptionsProvidePresentationEvidenceWithoutInferringIdentity() async throws {
         var liked = post("irl-like", [], provider: "redgifs")
         liked.caption = "Cosplay POV dancing at the beach"

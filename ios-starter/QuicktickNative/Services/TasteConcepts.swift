@@ -106,16 +106,26 @@ enum RealLifePresentation {
     private static let videoSources: Set<String> = ["pornhub", "eporner", "redgifs"]
     private static let phrases: [String: String] = [
         "pov": "camera:pov", "point of view": "camera:pov",
+        "first person": "camera:pov", "first person view": "camera:pov",
         "selfie": "camera:selfie", "webcam": "camera:webcam",
         "close up": "camera:close_up", "closeup": "camera:close_up",
+        "mirror": "camera:mirror", "handheld": "camera:handheld",
+        "tripod": "camera:tripod", "wide angle": "camera:wide_angle",
+        "full body": "camera:full_body", "slow motion": "motion:slow_motion",
+        "slowmo": "motion:slow_motion", "time lapse": "motion:timelapse",
         "cosplay": "scene:cosplay", "roleplay": "scene:roleplay", "role play": "scene:roleplay",
         "dancing": "scene:dancing", "dance": "scene:dancing",
         "workout": "scene:workout", "yoga": "scene:yoga",
+        "interview": "scene:interview", "vlog": "scene:vlog",
+        "tutorial": "scene:tutorial", "live stream": "scene:livestream",
+        "natural light": "scene:natural_light", "studio lighting": "scene:studio_lighting",
         "outdoors": "setting:outdoor", "outdoor": "setting:outdoor",
         "indoors": "setting:indoor", "indoor": "setting:indoor",
         "beach": "setting:beach", "forest": "setting:forest",
         "office": "setting:office", "kitchen": "setting:kitchen",
-        "bedroom": "setting:bedroom", "gym": "setting:gym"
+        "bedroom": "setting:bedroom", "gym": "setting:gym",
+        "city": "setting:city", "street": "setting:street",
+        "garden": "setting:garden", "pool": "setting:pool"
     ]
 
     static func tags(_ post: Post) -> Set<String> {

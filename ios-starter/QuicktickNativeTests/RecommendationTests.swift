@@ -768,6 +768,42 @@ final class RecommendationTests: XCTestCase {
 }
 
 final class RhythmPhraseTests: XCTestCase {
+    func testTempoPlannerBuildsThenSlowsDownWithinOneSession() {
+        var planner = RhythmTempoPlanner()
+        planner.reset(baseBPM: 112)
+        var observed = [planner.currentBPM]
+        for _ in 0..<10 {
+            for _ in 0..<8 {
+                planner.tick(division: .regular, mode: .adaptive, baseBPM: 112,
+                             intensity: 0.9, randomness: 0, bars: 2, randomUnit: 0.5)
+            }
+            for _ in 0..<8 {
+                planner.tick(division: .regular, mode: .adaptive, baseBPM: 112,
+                             intensity: 0.9, randomness: 0, bars: 2, randomUnit: 0.5)
+            }
+            observed.append(planner.currentBPM)
+        }
+        XCTAssertGreaterThan(observed.max() ?? 0, 120)
+        XCTAssertLessThan(observed.suffix(4).min() ?? 1000, observed.max() ?? 0)
+        XCTAssertTrue(observed.allSatisfy { (40...240).contains($0) })
+    }
+
+    func testTempoPlannerClampsFastQuadAndKeepsCustomTempoSteady() {
+        var planner = RhythmTempoPlanner()
+        planner.reset(baseBPM: 220)
+        for _ in 0..<600 {
+            planner.tick(division: .quad, mode: .spam, baseBPM: 220,
+                         intensity: 1, randomness: 1, bars: 2, randomUnit: 1)
+            XCTAssertTrue((40...240).contains(planner.currentBPM))
+        }
+        planner.reset(baseBPM: 103)
+        for _ in 0..<200 {
+            planner.tick(division: .triple, mode: .custom, baseBPM: 103,
+                         intensity: 1, randomness: 1, bars: 2, randomUnit: 1)
+        }
+        XCTAssertEqual(planner.currentBPM, 103, accuracy: 0.001)
+    }
+
     func testAdaptiveSessionVisitsAllFourDensitiesWithoutRestart() {
         var sequence = RhythmPhraseSequencer()
         sequence.reset(mode: .adaptive, mixed: true, quarterBeats: 2)
@@ -807,5 +843,27 @@ final class RhythmPhraseTests: XCTestCase {
         XCTAssertEqual(sequence.current, .duo)
         for _ in 0..<31 { XCTAssertFalse(sequence.tick(mixed: true, quarterBeats: 16, shuffle: false)) }
         XCTAssertEqual(sequence.current, .duo)
+    }
+}
+
+final class HomePullRefreshTests: XCTestCase {
+    func testSwipeStartingBelowTheHeaderNeverRefreshesEvenWhenItEndsAtTop() {
+        var gate = HomePullRefreshGate()
+        gate.observe(startOffset: -450)
+        gate.observe(startOffset: 18) // Header enters viewport during the drag.
+        XCTAssertFalse(gate.finish(translation: CGSize(width: 0, height: 500)))
+        gate.observe(startOffset: 14)
+        XCTAssertTrue(gate.finish(translation: CGSize(width: 2, height: 140)))
+    }
+
+    func testShortOrHorizontalDragCannotRefresh() {
+        var gate = HomePullRefreshGate()
+        gate.observe(startOffset: 14)
+        XCTAssertFalse(gate.finish(translation: CGSize(width: 0, height: 65)))
+        gate.observe(startOffset: 14)
+        XCTAssertFalse(gate.finish(translation: CGSize(width: 150, height: 130)))
+        gate.observe(startOffset: 14)
+        gate.cancel()
+        XCTAssertFalse(gate.finish(translation: CGSize(width: 0, height: 250)))
     }
 }

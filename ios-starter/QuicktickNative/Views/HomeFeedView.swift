@@ -1,5 +1,24 @@
 import SwiftUI
 
+/// Pull refresh is a gesture that *begins* at the top, not one that happens
+/// to end there. A long downward swipe from the middle can otherwise reload
+/// the whole feed and throw the reader back to the first post.
+struct HomePullRefreshGate {
+    private var beganAtTop: Bool?
+
+    mutating func observe(startOffset: CGFloat) {
+        if beganAtTop == nil { beganAtTop = (-18...48).contains(startOffset) }
+    }
+
+    mutating func finish(translation: CGSize) -> Bool {
+        defer { beganAtTop = nil }
+        return beganAtTop == true && translation.height >= 105
+            && abs(translation.width) < translation.height * 0.65
+    }
+
+    mutating func cancel() { beganAtTop = nil }
+}
+
 struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
@@ -18,6 +37,7 @@ struct HomeFeedView: View {
     @State private var scrollRestTask: Task<Void, Never>?
     @State private var topOffset: CGFloat = 0
     @State private var pullRefreshInFlight = false
+    @State private var pullRefreshGate = HomePullRefreshGate()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -47,12 +67,14 @@ struct HomeFeedView: View {
                     }
                     Spacer()
                     Button { Task { await refreshFromGesture() } } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 48, height: 48)
-                            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 16))
-                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(AppTheme.border))
+                        Group {
+                            if pullRefreshInFlight { ProgressView().tint(.white) }
+                            else { Image(systemName: "arrow.clockwise").font(.system(size: 18, weight: .semibold)) }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(width: 48, height: 48)
+                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 16))
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(AppTheme.border))
                     }
                     .buttonStyle(QuicktickPressStyle())
                     .disabled(pullRefreshInFlight)
@@ -196,12 +218,13 @@ struct HomeFeedView: View {
                   touch.location.x < gutter || touch.location.x > viewport.size.width - gutter else { return }
             likeVisiblePost(in: viewport.size)
         })
-        // Native pull-to-refresh is not consistently activated on iPad when
-        // the feed is nested in a ScrollViewReader. Also recognize a downward
-        // pull beginning at the top; preserve normal scrolling via simultaneity.
-        .simultaneousGesture(DragGesture(minimumDistance: 45).onEnded { drag in
-            guard topOffset >= -24, drag.translation.height > 100,
-                  abs(drag.translation.width) < drag.translation.height else { return }
+        // Track the offset on the FIRST drag event. Checking only onEnded
+        // mistakes scrolling back up to the header for a refresh. Use one
+        // gesture recognizer so native refresh cannot independently fire.
+        .simultaneousGesture(DragGesture(minimumDistance: 18)
+            .onChanged { _ in pullRefreshGate.observe(startOffset: topOffset) }
+            .onEnded { drag in
+            guard pullRefreshGate.finish(translation: drag.translation) else { return }
             Task { await refreshFromGesture() }
         })
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
@@ -248,7 +271,7 @@ struct HomeFeedView: View {
                 selectVisiblePlayback(viewport: viewport.size)
             }
         }
-        .onDisappear { scrollRestTask?.cancel() }
+        .onDisappear { scrollRestTask?.cancel(); pullRefreshGate.cancel() }
         .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)
@@ -289,14 +312,8 @@ struct HomeFeedView: View {
             }
         }
 
-        .onChange(of: store.feedRevision) { _, _ in
-            // Keep the search sheet alive while new results are committed.
-            // Scroll, rather than replacing the whole NavigationStack subtree.
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
-                proxy.scrollTo("home-top", anchor: .top)
-            }
-        }
-        .refreshable { await refreshFromGesture() }
+        // Refresh is deliberately owned by the top-origin drag above. Native
+        // .refreshable also treats a swipe arriving at the top as a refresh.
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }

@@ -57,6 +57,11 @@ final class PlayerPool: ObservableObject {
     }
     var onPlaybackStart: (() -> Void)?
     func isPreparing(_ key: String) -> Bool { warming.contains(key) }
+    func preparedURL(for key: String) -> URL? {
+        guard let player = players[key], player.status != .failed,
+              player.currentItem?.status != .failed else { return nil }
+        return urls[key]
+    }
     func transitionVisiblePost() {
         suspendedPlayback = nil
         if let activeKey {
@@ -99,7 +104,7 @@ final class PlayerPool: ObservableObject {
         p.automaticallyWaitsToMinimizeStalling = !url.isFileURL
         // Favor first frame latency for swipe-through playback. Longer
         // buffering remains AVFoundation's responsibility after startup.
-        p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 1.0
+        p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 1.5
         activeKey = key; activeOwner = owner; p.isMuted = muted
         p.volume = feedVolumeScale
         if UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),

@@ -74,14 +74,15 @@ struct RhythmPhraseSequencer {
 /// boundaries and the actual tempo glides towards them on each subdivision.
 /// This is deterministic for tests when randomUnit is provided.
 struct RhythmTempoPlanner {
-    static let maximumTapsPerSecond = 11.0
+    static let maximumTapsPerSecond = 4.2
+    static let maximumBPM = 136
     private(set) var currentBPM = 112.0
     private(set) var targetBPM = 112.0
     private(set) var section = 0
     private var quarterNotes = 0.0
 
     mutating func reset(baseBPM: Int) {
-        currentBPM = Double(max(40, min(240, baseBPM)))
+        currentBPM = Double(max(40, min(136, baseBPM)))
         targetBPM = currentBPM
         section = 0
         quarterNotes = 0
@@ -101,7 +102,7 @@ struct RhythmTempoPlanner {
         // Subdivisions never multiply the ramp speed. Short steps keep
         // triple/quad patterns smooth while allowing real slowdown sections.
         let rate = (0.08 + max(0, min(1, intensity)) * 0.09) / subdivisions
-        currentBPM = max(40, min(240, currentBPM + (targetBPM - currentBPM) * rate))
+        currentBPM = max(40, min(Self.maximumBPM, currentBPM + (targetBPM - currentBPM) * rate))
     }
 
     static func interval(bpm: Double, division: RhythmDivision) -> Double {
@@ -121,17 +122,21 @@ struct RhythmTempoPlanner {
         case .progressive: cycle = [1, 1.07, 1.15, 1.26, 1.32, 1.08, 0.79, 0.91]
         // The default mode does NOT climb predictably from a warmup: slower
         // valleys outnumber short faster bursts, with random variation.
-        case .adaptive: cycle = [0.9, 0.75, 1.08, 0.82, 1.26, 0.72, 0.96, 1.16, 0.8, 1.07, 0.73, 0.93]
+        case .adaptive: cycle = [0.76, 0.85, 0.97, 1.08, 0.88, 0.74, 0.94, 1.04, 0.81, 0.90, 1.06, 0.78]
         case .custom: cycle = [1]
         default: cycle = [1, 1.06, 0.94, 1]
         }
         let amount = max(0, min(1, intensity))
-        let shape = cycle[max(0, section) % cycle.count]
+        let stage = cycle[max(0, section) % cycle.count]
+        // Adaptive evolves through musical stages but varies each stage with
+        // bounded random phrasing, avoiding an identical repeating ramp.
+        let randomIndex = min(cycle.count - 1, Int(max(0, min(0.9999, randomUnit)) * Double(cycle.count)))
+        let shape = mode == .adaptive ? stage * 0.75 + cycle[randomIndex] * 0.25 : stage
         let range = mode == .custom ? 0 : (0.4 + amount * 0.9)
         let jitterAmount = mode == .chaos ? 0.19 : (mode == .adaptive ? 0.16 : 0.045)
         let jitter = mode == .custom ? 0 : (max(0, min(1, randomUnit)) - 0.5)
             * max(0, min(1, randomness)) * jitterAmount
-        return max(40, min(240, Double(max(40, min(240, baseBPM))) * (1 + (shape - 1) * range + jitter)))
+        return max(40, min(Self.maximumBPM, Double(max(40, min(136, baseBPM))) * (1 + (shape - 1) * range + jitter)))
     }
 }
 
@@ -143,8 +148,8 @@ final class RhythmClickSound: ObservableObject {
     private let soft: AVAudioPlayer?
 
     init() {
-        strong = try? AVAudioPlayer(data: Self.wave(pitch: 1_900))
-        soft = try? AVAudioPlayer(data: Self.wave(pitch: 1_400))
+        strong = try? AVAudioPlayer(data: Self.wave(pitch: 940))
+        soft = try? AVAudioPlayer(data: Self.wave(pitch: 680))
         strong?.prepareToPlay()
         soft?.prepareToPlay()
     }
@@ -161,7 +166,7 @@ final class RhythmClickSound: ObservableObject {
 
     private static func wave(pitch: Double) -> Data {
         let sampleRate = 44_100
-        let frames = Int(Double(sampleRate) * 0.095)
+        let frames = Int(Double(sampleRate) * 0.078)
         var wav = Data()
         func bytes(_ s: String) { wav.append(contentsOf: s.utf8) }
         func word(_ number: UInt16) {
@@ -178,10 +183,10 @@ final class RhythmClickSound: ObservableObject {
         bytes("data"); dword(UInt32(frames * 2))
         for frame in 0..<frames {
             let seconds = Double(frame) / Double(sampleRate)
-            let envelope = exp(-seconds * 47) * min(1, seconds * 16_000)
-            let tone = sin(2 * .pi * pitch * seconds) * 0.77
-                + sin(2 * .pi * pitch * 1.91 * seconds) * 0.23
-            let sample = Int16((max(-1, min(1, tone * envelope * 1.85)) * Double(Int16.max)).rounded())
+            let envelope = exp(-seconds * 62) * min(1, seconds * 16_000)
+            let tone = sin(2 * .pi * pitch * seconds) * 0.75
+                + sin(2 * .pi * pitch * 1.52 * seconds) * 0.25
+            let sample = Int16((max(-1, min(1, tone * envelope * 1.2)) * Double(Int16.max)).rounded())
             word(UInt16(bitPattern: sample))
         }
         return wav
@@ -198,12 +203,12 @@ struct RhythmSessionView: View {
     let offline: Bool
 
     @AppStorage("quicktick-rhythm-mode-v1") private var pattern = "adaptive"
-    @AppStorage("quicktick-rhythm-bpm-v1") private var bpm = 112
+    @AppStorage("quicktick-rhythm-bpm-v1") private var bpm = 96
     @AppStorage("quicktick-rhythm-randomness-v1") private var randomness = 0.65
     @AppStorage("quicktick-rhythm-acceleration-v1") private var acceleration = 0.25
     @AppStorage("quicktick-rhythm-transition-v1") private var transitionSpeed = 0.25
     @AppStorage("quicktick-rhythm-metronome-v1") private var metronome = false
-    @AppStorage("quicktick-rhythm-click-volume-v1") private var clickVolume = 1.0
+    @AppStorage("quicktick-rhythm-click-volume-v1") private var clickVolume = 0.8
     @AppStorage("quicktick-rhythm-bars-per-phrase-v1") private var barsPerPhrase = 4
     @AppStorage("quicktick-rhythm-haptics-v1") private var haptics = true
     @AppStorage("quicktick-rhythm-manual-v1") private var manual = false
@@ -368,7 +373,7 @@ struct RhythmSessionView: View {
                 }
                 .accessibilityLabel("Slow rhythm by 10 BPM")
                 .accessibilityIdentifier("rhythm-slower")
-                Button { bpm = min(240, bpm + 10) } label: {
+                Button { bpm = min(136, bpm + 10) } label: {
                     Image(systemName: "plus").frame(width: 38, height: 44)
                 }
                 .accessibilityLabel("Speed rhythm up by 10 BPM")
@@ -401,10 +406,10 @@ struct RhythmSessionView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    labeledSlider("Base BPM", value: Binding(get: { Double(bpm) }, set: { bpm = Int($0) }), range: 40...240)
+                    labeledSlider("Base BPM", value: Binding(get: { Double(bpm) }, set: { bpm = Int($0) }), range: 40...136)
                     labeledSlider("Randomness", value: $randomness, range: 0...1)
                     labeledSlider("Acceleration", value: $acceleration, range: 0...1)
-                    Text("Adaptive varies speed unpredictably with regular slowdowns. All modes are capped at 11 taps per second, including Quad. +/− adjusts your base tempo.")
+                    Text("Adaptive varies speed unpredictably with regular slowdowns. All modes are capped at 4.2 taps per second, including Quad. +/− adjusts your base tempo.")
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     labeledSlider("Transitions", value: $transitionSpeed, range: 0.08...0.65)
                     labeledSlider("Bars per rhythm", value: Binding(get: { Double(barsPerPhrase) }, set: { barsPerPhrase = Int($0) }), range: 2...8)
@@ -539,7 +544,7 @@ struct RhythmSessionView: View {
         if mode == .progressive { seconds *= max(0.55, 1 - Double(switches) * acceleration * 0.012) }
         if mode == .custom { seconds *= (112 / Double(max(40, bpm))) }
         if mode != .custom { seconds *= sqrt(Double(max(40, bpm)) / tempoPlanner.currentBPM) }
-        return max(0.25, seconds)
+        return max(0.75, seconds)
     }
 
     private func advance() {

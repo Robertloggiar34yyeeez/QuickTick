@@ -3,10 +3,10 @@ import AVFoundation
 @testable import QuicktickNative
 
 final class ImmersiveMediaTests: XCTestCase {
-    func testImmersivePreloadsOneUpcomingPostAndRetainsPreviousForReverseSwipe() {
-        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 0, count: 5), [0, 1])
+    func testImmersivePreloadsTwoUpcomingPostsAndRetainsPreviousForReverseSwipe() {
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 0, count: 5), [0, 1, 2])
         XCTAssertEqual(ImmersivePreloadPlan.nextIndex(current: 0, count: 5), 1)
-        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 2, count: 5), [1, 2, 3])
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 2, count: 5), [1, 2, 3, 4])
         XCTAssertEqual(ImmersivePreloadPlan.nextIndex(current: 2, count: 5), 3)
         XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 4, count: 5), [3, 4])
         XCTAssertNil(ImmersivePreloadPlan.nextIndex(current: 4, count: 5))

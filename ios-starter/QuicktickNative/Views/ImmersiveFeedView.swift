@@ -186,7 +186,8 @@ struct ImmersiveFeedView: View {
         // one next clip, so Immersive stays responsive without Home's former
         // aggressive offscreen video loading.
         let warmIndices = ImmersivePreloadPlan.retainedIndices(current: index, count: clips.count)
-        let nextIndex = ImmersivePreloadPlan.nextIndex(current: index, count: clips.count)
+        let forwardIndices = ImmersivePreloadPlan.forwardIndices(current: index, count: clips.count)
+        store.players.capacity = 4
         store.players.retain(Set(warmIndices.map { clips[$0].stableID }))
         previews.retain(Set(warmIndices.map { clips[$0].stableID }))
         let offlineMode = offline
@@ -201,33 +202,27 @@ struct ImmersiveFeedView: View {
             group.addTask(priority: .userInitiated) { await previewCache.load(clips[index]) }
             // A ready poster prevents a blank transition even if the next
             // CDN stream still needs a moment to produce its first frame.
-            if let i = nextIndex {
-                let post = clips[i]
-                group.addTask(priority: .userInitiated) {
+            for (distance, next) in forwardIndices.enumerated() {
+                let post = clips[next]
+                group.addTask(priority: distance == 0 ? .userInitiated : .utility) {
                     await previewCache.load(post)
                 }
-            }
-            if let i = nextIndex, ["video", "gif"].contains(clips[i].type.lowercased()) {
-                let post = clips[i]
-                group.addTask(priority: .utility) {
-                    // Resolve immediately. Previously a 480 ms sleep happened
-                    // before provider resolution, often leaving no warm clip
-                    // by the time the next swipe arrived.
-                    let url: URL?
-                    if offlineMode { url = URL(string: post.mediaUrl) }
-                    else { url = try? await resolver.resolve(post).mediaUrlURL }
-                    guard !Task.isCancelled, let url else { return }
-                    let stillPresenting = await MainActor.run {
-                        feedStore.isForeground && !feedStore.isManualVisualScanRunning &&
-                            feedStore.activeTab == presentingTab
-                    }
-                    guard stillPresenting, !Task.isCancelled else { return }
-                    if post.type.lowercased() == "video" {
-                        await pool.prewarm(key: post.stableID, url: url)
-                    } else {
-                        // Share downloaded GIF bytes with the active decoder;
-                        // avoid decoding offscreen animation frames.
-                        await MediaImagePipeline.shared.prefetchGIF(url: url)
+                if ["video", "gif"].contains(post.type.lowercased()) {
+                    group.addTask(priority: distance == 0 ? .userInitiated : .utility) {
+                        let url: URL?
+                        if offlineMode { url = URL(string: post.mediaUrl) }
+                        else { url = try? await resolver.resolve(post).mediaUrlURL }
+                        guard !Task.isCancelled, let url else { return }
+                        let stillPresenting = await MainActor.run {
+                            feedStore.isForeground && !feedStore.isManualVisualScanRunning &&
+                                feedStore.activeTab == presentingTab
+                        }
+                        guard stillPresenting, !Task.isCancelled else { return }
+                        if post.type.lowercased() == "video" {
+                            await pool.prewarm(key: post.stableID, url: url)
+                        } else {
+                            await MediaImagePipeline.shared.prefetchGIF(url: url)
+                        }
                     }
                 }
             }
@@ -242,7 +237,12 @@ struct ImmersiveFeedView: View {
 enum ImmersivePreloadPlan {
     static func retainedIndices(current: Int, count: Int) -> [Int] {
         guard count > 0, (0..<count).contains(current) else { return [] }
-        return Array(max(0, current - 1)...min(count - 1, current + 1))
+        return Array(max(0, current - 1)...min(count - 1, current + 2))
+    }
+
+    static func forwardIndices(current: Int, count: Int) -> [Int] {
+        guard count > 0, (0..<count).contains(current), current + 1 < count else { return [] }
+        return Array((current + 1)...min(count - 1, current + 2))
     }
 
     static func nextIndex(current: Int, count: Int) -> Int? {
@@ -618,6 +618,9 @@ private struct ImmersiveItemView: View {
             if offline {
                 guard let local = URL(string: post.mediaUrl), local.isFileURL, FileManager.default.fileExists(atPath: local.path) else { throw APIError.server("Offline file is missing.") }
                 url = local
+            } else if mediaRetry == 0, let prepared = store.players.preparedURL(for: post.stableID) {
+                // Reuse the already-resolved, already-warmed AVPlayer URL.
+                url = prepared
             } else {
                 let resolved = try await store.resolver.resolve(post, refresh: mediaRetry > 0)
                 guard let remote = URL(string: resolved.mediaUrl) else { throw URLError(.badURL) }

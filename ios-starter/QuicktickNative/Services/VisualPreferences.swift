@@ -12,6 +12,12 @@ enum VisualDomain: String, Codable, Sendable {
         if rendered { return .threeD }
         if photographic { return .realLife }
         if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"]) { return .anime }
+        // Real-world video services frequently omit typed photo tags. Without
+        // this fallback they were classified as uncertain and missed the
+        // MobileCLIP real-life appearance path entirely. Never override
+        // explicit illustration/3D tags above.
+        if post.type.lowercased() == "video",
+           ["redgifs", "pornhub", "eporner"].contains(post.provider.lowercased()) { return .realLife }
         return .uncertain
     }
 }
@@ -303,7 +309,8 @@ struct VisualProfile: Codable, Sendable, Equatable {
             .map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0) : 0
         // Similarity lowers rank but is never a hard blacklist.
         let visual = similarity * 3 + max(-0.5, similarity - baseline) * 2
-            - max(0, avoidance - 0.78) * 14 - max(0, contextual - 0.84) * 17
+            - max(0, avoidance - max(0.73, similarity - 0.02)) * 20
+            - max(0, contextual - max(0.79, similarity)) * 20
         // Keep a bounded contribution without flattening different outfits or
         // presentations into the same saturated score for a liked subject.
         return 4 * tanh((attributesScore + identity + context + artistAffinity + artistContext + franchiseAffinity + franchiseContext + visual) / 4)

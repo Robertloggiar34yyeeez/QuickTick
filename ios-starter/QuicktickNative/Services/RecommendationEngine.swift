@@ -4,6 +4,12 @@ import Foundation
 /// model is evaluated in its background worker; this policy only combines
 /// scores that are already available, never runs Core ML while scrolling.
 struct RecommendationQualityModel: Sendable {
+    static func rejects(visual: Double?) -> Bool {
+        // A strong learned visual aversion must not be rescued by incidental
+        // metadata matches, even if a post has popular generic tags.
+        visual.map { $0.isFinite && $0 <= -2.1 } ?? false
+    }
+
     static func combined(metadata: Double, visual: Double?) -> Double {
         guard let visual, visual.isFinite else { return metadata }
         // Stronger negative evidence than positive evidence. The visual
@@ -136,12 +142,16 @@ struct PassiveSkipPolicy {
             contextualPrefixes.contains(where: term.hasPrefix) && !ignored.contains(term)
                 && (favored[term] ?? 0) < 2.5
         })
-        guard candidate.count >= 2 else { return false }
+        guard !candidate.isEmpty else { return false }
+        let oneSpecificFacet = candidate.count == 1 && candidate.contains(where: {
+            ["act:", "power:", "position:", "camera:", "scene:", "setting:"].contains(where: $0.hasPrefix)
+        })
+        guard candidate.count >= 2 || oneSpecificFacet else { return false }
         var distinctIDs: Set<String> = []
         for sample in samples.reversed() {
             let overlap = candidate.intersection(sample.terms.map(RecommendationTagRules.canonical))
-            if overlap.count >= 2 { distinctIDs.insert(sample.id) }
-            if distinctIDs.count >= 3 { return true }
+            if overlap.count >= 2 || (oneSpecificFacet && overlap.count == 1) { distinctIDs.insert(sample.id) }
+            if distinctIDs.count >= (oneSpecificFacet ? 4 : 3) { return true }
         }
         return false
     }
@@ -531,8 +541,8 @@ actor RecommendationEngine {
         return general.termEvidence.compactMap { term, evidence -> String? in
             let canonical = RecommendationTagRules.canonical(term)
             guard !Self.genericTasteTerms.contains(canonical),
-                  evidence.negative >= 2.2,
-                  evidence.negative > evidence.positive * 2.5 + 1.2 else { return nil }
+                  evidence.negative >= 1.2,
+                  evidence.negative > evidence.positive * 2.5 + 0.8 else { return nil }
             return canonical
         }.sorted()
     }
@@ -1238,6 +1248,7 @@ actor RecommendationEngine {
         guard hasSignal || !state.reversibleSkips.evidence.isEmpty || !visualScores.isEmpty else {
             let allowed = candidates.filter { post in
                 !isHardDisliked(post, taste: taste) &&
+                !RecommendationQualityModel.rejects(visual: visualScores[post.stableID]) &&
                 (!strict || matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]))
             }
             let scored = allowed.enumerated().map { offset, post in
@@ -1249,7 +1260,8 @@ actor RecommendationEngine {
         let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
         var scored: [(post: Post, value: Double, offset: Int, topics: Set<String>)] = []
         for (offset, post) in candidates.prefix(384).enumerated() {
-            guard !isHardDisliked(post, taste: taste) else { continue }
+            guard !isHardDisliked(post, taste: taste),
+                  !RecommendationQualityModel.rejects(visual: visualScores[post.stableID]) else { continue }
             // Tokenize once for strict matching, metadata and diversification.
             let postTerms = terms(for: post)
             if strict && !matchesExplicitInterest(post, taste: taste,
@@ -1265,6 +1277,7 @@ actor RecommendationEngine {
         let output = diversifyFast(scored, recent: recent)
         return output + candidates.dropFirst(384).filter { post in
             !isHardDisliked(post, taste: taste) &&
+            !RecommendationQualityModel.rejects(visual: visualScores[post.stableID]) &&
             (!strict || matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]))
         }
     }
@@ -1279,7 +1292,8 @@ actor RecommendationEngine {
         let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
         var scored: [(offset: Int, post: Post, metadata: Double)] = []
         for (offset, post) in candidates.prefix(512).enumerated() {
-            guard !isHardDisliked(post, taste: taste) else { continue }
+            guard !isHardDisliked(post, taste: taste),
+                  !RecommendationQualityModel.rejects(visual: visualScores[post.stableID]) else { continue }
             if strict && !matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]) { continue }
             scored.append((offset, post, score(post, taste: taste, recent: recent,
                                                collaborativeScores: collaborativeScores,
@@ -1388,6 +1402,7 @@ actor RecommendationEngine {
         }
         let remainder = overflow.filter {
             !isHardDisliked($0, taste: taste) &&
+            !RecommendationQualityModel.rejects(visual: visualScores[$0.stableID]) &&
             (!strict || matchesExplicitInterest($0, taste: taste, visual: visualScores[$0.stableID])) &&
             unique.insert($0.stableID).inserted
         }

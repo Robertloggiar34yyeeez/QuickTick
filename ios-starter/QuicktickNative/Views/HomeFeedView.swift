@@ -10,7 +10,7 @@ struct HomePullRefreshGate {
         // LazyVStack unmounts the header well below the fold. An absent
         // preference must NOT use a zero offset: zero means "at the top" and
         // accidentally turns an ordinary upward journey into a full refresh.
-        if beganAtTop == nil { beganAtTop = startOffset.map { (-18...48).contains($0) } ?? false }
+        if beganAtTop == nil { beganAtTop = startOffset.map { (-12...22).contains($0) } ?? false }
     }
 
     mutating func finish(translation: CGSize) -> Bool {
@@ -227,7 +227,11 @@ struct HomeFeedView: View {
         // mistakes scrolling back up to the header for a refresh. Use one
         // gesture recognizer so native refresh cannot independently fire.
         .simultaneousGesture(DragGesture(minimumDistance: 18)
-            .onChanged { _ in pullRefreshGate.observe(startOffset: topOffset) }
+            .onChanged { drag in
+                // Reconstruct the header position at gesture START, not after
+                // a long swipe has already carried it into the visible area.
+                pullRefreshGate.observe(startOffset: topOffset.map { $0 - drag.translation.height })
+            }
             .onEnded { drag in
             guard pullRefreshGate.finish(translation: drag.translation) else { return }
             Task { await refreshFromGesture() }

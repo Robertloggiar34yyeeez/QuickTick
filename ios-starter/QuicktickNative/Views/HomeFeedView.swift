@@ -16,6 +16,8 @@ struct HomeFeedView: View {
     @State private var playableIDs: Set<String> = []
     @State private var lastVisibleTop: String?
     @State private var visibleTopSince = Date.distantPast
+    @State private var isScrollMoving = false
+    @State private var scrollRestTask: Task<Void, Never>?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -159,24 +161,27 @@ struct HomeFeedView: View {
             visibleTopSince = .distantPast
             proxy.scrollTo("home-top", anchor: .top)
         }
-        .overlay(alignment: .bottomTrailing) {
-            Group {
+        .overlay(alignment: .bottomLeading) {
+            if !isScrollMoving {
                 Button {
                     withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo("home-top", anchor: .top) }
                 } label: {
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 13, weight: .bold))
-                        .frame(width: 34, height: 34)
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 48, height: 48)
                         .background(AppTheme.gradient, in: Circle())
-                        .shadow(color: .black.opacity(0.35), radius: 7)
-                        .frame(width: 44, height: 44, alignment: .center)
+                        .overlay(Circle().strokeBorder(.white.opacity(0.27), lineWidth: 1))
+                        .shadow(color: AppTheme.accent.opacity(0.28), radius: 14, y: 5)
+                        .shadow(color: .black.opacity(0.34), radius: 9, y: 4)
                 }
                 .buttonStyle(.plain)
-                .frame(width: 44, height: 44)
+                .frame(width: 48, height: 48)
                 .fixedSize()
                 .contentShape(Rectangle())
-                .padding(.trailing, 12)
-                .padding(.bottom, 12)
+                .padding(.leading, viewport.size.width > 700 ? 88 : 14)
+                .padding(.bottom, 14)
+                .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
                 .accessibilityLabel("Scroll to top")
                 .accessibilityIdentifier("home-scroll-top")
             }
@@ -185,6 +190,14 @@ struct HomeFeedView: View {
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
             guard store.feedRevision == revision else { return }
             guard frames != visibleFrames else { return }
+            // Geometry changes reveal actual scrolling without attaching a
+            // gesture that competes with normal vertical paging. Hide the
+            // shortcut during motion; restore it after a quiet interval.
+            let moved = frames.contains { id, rect in
+                guard let previous = visibleFrames[id] else { return false }
+                return abs(previous.minY - rect.minY) > 2
+            }
+            if moved { noteScrollMotion() }
             visibleFrames = frames
             let bounds = CGRect(origin: .zero, size: viewport.size)
             let top = frames.filter { $0.value.intersects(bounds) }.min { $0.value.minY < $1.value.minY }?.key
@@ -218,6 +231,7 @@ struct HomeFeedView: View {
                 selectVisiblePlayback(viewport: viewport.size)
             }
         }
+        .onDisappear { scrollRestTask?.cancel() }
         .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)
@@ -278,6 +292,18 @@ struct HomeFeedView: View {
                 && !store.tasteChoice(for: store.selectedProvider).done { onboarding = true }
         }
         }
+        }
+    }
+
+    private func noteScrollMotion() {
+        scrollRestTask?.cancel()
+        if !isScrollMoving {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { isScrollMoving = true }
+        }
+        scrollRestTask = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+            guard !Task.isCancelled else { return }
+            withAnimation(reduceMotion ? nil : .easeIn(duration: 0.18)) { isScrollMoving = false }
         }
     }
 

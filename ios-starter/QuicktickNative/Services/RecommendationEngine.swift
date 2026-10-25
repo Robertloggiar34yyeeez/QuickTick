@@ -22,6 +22,13 @@ struct ConditionalTasteModel: Sendable {
     private var artistsByMedium: [String: Set<String>] = [:]
     private var approvedPairs: [String: Set<String>] = [:]
     private var actionsByMedium: [String: [String: Int]] = [:]
+    private var presentationsByIdentity: [String: [String: Int]] = [:]
+    private var realLifePresentations: [String: [String: Int]] = [:]
+
+    private static func presentation(_ key: String) -> Bool {
+        ["clothing:", "pose:", "gaze:", "scene:", "setting:", "camera:",
+         "power:", "role:", "tone:", "persona:", "expression:"].contains(where: key.hasPrefix)
+    }
 
     private static func mediumKey(_ post: Post) -> String {
         post.provider.lowercased() + "|" + (VisualDomain.classify(post)?.rawValue ?? "uncertain")
@@ -32,10 +39,16 @@ struct ConditionalTasteModel: Sendable {
         artistsByMedium.removeAll(keepingCapacity: true)
         approvedPairs.removeAll(keepingCapacity: true)
         actionsByMedium.removeAll(keepingCapacity: true)
+        presentationsByIdentity.removeAll(keepingCapacity: true)
+        realLifePresentations.removeAll(keepingCapacity: true)
         for post in favorites {
             let key = Self.mediumKey(post)
-            guard !key.hasSuffix("|uncertain"), !key.hasSuffix("|mixed"),
+            let irlTags = RealLifePresentation.tags(post)
+            guard (!key.hasSuffix("|uncertain") || !irlTags.isEmpty), !key.hasSuffix("|mixed"),
                   let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { continue }
+            for tag in irlTags {
+                realLifePresentations[key, default: [:]][tag, default: 0] += 1
+            }
             let subjects = Set(features.subjects)
             let artists = Set(features.artists ?? [])
             subjectsByMedium[key, default: []].formUnion(subjects)
@@ -46,12 +59,20 @@ struct ConditionalTasteModel: Sendable {
             for facet in ActionSemantics.facets(post) {
                 actionsByMedium[key, default: [:]][facet, default: 0] += 1
             }
+            let presentation = features.attributes.keys.filter(Self.presentation)
+            for identity in subjects.map({ "subject:" + $0 }) + artists.map({ "artist:" + $0 }) {
+                let context = key + "|" + identity
+                for facet in presentation {
+                    presentationsByIdentity[context, default: [:]][facet, default: 0] += 1
+                }
+            }
         }
     }
 
     func score(_ post: Post, taxonomy: VisualTagTaxonomy?) -> Double {
         let key = Self.mediumKey(post)
-        guard !key.hasSuffix("|uncertain"), !key.hasSuffix("|mixed"),
+        let irlTags = RealLifePresentation.tags(post)
+        guard (!key.hasSuffix("|uncertain") || !irlTags.isEmpty), !key.hasSuffix("|mixed"),
               let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { return 0 }
         let subjects = Set(features.subjects)
         let artists = Set(features.artists ?? [])
@@ -78,10 +99,52 @@ struct ConditionalTasteModel: Sendable {
             let mismatch = ActionSemantics.axis(facet) == "power" ? 16.0 : 2.5
             return value + (count >= 3 && likedActions[facet] == nil ? mismatch : 0)
         }
+        // This is the answer to "why this subject?": preserve repeated
+        // subject/artist + outfit/pose/setting pairings. A character's identity
+        // alone is intentionally worth little, and incidental co-tags from a
+        // single like cannot dictate future recommendations.
+        let identityKeys = subjects.map { key + "|subject:" + $0 }
+            + artists.map { key + "|artist:" + $0 }
+        let contextual = features.attributes.keys.filter(Self.presentation).reduce(0.0) { sum, facet in
+            let frequency = identityKeys.map { presentationsByIdentity[$0]?[facet] ?? 0 }.max() ?? 0
+            return sum + (frequency >= 2 ? min(0.5, Double(frequency) * 0.15) : 0)
+        }
+        let irlMatch = irlTags.reduce(0.0) { sum, facet in
+            let count = realLifePresentations[key]?[facet] ?? 0
+            return sum + (count >= 2 ? min(1.25, Double(count) * 0.42) : 0)
+        }
         // One matched character alone cannot outweigh an unapproved credited
         // artist. Confident pairs win; unknown creators get no artist boost.
         return (exactSubject ? 2.0 : 0) + (exactArtist ? 3.0 : 0) + (approvedPair ? 4.0 : 0)
-            + min(6.0, actionBoost) - min(22.0, actionConflict)
+            + min(6.0, actionBoost) + min(1.0, contextual)
+            + min(3.0, irlMatch) - min(22.0, actionConflict)
+    }
+}
+
+/// Evidence from a swipe is weak and fully reversible. Repeated *specific*
+/// similarities between skipped posts earn a larger temporary avoidance
+/// penalty; shared background tags and already loved attributes do not.
+struct PassiveSkipPolicy {
+    static func penalty(terms: Set<String>, samples: [ReversibleSkipModel.Evidence],
+                        favored: [String: Double], ignored: Set<String>) -> Double {
+        var counts: [String: Int] = [:]
+        for sample in samples {
+            for raw in Set(sample.terms) {
+                let term = RecommendationTagRules.canonical(raw)
+                guard terms.contains(term), !ignored.contains(term),
+                      !["artist:", "character:", "performer:", "franchise:", "uploader:"].contains(where: term.hasPrefix)
+                else { continue }
+                counts[term, default: 0] += 1
+            }
+        }
+        return min(30, counts.reduce(0.0) { total, entry in
+            let (term, count) = entry
+            guard count >= 2 else { return total }
+            let trusted = favored[term] ?? 0
+            let strength = trusted >= 2.5 ? 0.12 : (trusted >= 1 ? 0.4 : 1.0)
+            let contextual = ["power:", "role:", "scene:", "camera:", "setting:", "act:", "position:"].contains(where: term.hasPrefix)
+            return total + Double(min(5, count - 1)) * (contextual ? 4.0 : 2.4) * strength
+        })
     }
 }
 
@@ -421,8 +484,11 @@ actor RecommendationEngine {
     func recordReversibleSkip(_ post: Post) {
         guard !state.reversibleSkips.contains(post.stableID) else { return }
         let source = post.provider.lowercased()
+        let approvedIdentities = (favoriteCharacters[source] ?? []).union(favoriteArtists[source] ?? [])
+        let ignored = Self.genericTasteTerms.union(Self.lowSignalDiscoveryTags)
+            .union(Self.broadDiversityTags).union(approvedIdentities)
         let terms = Array(Set(terms(for: post).map(RecommendationTagRules.canonical)
-            .filter { !Self.genericTasteTerms.contains($0) })).sorted().prefix(24)
+            .filter { !ignored.contains($0) })).sorted().prefix(24)
         state.reversibleSkips.mark(.init(id: post.stableID, provider: source, terms: Array(terms)))
     }
     @discardableResult
@@ -684,16 +750,19 @@ actor RecommendationEngine {
             }
             return Array(Set(values)).sorted().prefix(48).map { $0 }
         }
+        // Preserve trusted scene/camera phrases for IRL videos; generic
+        // title tokens remain low-weight, and no face identity is inferred.
+        let presentations = RealLifePresentation.tags(post).sorted()
         var out: [String] = []
         for value in raw.prefix(24) {
             for token in value.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ").split(whereSeparator: { $0.isWhitespace }) {
                 let clean = String(token).lowercased().filter { $0.isLetter || $0.isNumber || $0 == "'" }
                 guard clean.count >= 3, !stopwords.contains(clean), Int(clean) == nil, !out.contains(clean) else { continue }
                 out.append(clean)
-                if out.count >= 30 { return out }
+                if out.count >= 30 { return Array(Set(out + presentations)).sorted() }
             }
         }
-        return out
+        return Array(Set(out + presentations)).sorted()
     }
 
     func themeSignatures(for post: Post) -> [String] {
@@ -781,6 +850,9 @@ actor RecommendationEngine {
             }
             evidencePost.caption = nil; evidencePost.category = nil
             evidencePost.creator = nil
+            // Even a sparse IRL title can contain a reliable presentation
+            // phrase. Negative feedback targets that context, not identities.
+            evidencePost.tags.append(contentsOf: RealLifePresentation.tags(post).sorted())
         }
         let source = post.provider.lowercased()
         let signalTerms = terms(for: evidencePost)
@@ -905,14 +977,12 @@ actor RecommendationEngine {
         // An instant swipe away is an explicitly reversible negative; unlike a
         // thumbs-down it does not change permanent term evidence or visual profiles.
         let candidateTerms = Set(postTerms.map(RecommendationTagRules.canonical))
-        let recentSkips = state.reversibleSkips.evidence.suffix(24).filter { $0.provider == source }
-        let skipPenalty = recentSkips.reduce(0.0) { total, skip in
-            let common = candidateTerms.intersection(skip.terms)
-            return total + min(5, Double(common.count) * 1.8)
-        }
-        // Several independent quick skips expressing the same aversion
-        // outweigh one accidental swipe, without permanently blacklisting it.
-        score -= min(24, skipPenalty)
+        let recentSkips = state.reversibleSkips.evidence.suffix(36).filter { $0.provider == source }
+        let approvedIdentities = (favoriteCharacters[source] ?? []).union(favoriteArtists[source] ?? [])
+        let ignored = Self.genericTasteTerms.union(Self.lowSignalDiscoveryTags)
+            .union(Self.broadDiversityTags).union(approvedIdentities)
+        score -= PassiveSkipPolicy.penalty(terms: candidateTerms, samples: recentSkips,
+            favored: savedFavoriteAffinity[source] ?? [:], ignored: ignored)
         if state.reversibleSkips.contains(post.stableID) { score -= 20 }
 
         let topPositive = positiveTermEntries(source: source, taste: taste, limit: 8, learned: p)
@@ -1155,7 +1225,7 @@ actor RecommendationEngine {
         }
     }
 
-    func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], visualScores: [String: Double] = [:], limit: Int? = nil) async -> [Post] {
+    func rank(_ candidates: [Post], taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:], visualScores: [String: Double] = [:], limit: Int? = nil, strict: Bool = false) async -> [Post] {
         guard !Task.isCancelled else { return candidates }
         let start = Date(); defer { rankLatencyMs = Date().timeIntervalSince(start) * 1000 }
         // Query the existing on-device embedding cache BEFORE trimming the 512
@@ -1166,6 +1236,7 @@ actor RecommendationEngine {
         var scored: [(offset: Int, post: Post, metadata: Double)] = []
         for (offset, post) in candidates.prefix(512).enumerated() {
             guard !isHardDisliked(post, taste: taste) else { continue }
+            if strict && !matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]) { continue }
             scored.append((offset, post, score(post, taste: taste, recent: recent,
                                                collaborativeScores: collaborativeScores,
                                                cachedRecentTerms: recentTerms, alreadyApproved: true)))
@@ -1260,7 +1331,11 @@ actor RecommendationEngine {
             }
             chosen.append(pool.remove(at: bestIndex).post)
         }
-        let remainder = overflow.filter { !isHardDisliked($0, taste: taste) && unique.insert($0.stableID).inserted }
+        let remainder = overflow.filter {
+            !isHardDisliked($0, taste: taste) &&
+            (!strict || matchesExplicitInterest($0, taste: taste, visual: visualScores[$0.stableID])) &&
+            unique.insert($0.stableID).inserted
+        }
         return limit == nil ? chosen + pool.map(\.post) + remainder : chosen
     }
 

@@ -574,12 +574,15 @@ private struct ImmersiveItemView: View {
     }
     private func railButton(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 25, weight: .semibold))
-                .foregroundStyle(selected ? Color.pink : .white)
-                .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
+            Image(systemName: symbol)
+                .font(.system(size: 23, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(selected ? AppTheme.accent : .white)
                 .frame(width: 48, height: 48).contentShape(Circle())
-                .background(.black.opacity(0.55), in: Circle())
-                .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+                .background(.black.opacity(0.25), in: Circle())
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.75) : .white.opacity(0.27), lineWidth: 1))
+                .shadow(color: .black.opacity(0.32), radius: 8, y: 3)
         }.buttonStyle(.plain).accessibilityLabel(title)
             .accessibilityIdentifier(active ? "immersive-\(title)" : "inactive-\(title)-\(post.stableID)")
     }
@@ -718,10 +721,12 @@ private struct ImmersiveDownloadControl: View {
         } label: {
             Group {
                 if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 28) }
-                else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 25, weight: .semibold)) }
+                else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 23, weight: .semibold)) }
             }.foregroundStyle(.white).frame(width: 48, height: 48).contentShape(Circle())
-                .background(.black.opacity(0.55), in: Circle())
-                .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+                .background(.black.opacity(0.25), in: Circle())
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.27), lineWidth: 1))
+                .shadow(color: .black.opacity(0.32), radius: 8, y: 3)
         }.buttonStyle(.plain).accessibilityLabel("Download").accessibilityValue(status)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: status)
             .sensoryFeedback(.selection, trigger: taps)

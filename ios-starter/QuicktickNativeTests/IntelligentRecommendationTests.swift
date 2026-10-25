@@ -92,6 +92,68 @@ final class IntelligentRecommendationTests: XCTestCase {
         XCTAssertLessThan(session.score(provider: "rule34", terms: item.tags), positive)
     }
 
+    func testRepeatedFastSkipsLearnSpecificAversionWithoutManualTagBlocks() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let one = post("skip-one", ["2d", "solo", "unwanted_presentation", "looking_at_viewer"])
+        let two = post("skip-two", ["2d", "solo", "unwanted_presentation", "looking_at_viewer"])
+        let repeated = post("candidate", ["2d", "solo", "unwanted_presentation", "looking_at_viewer"])
+        let different = post("other", ["2d", "solo", "wanted_presentation", "looking_at_viewer"])
+        await engine.recordReversibleSkip(one)
+        let first = await engine.score(repeated, taste: TasteChoice(), recent: [])
+        await engine.recordReversibleSkip(two)
+        let second = await engine.score(repeated, taste: TasteChoice(), recent: [])
+        let alternative = await engine.score(different, taste: TasteChoice(), recent: [])
+        XCTAssertLessThan(second, first)
+        XCTAssertGreaterThan(alternative, second)
+        _ = await engine.neutralizeReversibleSkip(two.stableID)
+        let restored = await engine.score(repeated, taste: TasteChoice(), recent: [])
+        XCTAssertEqual(restored, first, accuracy: 0.001)
+    }
+
+    func testFastSkipDoesNotTurnStrongFavoriteTagIntoNegativeTheme() {
+        let samples = (1...3).map { index in
+            ReversibleSkipModel.Evidence(id: "\(index)", provider: "rule34", terms: ["chun_li", "qipao", "solo"])
+        }
+        let ignored: Set<String> = ["solo"]
+        let generic = PassiveSkipPolicy.penalty(terms: ["solo"], samples: samples,
+            favored: [:], ignored: ignored)
+        let loved = PassiveSkipPolicy.penalty(terms: ["qipao"], samples: samples,
+            favored: ["qipao": 3.0], ignored: ignored)
+        let untrusted = PassiveSkipPolicy.penalty(terms: ["qipao"], samples: samples,
+            favored: [:], ignored: ignored)
+        XCTAssertEqual(generic, 0)
+        XCTAssertLessThan(loved, untrusted)
+    }
+
+    func testIRLVideoCaptionsProvidePresentationEvidenceWithoutInferringIdentity() async throws {
+        var liked = post("irl-like", [], provider: "redgifs")
+        liked.caption = "Cosplay POV dancing at the beach"
+        let concepts = RealLifePresentation.tags(liked)
+        XCTAssertTrue(concepts.contains("scene:cosplay"))
+        XCTAssertTrue(concepts.contains("camera:pov"))
+        XCTAssertTrue(concepts.contains("setting:beach"))
+        let features = try XCTUnwrap(VisualFeatures.metadata(liked))
+        XCTAssertEqual(features.domain, .uncertain, "Loose video titles do not prove photographic medium")
+        XCTAssertEqual(features.attributes["camera:pov"], 0.8)
+        XCTAssertTrue(features.subjects.isEmpty, "A caption must not identify a real person")
+
+        var falsePositive = post("not-a-scene", [], provider: "redgifs")
+        falsePositive.caption = "Gymnastics and cosplayish sketches"
+        XCTAssertTrue(RealLifePresentation.tags(falsePositive).isEmpty)
+
+        var secondLike = post("irl-like-two", [], provider: "redgifs")
+        secondLike.caption = "POV cosplay behind the scenes"
+        var candidate = post("irl-candidate", [], provider: "redgifs")
+        candidate.caption = "POV cosplay video"
+        var unrelated = post("irl-other", [], provider: "redgifs")
+        unrelated.caption = "Gym workout outdoors"
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await engine.configureFavorites([liked, secondLike])
+        let preferred = await engine.score(candidate, taste: TasteChoice(), recent: [])
+        let other = await engine.score(unrelated, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(preferred, other)
+    }
+
     func testHistoricalFavoritesRemainAWeakSignalRatherThanOvertakingDiversity() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let favorites = (0..<100).map { post("saved-\($0)", ["chun_li", "qipao", "art"]) }

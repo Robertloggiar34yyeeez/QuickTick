@@ -161,6 +161,23 @@ final class NavigationTests: XCTestCase {
         app.buttons["Done"].tap()
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
     }
+
+    @MainActor func testIconOnlyFeedActionsAndIdleScrollShortcutOnLeft() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        let dislike = app.buttons["dislike-test:video"]
+        XCTAssertTrue(dislike.waitForExistence(timeout: 10))
+        XCTAssertFalse(dislike.staticTexts["Less"].exists)
+        let download = app.buttons["card-download-test:video"]
+        XCTAssertTrue(download.exists)
+        XCTAssertFalse(download.staticTexts["Download"].exists)
+
+        app.swipeUp()
+        let scrollTop = app.buttons["home-scroll-top"]
+        XCTAssertTrue(scrollTop.waitForExistence(timeout: 5))
+        XCTAssertLessThan(scrollTop.frame.midX, app.frame.width / 2)
+        scrollTop.tap()
+        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+    }
     @MainActor func testCreateStudioFirstRunAndReturnToFeed() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.buttons["tab-Create"].waitForExistence(timeout: 10))

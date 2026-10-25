@@ -5,7 +5,7 @@ import Foundation
 enum TasteConcepts {
     // Versions the per-favorite metadata/appearance cache. New action facets
     // must be revisited after an in-place IPA upgrade.
-    static let version = "concepts-2026-10-24-relationship-context-v4"
+    static let version = "concepts-2026-10-25-irl-presentation-v5"
     static let aliases: [String: String] = [
         "chunli": "chun_li", "chun_li_(street_fighter)": "chun_li",
         "chun_li_(street_fighter_series)": "chun_li", "streetfighter": "street_fighter",
@@ -95,6 +95,43 @@ enum TasteConcepts {
             for other in anchors where anchor < other { result.append((anchor + "|" + other, min(dimensions[anchor] ?? 0, dimensions[other] ?? 0))) }
         }
         return result
+    }
+}
+
+/// Only explicit title/tag phrases, never inferred identities or activities.
+/// Real-world video providers commonly supply a title instead of booru tags;
+/// retain its useful *presentation* details without treating every word in a
+/// promotional caption as a reliable subject or an action classifier.
+enum RealLifePresentation {
+    private static let videoSources: Set<String> = ["pornhub", "eporner", "redgifs"]
+    private static let phrases: [String: String] = [
+        "pov": "camera:pov", "point of view": "camera:pov",
+        "selfie": "camera:selfie", "webcam": "camera:webcam",
+        "close up": "camera:close_up", "closeup": "camera:close_up",
+        "cosplay": "scene:cosplay", "roleplay": "scene:roleplay", "role play": "scene:roleplay",
+        "dancing": "scene:dancing", "dance": "scene:dancing",
+        "workout": "scene:workout", "yoga": "scene:yoga",
+        "outdoors": "setting:outdoor", "outdoor": "setting:outdoor",
+        "indoors": "setting:indoor", "indoor": "setting:indoor",
+        "beach": "setting:beach", "forest": "setting:forest",
+        "office": "setting:office", "kitchen": "setting:kitchen",
+        "bedroom": "setting:bedroom", "gym": "setting:gym"
+    ]
+
+    static func tags(_ post: Post) -> Set<String> {
+        let medium = VisualDomain.classify(post)
+        guard medium == .realLife || (medium == .uncertain
+            && videoSources.contains(post.provider.lowercased())) else { return [] }
+        // Word boundaries stop accidental substring matches (e.g. "gym" in a
+        // creator name). Do not mine uploader handles or unverified identities.
+        let raw = (Array(post.tags.prefix(64)) + [post.caption, post.category].compactMap { $0 })
+            .joined(separator: " ").lowercased()
+        let normalized = raw.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .joined(separator: " ")
+        let padded = " " + normalized + " "
+        return Set(phrases.compactMap { phrase, facet in
+            padded.contains(" " + phrase + " ") ? facet : nil
+        })
     }
 }
 

@@ -188,19 +188,20 @@ struct ActionIcon: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: symbol)
-                    .font(.system(size: 19, weight: .semibold))
-                    .symbolEffect(.bounce, value: selected)
-                Text(title)
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-            }
-            .foregroundStyle(selected ? AppTheme.accent : .white.opacity(0.83))
-            .frame(maxWidth: .infinity, minHeight: 48)
+            Image(systemName: symbol)
+                .font(.system(size: 20, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .symbolEffect(.bounce, value: selected)
+                .foregroundStyle(selected ? AppTheme.accent : .white.opacity(0.9))
+                .frame(width: 42, height: 42)
+                .background(selected ? AppTheme.accent.opacity(0.16) : .white.opacity(0.065), in: Circle())
+                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.42) : .white.opacity(0.11), lineWidth: 1))
+            .frame(maxWidth: .infinity, minHeight: 50)
             .contentShape(Rectangle())
         }
         .buttonStyle(QuicktickPressStyle())
         .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

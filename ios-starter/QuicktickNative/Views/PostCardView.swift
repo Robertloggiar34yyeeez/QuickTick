@@ -353,21 +353,19 @@ private struct FeedDownloadControl: View {
             else if let record, failed { manager.retry(record) }
             else if !working && !saved { manager.download(post) }
         } label: {
-            VStack(spacing: 3) {
-                Group {
-                    if working { InfinityLoader(size: 22) }
-                    else {
-                        Image(systemName: saved ? "checkmark.circle.fill" : failed ? "arrow.clockwise.circle" : "arrow.down.to.line")
-                            .font(.system(size: 19, weight: .semibold))
-                            .symbolEffect(.bounce, value: taps)
-                    }
+            Group {
+                if working { InfinityLoader(size: 22) }
+                else {
+                    Image(systemName: saved ? "checkmark" : failed ? "arrow.clockwise" : "arrow.down.to.line")
+                        .font(.system(size: 20, weight: .semibold))
+                        .symbolEffect(.bounce, value: taps)
                 }
-                .frame(height: 22)
-                Text(working ? "Saving" : saved ? "Saved" : failed ? "Retry" : "Download")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
             }
-            .foregroundStyle(saved ? AppTheme.accent : .white.opacity(0.83))
-            .frame(maxWidth: .infinity, minHeight: 48)
+            .foregroundStyle(saved ? AppTheme.accent : .white.opacity(0.9))
+            .frame(width: 42, height: 42)
+            .background(saved ? AppTheme.accent.opacity(0.16) : .white.opacity(0.065), in: Circle())
+            .overlay(Circle().strokeBorder(saved ? AppTheme.accent.opacity(0.42) : .white.opacity(0.11), lineWidth: 1))
+            .frame(maxWidth: .infinity, minHeight: 50)
             .contentShape(Rectangle())
         }
         .buttonStyle(QuicktickPressStyle())

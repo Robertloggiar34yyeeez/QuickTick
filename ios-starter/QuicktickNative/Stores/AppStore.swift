@@ -840,6 +840,15 @@ final class AppStore: ObservableObject {
                 _ = await recommendations.neutralizeReversibleSkip(key)
             }
             scheduleRecommendationPersistence()
+            // Use the new passive feedback for the unseen tail on this visit.
+            // Preserve the visible cards and let the tail's generation guard
+            // reject a stale republish after further scrolling.
+            let token = generation
+            tailRankTask?.cancel()
+            tailRankTask = Task(priority: .utility) { [weak self] in
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                await self?.adaptRecommendationTail(token: token)
+            }
         }
     }
     func neutralizeQuickSkip(_ post: Post) {
@@ -918,7 +927,8 @@ final class AppStore: ObservableObject {
         let tail = tab == 1 && candidateContext == nil ? unseen
             : feedExclusions.filter(unseen, favorites: Array(favorites.values), existing: prefix,
                                     recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
-        let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: prefix, visualScores: visualScores)
+        let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider),
+            recent: prefix, visualScores: visualScores, strict: candidateContext != nil)
         let stillProtected = tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs
         guard !Task.isCancelled, generation == token, activeTab == tab, feedSort == "recommended",
               posts.map(\.stableID) == source.map(\.stableID),

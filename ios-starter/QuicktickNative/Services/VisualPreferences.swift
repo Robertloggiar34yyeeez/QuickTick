@@ -67,6 +67,11 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             // An unspecified action stays unknown, not negative evidence.
             result.attributes[facet] = 0.95
         }
+        for facet in RealLifePresentation.tags(post) {
+            // A title can establish a *claimed* setting or camera style, but
+            // does not identify a performer or prove an activity occurred.
+            result.attributes[facet] = 0.8
+        }
         for raw in post.tags.prefix(128) {
             let tag = raw.lowercased().replacingOccurrences(of: " ", with: "_")
             for (axis, known) in vocabulary where known.contains(tag) { result.attributes[axis + ":" + tag] = 0.9 }

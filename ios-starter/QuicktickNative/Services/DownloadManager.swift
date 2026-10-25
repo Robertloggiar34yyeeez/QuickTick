@@ -249,7 +249,9 @@ struct DownloadPathStorage {
     let root: URL
     let container: URL
 
-    init(root: URL, container: URL = FileManager.default.homeDirectoryForCurrentUser) {
+    // FileManager.homeDirectoryForCurrentUser is macOS-only. Documents is a
+    // stable, sandbox-local directory on iOS; its parent is the data container.
+    init(root: URL, container: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].deletingLastPathComponent()) {
         self.root = root.standardizedFileURL
         self.container = container.standardizedFileURL
     }

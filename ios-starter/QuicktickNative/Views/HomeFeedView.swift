@@ -4,10 +4,8 @@ struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
     @Binding var scrollAnchor: String?
-    @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @State private var showSearch = false
-    @State private var onboarding = false
     @State private var immersive = false
     @State private var immersivePostID: String?
     @State private var visibleFrames: [String: CGRect] = [:]
@@ -18,6 +16,8 @@ struct HomeFeedView: View {
     @State private var visibleTopSince = Date.distantPast
     @State private var isScrollMoving = false
     @State private var scrollRestTask: Task<Void, Never>?
+    @State private var topOffset: CGFloat = 0
+    @State private var pullRefreshInFlight = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -37,6 +37,18 @@ struct HomeFeedView: View {
                             .accessibilityIdentifier("home-title")
                     }
                     Spacer()
+                    Button { Task { await refreshFromGesture() } } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 48, height: 48)
+                            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 16))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(AppTheme.border))
+                    }
+                    .buttonStyle(QuicktickPressStyle())
+                    .disabled(pullRefreshInFlight)
+                    .accessibilityLabel("Refresh feed")
+                    .accessibilityIdentifier("home-refresh")
                     Image(systemName: store.feedSort == "recommended" ? "sparkles" : "flame.fill")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.white)
@@ -46,6 +58,10 @@ struct HomeFeedView: View {
                         .accessibilityHidden(true)
                 }
                 .id("home-top")
+                .background(GeometryReader { origin in
+                    Color.clear.preference(key: HomeTopOffsetPreference.self,
+                                           value: origin.frame(in: .named("home-viewport")).minY)
+                })
                 .padding(.top, 14)
                 .padding(.horizontal, 16)
                 HStack(spacing: 10) {
@@ -92,30 +108,6 @@ struct HomeFeedView: View {
                     .accessibilityLabel("Search")
                     .accessibilityIdentifier("home-search-button")
                 }
-                .padding(.horizontal, 16)
-                Button { onboarding = true } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "slider.horizontal.3")
-                            .foregroundStyle(.white)
-                            .frame(width: 38, height: 38)
-                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 13))
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Make it yours")
-                                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                            Text("Fine-tune your feed and interests")
-                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AppTheme.secondaryLabel)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, minHeight: 58)
-                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous).stroke(AppTheme.accent.opacity(0.26), lineWidth: 1))
-                }
-                .buttonStyle(QuicktickPressStyle())
-                .accessibilityIdentifier("personalize-feed")
                 .padding(.horizontal, 16)
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
@@ -187,6 +179,21 @@ struct HomeFeedView: View {
             }
         }
         .coordinateSpace(name: "home-viewport")
+        .onPreferenceChange(HomeTopOffsetPreference.self) { topOffset = $0 }
+        .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { touch in
+            let gutter = (viewport.size.width - AppTheme.feedWidth) / 2
+            guard gutter >= 48,
+                  touch.location.x < gutter || touch.location.x > viewport.size.width - gutter else { return }
+            likeVisiblePost(in: viewport.size)
+        })
+        // Native pull-to-refresh is not consistently activated on iPad when
+        // the feed is nested in a ScrollViewReader. Also recognize a downward
+        // pull beginning at the top; preserve normal scrolling via simultaneity.
+        .simultaneousGesture(DragGesture(minimumDistance: 45).onEnded { drag in
+            guard topOffset >= -24, drag.translation.height > 100,
+                  abs(drag.translation.width) < drag.translation.height else { return }
+            Task { await refreshFromGesture() }
+        })
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
             guard store.feedRevision == revision else { return }
             guard frames != visibleFrames else { return }
@@ -279,20 +286,32 @@ struct HomeFeedView: View {
                 proxy.scrollTo("home-top", anchor: .top)
             }
         }
-        .refreshable { await store.refresh() }
+        .refreshable { await refreshFromGesture() }
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
-        .sheet(isPresented: $onboarding) { TasteOnboardingView() }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
         .onChange(of: store.posts) { _, posts in
             playableIDs = Set(posts.filter(\.isImmersiveMedia).map(\.stableID))
-            // The first-run wizard owns initial taste setup. Do not queue a
-            // second modal underneath its full-screen presentation.
-            if firstRunCompleted && !posts.isEmpty
-                && !store.tasteChoice(for: store.selectedProvider).done { onboarding = true }
         }
         }
         }
+    }
+
+    private func refreshFromGesture() async {
+        guard !pullRefreshInFlight else { return }
+        pullRefreshInFlight = true
+        defer { pullRefreshInFlight = false }
+        await store.refresh()
+    }
+
+    private func likeVisiblePost(in viewport: CGSize) {
+        let bounds = CGRect(origin: .zero, size: viewport)
+        guard let chosen = visibleFrames
+            .filter({ $0.value.intersects(bounds) })
+            .max(by: { $0.value.intersection(bounds).height < $1.value.intersection(bounds).height }),
+              let post = store.posts.first(where: { $0.stableID == chosen.key }),
+              store.favorites[post.stableID] == nil else { return }
+        store.toggleFavorite(post)
     }
 
     private func noteScrollMotion() {
@@ -355,6 +374,11 @@ struct HomeFeedView: View {
     private var searchBar: some View {
         NativeSearchBar(focusRequested: $showSearch)
     }
+}
+
+private struct HomeTopOffsetPreference: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 struct HomeVisibleFrames: PreferenceKey {

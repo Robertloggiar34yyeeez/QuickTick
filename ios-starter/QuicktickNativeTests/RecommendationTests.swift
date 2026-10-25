@@ -2,6 +2,17 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
+    func testTasteEditorSuggestsSpecificLikedSubjectsBeforeGenericFeedTags() {
+        let favorite = Post(key: "rule34:1", id: "1", provider: "Rule34", tags: ["chun_li", "cosplay", "1girl", "16:9"])
+        let unrelated = Post(key: "rule34:2", id: "2", provider: "Rule34", tags: ["generic_background", "1girl"])
+        let suggestions = TasteTagSuggestions.rank(
+            learned: ["chun_li", "16:9"], favorites: [favorite], posts: [unrelated], provider: .rule34)
+        XCTAssertEqual(suggestions.first, "chun_li")
+        XCTAssertTrue(suggestions.contains("cosplay"))
+        XCTAssertFalse(suggestions.contains("1girl"))
+        XCTAssertFalse(suggestions.contains("16:9"))
+    }
+
     func testInstalledIPAMigratesV3CacheIntoV5WithoutDeletingTheOriginal() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

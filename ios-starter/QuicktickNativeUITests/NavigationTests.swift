@@ -568,21 +568,38 @@ final class NavigationTests: XCTestCase {
         waitForExpectations(timeout: 10)
         app.buttons["feed-recommended"].tap()
         XCTAssertTrue(app.buttons["feed-recommended"].isSelected)
-        app.buttons["personalize-feed"].tap()
+        XCTAssertFalse(app.buttons["personalize-feed"].exists)
+        app.buttons["open-settings"].tap()
+        let personalize = app.buttons["personalize-feed"]
+        for _ in 0..<8 { if personalize.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(personalize.isHittable)
+        personalize.tap()
         let input = app.textFields["positive-interest-input"]
         XCTAssertTrue(input.waitForExistence(timeout: 10)); input.tap()
-        let intro = app.buttons["Continue"]
-        if intro.waitForExistence(timeout: 2) { intro.tap() }
         input.typeText("engineering")
         expectation(for: NSPredicate(format: "value == %@", "engineering"), evaluatedWith: input)
         waitForExpectations(timeout: 10)
-        if intro.exists { intro.tap() }
-        app.buttons["Add interests"].tap()
+        app.buttons["Add interest"].tap()
         XCTAssertTrue(app.staticTexts["engineering"].exists)
-        app.buttons["Done"].tap()
-        app.buttons["personalize-feed"].tap()
+        app.buttons["save-taste"].tap()
+        personalize.tap()
         XCTAssertTrue(app.staticTexts["engineering"].waitForExistence(timeout: 10))
-        app.buttons["Done"].tap()
+        app.buttons["save-taste"].tap()
+    }
+
+    @MainActor func testIPadHomeSideGuttersDoubleTapToLike() throws {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        guard app.frame.width > 850 else { throw XCTSkip("iPad side-gutter gestures need a wide layout") }
+        let like = app.buttons["Like"].firstMatch
+        XCTAssertTrue(like.waitForExistence(timeout: 10))
+        let left = app.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.58))
+        left.doubleTap()
+        XCTAssertTrue(like.isSelected)
+        like.tap()
+        XCTAssertFalse(like.isSelected)
+        let right = app.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.58))
+        right.doubleTap()
+        XCTAssertTrue(like.isSelected)
     }
 
     @MainActor func testHomeImmersiveHomeAndDownloads() async {

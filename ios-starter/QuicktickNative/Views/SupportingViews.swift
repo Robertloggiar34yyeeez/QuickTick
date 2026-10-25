@@ -28,82 +28,230 @@ struct TasteOnboardingView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var into = Set<String>()
     @State private var notInto = Set<String>()
-    @State private var positiveDraft = ""
-    @State private var negativeDraft = ""
+    @State private var suggestedTags: [String] = []
     var body: some View {
         NavigationStack {
-            List {
-                Section("What would you like more of?") {
-                    Text("Guide your existing learned profile with topics, tags or phrases. Separate interests with commas. Your history is kept.").font(.caption).foregroundStyle(.secondary)
-                    TextField("Topics or keywords", text: $positiveDraft)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("positive-interest-input")
-                    Button("Add interests") { addDraft(positive: true) }.disabled(positiveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    ForEach(into.sorted(), id: \.self) { term in
-                        TasteChipRow(tag: term, preferred: true) { into.remove(term) }
-                    }
-                }
-                Section("What would you rather avoid?") {
-                    Text("Reduces unwanted recommendations while keeping your other learned interests. Exact unwanted tags are excluded.").font(.caption).foregroundStyle(.secondary)
-                    TextField("Unwanted topics or keywords", text: $negativeDraft).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button("Add exclusions") { addDraft(positive: false) }.disabled(negativeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    ForEach(notInto.sorted(), id: \.self) { term in
-                        TasteChipRow(tag: term, preferred: false) { notInto.remove(term) }
-                    }
-                }
-                Section("Which of these appeal to you?") {
-                ForEach(Array(Set(store.posts.flatMap { $0.tags.prefix(6) })).sorted().prefix(24), id: \.self) { tag in
-                    HStack {
-                        if let post = store.posts.first(where: { $0.tags.contains(tag) }) {
-                            PosterView(url: post.thumbUrl).frame(width: 72, height: 72).clipped()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(alignment: .center, spacing: 15) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 23, weight: .semibold))
+                            .frame(width: 58, height: 58)
+                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 19))
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Make QuickTick yours")
+                                .font(.system(size: 27, weight: .bold, design: .rounded))
+                            Text("Fine-tune what you love, without resetting what QuickTick has learned.")
+                                .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
                         }
-                        Text(tag)
-                        Spacer()
-                        Button(into.contains(tag) ? "✓ Into" : "Into") { notInto.remove(tag); if !into.insert(tag).inserted { into.remove(tag) } }
-                        Button(notInto.contains(tag) ? "✓ Not Into" : "Not Into") { into.remove(tag); if !notInto.insert(tag).inserted { notInto.remove(tag) } }
-                    }.buttonStyle(.bordered)
+                    }
+                    .padding(.bottom, 4)
+                    Label("Tuning \(store.selectedProvider.displayName)", systemImage: "sparkles")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.accent)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(AppTheme.accent.opacity(0.13), in: Capsule())
+                    TasteTagSection(preferred: true, selected: $into, opposite: $notInto,
+                                    candidates: suggestedTags, provider: store.selectedProvider)
+                    TasteTagSection(preferred: false, selected: $notInto, opposite: $into,
+                                    candidates: suggestedTags, provider: store.selectedProvider)
+                    Label("Suggestions use your liked posts, learned interests and matching source tags. Your history remains private on this device.",
+                          systemImage: "lock.shield")
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        .padding(.horizontal, 4)
                 }
+                .frame(maxWidth: 740).frame(maxWidth: .infinity)
+                .padding(20)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .background(AppTheme.canvas)
+            .navigationTitle("Your interests")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { store.setTaste(into: into.sorted(), notInto: notInto.sorted()); dismiss() }
+                        .fontWeight(.semibold)
+                        .accessibilityIdentifier("save-taste")
                 }
-            }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Your interests")
-                .toolbar { Button("Done") { addDraft(positive: true); addDraft(positive: false); store.setTaste(into: into.sorted(), notInto: notInto.sorted()); dismiss() } }
-        }.interactiveDismissDisabled()
-            .onAppear { let taste = store.tasteChoice(for: store.selectedProvider); into = Set(taste.into); notInto = Set(taste.notInto) }
-    }
-    private func addDraft(positive: Bool) {
-        let draft = positive ? positiveDraft : negativeDraft
-        let terms = TasteChoice.normalized(draft.components(separatedBy: CharacterSet(charactersIn: ",\n;")))
-        for term in terms {
-            if positive { notInto.remove(term); into.insert(term) }
-            else { into.remove(term); notInto.insert(term) }
+            }
         }
-        if positive { positiveDraft = "" } else { negativeDraft = "" }
+        .presentationBackground(AppTheme.canvas)
+        .onAppear {
+            let taste = store.tasteChoice(for: store.selectedProvider)
+            into = Set(taste.into); notInto = Set(taste.notInto)
+            suggestedTags = TasteTagSuggestions.rank(learned: store.learnedInterests,
+                favorites: Array(store.favorites.values.prefix(250)), posts: Array(store.posts.prefix(80)),
+                provider: store.selectedProvider)
+        }
     }
 }
 
-private struct TasteChipRow: View {
-    let tag: String
+private struct TasteTagSection: View {
+    @EnvironmentObject private var store: AppStore
     let preferred: Bool
-    let onRemove: () -> Void
-    private var hue: Color { preferred ? AppTheme.accent : .orange }
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: preferred ? "heart.fill" : "nosign")
-                .font(.caption)
-            Text(tag.replacingOccurrences(of: "_", with: " "))
-                .font(.subheadline.weight(.medium))
-            Spacer(minLength: 0)
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(QuicktickPressStyle())
-            .accessibilityLabel("Remove \(tag)")
+    @Binding var selected: Set<String>
+    @Binding var opposite: Set<String>
+    let candidates: [String]
+    let provider: Provider
+    @State private var draft = ""
+    @State private var remote: [TagSuggestion] = []
+    private var hue: Color { preferred ? AppTheme.accent : Color.orange }
+    private var normalizedDraft: String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: " ", with: "_")
+    }
+    private var matches: [String] {
+        let pool = remote.map(\.value) + candidates
+        var seen = Set<String>()
+        let available = pool.filter { value in
+            let tag = value.lowercased()
+            guard !selected.contains(tag), !opposite.contains(tag), seen.insert(tag).inserted else { return false }
+            return normalizedDraft.isEmpty || tag.contains(normalizedDraft)
         }
-        .foregroundStyle(hue)
-        .padding(.leading, 12)
-        .padding(.trailing, 4)
-        .background(hue.opacity(0.13), in: Capsule())
-        .overlay(Capsule().stroke(hue.opacity(0.4)))
+        if normalizedDraft.isEmpty { return Array(available.prefix(12)) }
+        let starts = available.filter { $0.lowercased().hasPrefix(normalizedDraft) }
+        let contains = available.filter { !$0.lowercased().hasPrefix(normalizedDraft) }
+        return Array((starts + contains).prefix(12))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(preferred ? "More like this" : "See less of this", systemImage: preferred ? "heart.fill" : "hand.thumbsdown.fill")
+                .font(.headline).foregroundStyle(hue)
+            Text(preferred ? "Choose subjects, characters, styles or scenes." : "De-emphasize topics you dislike. Exact Rule34 tags can also be excluded.")
+                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(AppTheme.secondaryLabel)
+                TextField(preferred ? "Find an interest or tag" : "Find an unwanted tag", text: $draft)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .submitLabel(.done).onSubmit(addTyped)
+                    .accessibilityIdentifier(preferred ? "positive-interest-input" : "negative-interest-input")
+                Button(action: addTyped) {
+                    Image(systemName: "plus").font(.subheadline.weight(.bold))
+                        .frame(width: 38, height: 38)
+                        .background(hue.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel(preferred ? "Add interest" : "Add exclusion")
+            }
+            .padding(.horizontal, 12).frame(minHeight: 54)
+            .background(AppTheme.canvas, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(AppTheme.border))
+
+            if !selected.isEmpty {
+                Text("YOUR \(preferred ? "INTERESTS" : "EXCLUSIONS")")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.3).foregroundStyle(AppTheme.secondaryLabel)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), spacing: 8)], spacing: 8) {
+                    ForEach(selected.sorted(), id: \.self) { tag in
+                        Button { selected.remove(tag) } label: {
+                            HStack(spacing: 6) {
+                                Text(tag.replacingOccurrences(of: "_", with: " "))
+                                    .lineLimit(1)
+                                Image(systemName: "xmark.circle.fill")
+                            }
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(hue)
+                            .frame(maxWidth: .infinity, minHeight: 37)
+                            .padding(.horizontal, 8)
+                            .background(hue.opacity(0.12), in: Capsule())
+                        }
+                        .buttonStyle(.plain).accessibilityLabel("Remove \(tag)")
+                    }
+                }
+            }
+            if !matches.isEmpty {
+                Text(normalizedDraft.isEmpty ? "SUGGESTED FOR YOU" : "MATCHING TAGS")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.3).foregroundStyle(AppTheme.secondaryLabel)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
+                    ForEach(matches, id: \.self) { tag in
+                        Button { add(tag) } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "plus.circle.fill").foregroundStyle(hue)
+                                Text(tag.replacingOccurrences(of: "_", with: " ")).lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 11)
+                            .frame(minHeight: 39)
+                            .background(AppTheme.canvas, in: Capsule())
+                            .overlay(Capsule().stroke(AppTheme.border))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("taste-suggestion-\(tag)")
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(AppTheme.border))
+        .task(id: "\(provider.rawValue):\(draft)") {
+            remote = []
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
+            #endif
+            guard provider == .rule34, normalizedDraft.count >= 2 else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(260))
+                let values = try await store.api.suggestions(provider: provider, query: normalizedDraft)
+                guard !Task.isCancelled else { return }
+                remote = values
+            } catch { if !Task.isCancelled { remote = [] } }
+        }
+    }
+    private func addTyped() {
+        let words = draft.components(separatedBy: CharacterSet(charactersIn: ",;\n"))
+        for tag in TasteChoice.normalized(words) {
+            add(provider == .rule34 ? tag.replacingOccurrences(of: " ", with: "_") : tag)
+        }
+        draft = ""
+    }
+    private func add(_ tag: String) {
+        guard let normal = TasteChoice.normalized([tag]).first else { return }
+        opposite.remove(normal)
+        if selected.count < 40 { selected.insert(normal) }
+    }
+}
+
+enum TasteTagSuggestions {
+    private static let lowSignal: Set<String> = [
+        "1girl", "1girls", "2girls", "1boy", "2boys", "solo", "solo_focus", "multiple_girls",
+        "highres", "absurdres", "score", "rating", "image", "video", "commentary_request",
+        "artist_request", "tagme", "translation_request", "uncensored", "large_breasts",
+        "breasts", "looking_at_viewer", "smile", "open_mouth", "simple_background",
+        "white_background", "black_background", "blush", "long_hair", "short_hair",
+        "16:9", "9:16", "1:1", "4:3", "2d", "3d", "animated_gif", "hires"
+    ]
+
+    static func isUseful(_ raw: String) -> Bool {
+        let tag = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return tag.count >= 3 && tag.count <= 80 && !lowSignal.contains(tag)
+            && !tag.hasPrefix("rating:") && !tag.hasPrefix("score:")
+    }
+
+    static func rank(learned: [String], favorites: [Post], posts: [Post], provider: Provider) -> [String] {
+        var weights: [String: Int] = [:]
+        func add(_ words: [String], weight: Int) {
+            for raw in Set(words) {
+                let tag = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                guard isUseful(tag) else { continue }
+                weights[tag, default: 0] += weight
+            }
+        }
+        add(learned, weight: 15)
+        for post in favorites { add(post.tags, weight: 5) }
+        for post in posts { add(post.tags, weight: 1) }
+        if provider == .rule34 {
+            add(StarterTastePick.characters.flatMap(\.tags), weight: 2)
+        } else {
+            add(StarterTastePick.keywords.flatMap(\.tags), weight: 2)
+        }
+        return weights.keys.sorted { lhs, rhs in
+            weights[lhs] == weights[rhs] ? lhs < rhs : weights[lhs, default: 0] > weights[rhs, default: 0]
+        }.prefix(120).map { $0 }
     }
 }
 

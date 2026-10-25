@@ -109,13 +109,36 @@ struct SettingsView: View {
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
             }.disabled(store.isSyncing).id(SettingsDestination.access.rawValue)
             SettingsGroup(title: "Learned interests · \(store.selectedProvider.displayName)", icon: "sparkles") {
+                Button { onboarding = true } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 46, height: 46)
+                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 15))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Make QuickTick yours")
+                                .font(.system(.headline, design: .rounded))
+                                .foregroundStyle(.white)
+                            Text("Edit interests and dislikes with live tag suggestions")
+                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                    .padding(12)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 20))
+                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(AppTheme.accent.opacity(0.25)))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityIdentifier("personalize-feed")
                 LabeledContent("Engine", value: store.recommendationMode)
                 if store.learnedInterests.isEmpty {
                     Text("Interact with posts or search to learn interests.")
                         .foregroundStyle(AppTheme.secondaryLabel)
                 } else {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 115), spacing: 7)], spacing: 7) {
-                        ForEach(Array(store.learnedInterests.prefix(24)), id: \.self) { interest in
+                        ForEach(Array(store.learnedInterests.filter(TasteTagSuggestions.isUseful).prefix(24)), id: \.self) { interest in
                             Text(interest.replacingOccurrences(of: "_", with: " "))
                                 .font(.caption.weight(.medium))
                                 .lineLimit(1)
@@ -126,7 +149,6 @@ struct SettingsView: View {
                         }
                     }
                 }
-                Button("Edit Into / Not Into") { onboarding = true }
                 Button {
                     Task { await store.rebuildRecommended() }
                 } label: {

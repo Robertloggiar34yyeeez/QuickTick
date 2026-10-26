@@ -145,6 +145,9 @@ struct HomeFeedView: View {
                     .accessibilityIdentifier("home-search-button")
                 }
                 .padding(.horizontal, 16)
+                if store.selectedProvider == .hhaven || store.selectedProvider == .pornhub {
+                    homeCategoryRow
+                }
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
                 } else if store.posts.isEmpty && !store.isLoading {
@@ -347,6 +350,43 @@ struct HomeFeedView: View {
         .onChange(of: store.posts) { _, posts in
             playableIDs = Set(posts.filter(\.isImmersiveMedia).map(\.stableID))
         }
+    }
+
+    /// Provider categories live on Home as one-tap discovery chips. They are
+    /// intentionally not part of the Search sheet's autocomplete suggestions.
+    private var homeCategoryRow: some View {
+        let provider = store.selectedProvider
+        let selected = ProviderSearchCategories.split(QueryParser.parse(store.queryText), provider: provider).category
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Text("Categories")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.secondaryLabel)
+                ForEach(ProviderSearchCategories.suggestions(provider: provider)) { item in
+                    let active = selected == item.value
+                    Button {
+                        let current = QueryParser.parse(store.queryText)
+                        let keywords = ProviderSearchCategories.split(current, provider: provider).keywords
+                        let next = ParsedQuery(included: (active ? [] : [item.value]) + keywords,
+                                               excluded: current.excluded)
+                        store.commitSearch(query: QueryParser.formatted(next), sort: store.feedSort)
+                        Task { await store.refresh() }
+                    } label: {
+                        Text(item.label)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(active ? .white : AppTheme.secondaryLabel)
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 36)
+                            .background(active ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface),
+                                        in: Capsule())
+                            .overlay(Capsule().stroke(active ? AppTheme.accent : AppTheme.border, lineWidth: 1))
+                    }
+                    .buttonStyle(QuicktickPressStyle())
+                    .accessibilityIdentifier("home-category-\(item.value)")
+                    .accessibilityAddTraits(active ? .isSelected : [])
+                }
+            }.padding(.horizontal, 16)
+        }.accessibilityIdentifier("home-categories")
     }
 
     private func refreshFromGesture() async {

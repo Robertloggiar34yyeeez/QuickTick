@@ -63,7 +63,10 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"{"data":{"hentais":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"total_pages":3}}"#
         }
         else if host == "api.hentaihaven.app", path == "/v1/hentai/home" {
-            payload = #"{"data":{"trending_month":[{"post_id":12,"post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}]}}"#
+            payload = #"{"data":{"trending_month":[{"post_id":12,"post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"yuri":[{"post_id":19,"post_title":"Yuri romance","post_thumbnail":"https://cdn.hentaihaven.app/yuri.jpg"}]}}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/genre/17" {
+            payload = #"{"data":{"hentais":[{"post_id":34,"post_title":"Maid academy","post_thumbnail":"https://cdn.hentaihaven.app/maid.jpg"}],"total_pages":2}}"#
         }
         else if host == "api.hentaihaven.app", path == "/v1/hentai/12" {
             payload = #"{"data":{"post_id":12,"episodes":[{"chapter_id":34,"chapter_name":"Episode 1"}]}}"#
@@ -255,6 +258,53 @@ final class NativeProviderAPITests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("Hentai Haven"))
             XCTAssertTrue(error.localizedDescription.contains("unavailable"))
         }
+    }
+
+    func testHomeCategoryChipsHaveValidProviderSpecificFilters() {
+        let haven = ProviderSearchCategories.suggestions(provider: .hhaven)
+        let pornhub = ProviderSearchCategories.suggestions(provider: .pornhub)
+        XCTAssertTrue(haven.contains { $0.value == "category:section:yuri" && $0.label == "Yuri" })
+        XCTAssertTrue(pornhub.contains { $0.value == "category:hentai" && $0.label == "Hentai" })
+        XCTAssertEqual(ProviderSearchCategories.suggestions(provider: .hhaven, matching: "yur").map(\.label), ["Yuri"])
+        XCTAssertEqual(ProviderSearchCategories.suggestions(provider: .pornhub, matching: "anim").map(\.label), ["Animation"])
+        XCTAssertTrue(ProviderSearchCategories.valid("category:genre:17", provider: .hhaven))
+        XCTAssertFalse(ProviderSearchCategories.valid("category:genre:../private", provider: .hhaven))
+        XCTAssertFalse(ProviderSearchCategories.valid("category:../../private", provider: .pornhub))
+        let selected = ProviderSearchCategories.split(QueryParser.parse("category:section:yuri \"maid academy\""), provider: .hhaven)
+        XCTAssertEqual(selected.category, "category:section:yuri")
+        XCTAssertEqual(selected.keywords, ["maid academy"])
+    }
+
+    func testHavenHomeCategoriesOpenSectionOrGenreCatalog() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let section = try await api.posts(provider: .hhaven,
+            query: QueryParser.parse("category:section:yuri"), page: 1)
+        XCTAssertEqual(section.items.map(\.stableID), ["hhaven:19"])
+        XCTAssertEqual(section.items.first?.category, "yuri")
+        let genre = try await api.posts(provider: .hhaven,
+            query: QueryParser.parse("category:genre:17 maid"), page: 1)
+        XCTAssertEqual(genre.items.map(\.stableID), ["hhaven:34"])
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path == "/v1/genre/17" &&
+                URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?.contains(where: { $0.name == "p" && $0.value == "1" }) == true
+        })
+    }
+
+    func testPornhubHomeCategoryUsesActualCategoryParameter() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .pornhub,
+            query: QueryParser.parse("category:hentai"), page: 1)
+        XCTAssertEqual(page.items.map(\.stableID), ["pornhub:ph1"])
+        let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first {
+            $0.url?.path == "/webmasters/search"
+        })
+        let params = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(params.first(where: { $0.name == "category" })?.value, "hentai")
+        XCTAssertNil(params.first(where: { $0.name == "search" }),
+            "A category-only chip must not be sent as an unrelated title search")
     }
 
     func testPornhubWebmaster404UsesSameSitePublicCatalog() async throws {

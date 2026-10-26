@@ -54,11 +54,16 @@ struct NativeSearchBar: View {
                 .onAppear {
                     guard !loaded else { return }; loaded = true; focused = true
                     let split = SearchFilters.split(store.queryText)
+                    let parsed = QueryParser.parse(split.tags)
+                    let keywords = ProviderSearchCategories.split(parsed, provider: store.selectedProvider).keywords
+                    let plainQuery = store.selectedProvider == .hhaven || store.selectedProvider == .pornhub
+                        ? QueryParser.formatted(ParsedQuery(included: keywords, excluded: parsed.excluded))
+                        : split.tags
                     if let saved = store.searchDrafts[tab], saved.provider == store.selectedProvider {
                         form = saved
                     } else {
                         form = SearchDraft(
-                            text: store.selectedProvider == .rule34 ? "" : split.tags,
+                            text: store.selectedProvider == .rule34 ? "" : plainQuery,
                             tags: store.selectedProvider == .rule34 ? SearchTag.parse(split.tags) : [],
                             filters: split.filters, sort: store.feedSort,
                             provider: store.selectedProvider)

@@ -35,6 +35,17 @@ final class AppStore: ObservableObject {
             if selectedProvider == .hanime { selectedProvider = .hhaven }
             guard oldValue != selectedProvider else { return }
             savedFeeds.removeAll()
+            // Home category chips are scoped to one provider. Never carry a
+            // category route into another provider's keyword search.
+            let previousQuery = QueryParser.parse(queryText)
+            let retainedTerms = previousQuery.included.filter {
+                !ProviderSearchCategories.valid($0, provider: oldValue)
+            }
+            if retainedTerms.count != previousQuery.included.count {
+                queryText = QueryParser.formatted(ParsedQuery(included: retainedTerms,
+                                                              excluded: previousQuery.excluded))
+                return // queryText's didSet invalidates this feed once.
+            }
             // Creator references are scoped to one archive's service/user
             // index. Carrying them into a different provider silently builds
             // invalid routes and can surface as HTTP 404 on a tab switch.
@@ -588,9 +599,13 @@ final class AppStore: ObservableObject {
             scheduleIdleIntelligence()
             if generation == token, !restoreFailed {
                 if immediate.isEmpty {
-                    lastError = personalized
-                        ? "No fresh matches yet. Try Load more, another source, or refine your interests."
-                        : "No matches for these tags. Remove a keyword or exclusion to broaden your search."
+                    if ProviderSearchCategories.split(parsed, provider: provider).category != nil {
+                        lastError = "No posts found in this category. Choose a different Home category or clear the filter."
+                    } else {
+                        lastError = personalized
+                            ? "No fresh matches yet. Try Load more, another source, or refine your interests."
+                            : "No matches for these tags. Remove a keyword or exclusion to broaden your search."
+                    }
                 } else { lastError = nil }
             }
         } catch {

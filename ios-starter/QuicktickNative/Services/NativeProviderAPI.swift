@@ -352,13 +352,23 @@ enum NativeProviderAPI {
 
     static func haven(session: URLSession, token: String, query: ParsedQuery,
                       page: Int, sort: String, immersive: Bool) async throws -> PostPage {
-        let searching = !query.included.isEmpty
+        let selection = ProviderSearchCategories.split(query, provider: .hhaven)
+        let section = selection.category?.hasPrefix("category:section:") == true
+            ? String(selection.category!.dropFirst("category:section:".count)) : nil
+        let genreID = selection.category?.hasPrefix("category:genre:") == true
+            ? String(selection.category!.dropFirst("category:genre:".count)) : nil
+        let searching = selection.category == nil && !selection.keywords.isEmpty
         if searching && page > 1 { return PostPage(items: [], hasMore: false) }
         let route: String
         let parameters: [URLQueryItem]
-        if searching {
+        if section != nil {
+            route = "hentai/home"; parameters = []
+        } else if let genreID {
+            route = "genre/" + genreID
+            parameters = [.init(name: "p", value: String(max(1, page)))]
+        } else if searching {
             route = "search"
-            parameters = [.init(name: "q", value: query.included.joined(separator: " "))]
+            parameters = [.init(name: "q", value: selection.keywords.joined(separator: " "))]
         } else if sort == "popular" && page == 1 {
             route = "hentai/home"
             parameters = []
@@ -371,9 +381,13 @@ enum NativeProviderAPI {
         let data = result["data"]
         let payload = data as? [String: Any] ?? [:]
         let homeEntries = rows(payload["trending_month"] ?? payload["last"])
-        let entries = rows(searching ? data :
-            (route == "hentai/home" ? (homeEntries.isEmpty ? payload["last"] : payload["trending_month"]) : payload["hentais"]))
-        if !searching, page == 1, entries.isEmpty {
+        let entries: [[String: Any]]
+        if searching { entries = rows(data) }
+        else if route == "hentai/home" {
+            if let section { entries = rows(payload[section]) }
+            else { entries = rows(homeEntries.isEmpty ? payload["last"] : payload["trending_month"]) }
+        } else { entries = rows(payload["hentais"]) }
+        if selection.category == nil, !searching, page == 1, entries.isEmpty {
             throw APIError.server("Hentai Haven returned an empty catalog. Its provider API may be unavailable or may have changed its response format.")
         }
         let posts: [Post] = entries.compactMap { entry in
@@ -385,7 +399,10 @@ enum NativeProviderAPI {
                             thumbUrl: text(entry["post_thumbnail"] ?? entry["thumbnail"]),
                             pageUrl: "https://hentaihaven.xxx/", type: "video")
             post.caption = title
+            if let section { post.category = section }
             return post
+        }.filter { post in
+            selection.category == nil || selection.keywords.allSatisfy { containsKeyword($0, in: post) }
         }
         let pages = Int(number(payload["total_pages"]))
         return self.page(posts, hasMore: !searching && route != "hentai/home" &&
@@ -411,6 +428,7 @@ enum NativeProviderAPI {
     }
 
     static func pornhub(session: URLSession, credentials: ProviderCredentials, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
+        let selection = ProviderSearchCategories.split(query, provider: .pornhub)
         // The public webmaster API accepts browsing without a search term.
         // An explicit `search=` with an empty value is not equivalent on all
         // deployments and has returned the site's generic 404 page.
@@ -418,8 +436,11 @@ enum NativeProviderAPI {
             .init(name: "page", value: String(max(1, page))),
             .init(name: "ordering", value: sort == "recent" ? "newest" : sort == "popular" ? "mostviewed" : "featured"),
             .init(name: "thumbsize", value: "large_hd")]
-        if !query.included.isEmpty {
-            parameters.insert(.init(name: "search", value: query.included.joined(separator: " ")), at: 0)
+        if !selection.keywords.isEmpty {
+            parameters.insert(.init(name: "search", value: selection.keywords.joined(separator: " ")), at: 0)
+        }
+        if let category = selection.category {
+            parameters.append(.init(name: "category", value: String(category.dropFirst("category:".count))))
         }
         if sort == "recent" || sort == "popular" {
             parameters.append(.init(name: "period", value: "monthly"))
@@ -444,7 +465,7 @@ enum NativeProviderAPI {
                 query: query, page: page, sort: sort, immersive: immersive)
         }
         let raw = rows(result["videos"])
-        if raw.isEmpty, page == 1, query.included.isEmpty {
+        if raw.isEmpty, page == 1, selection.keywords.isEmpty {
             return try await pornhubPublicCatalog(session: session, credentials: credentials,
                 query: query, page: page, sort: sort, immersive: immersive)
         }
@@ -464,11 +485,15 @@ enum NativeProviderAPI {
     static func pornhubPublicCatalog(session: URLSession, credentials: ProviderCredentials,
                                      query: ParsedQuery, page: Int, sort: String,
                                      immersive: Bool) async throws -> PostPage {
-        let searching = !query.included.isEmpty
-        let route = searching ? "https://www.pornhub.com/video/search" : "https://www.pornhub.com/video"
+        let selection = ProviderSearchCategories.split(query, provider: .pornhub)
+        let searching = !selection.keywords.isEmpty
+        let category = selection.category.map { String($0.dropFirst("category:".count)) }
+        let route = searching ? "https://www.pornhub.com/video/search" :
+            category.map { "https://www.pornhub.com/categories/" + $0 } ?? "https://www.pornhub.com/video"
         var parameters: [URLQueryItem] = [.init(name: "page", value: String(max(1, page)))]
         if searching {
-            parameters.append(.init(name: "search", value: query.included.joined(separator: " ")))
+            parameters.append(.init(name: "search", value: selection.keywords.joined(separator: " ")))
+            if let category { parameters.append(.init(name: "category", value: category)) }
         } else {
             parameters.append(.init(name: "o", value: sort == "recent" ? "mr" : "mv"))
         }

@@ -7,6 +7,59 @@ struct TagSuggestion: Decodable, Identifiable, Sendable {
     let count: Int
 }
 
+/// Home-feed category chips are provider-scoped structured filters, not
+/// ordinary title keywords or Search-sheet autocomplete suggestions.
+enum ProviderSearchCategories {
+    private static let havenSections: [(String, String)] = [
+        ("trending_month", "Trending"), ("last", "Latest"),
+        ("yuri", "Yuri"), ("ecchi", "Ecchi"),
+        ("incest", "Incest"), ("tentacle", "Tentacle"),
+        ("uncensored", "Uncensored")
+    ]
+    private static let pornhubCategories: [(String, String)] = [
+        ("amateur", "Amateur"), ("hentai", "Hentai"),
+        ("animation", "Animation"), ("asian", "Asian"),
+        ("big-ass", "Big Ass"), ("big-tits", "Big Tits"),
+        ("cosplay", "Cosplay"), ("milf", "MILF"),
+        ("pov", "POV"), ("solo", "Solo"),
+        ("vintage", "Vintage")
+    ]
+    static func suggestions(provider: Provider, matching query: String = "") -> [TagSuggestion] {
+        let values: [TagSuggestion]
+        switch provider {
+        case .hhaven:
+            values = havenSections.map { TagSuggestion(value: "category:section:" + $0.0, label: $0.1, count: 0) }
+        case .pornhub:
+            values = pornhubCategories.map { TagSuggestion(value: "category:" + $0.0, label: $0.1, count: 0) }
+        default: return []
+        }
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return needle.isEmpty ? values : values.filter { $0.label.lowercased().contains(needle) }
+    }
+
+    static func valid(_ token: String, provider: Provider) -> Bool {
+        guard token.hasPrefix("category:") else { return false }
+        let value = String(token.dropFirst("category:".count))
+        switch provider {
+        case .hhaven:
+            if value.hasPrefix("genre:") {
+                let id = String(value.dropFirst("genre:".count))
+                return !id.isEmpty && id.count <= 8 && id.allSatisfy(\.isNumber)
+            }
+            return havenSections.contains { value == "section:" + $0.0 }
+        case .pornhub:
+            return !value.isEmpty && value.count <= 60 &&
+                value.utf8.allSatisfy { (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }
+        default: return false
+        }
+    }
+
+    static func split(_ query: ParsedQuery, provider: Provider) -> (category: String?, keywords: [String]) {
+        let category = query.included.first { valid($0, provider: provider) }
+        return (category, query.included.filter { $0 != category })
+    }
+}
+
 struct ParsedQuery: Equatable, Sendable {
     var included: [String]
     var excluded: [String]

@@ -295,19 +295,40 @@ enum NativeProviderAPI {
     }
 
     static func pornhub(session: URLSession, credentials: ProviderCredentials, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
-        // Public webmaster API; no third-party relay or challenge bypass.
-        let parameters: [URLQueryItem] = [
-            .init(name: "search", value: query.included.joined(separator: " ")), .init(name: "page", value: String(page)),
+        // The public webmaster API accepts browsing without a search term.
+        // An explicit `search=` with an empty value is not equivalent on all
+        // deployments and has returned the site's generic 404 page.
+        var parameters: [URLQueryItem] = [
+            .init(name: "page", value: String(max(1, page))),
             .init(name: "ordering", value: sort == "recent" ? "newest" : sort == "popular" ? "mostviewed" : "featured"),
-            .init(name: "thumbsize", value: "large_hd"), .init(name: "period", value: "monthly")]
+            .init(name: "thumbsize", value: "large_hd")]
+        if !query.included.isEmpty {
+            parameters.insert(.init(name: "search", value: query.included.joined(separator: " ")), at: 0)
+        }
+        if sort == "recent" || sort == "popular" {
+            parameters.append(.init(name: "period", value: "monthly"))
+        }
         let bytes: Data
         do { bytes = try await data(session: session, url: url("https://www.pornhub.com/webmasters/search", parameters), provider: .pornhub, headers: cookieHeaders(credentials)) }
         catch APIError.providerStatus(.pornhub, 404) {
             // Same public API and host; some deployments require the canonical
-            // trailing slash. Never rotate domains or retry access/rate limits.
-            bytes = try await data(session: session, url: url("https://www.pornhub.com/webmasters/search/", parameters), provider: .pornhub, headers: cookieHeaders(credentials))
+            // trailing slash. Do not rotate to untrusted proxies or retry an
+            // intentional rate/auth block.
+            do {
+                bytes = try await data(session: session, url: url("https://www.pornhub.com/webmasters/search/", parameters), provider: .pornhub, headers: cookieHeaders(credentials))
+            } catch APIError.providerStatus(.pornhub, 404) {
+                throw APIError.server("Pornhub's public catalog endpoint is currently unavailable (404). Please try again later or open Pornhub directly.")
+            }
         }
-        let result = try object(bytes)
+        let result: [String: Any]
+        do { result = try object(bytes) }
+        catch {
+            let body = String(decoding: bytes.prefix(1_024), as: UTF8.self).lowercased()
+            if body.contains("requested url was not found") || body.contains("404 not found") {
+                throw APIError.server("Pornhub's public catalog is returning a missing-page response. Please try again later or open Pornhub directly.")
+            }
+            throw error
+        }
         if result["videos"] == nil { throw APIError.server("Pornhub did not return a public feed. Check provider availability in your region.") }
         let raw = rows(result["videos"])
         let posts = raw.map { row -> Post in
@@ -518,7 +539,7 @@ extension NativeProviderAPI {
         for suffix in ["/api/v1/creators", "/api/v1/creators.txt"] {
             do {
                 let bytes = try await data(session: session, url: url(origin(provider).absoluteString + suffix),
-                    provider: provider, headers: ["Accept": "text/css"], maxBytes: 32 * 1024 * 1024)
+                    provider: provider, maxBytes: 32 * 1024 * 1024)
                 let json = try JSONSerialization.jsonObject(with: bytes)
                 let entries: [[String: Any]]
                 if let list = json as? [[String: Any]] { entries = list }
@@ -544,8 +565,10 @@ extension NativeProviderAPI {
         guard provider == .kemono || provider == .coomer else { throw APIError.invalidResponse }
         let origin = origin(provider).absoluteString
         // The API uses 50 source posts per page, not 150. Skipping by 150
-        // silently lost two pages and made searches appear exhausted.
-        let offset = max(0, min(10_000, page - 1)) * 50
+        // silently lost two pages and made searches appear exhausted. Public
+        // archive pagination can also return 404 for deep offsets: rotate a
+        // bounded discovery window rather than persisting broken page URLs.
+        let offset = max(0, page - 1) % 60 * 50
         var parameters: [URLQueryItem] = [.init(name: "o", value: String(offset))]
         let creator = query.included.count == 1 ? archiveCreatorRoute(query.included[0]) : nil
         if creator == nil, !query.included.isEmpty {
@@ -555,8 +578,30 @@ extension NativeProviderAPI {
         // a supported popularity sort, so QuickTick reranks locally.
         let path = creator.map { "/api/v1/\($0.service)/user/\($0.id)/posts" } ?? "/api/v1/posts"
         let endpoint = try url(origin + path, parameters)
-        let data = try await self.data(session: session, url: endpoint, provider: provider,
-                                       headers: ["Accept": "text/css"])
+        let data: Data
+        var usedFallback = false
+        do {
+            data = try await self.data(session: session, url: endpoint, provider: provider)
+        } catch APIError.providerStatus(_, 404) {
+            usedFallback = true
+            // Kemono's own global search UI can receive a 404 on `?q=...`.
+            // Reuse the documented recent-post endpoint without its optional
+            // query, then apply the ORIGINAL terms locally. Never show posts
+            // that do not match an explicitly typed search.
+            let fallbackPath = creator == nil ? "/api/v1/posts" : path
+            let retryParameters: [URLQueryItem] = [.init(name: "o", value: "0")]
+            do {
+                data = try await self.data(session: session,
+                    url: url(origin + fallbackPath, retryParameters), provider: provider)
+            } catch APIError.providerStatus(_, 404) where creator == nil {
+                do {
+                    data = try await self.data(session: session,
+                        url: url(origin + "/api/v1/posts/popular"), provider: provider)
+                } catch APIError.providerStatus(_, 404) {
+                    throw APIError.server("\(provider.displayName)'s public recent and popular APIs are unavailable (404). Try again later.")
+                }
+            }
+        }
         let decoded = try JSONSerialization.jsonObject(with: data)
         let raw: [[String: Any]]
         if let array = decoded as? [[String: Any]] { raw = array }
@@ -564,9 +609,16 @@ extension NativeProviderAPI {
                 let posts = object["posts"] as? [[String: Any]] { raw = posts }
         else { throw APIError.invalidResponse }
         let normalized = raw.flatMap { archiveItems($0, provider: provider) }
+        // A fallback without server-side `q` must still honor the user's
+        // search. Otherwise a recoverable 404 silently becomes a wrong feed.
+        let visible = usedFallback && creator == nil
+            ? normalized.filter { post in query.included.allSatisfy { containsKeyword($0, in: post) } }
+            : normalized
         let total = (decoded as? [String: Any]).map { number($0["true_count"]) } ?? 0
-        let hasMore = total > 0 ? Double(offset + raw.count) < total : raw.count >= 50
-        return self.page(normalized, hasMore: hasMore, query: query, immersive: immersive)
+        // A recovery page is deliberately bounded; do not keep requesting a
+        // broken deep cursor or synthesize infinite duplicates.
+        let hasMore = usedFallback ? false : (total > 0 ? Double(offset + raw.count) < total : raw.count >= 50)
+        return self.page(visible, hasMore: hasMore, query: query, immersive: immersive)
     }
 
     // Typed creator routes are embedded into the canonical post URL. Never
@@ -593,8 +645,7 @@ extension NativeProviderAPI {
         }
         let endpoint = try url(origin(provider).absoluteString
             + "/api/v1/\(route.service)/user/\(route.user)/post/\(route.id)/comments")
-        let bytes = try await data(session: session, url: endpoint, provider: provider,
-                                   headers: ["Accept": "text/css"])
+        let bytes = try await data(session: session, url: endpoint, provider: provider)
         let decoded = try JSONSerialization.jsonObject(with: bytes)
         let comments: [[String: Any]]
         if let array = decoded as? [[String: Any]] { comments = array }

@@ -49,6 +49,14 @@ struct RhythmPhraseSequencer {
         ticksRemaining = max(2, quarterBeats) * current.rawValue
     }
 
+    mutating func beginRecovery(quarterBeats: Int) {
+        // A regular pulse gives a real rest from dense Triple/Quad events.
+        // Resume the full mixed sequence after this recovery phrase.
+        current = .regular
+        upcoming = [.duo, .triple, .quad]
+        ticksRemaining = max(4, quarterBeats)
+    }
+
     /// Return true only when the next phrase begins. Duration is measured in
     /// quarter notes so a triple phrase isn't three times shorter than regular.
     mutating func tick(mixed: Bool, quarterBeats: Int, shuffle: Bool = true) -> Bool {
@@ -74,17 +82,19 @@ struct RhythmPhraseSequencer {
 /// boundaries and the actual tempo glides towards them on each subdivision.
 /// This is deterministic for tests when randomUnit is provided.
 struct RhythmTempoPlanner {
-    static let maximumTapsPerSecond = 4.2
-    static let maximumBPM = 136.0
-    private(set) var currentBPM = 112.0
-    private(set) var targetBPM = 112.0
+    static let maximumTapsPerSecond = 3.0
+    static let maximumBPM = 112.0
+    private(set) var currentBPM = 96.0
+    private(set) var targetBPM = 96.0
     private(set) var section = 0
+    private(set) var isRecovering = false
     private var quarterNotes = 0.0
 
     mutating func reset(baseBPM: Int) {
-        currentBPM = Double(max(40, min(136, baseBPM)))
+        currentBPM = Double(max(40, min(Int(Self.maximumBPM), baseBPM)))
         targetBPM = currentBPM
         section = 0
+        isRecovering = false
         quarterNotes = 0
     }
 
@@ -98,10 +108,12 @@ struct RhythmTempoPlanner {
             section += 1
             targetBPM = Self.target(mode: mode, baseBPM: baseBPM, section: section,
                                     intensity: intensity, randomness: randomness, randomUnit: randomUnit)
+            isRecovering = Self.isRecoverySection(mode: mode, section: section)
         }
-        // Subdivisions never multiply the ramp speed. Short steps keep
-        // triple/quad patterns smooth while allowing real slowdown sections.
-        let rate = (0.16 + max(0, min(1, intensity)) * 0.17) / subdivisions
+        // Ramp up gently, but relax noticeably faster after peaks. Dense
+        // subdivisions cannot multiply the acceleration per quarter note.
+        let building = 0.12 + max(0, min(1, intensity)) * 0.13
+        let rate = (targetBPM < currentBPM ? 0.42 : building) / subdivisions
         currentBPM = max(40.0, min(Self.maximumBPM,
             currentBPM + (targetBPM - currentBPM) * rate))
     }
@@ -112,21 +124,30 @@ struct RhythmTempoPlanner {
         max(1 / maximumTapsPerSecond, 60 / max(40, bpm) / Double(division.rawValue))
     }
 
+    private static func stages(for mode: RhythmPattern) -> [Double] {
+        switch mode {
+        case .chill: return [0.80, 0.72, 0.83, 0.91, 0.70, 0.79]
+        case .fast: return [0.90, 1.14, 0.66, 0.75, 1.09, 0.65]
+        case .spam: return [0.92, 1.18, 0.63, 0.73, 1.13, 0.62]
+        case .chaos: return [0.78, 1.13, 0.64, 0.76, 1.11, 0.66]
+        case .progressive: return [0.86, 0.98, 1.09, 1.16, 0.65, 0.72, 0.94, 1.05, 0.66]
+        // The default mode does NOT climb predictably from a warmup: slower
+        // valleys outnumber brief fast bursts, with guaranteed recoveries.
+        case .adaptive: return [0.71, 0.84, 1.02, 1.12, 0.64, 0.73, 0.90, 1.08, 0.65, 0.80, 1.03, 0.64]
+        case .custom: return [1]
+        default: return [0.84, 1.05, 0.72, 0.92]
+        }
+    }
+
+    static func isRecoverySection(mode: RhythmPattern, section: Int) -> Bool {
+        guard mode != .chill, mode != .custom else { return false }
+        let cycle = stages(for: mode)
+        return cycle[max(0, section) % cycle.count] <= 0.75
+    }
+
     static func target(mode: RhythmPattern, baseBPM: Int, section: Int,
                        intensity: Double, randomness: Double, randomUnit: Double = 0.5) -> Double {
-        let cycle: [Double]
-        switch mode {
-        case .chill: cycle = [0.89, 0.78, 0.86, 0.94, 0.80, 0.88]
-        case .fast: cycle = [1.1, 1.18, 0.94, 1.26, 1.06, 1.2]
-        case .spam: cycle = [1.18, 1.3, 1.05, 1.34, 0.96, 1.24]
-        case .chaos: cycle = [0.84, 1.19, 0.76, 1.25, 0.79, 1.12]
-        case .progressive: cycle = [1, 1.07, 1.15, 1.26, 1.32, 1.08, 0.79, 0.91]
-        // The default mode does NOT climb predictably from a warmup: slower
-        // valleys outnumber short faster bursts, with random variation.
-        case .adaptive: cycle = [0.76, 0.85, 0.97, 1.08, 1.18, 0.74, 0.94, 1.04, 0.81, 0.90, 1.06, 0.78]
-        case .custom: cycle = [1]
-        default: cycle = [1, 1.06, 0.94, 1]
-        }
+        let cycle = stages(for: mode)
         let amount = max(0, min(1, intensity))
         let stage = cycle[max(0, section) % cycle.count]
         // Adaptive evolves through musical stages but varies each stage with
@@ -138,7 +159,7 @@ struct RhythmTempoPlanner {
         let jitter = mode == .custom ? 0 : (max(0, min(1, randomUnit)) - 0.5)
             * max(0, min(1, randomness)) * jitterAmount
         // Keep Swift type inference bounded and arithmetic consistently Double.
-        let boundedBase = Double(max(40, min(136, baseBPM)))
+        let boundedBase = Double(max(40, min(Int(Self.maximumBPM), baseBPM)))
         let deviation = (shape - 1.0) * range
         let multiplier = 1.0 + deviation + jitter
         let requestedBPM = boundedBase * multiplier
@@ -310,6 +331,7 @@ struct RhythmSessionView: View {
         .onAppear {
             guard !started else { return }
             started = true
+            if bpm > Int(RhythmTempoPlanner.maximumBPM) { bpm = Int(RhythmTempoPlanner.maximumBPM) }
             deck = posts.shuffled()
             running = !deck.isEmpty
             resetPhrases()
@@ -328,9 +350,13 @@ struct RhythmSessionView: View {
                 if haptics { UIImpactFeedbackGenerator(style: downbeat ? .medium : .light).impactOccurred() }
                 if !manual && Date() >= nextSwitch { advance() }
                 let interval = beatInterval
+                let previousSection = tempoPlanner.section
                 tempoPlanner.tick(division: division, mode: mode, baseBPM: bpm,
                                   intensity: acceleration, randomness: randomness, bars: barsPerPhrase)
-                if phraseSequencer.tick(mixed: mixSubdivisions, quarterBeats: nextPhraseLength()) {
+                if mixSubdivisions && tempoPlanner.section != previousSection && tempoPlanner.isRecovering {
+                    phraseSequencer.beginRecovery(quarterBeats: phraseLength)
+                    beat = 0
+                } else if phraseSequencer.tick(mixed: mixSubdivisions, quarterBeats: nextPhraseLength()) {
                     beat = 0
                 } else {
                     beat = (beat + 1) % (division.rawValue * 4)
@@ -379,7 +405,7 @@ struct RhythmSessionView: View {
                 }
                 .accessibilityLabel("Slow rhythm by 10 BPM")
                 .accessibilityIdentifier("rhythm-slower")
-                Button { bpm = min(136, bpm + 10) } label: {
+                Button { bpm = min(Int(RhythmTempoPlanner.maximumBPM), bpm + 10) } label: {
                     Image(systemName: "plus").frame(width: 38, height: 44)
                 }
                 .accessibilityLabel("Speed rhythm up by 10 BPM")
@@ -412,10 +438,11 @@ struct RhythmSessionView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    labeledSlider("Base BPM", value: Binding(get: { Double(bpm) }, set: { bpm = Int($0) }), range: 40...136)
+                    labeledSlider("Base BPM", value: Binding(get: { Double(bpm) }, set: { bpm = Int($0) }),
+                                  range: 40...RhythmTempoPlanner.maximumBPM)
                     labeledSlider("Randomness", value: $randomness, range: 0...1)
                     labeledSlider("Acceleration", value: $acceleration, range: 0...1)
-                    Text("Adaptive varies speed unpredictably with regular slowdowns. All modes are capped at 4.2 taps per second, including Quad. +/− adjusts your base tempo.")
+                    Text("After fast bursts, Rhythm returns to a slower regular pulse for recovery. All modes are capped at 3 taps per second, including Quad. +/− adjusts your base tempo.")
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     labeledSlider("Transitions", value: $transitionSpeed, range: 0.08...0.65)
                     labeledSlider("Bars per rhythm", value: Binding(get: { Double(barsPerPhrase) }, set: { barsPerPhrase = Int($0) }), range: 2...8)

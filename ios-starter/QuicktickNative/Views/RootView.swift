@@ -1,5 +1,18 @@
 import SwiftUI
 
+/// Directional swipes belong to the navigation controls only. Media and the
+/// rest of the screen keep their own horizontal/vertical gestures.
+enum TabSwipePolicy {
+    static func destination(current: Int, translation: CGSize, vertical: Bool) -> Int? {
+        guard (0...3).contains(current) else { return nil }
+        let primary = vertical ? translation.height : translation.width
+        let cross = vertical ? translation.width : translation.height
+        guard abs(primary) >= 42, abs(primary) > abs(cross) * 1.45 else { return nil }
+        let next = current + (primary < 0 ? 1 : -1)
+        return (0...3).contains(next) ? next : nil
+    }
+}
+
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -50,6 +63,9 @@ struct RootView: View {
                     // Full-width dock with a raised, high-contrast creation
                     // action in the center. Preserve safe-area touch targets.
                     HStack(spacing: 0) { tabButtons(vertical: false) }
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(DragGesture(minimumDistance: 24)
+                            .onEnded { swipeTabs($0.translation, vertical: false) })
                         .padding(.horizontal, modernUI ? 8 : 4)
                         .padding(.top, modernUI ? 8 : 4)
                         .padding(.bottom, 0)
@@ -77,6 +93,9 @@ struct RootView: View {
             .overlay(alignment: .leading) {
                 if sideNavigation {
                     VStack(spacing: 6) { tabButtons(vertical: true) }
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(DragGesture(minimumDistance: 24)
+                            .onEnded { swipeTabs($0.translation, vertical: true) })
                         .padding(6)
                         .background(AppTheme.isCosmic ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
                                     in: RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -157,6 +176,19 @@ struct RootView: View {
             .tint(AppTheme.accent)
         }
         .overlay(alignment: .topTrailing) { FloatingPiPView().environmentObject(store) }
+    }
+
+    private func swipeTabs(_ translation: CGSize, vertical: Bool) {
+        guard !showStudio, !showSettings,
+              let tab = TabSwipePolicy.destination(current: store.activeTab,
+                                                     translation: translation, vertical: vertical)
+        else { return }
+        tabSelectionTask?.cancel()
+        let refresh = store.beginFeedTabSelection(tab)
+        tabSelectionTask = Task { @MainActor in
+            guard !Task.isCancelled else { return }
+            if refresh { await store.refresh(immersive: tab == 1) }
+        }
     }
 
     @ViewBuilder private func tabButtons(vertical: Bool) -> some View {

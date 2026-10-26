@@ -32,6 +32,15 @@ final class AppStore: ObservableObject {
         didSet {
             guard oldValue != selectedProvider else { return }
             savedFeeds.removeAll()
+            // Creator references are scoped to one archive's service/user
+            // index. Carrying them into a different provider silently builds
+            // invalid routes and can surface as HTTP 404 on a tab switch.
+            if QueryParser.parse(queryText).included.contains(where: {
+                NativeProviderAPI.archiveCreatorRoute($0) != nil
+            }) {
+                queryText = ""
+                return // queryText's didSet invalidates this feed once.
+            }
             if selectedProvider != .rule34 {
                 let plainQuery = SearchFilters.split(queryText).tags
                 if plainQuery != queryText { queryText = plainQuery; return }

@@ -26,6 +26,12 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         }
         else if ["coomer.st", "kemono.cr"].contains(host),
                 path == "/api/v1/posts" || path == "/api/v1/fanbox/user/42/posts" {
+            let parts = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if host == "kemono.cr", path == "/api/v1/posts",
+               parts.contains(where: { $0.name == "o" && $0.value == "100" }) {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
             payload = #"{"posts":[{"id":"p100","service":"fanbox","user":"42","title":"Cosplay fantasy portrait","artist":"Fixture Artist","published":"2026-09-01T10:00:00Z","file":{"name":"portrait.jpg","path":"/ab/cd.jpg"},"attachments":[{"name":"clip.mp4","path":"/ab/ef.mp4"},{"name":"sound.mp3","path":"/ab/sound.mp3"},{"name":"archive.zip","path":"/ab/ignored.zip"}]}]}"#
         }
         else if ["coomer.st", "kemono.cr"].contains(host), path.hasSuffix("/comments") {
@@ -42,7 +48,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "search.htv-services.com" { payload = #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fixture\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"}]}]"}"# }
         else if path == "/api/v8/video" { payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/full.m3u8"}]}]}}"# }
         else if path == "/webmasters/search" || path == "/webmasters/search/" {
-            if path == "/webmasters/search", URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: { $0.name == "search" && $0.value == "route-fixture" }) == true {
+            let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "search" })?.value
+            if search == "unavailable-route" || (path == "/webmasters/search" && search == "route-fixture") {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
             }
@@ -116,7 +124,7 @@ final class NativeProviderAPITests: XCTestCase {
                            "https://img.\(provider == .kemono ? "kemono.cr" : "coomer.st")/thumbnail/data/ab/cd.jpg")
             let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot()
                 .first(where: { $0.url?.path == "/api/v1/posts" }))
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/css")
+            XCTAssertTrue(request.value(forHTTPHeaderField: "Accept")?.contains("application/json") == true)
             let q = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
             XCTAssertEqual(q.first(where: { $0.name == "q" })?.value, "cosplay")
             XCTAssertEqual(q.first(where: { $0.name == "o" })?.value, "50")
@@ -154,6 +162,20 @@ final class NativeProviderAPITests: XCTestCase {
             XCTAssertNil(query.first(where: { $0.name == "q" }))
         }
         XCTAssertNil(NativeProviderAPI.archiveCreatorRoute("creator:fanbox:../evil"))
+    }
+
+    func testKemonoRecoverable404ReturnsBoundedLocallyFilteredPosts() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .kemono,
+            query: QueryParser.parse("cosplay"), page: 3)
+        XCTAssertEqual(page.items.count, 3)
+        XCTAssertFalse(page.hasMore ?? true, "A recovered page must not loop its broken cursor")
+        let requested = NativeProviderProtocol.log.snapshot().compactMap(\.url)
+        XCTAssertEqual(requested.count, 2)
+        let fallback = try XCTUnwrap(URLComponents(url: requested[1], resolvingAgainstBaseURL: false))
+        XCTAssertNil(fallback.queryItems?.first(where: { $0.name == "q" }))
+        XCTAssertEqual(fallback.queryItems?.first(where: { $0.name == "o" })?.value, "0")
     }
 
     func testDownloadsRecoverCanonicalProviderFromAliasesKeysAndOriginalPages() {
@@ -316,6 +338,25 @@ final class NativeProviderAPITests: XCTestCase {
         }
         XCTAssertEqual(rawPaths, ["/webmasters/search", "/webmasters/search/"],
                        "Fallback request should retain its trailing slash")
+    }
+    func testPornhubEmptySearchIsOmittedAndUnavailableRouteExplained() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        _ = try await api.posts(provider: .pornhub,
+            query: ParsedQuery(included: [], excluded: []), page: 1)
+        let home = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first?.url)
+        let terms = URLComponents(url: home, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertFalse(terms.contains(where: { $0.name == "search" }))
+
+        NativeProviderProtocol.log.reset()
+        do {
+            _ = try await api.posts(provider: .pornhub,
+                query: QueryParser.parse("unavailable-route"), page: 1)
+            XCTFail("Expected documented public endpoint failure")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("unavailable"))
+        }
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().count, 2)
     }
     func testPornhubUsesCanonicalPageAndSurvivesRemovedMP4Definition() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }

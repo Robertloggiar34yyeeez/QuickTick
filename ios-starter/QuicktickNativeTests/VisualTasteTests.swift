@@ -125,6 +125,56 @@ final class VisualTasteTests: XCTestCase {
                                            recent: [], visualScores: scores)
         XCTAssertEqual(ranked.first?.stableID, preferred.stableID)
     }
+    func testHavenCatalogAndSavedVideosUseDeferredAnimeWDTagger() {
+        let haven = Post(key: "hhaven:12", id: "12", provider: "hhaven", tags: ["hentai"],
+                         thumbUrl: "https://cdn.hentaihaven.app/thumb.jpg", type: "video")
+        let legacy = Post(key: "hhaven:13", id: "13", provider: "hhaven",
+                          thumbUrl: haven.thumbUrl, type: "video")
+        for post in [haven, legacy] {
+            XCTAssertEqual(VisualDomain.classify(post), .anime)
+            XCTAssertTrue(AnimeVisualRecommendationPolicy.usesWDTagger(post, domain: .anime))
+            XCTAssertTrue(AnimeVisualRecommendationPolicy.fetchesIdlePreview(post, domain: .anime,
+                favorite: false, disliked: false, lightweight: false))
+            XCTAssertFalse(AnimeVisualRecommendationPolicy.fetchesIdlePreview(post, domain: .anime,
+                favorite: false, disliked: false, lightweight: true))
+            XCTAssertEqual(VisualPreviewLoader.thumbnailURL(post)?.absoluteString, haven.thumbUrl)
+        }
+        let real = Post(key: "coomer:1", id: "1", provider: "coomer", type: "video")
+        XCTAssertFalse(AnimeVisualRecommendationPolicy.usesWDTagger(real, domain: .realLife))
+        XCTAssertFalse(AnimeVisualRecommendationPolicy.fetchesIdlePreview(real, domain: .realLife,
+            favorite: false, disliked: false, lightweight: false))
+        let audio = Post(key: "hhaven:audio", id: "audio", provider: "hhaven", type: "audio")
+        XCTAssertFalse(AnimeVisualRecommendationPolicy.usesWDTagger(audio, domain: .anime))
+    }
+    func testHavenWDVisualSignalsImproveRankingBeyondAnimeTitleTags() async {
+        let labels = [WDAnimeTagger.Label(name: "long_hair", category: 0),
+                      WDAnimeTagger.Label(name: "blue_eyes", category: 0),
+                      WDAnimeTagger.Label(name: "character_one", category: 4)]
+        let signals = WDAnimeTagger.signals(labels: labels, probabilities: [0.95, 0.9, 0.96])
+        var liked = VisualFeatures(domain: .anime, subjects: ["title_character"])
+        AnimeVisualRecommendationPolicy.mergeWD(signals, into: &liked)
+        XCTAssertEqual(liked.subjects, ["character_one", "title_character"])
+        XCTAssertNotNil(liked.attributes["appearance:long_hair"])
+        XCTAssertEqual(liked.conceptEvidence?["character:character_one"]?.origin, "wd-v3-high-confidence")
+        var profile = VisualProfile()
+        profile.record(.like, features: liked)
+        var matched = VisualFeatures(domain: .anime)
+        AnimeVisualRecommendationPolicy.mergeWD(signals, into: &matched)
+        let unmatched = VisualFeatures(domain: .anime, attributes: ["appearance:short_hair": 0.9])
+        XCTAssertGreaterThan(profile.score(matched), profile.score(unmatched))
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = VisualAnalysisService(directory: directory)
+        let post = Post(key: "hhaven:liked", id: "liked", provider: "hhaven",
+                        tags: ["hentai", "long_hair"], type: "video")
+        await service.record(.like, post: post, queueAnalysis: false)
+        let candidate = Post(key: "hhaven:candidate", id: "candidate", provider: "hhaven",
+                             tags: ["hentai", "long_hair"], type: "video")
+        let scores = await service.scores([candidate])
+        XCTAssertGreaterThan(scores[candidate.stableID] ?? 0, 0,
+            "Haven visual profiles must score future Haven candidates independently of Rule34")
+    }
     func testVisualDiscoveryAlternatesWithBroadExplorationAndRespectsExclusions() {
         let queries = [["sample_character_one", "2d"], ["sample_artist", "2d"], ["sample_character_two", "2d"]]
         XCTAssertNil(VisualDiscoveryPolicy.query(round: 1, queries: queries, excluded: []))

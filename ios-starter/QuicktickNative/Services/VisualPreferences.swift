@@ -12,7 +12,11 @@ enum VisualDomain: String, Codable, Sendable {
         if normalized.contains("mixed_media") || [flat, rendered, photographic].filter({ $0 }).count > 1 { return .mixed }
         if rendered { return .threeD }
         if photographic { return .realLife }
-        if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"]) { return .anime }
+        // Hentai Haven's older saved posts can lack the synthetic `hentai`
+        // tag. The provider is animated content even when its title supplies
+        // no descriptive tags. Explicit photo/3D/mixed evidence above wins.
+        if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"])
+            || (!post.isAudio && post.providerKey == .hhaven) { return .anime }
         return .uncertain
     }
 }

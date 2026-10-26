@@ -1207,7 +1207,10 @@ final class AppStore: ObservableObject {
                         || activeTab == 1 || fullScreenPlaybackID != nil || !isForeground,
                     loading: isLoading)
                 if idle {
-                    for post in posts.prefix(4) {
+                    // Haven recommendations need visual evidence from poster
+                    // images even when the corresponding video was not opened.
+                    // Enqueue only; all network/model work remains idle-only.
+                    for post in posts.prefix(selectedProvider == .hhaven ? 8 : 4) {
                         guard !Task.isCancelled, generation == token else { return }
                         _ = await visual.enqueue(post, priority: 1)
                     }

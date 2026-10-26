@@ -31,6 +31,41 @@ enum VisualDiscoveryPolicy {
     }
 }
 
+/// Routes known anime sources through the same on-device WD-v3 pipeline as
+/// Rule34. Catalog videos use their bounded poster image, never a stream or
+/// network request on the scrolling/playback path.
+enum AnimeVisualRecommendationPolicy {
+    static func usesWDTagger(_ post: Post, domain: VisualDomain) -> Bool {
+        guard !post.isAudio else { return false }
+        return domain == .anime || (domain == .uncertain &&
+            (post.providerKey == .kemono || post.providerKey == .hhaven))
+    }
+
+    static func fetchesIdlePreview(_ post: Post, domain: VisualDomain,
+                                   favorite: Bool, disliked: Bool, lightweight: Bool) -> Bool {
+        guard !lightweight else { return false }
+        // Unseen Haven cards are often video posters that have not passed
+        // through the decoded image cache. Fetch a *small* preview in the
+        // existing serial, Wi-Fi-only idle worker so visual ranking can learn
+        // from more than just previously opened posts.
+        return favorite || disliked ||
+            (post.providerKey == .hhaven && usesWDTagger(post, domain: domain))
+    }
+
+    static func mergeWD(_ tagged: WDAnimeTagger.Result, into features: inout VisualFeatures) {
+        features.attributes.merge(tagged.attributes, uniquingKeysWith: max)
+        guard features.domain == .anime else { return }
+        // Title-derived subjects must not suppress high-confidence visual
+        // subjects when multiple characters appear on the poster.
+        features.subjects = Array(Set(features.subjects + tagged.subjects)).sorted()
+        if features.conceptEvidence == nil { features.conceptEvidence = [:] }
+        for subject in tagged.subjects where features.conceptEvidence?["character:" + subject] == nil {
+            features.conceptEvidence?["character:" + subject] =
+                ConceptEvidence(confidence: 0.9, origin: "wd-v3-high-confidence")
+        }
+    }
+}
+
 /// One bounded worker; metadata feedback is independent of model execution.
 actor VisualAnalysisService {
     struct State: Codable, Sendable {
@@ -290,7 +325,7 @@ actor VisualAnalysisService {
         let realLifeModel = VisualDomain.classify(post).map {
             VisualAppearanceEncoder.prefersMobileCLIP(domain: $0, provider: post.provider)
         } == true && MobileCLIPRealLifeEncoder.isInstalled()
-        return TasteConcepts.version + "|kemono-wd-v1|irl-frames-v1|appearance-wd-v3-fp16|" + (realLifeModel ? MobileCLIPRealLifeEncoder.version : "vision")
+        return TasteConcepts.version + "|kemono-wd-v1|hhaven-wd-v1|irl-frames-v1|appearance-wd-v3-fp16|" + (realLifeModel ? MobileCLIPRealLifeEncoder.version : "vision")
             + "|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.
@@ -335,7 +370,10 @@ actor VisualAnalysisService {
         if lightweight, lightVersions[post.stableID] == revision { return }
         let before = state.features[post.stableID]?.domain == metadata.domain ? state.features[post.stableID]! : metadata
         var preview = await MediaImagePipeline.shared.cachedAnalysisImage(raw: post.cardPreviewURL)
-        if preview == nil, !lightweight, (favorite || disliked), resourcesAllowAnalysis(), VisualPreviewLoader.thumbnailURL(post) != nil {
+        if preview == nil,
+           AnimeVisualRecommendationPolicy.fetchesIdlePreview(post, domain: metadata.domain,
+               favorite: favorite, disliked: disliked, lightweight: lightweight),
+           resourcesAllowAnalysis(), VisualPreviewLoader.thumbnailURL(post) != nil {
             // Keep requests bounded while avoiding a three-second penalty per
             // favorite during an explicit idle/manual refresh.
             let delay = 0.9 - Date().timeIntervalSince(lastPreviewAttempt)
@@ -353,8 +391,7 @@ actor VisualAnalysisService {
         if preview == nil { preview = sampled.first }
         guard let image = preview, resourcesAllowAnalysis() else { return }
         var enriched = metadata
-        let useWDTagger = before.domain == .anime ||
-            (post.providerKey == .kemono && before.domain == .uncertain)
+        let useWDTagger = AnimeVisualRecommendationPolicy.usesWDTagger(post, domain: before.domain)
         let taggerCoolingDown = !lightweight && useWDTagger ? await animeTagger.cooldownDelay() > 0 : false
         enriched.pixelsAnalyzed = true
         enriched.version = "cached-appearance-v2"
@@ -396,12 +433,7 @@ actor VisualAnalysisService {
         if !lightweight, !taggerCoolingDown, useWDTagger,
            let tagged = await animeTagger.analyze(image, domain: before.domain),
            (before.domain == .anime || tagged.attributes.count >= 4) {
-            enriched.attributes.merge(tagged.attributes, uniquingKeysWith: max)
-            if before.domain == .anime && enriched.subjects.isEmpty { enriched.subjects = tagged.subjects }
-            for subject in (before.domain == .anime ? tagged.subjects : []) where enriched.conceptEvidence?["character:" + subject] == nil {
-                if enriched.conceptEvidence == nil { enriched.conceptEvidence = [:] }
-                enriched.conceptEvidence?["character:" + subject] = ConceptEvidence(confidence: 0.9, origin: "wd-v3-high-confidence")
-            }
+            AnimeVisualRecommendationPolicy.mergeWD(tagged, into: &enriched)
             enriched.version += "+wd-vit-v3-7f6b584-fp16"
             let mapped = TasteConcepts.resolve(before.domain == .anime ? tagged.subjects : [])
             enriched.franchises = Array(Set((enriched.franchises ?? []) + mapped.franchises)).sorted()

@@ -509,9 +509,13 @@ final class AppStore: ObservableObject {
                 Task(priority: .utility) { await recordSearch(provider: provider, query: search) }
             }
             let personalized = requestedSort == "recommended" && parsed.included.isEmpty
+            // Hentai Haven's finite catalog is browsed by actual pages. Its
+            // historical focused-query cursors can outlive the available
+            // pages and leave Recommended permanently empty.
+            let directHaven = personalized && provider == .hhaven
             let banned = Set((exclusions + parsed.excluded + tasteChoice(for: provider).notInto).map(RecommendationTagRules.canonical))
             let context = provider.rawValue + "|batch40|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
-            candidateContext = personalized ? context : nil
+            candidateContext = personalized && !directHaven ? context : nil
             var requestedPage = 1
             guard generation == token, !Task.isCancelled else { return }
             encountered = []
@@ -524,12 +528,18 @@ final class AppStore: ObservableObject {
             // more after three sparse/filtered pages without a long spinner.
             for _ in 0..<3 {
                 guard generation == token, !Task.isCancelled else { return }
-                let response = personalized && !broaden
-                    ? try await fetchBlendedCandidates(provider: provider, parsed: parsed,
+                let response: (page: PostPage, request: RecommendationEngine.CandidateRequest?)
+                if directHaven {
+                    response = try await fetchCandidates(provider: provider, parsed: parsed,
+                        context: nil, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly)
+                } else if personalized && !broaden {
+                    response = try await fetchBlendedCandidates(provider: provider, parsed: parsed,
                         context: context, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly)
-                    : try await fetchCandidates(provider: provider, parsed: parsed,
+                } else {
+                    response = try await fetchCandidates(provider: provider, parsed: parsed,
                         context: personalized ? context : nil, page: requestedPage,
                         sort: requestedSort, mediaOnly: mediaOnly, forceBroad: broaden)
+                }
                 let acquisition = response.request
                 let page = response.page
                 requestedPage = acquisition?.page ?? requestedPage
@@ -565,7 +575,7 @@ final class AppStore: ObservableObject {
                 }
                 // Even if a focused title search says "no more pages", one
                 // broad catalog request must run before an empty-screen error.
-                if !filtered.isEmpty || (!hasMore && !focusedMiss) { break }
+                if !filtered.isEmpty || (directHaven && !havenSafeCatalog.isEmpty) || (!hasMore && !focusedMiss) { break }
             }
             var immediate = filtered
             if immediate.isEmpty, personalized, provider == .hhaven, !havenExploration.isEmpty {
@@ -619,6 +629,10 @@ final class AppStore: ObservableObject {
                 if immediate.isEmpty {
                     if ProviderSearchCategories.split(parsed, provider: provider).category != nil {
                         lastError = "No posts found in this category. Choose a different Home category or clear the filter."
+                    } else if directHaven {
+                        lastError = havenSafeCatalog.isEmpty
+                            ? "Hentai Haven returned no catalog items. Try again when its catalog is available."
+                            : "The available Hentai Haven posts were removed by saved favorites or explicit dislikes."
                     } else {
                         lastError = personalized
                             ? "No fresh matches yet. Try Load more, another source, or refine your interests."
@@ -651,6 +665,8 @@ final class AppStore: ObservableObject {
         do {
             let parsed = QueryParser.parse(queryText)
             lastError = nil
+            let directHaven = provider == .hhaven && feedSort == "recommended" && parsed.included.isEmpty
+            let personalizedPage = candidateContext != nil || directHaven
             // Skip sparse, duplicate and fully filtered pages without waiting for
             // a last-card onAppear that will never fire again.
             var broaden = false
@@ -674,12 +690,16 @@ final class AppStore: ObservableObject {
             }
             if candidateContext != nil { candidates = await recommendations.unseenRecommendations(candidates) }
             candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
-                recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
+                recommended: personalizedPage, favoriteIDs: favoriteExclusionIDs)
             let ranked: [Post]
-            if candidateContext != nil {
+            if personalizedPage {
                 let cachedAppearance = await visual.scores(candidates)
-                ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
+                let strict = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                     recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: true)
+                if strict.isEmpty && directHaven {
+                    ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
+                        recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: false)
+                } else { ranked = strict }
             } else { ranked = candidates }
             guard generation == token, !Task.isCancelled else { return }
             if ranked.isEmpty, let acquisition, acquisition.focused {
@@ -688,7 +708,7 @@ final class AppStore: ObservableObject {
                 guard generation == token, !Task.isCancelled else { return }
             }
             posts.append(contentsOf: ranked)
-            if candidateContext != nil {
+            if personalizedPage {
                 await recommendations.recordOffered(ranked)
                 scheduleRecommendationPersistence()
             }
@@ -797,9 +817,12 @@ final class AppStore: ObservableObject {
                 if completed == 2 { break }
                 if case .graceExpired = result { break }
                 let available = (primary?.items.count ?? 0) + (secondary?.items.count ?? 0)
-                if available >= 8 && deadline == nil {
+                // A sparse provider can return only 1-4 posts on its fast
+                // lane. Waiting for eight before starting the grace timer
+                // made first paint depend on the slowest request (up to 15s).
+                if available > 0 && deadline == nil {
                     deadline = Task {
-                        do { try await Task.sleep(for: .milliseconds(160)) } catch { return }
+                        do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
                         emitter.yield(.graceExpired)
                     }
                 }

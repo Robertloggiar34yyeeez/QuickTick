@@ -60,7 +60,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             }
         }
         else if host == "api.hentaihaven.app", path == "/v1/hentai/all" {
-            payload = #"{"data":{"hentais":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"total_pages":3}}"#
+            payload = request.value(forHTTPHeaderField: "warden") == "fallback-test-token"
+                ? #"{"data":{"hentais":[],"total_pages":0}}"#
+                : #"{"data":{"hentais":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"total_pages":3}}"#
         }
         else if host == "api.hentaihaven.app", path == "/v1/hentai/home" {
             payload = #"{"data":{"trending_month":[{"post_id":12,"post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"yuri":[{"post_id":19,"post_title":"Yuri romance","post_thumbnail":"https://cdn.hentaihaven.app/yuri.jpg"}]}}"#
@@ -296,6 +298,28 @@ final class NativeProviderAPITests: XCTestCase {
                 URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
                     .queryItems?.contains(where: { $0.name == "p" && $0.value == "1" }) == true
         })
+    }
+
+    func testHavenFirstCatalogPageFallsBackToPopulatedHomeIndex() async throws {
+        let (_, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let result = try await NativeProviderAPI.haven(session: session, token: "fallback-test-token",
+            query: ParsedQuery(included: [], excluded: []), page: 1,
+            sort: "recommended", immersive: false)
+        XCTAssertEqual(result.items.map(\.stableID), ["hhaven:12"])
+        let paths = NativeProviderProtocol.log.snapshot().compactMap { $0.url?.path }
+        XCTAssertTrue(paths.contains("/v1/hentai/all"))
+        XCTAssertTrue(paths.contains("/v1/hentai/home"))
+    }
+
+    func testHavenShortCacheReusesTheSameFirstPage() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let query = ParsedQuery(included: [], excluded: [])
+        let first = try await api.posts(provider: .hhaven, query: query, page: 1, sort: "recommended")
+        let repeated = try await api.posts(provider: .hhaven, query: query, page: 1, sort: "recommended")
+        XCTAssertEqual(first.items.map(\.stableID), repeated.items.map(\.stableID))
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/v1/hentai/all" }.count, 1)
     }
 
     func testNHentaiGalleryBrowseSearchAndCompletePageManifest() async throws {

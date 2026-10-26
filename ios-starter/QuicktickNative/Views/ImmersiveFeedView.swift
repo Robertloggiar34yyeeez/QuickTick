@@ -6,12 +6,14 @@ import UIKit
 struct ImmersiveFeedView: View {
     @EnvironmentObject private var store: AppStore
     let posts: [Post]
+    private let mediaPosts: [Post]
     let offline: Bool
     var onClose: (() -> Void)? = nil
     let collectionTab: Int?
     @Binding var showSettings: Bool
     init(posts: [Post], offline: Bool, activePostID: Binding<String?>, onClose: (() -> Void)? = nil, showSettings: Binding<Bool> = .constant(false), collectionTab: Int? = nil) {
-        self.posts = posts; self.offline = offline; self.onClose = onClose; self.collectionTab = collectionTab
+        self.posts = posts; self.mediaPosts = collectionTab == 2 ? posts : posts.filter(\.isImmersiveMedia)
+        self.offline = offline; self.onClose = onClose; self.collectionTab = collectionTab
         _showSettings = showSettings
         _activeID = activePostID
     }
@@ -26,8 +28,15 @@ struct ImmersiveFeedView: View {
     @State private var preferencesVisible = false
     @StateObject private var previews = ImmersivePreviewCache()
 
-    private var mediaPosts: [Post] { collectionTab == 2 ? posts : posts.filter(\.isImmersiveMedia) }
-    private var visiblePost: Post? { mediaPosts.first(where: { $0.stableID == activeID }) }
+    private var mediaSignature: String {
+        "\(mediaPosts.count)|\(mediaPosts.first?.stableID ?? "")|\(mediaPosts.last?.stableID ?? "")"
+    }
+    private var visiblePost: Post? {
+        if mediaPosts.indices.contains(activeIndex), mediaPosts[activeIndex].stableID == activeID {
+            return mediaPosts[activeIndex]
+        }
+        return mediaPosts.first(where: { $0.stableID == activeID })
+    }
     private var presentationActive: Bool {
         !store.isStudioPresented &&
             (collectionTab.map { store.activeTab == $0 }
@@ -123,7 +132,8 @@ struct ImmersiveFeedView: View {
             activeSince = .distantPast
             activeIndex = 0; activeID = mediaPosts.first?.stableID
         }
-        .onChange(of: mediaPosts.map(\.stableID)) { _, keys in
+        .onChange(of: mediaSignature) { _, _ in
+            let keys = mediaPosts.map(\.stableID)
             if activeID == nil || !keys.contains(activeID ?? "") {
                 activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
                 if keys.isEmpty { activeIndex = 0 }
@@ -199,6 +209,11 @@ struct ImmersiveFeedView: View {
         let resolver = store.resolver
         let pool = store.players
         let previewCache = previews
+        if !offline, collectionTab == nil, index >= clips.count - 8 {
+            // Pagination must not wait for future CDN video prewarming. A
+            // stalled preload previously delayed the next batch of posts.
+            Task(priority: .utility) { await feedStore.loadMore(immersive: true) }
+        }
         await withTaskGroup(of: Void.self) { group in
             // Fetch the visible poster first; decoding future posters must
             // not compete at the same priority with the current media startup.
@@ -211,7 +226,11 @@ struct ImmersiveFeedView: View {
                     await previewCache.load(post)
                 }
                 if ["video", "gif"].contains(post.type.lowercased()) {
-                    group.addTask(priority: distance == 0 ? .userInitiated : .utility) {
+                    group.addTask(priority: .utility) {
+                        // Let the visible clip acquire its stream and render
+                        // a frame before the next clip competes for bandwidth.
+                        do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
+                        guard !Task.isCancelled else { return }
                         let url: URL?
                         if offlineMode { url = URL(string: post.mediaUrl) }
                         else { url = try? await resolver.resolve(post).mediaUrlURL }
@@ -229,10 +248,6 @@ struct ImmersiveFeedView: View {
                     }
                 }
             }
-        }
-        if !offline, collectionTab == nil, index >= clips.count - 8 {
-            // Paging must never keep the swipe's preview-prewarm task alive.
-            Task(priority: .utility) { await feedStore.loadMore(immersive: true) }
         }
     }
 
@@ -412,7 +427,9 @@ private struct ImmersiveItemView: View {
                             }
                         }
                         .frame(width: geo.size.width, height: geo.size.height)
-                        .blur(radius: 13)
+                        // Posters are already low-resolution cached previews;
+                        // a fullscreen live blur caused expensive iPad GPU
+                        // work on each transition without improving clarity.
                         .clipped()
                         .accessibilityHidden(true)
                         .allowsHitTesting(false)
@@ -425,7 +442,6 @@ private struct ImmersiveItemView: View {
                             Image(uiImage: thumbnail)
                                 .resizable()
                                 .scaledToFill()
-                                .blur(radius: 12)
                         }
                     }
                     .frame(width: geo.size.width, height: geo.size.height)

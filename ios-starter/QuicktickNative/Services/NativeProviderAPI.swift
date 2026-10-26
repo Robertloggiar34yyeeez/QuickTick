@@ -452,6 +452,13 @@ enum NativeProviderAPI {
             if let section { entries = rows(payload[section]) }
             else { entries = rows(homeEntries.isEmpty ? payload["last"] : payload["trending_month"]) }
         } else { entries = rows(payload["hentais"]) }
+        if route == "hentai/all", page == 1, selection.category == nil, entries.isEmpty {
+            // The catalog endpoint has sometimes returned an empty first page
+            // while the Home sections were populated. Try that independent
+            // first-party index once before declaring the entire source empty.
+            return try await haven(session: session, token: token, query: query,
+                                   page: 1, sort: "popular", immersive: immersive)
+        }
         if selection.category == nil, !searching, page == 1, entries.isEmpty {
             throw APIError.server("Hentai Haven returned an empty catalog. Its provider API may be unavailable or may have changed its response format.")
         }

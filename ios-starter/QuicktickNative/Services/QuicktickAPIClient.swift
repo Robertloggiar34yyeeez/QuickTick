@@ -64,6 +64,8 @@ actor QuicktickAPIClient {
     private var cloudSyncEnabled = false
     private let redgifsAuth = RedgifsAuthentication()
     private let havenAuth = HavenAuthentication()
+    private var havenPages: [String: (page: PostPage, expiry: Date)] = [:]
+    private var havenPageTasks: [String: Task<PostPage, Error>] = [:]
     private var archivePages: [String: (page: PostPage, expiry: Date)] = [:]
     private var archivePageTasks: [String: Task<PostPage, Error>] = [:]
     private var archiveCreators: [Provider: [ArchiveCreator]] = [:]
@@ -132,15 +134,7 @@ actor QuicktickAPIClient {
         case .hanime:
             throw APIError.server("Hanime has been retired from QuickTick. Switch to Hentai Haven.")
         case .hhaven:
-            let token = try await havenAuth.value(session: session)
-            do { return try await NativeProviderAPI.haven(session: session, token: token, query: query, page: page, sort: sort, immersive: immersive) }
-            catch APIError.providerStatus(.hhaven, 401) {
-                await havenAuth.invalidate(expecting: token)
-                let refreshed = try await havenAuth.value(session: session)
-                return try await NativeProviderAPI.haven(session: session,
-                    token: refreshed, query: query,
-                    page: page, sort: sort, immersive: immersive)
-            }
+            return try await cachedHavenPosts(query: query, page: page, sort: sort, immersive: immersive)
         case .redgifs:
             let token = try await redgifsAuth.value(session: session)
             do { return try await NativeProviderAPI.redgifs(session: session, token: token, query: query, page: page, sort: sort, immersive: immersive) }
@@ -154,6 +148,35 @@ actor QuicktickAPIClient {
 
     func mangaPages(bookID: String) async throws -> [URL] {
         try await NativeProviderAPI.nhentaiPages(session: session, bookID: bookID)
+    }
+
+    private func cachedHavenPosts(query: ParsedQuery, page: Int, sort: String,
+                                  immersive: Bool) async throws -> PostPage {
+        let key = "\(page)|\(sort)|\(immersive)|\(QueryParser.formatted(query))"
+        if let saved = havenPages[key], saved.expiry > .now { return saved.page }
+        if let running = havenPageTasks[key] { return try await running.value }
+        let session = self.session
+        let auth = havenAuth
+        let request = Task<PostPage, Error> {
+            let token = try await auth.value(session: session)
+            do {
+                return try await NativeProviderAPI.haven(session: session, token: token,
+                    query: query, page: page, sort: sort, immersive: immersive)
+            } catch APIError.providerStatus(.hhaven, 401) {
+                await auth.invalidate(expecting: token)
+                let replacement = try await auth.value(session: session)
+                return try await NativeProviderAPI.haven(session: session, token: replacement,
+                    query: query, page: page, sort: sort, immersive: immersive)
+            }
+        }
+        havenPageTasks[key] = request
+        defer { havenPageTasks[key] = nil }
+        let response = try await request.value
+        // A short-lived cache enables instant Home/Immersive returns without
+        // baking in stale upstream catalogs for an entire session.
+        havenPages[key] = (response, .now.addingTimeInterval(50))
+        if havenPages.count > 24 { havenPages = havenPages.filter { $0.value.expiry > .now } }
+        return response
     }
 
     private func cachedArchivePosts(provider: Provider, query: ParsedQuery, page: Int,

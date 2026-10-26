@@ -45,7 +45,11 @@ struct HomeFeedView: View {
     @State private var pullRefreshInFlight = false
     @State private var pullRefreshGate = HomePullRefreshGate()
     @State private var visualThemeTerms: [String] = []
+    @State private var themeSuggestions: [HomeThemeSuggestion] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var postSignature: String {
+        "\(store.feedRevision)|\(store.posts.count)|\(store.posts.first?.stableID ?? "")|\(store.posts.last?.stableID ?? "")"
+    }
 
     var body: some View {
         GeometryReader { viewport in
@@ -147,7 +151,7 @@ struct HomeFeedView: View {
                     .accessibilityIdentifier("home-search-button")
                 }
                 .padding(.horizontal, 16)
-                if suggestedThemesEnabled { suggestedThemeRow }
+                if suggestedThemesEnabled && !themeSuggestions.isEmpty { suggestedThemeRow }
                 if store.selectedProvider == .hhaven || store.selectedProvider == .pornhub {
                     homeCategoryRow
                 }
@@ -351,23 +355,43 @@ struct HomeFeedView: View {
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
         .task(id: store.selectedProvider) {
-            visualThemeTerms = await store.visual.discoveryTerms(provider: store.selectedProvider)
+            let provider = store.selectedProvider
+            let discovered = await store.visual.discoveryTerms(provider: provider)
+            guard !Task.isCancelled, store.selectedProvider == provider else { return }
+            visualThemeTerms = discovered
+            refreshThemeSuggestions()
         }
-        .onChange(of: store.posts) { _, posts in
-            playableIDs = Set(posts.filter(\.isImmersiveMedia).map(\.stableID))
+        .onChange(of: postSignature) { _, _ in
+            playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
+            refreshThemeSuggestions()
         }
+        .onChange(of: store.favorites.count) { _, _ in refreshThemeSuggestions() }
+        .onChange(of: store.learnedInterests) { _, _ in refreshThemeSuggestions() }
+        .onChange(of: store.tasteChoice(for: store.selectedProvider)) { _, _ in refreshThemeSuggestions() }
+        .onChange(of: store.exclusions) { _, _ in refreshThemeSuggestions() }
+        .onChange(of: suggestedThemesEnabled) { _, _ in refreshThemeSuggestions() }
+        .onChange(of: store.selectedProvider) { _, _ in
+            visualThemeTerms = []
+            themeSuggestions = []
+            refreshThemeSuggestions()
+        }
+    }
+
+    private func refreshThemeSuggestions() {
+        guard suggestedThemesEnabled else { themeSuggestions = []; return }
+        let provider = store.selectedProvider
+        let taste = store.tasteChoice(for: provider)
+        let proposed = HomeThemeSuggestions.make(provider: provider,
+            learned: store.learnedInterests, chosen: taste.into,
+            visual: visualThemeTerms, favorites: Array(store.favorites.values),
+            posts: store.posts, excluded: store.exclusions + taste.notInto, limit: 5)
+        if proposed != themeSuggestions { themeSuggestions = proposed }
     }
 
     /// Personal suggestions work on *every* provider and use real covers or
     /// thumbnails from posts matching this provider's learned interests.
     @ViewBuilder private var suggestedThemeRow: some View {
-        let provider = store.selectedProvider
-        let tastes = store.tasteChoice(for: provider)
-        let suggestions = HomeThemeSuggestions.make(provider: provider,
-            learned: store.learnedInterests, chosen: tastes.into,
-            visual: visualThemeTerms, favorites: Array(store.favorites.values),
-            posts: store.posts, excluded: store.exclusions + tastes.notInto)
-        if !suggestions.isEmpty {
+        if !themeSuggestions.isEmpty {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 6) {
                     Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
@@ -377,7 +401,7 @@ struct HomeFeedView: View {
                 }.padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 9) {
-                        ForEach(suggestions) { theme in
+                        ForEach(themeSuggestions) { theme in
                             let selected = QueryParser.parse(store.queryText).included.contains(theme.term)
                             Button {
                                 let current = QueryParser.parse(store.queryText)

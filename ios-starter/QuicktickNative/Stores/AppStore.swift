@@ -649,7 +649,7 @@ final class AppStore: ObservableObject {
                 if immediate.isEmpty {
                     if ProviderSearchCategories.split(parsed, provider: provider).category != nil {
                         lastError = "No posts found in this category. Choose a different Home category or clear the filter."
-                    } else if directHaven {
+                    } else if directCatalog && provider == .hhaven {
                         lastError = havenSafeCatalog.isEmpty
                             ? "Hentai Haven returned no catalog items. Try again when its catalog is available."
                             : "The available Hentai Haven posts were removed by saved favorites or explicit dislikes."

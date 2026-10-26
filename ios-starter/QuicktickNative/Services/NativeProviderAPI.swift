@@ -399,6 +399,10 @@ private final class ProviderXML: NSObject, XMLParserDelegate {
 }
 
 extension NativeProviderAPI {
+    // Archive CDNs may serve JSON with a legacy `text/css` content type.
+    // Accept both without depending on MIME sniffing or a single deployment.
+    static let archiveAcceptHeaders = ["Accept": "application/json, text/css;q=0.9, */*;q=0.5"]
+
     static func resolve(session: URLSession, credentials: ProviderCredentials, post: Post, redgifsToken: String?) async throws -> ResolvedMedia {
         // A valid direct media URL can outlive its provider metadata (for
         // example an imported/restored post with a legacy or unknown site).
@@ -539,7 +543,7 @@ extension NativeProviderAPI {
         for suffix in ["/api/v1/creators", "/api/v1/creators.txt"] {
             do {
                 let bytes = try await data(session: session, url: url(origin(provider).absoluteString + suffix),
-                    provider: provider, maxBytes: 32 * 1024 * 1024)
+                    provider: provider, headers: archiveAcceptHeaders, maxBytes: 32 * 1024 * 1024)
                 let json = try JSONSerialization.jsonObject(with: bytes)
                 let entries: [[String: Any]]
                 if let list = json as? [[String: Any]] { entries = list }
@@ -581,7 +585,8 @@ extension NativeProviderAPI {
         let data: Data
         var usedFallback = false
         do {
-            data = try await self.data(session: session, url: endpoint, provider: provider)
+            data = try await self.data(session: session, url: endpoint, provider: provider,
+                                       headers: archiveAcceptHeaders)
         } catch APIError.providerStatus(_, 404) {
             usedFallback = true
             // Kemono's own global search UI can receive a 404 on `?q=...`.
@@ -592,11 +597,13 @@ extension NativeProviderAPI {
             let retryParameters: [URLQueryItem] = [.init(name: "o", value: "0")]
             do {
                 data = try await self.data(session: session,
-                    url: url(origin + fallbackPath, retryParameters), provider: provider)
+                    url: url(origin + fallbackPath, retryParameters), provider: provider,
+                    headers: archiveAcceptHeaders)
             } catch APIError.providerStatus(_, 404) where creator == nil {
                 do {
                     data = try await self.data(session: session,
-                        url: url(origin + "/api/v1/posts/popular"), provider: provider)
+                        url: url(origin + "/api/v1/posts/popular"), provider: provider,
+                        headers: archiveAcceptHeaders)
                 } catch APIError.providerStatus(_, 404) {
                     throw APIError.server("\(provider.displayName)'s public recent and popular APIs are unavailable (404). Try again later.")
                 }
@@ -645,7 +652,8 @@ extension NativeProviderAPI {
         }
         let endpoint = try url(origin(provider).absoluteString
             + "/api/v1/\(route.service)/user/\(route.user)/post/\(route.id)/comments")
-        let bytes = try await data(session: session, url: endpoint, provider: provider)
+        let bytes = try await data(session: session, url: endpoint, provider: provider,
+                                   headers: archiveAcceptHeaders)
         let decoded = try JSONSerialization.jsonObject(with: bytes)
         let comments: [[String: Any]]
         if let array = decoded as? [[String: Any]] { comments = array }

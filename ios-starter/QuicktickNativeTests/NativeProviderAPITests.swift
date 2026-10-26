@@ -45,6 +45,24 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         } else if path.contains("/embed/") { payload = #"<html><script>var hash='00112233445566778899aabbccddeeff';</script></html>"# }
         else if path.contains("/xhr/video/") { payload = #"{"sources":{"mp4":{"360p":{"src":"https://cdn.eporner.com/small.mp4"},"1080p":{"src":"https://cdn.eporner.com/full.mp4"}}}}"# }
         else if host == "www.eporner.com" { payload = #"{"total_pages":3,"videos":[{"id":"ep1","title":"Ground effect","keywords":"engineering,aerodynamics","views":10,"default_thumb":{"src":"https://cdn.eporner.com/thumb.jpg"}}]}"# }
+        else if host == "api.hentaihaven.app", path == "/v1/warden" {
+            payload = #"{"data":{"token":"fixture-warden-token"}}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/search" {
+            payload = #"{"data":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}]}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/hentai/all" {
+            payload = #"{"data":{"hentais":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"total_pages":3}}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/hentai/home" {
+            payload = #"{"data":{"trending_month":[{"post_id":12,"post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}]}}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/hentai/12" {
+            payload = #"{"data":{"post_id":12,"episodes":[{"chapter_id":34,"chapter_name":"Episode 1"}]}}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/hentai/12/episode/34" {
+            payload = #"{"data":{"chapter_content":"https://cdn.hentaihaven.app/episode.m3u8"}}"#
+        }
         else if host == "search.htv-services.com" { payload = #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fixture\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"}]}]"}"# }
         else if path == "/api/v8/video" { payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/full.m3u8"}]}]}}"# }
         else if path == "/webmasters/search" || path == "/webmasters/search/" {
@@ -183,11 +201,34 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(Post(key: "pornhub:2", id: "2", provider: "Unknown site").providerKey, .pornhub)
         XCTAssertEqual(Post(key: "legacy:3", id: "3", provider: "Rule34.xxx").providerKey, .rule34)
         XCTAssertEqual(Post(key: "legacy:4", id: "4", provider: "Hanime.tv").providerKey, .hanime)
+        XCTAssertEqual(Post(key: "hhaven:12", id: "12", provider: "Hentai Haven").providerKey, .hhaven)
+        XCTAssertFalse(Provider.allCases.contains(.hanime), "Old Hanime downloads remain identifiable but its feed is removed")
+        XCTAssertTrue(Provider.allCases.contains(.hhaven))
         var fromPage = Post(key: "legacy:5", id: "5", provider: "Imported")
         fromPage.pageUrl = "https://www.eporner.com/video-abc"
         XCTAssertEqual(fromPage.providerKey, .eporner)
         fromPage.pageUrl = "https://www.pornhub.com.evil.invalid/view_video.php"
         XCTAssertNil(fromPage.providerKey)
+    }
+
+    func testHavenCatalogAndPlaybackFollowDocumentedWardenEpisodeRoutes() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .hhaven,
+                                       query: QueryParser.parse(""), page: 1)
+        XCTAssertEqual(page.items.map(\.stableID), ["hhaven:12"])
+        XCTAssertEqual(page.items.first?.caption, "Maid episode")
+        XCTAssertEqual(page.items.first?.cardPreviewURL, "https://cdn.hentaihaven.app/thumb.jpg")
+        let post = try XCTUnwrap(page.items.first)
+        let stream = try await api.resolveMedia(post)
+        XCTAssertEqual(stream.mediaUrl, "https://cdn.hentaihaven.app/episode.m3u8")
+        XCTAssertEqual(stream.type, "hls")
+        let requests = NativeProviderProtocol.log.snapshot()
+        XCTAssertEqual(requests.filter { $0.url?.path == "/v1/warden" }.count, 1)
+        XCTAssertTrue(requests.contains { $0.url?.path == "/v1/hentai/12/episode/34" &&
+            $0.value(forHTTPHeaderField: "warden") == "fixture-warden-token" })
+        XCTAssertFalse(requests.contains { $0.url?.host == "search.htv-services.com" })
+        XCTAssertEqual(VisualDomain.classify(post), .anime)
     }
 
     func testUnknownSiteCanDownloadValidDirectMediaWithoutProviderRequest() async throws {
@@ -214,7 +255,7 @@ final class NativeProviderAPITests: XCTestCase {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let phrase = "cosplay scene"
         let parsed = QueryParser.parse("\"cosplay scene\" -\"unwanted intro\"")
-        for provider in [Provider.eporner, .redgifs, .hanime, .pornhub] {
+        for provider in [Provider.eporner, .redgifs, .hhaven, .pornhub] {
             NativeProviderProtocol.log.reset()
             _ = try await api.posts(provider: provider, query: parsed, page: 1)
             let requests = NativeProviderProtocol.log.snapshot()
@@ -222,22 +263,15 @@ final class NativeProviderAPITests: XCTestCase {
                 switch provider {
                 case .eporner: request.url?.host == "www.eporner.com"
                 case .redgifs: request.url?.host == "api.redgifs.com" && request.url?.path.contains("search") == true
-                case .hanime: request.url?.host == "search.htv-services.com"
+                case .hhaven: request.url?.host == "api.hentaihaven.app" && request.url?.path == "/v1/search"
                 case .pornhub: request.url?.host == "www.pornhub.com"
                 default: false
                 }
             }
             let actual = try XCTUnwrap(search, "No keyword search request for \(provider.rawValue)")
-            if provider == .hanime {
-                XCTAssertEqual(actual.httpMethod, "POST")
-                let body = try NativeProviderAPI.hanimeSearchBody(query: parsed, page: 1, sort: "recommended")
-                let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
-                XCTAssertEqual(json["search_text"] as? String, phrase)
-            } else {
-                let items = URLComponents(url: try XCTUnwrap(actual.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
-                let parameter = provider == .eporner ? "query" : provider == .redgifs ? "search_text" : "search"
-                XCTAssertEqual(items.first(where: { $0.name == parameter })?.value, phrase)
-            }
+            let items = URLComponents(url: try XCTUnwrap(actual.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let parameter = provider == .eporner ? "query" : provider == .redgifs ? "search_text" : provider == .hhaven ? "q" : "search"
+            XCTAssertEqual(items.first(where: { $0.name == parameter })?.value, phrase)
         }
     }
     func testKeywordProviderExclusionsMatchTitlesAndCreatorWithoutSubstringErrors() {

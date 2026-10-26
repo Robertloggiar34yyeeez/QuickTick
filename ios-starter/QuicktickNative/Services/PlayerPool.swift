@@ -7,8 +7,16 @@ enum VideoIntroPolicy {
         provider.lowercased() == "pornhub"
     }
 
+    static func isHaven(_ provider: String) -> Bool {
+        ["hhaven", "hentai haven", "hentaihaven"].contains(provider.lowercased())
+    }
+
+    static func enabled(provider: String, pornhub: Bool, haven: Bool) -> Bool {
+        isHaven(provider) ? haven : (isPornhub(provider) && pornhub)
+    }
+
     static func startTime(duration: Double, enabled: Bool, provider: String) -> Double {
-        enabled && isPornhub(provider) && duration.isFinite && duration > 12 ? 10 : 0
+        enabled && (isPornhub(provider) || isHaven(provider)) && duration.isFinite && duration > 12 ? 10 : 0
     }
 
     static func bufferedFrom(_ start: Double, ranges: [CMTimeRange], requiredSeconds: Double = 0.7) -> Bool {
@@ -107,21 +115,25 @@ final class PlayerPool: ObservableObject {
         p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 1.5
         activeKey = key; activeOwner = owner; p.isMuted = muted
         p.volume = feedVolumeScale
-        if UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
-           key.lowercased().hasPrefix("pornhub:"), !introSkipped.contains(key),
+        let provider = String(key.split(separator: ":", maxSplits: 1).first ?? "")
+        let skipIntro = VideoIntroPolicy.enabled(provider: provider,
+            pornhub: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
+            haven: UserDefaults.standard.object(forKey: "quicktick-skip-hhaven-intros-v1") as? Bool ?? true)
+        if skipIntro, !introSkipped.contains(key),
            p.currentItem != nil {
             // Crucially: never decode 0:00 and seek a playing video afterward.
             // Keep the poster visible while metadata, the seek, and the first
             // post-seek playable frame become ready.
             p.pause()
-            scheduleIntroSkip(key: key, player: p, autoplay: autoplay, onIntroReady: onIntroReady)
+            scheduleIntroSkip(key: key, provider: provider, player: p,
+                              autoplay: autoplay, onIntroReady: onIntroReady)
         } else {
             if autoplay { p.play() } else { p.pause() }
             onIntroReady?()
         }
         return p
     }
-    private func scheduleIntroSkip(key: String, player: AVPlayer, autoplay: Bool,
+    private func scheduleIntroSkip(key: String, provider: String, player: AVPlayer, autoplay: Bool,
                                    onIntroReady: (@MainActor () -> Void)?) {
         guard let item = player.currentItem else { onIntroReady?(); return }
         let attempt = UUID()
@@ -136,7 +148,7 @@ final class PlayerPool: ObservableObject {
                 let current = player.currentTime().seconds
                 guard self.players[key] === player, self.activeKey == key,
                       self.introAttempts[key] == attempt else { return }
-                let start = VideoIntroPolicy.startTime(duration: duration, enabled: true, provider: "pornhub")
+                let start = VideoIntroPolicy.startTime(duration: duration, enabled: true, provider: provider)
                 if current.isFinite, current < 9.5, start > 0 {
                     let seeked = await player.seek(to: CMTime(seconds: start, preferredTimescale: 600),
                             toleranceBefore: CMTime(seconds: 0.15, preferredTimescale: 600),

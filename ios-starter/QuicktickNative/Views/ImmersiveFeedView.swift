@@ -263,7 +263,7 @@ enum ImmersivePageSwipePolicy {
                           viewportHeight: CGFloat) -> Int? {
         let travel = abs(translation.height)
         let sideways = abs(translation.width)
-        let normalThreshold = min(64, max(38, viewportHeight * 0.055))
+        let normalThreshold = min(54, max(34, viewportHeight * 0.045))
         let deliberateDrag = travel >= normalThreshold && travel > sideways * 1.15
         let quickFlick = travel >= 16 && travel > sideways * 0.8 &&
             abs(velocity.height) >= 360 && abs(velocity.height) > abs(velocity.width) * 1.2
@@ -348,6 +348,7 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
 private struct ImmersiveItemView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
+    @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
     let post: Post
     let offline: Bool
     let active: Bool
@@ -379,6 +380,9 @@ private struct ImmersiveItemView: View {
     @State private var gifClock = 0.0
     @State private var lastGIFSample = Date()
     @State private var likePulse = false
+    private var shouldSkipIntro: Bool {
+        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros, haven: skipHavenIntros)
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -519,7 +523,7 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros)") {
+        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros)") {
             guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else {
                 endExposure(); player = nil; ready = false; introReady = true; gifURL = nil
                 if !active { playing = true }
@@ -551,7 +555,7 @@ private struct ImmersiveItemView: View {
                         restoredResume = true
                         // An additional resume seek races with the 10-second
                         // Pornhub seek and can bounce the clip back to 0:00.
-                        let skippingIntro = post.provider.lowercased() == "pornhub" && skipVideoIntros
+                        let skippingIntro = shouldSkipIntro
                         if !skippingIntro, let resume = PlaybackPosition.resume(store.resumePosition(post.stableID), duration: length), abs(seconds - resume) > 2 {
                             player.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: CMTime(seconds: 0.25, preferredTimescale: 600), toleranceAfter: CMTime(seconds: 0.25, preferredTimescale: 600), completionHandler: { _ in })
                         }
@@ -590,7 +594,7 @@ private struct ImmersiveItemView: View {
             let pool = store.players
             let key = post.stableID
             let owner = playbackOwner
-            let start = VideoIntroPolicy.startTime(duration: length, enabled: skipVideoIntros, provider: post.provider)
+            let start = VideoIntroPolicy.startTime(duration: length, enabled: shouldSkipIntro, provider: post.provider)
             player.seek(to: CMTime(seconds: start, preferredTimescale: 600)) { finished in
                 Task { @MainActor in
                     guard finished, playing, store.isForeground, pool.activeKey == key, pool.activeOwner == owner else { return }
@@ -651,7 +655,7 @@ private struct ImmersiveItemView: View {
             }
             guard !Task.isCancelled, active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else { return }
             if post.type.lowercased() == "gif" { gifURL = url; return }
-            introReady = !(post.provider.lowercased() == "pornhub" && skipVideoIntros)
+            introReady = !shouldSkipIntro
             let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) {
                 introReady = true
             }

@@ -3,6 +3,12 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationExperienceRegressionTests: XCTestCase {
+    @MainActor func testRemovedHanimeSelectionMigratesToHaven() {
+        let store = AppStore()
+        store.selectedProvider = .hanime
+        XCTAssertEqual(store.selectedProvider, .hhaven)
+    }
+
     func testIPadImmersiveRecognizesShortVerticalFlicksWithoutDiagonalPaging() {
         let height: CGFloat = 1_080
         XCTAssertEqual(ImmersivePageSwipePolicy.direction(

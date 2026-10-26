@@ -740,6 +740,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "F73FC5F2642E12710AC334D2";
 		};
+		"F7A8D4C9E1B2030405060708" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.json";
+			"path" = "QuicktickNativeTests/Fixtures/hhaven.json";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F7A8D4C9E1B2030405060709" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F7A8D4C9E1B2030405060708";
+		};
 		"F422696745B42143030C181A" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "text.json";
@@ -1234,6 +1244,7 @@
 			"files" = (
 				"CED1C57A2E29CBDF26774D60",
 				"F854E624DB4AC7CC99445A90",
+				"F7A8D4C9E1B2030405060709",
 				"24BC0F43299D712E12B80244",
 				"8F563413A2CA200525C9C9B4",
 				"E7F09928DB5ADF1840E74BE3",
@@ -1500,6 +1511,7 @@
 				"7B0EA4C3D531347AFB4FBC38",
 				"EB3EC0AF32C3ED8458E0BCDF",
 				"F73FC5F2642E12710AC334D2",
+				"F7A8D4C9E1B2030405060708",
 				"F422696745B42143030C181A",
 				"9193556AEBFB063734B2A162",
 				"A00D35EE326C2421B308F85E",

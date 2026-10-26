@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
+    @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage("quicktick-rhythm-finish-text-v1") private var rhythmFinishText = "Beautiful rhythm. Session complete."
     @AppStorage("quicktick-rhythm-finish-style-v1") private var rhythmFinishStyle = "Glow"
@@ -318,7 +319,9 @@ struct SettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
                     .accessibilityIdentifier("skip-video-intros-toggle")
-                Text("For Pornhub videos longer than 12 seconds, the preview stays visible while the 0:10 position loads, then playback starts. Other sources begin at 0:00.")
+                Toggle("Skip Hentai Haven intros (10 seconds)", isOn: $skipHavenIntros)
+                    .accessibilityIdentifier("skip-hhaven-intros-toggle")
+                Text("For enabled providers with videos longer than 12 seconds, QuickTick waits for the 0:10 position to load before showing playback. Hentai Haven is enabled by default.")
                     .font(.footnote).foregroundStyle(.secondary)
             }.id(SettingsDestination.playback.rawValue)
             SettingsGroup(title: "Rhythm & floating player", icon: "waveform.path") {

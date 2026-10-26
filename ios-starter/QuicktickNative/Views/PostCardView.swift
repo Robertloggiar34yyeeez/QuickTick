@@ -8,6 +8,7 @@ struct PostCardView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
+    @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
     let post: Post
     var available = CGSize(width: 400, height: 800)
     var playbackTab = 0
@@ -21,6 +22,9 @@ struct PostCardView: View {
     @State private var player: AVPlayer?
     @State private var gifURL: URL?
     @State private var ready = false
+    private var shouldSkipIntro: Bool {
+        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros, haven: skipHavenIntros)
+    }
     @State private var introReady = true
     @State private var manualPlaybackRequested = false
     @State private var playing = false
@@ -109,7 +113,7 @@ struct PostCardView: View {
             }) {
                 if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(manualPlaybackRequested)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(manualPlaybackRequested)") {
                 guard !Task.isCancelled, !post.isAudio else { return }
                 guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
                 guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
@@ -148,7 +152,7 @@ struct PostCardView: View {
                 if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground {
                     store.recordComplete(post); store.recordReplay(post)
                     let length = player?.currentItem?.duration.seconds ?? 0
-                    let start = VideoIntroPolicy.startTime(duration: length, enabled: skipVideoIntros, provider: post.provider)
+                    let start = VideoIntroPolicy.startTime(duration: length, enabled: shouldSkipIntro, provider: post.provider)
                     player?.seek(to: CMTime(seconds: start, preferredTimescale: 600))
                     if store.pausedPlaybackID != post.stableID,
                        (autoplayVideos || manualPlaybackRequested) { player?.play() }
@@ -332,7 +336,7 @@ struct PostCardView: View {
                 p = store.players.player(for: post.stableID, url: url); p.pause()
                 introReady = true
             } else {
-                introReady = !(post.provider.lowercased() == "pornhub" && skipVideoIntros)
+                introReady = !shouldSkipIntro
                 p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) {
                     introReady = true
                 }

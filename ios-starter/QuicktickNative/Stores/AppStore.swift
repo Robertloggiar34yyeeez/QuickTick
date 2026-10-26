@@ -30,6 +30,9 @@ enum CandidatePoolMix {
 final class AppStore: ObservableObject {
     @Published var selectedProvider: Provider = .rule34 {
         didSet {
+            // Old profiles may still restore Hanime; silently migrate the
+            // selection while retaining the legacy source for old downloads.
+            if selectedProvider == .hanime { selectedProvider = .hhaven }
             guard oldValue != selectedProvider else { return }
             savedFeeds.removeAll()
             // Creator references are scoped to one archive's service/user

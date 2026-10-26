@@ -36,6 +36,7 @@ enum NativeProviderAPI {
         case .eporner: URL(string: "https://www.eporner.com")!
         case .pornhub: URL(string: "https://www.pornhub.com")!
         case .hanime: URL(string: "https://hanime.tv")!
+        case .hhaven: URL(string: "https://hentaihaven.xxx")!
         case .coomer: URL(string: "https://coomer.st")!
         case .kemono: URL(string: "https://kemono.cr")!
         }
@@ -294,6 +295,93 @@ enum NativeProviderAPI {
         return self.page(posts, hasMore: number(result["nbPages"]) > 0 ? page < Int(number(result["nbPages"])) : !raw.isEmpty, query: query, immersive: immersive)
     }
 
+    /// HHaven documents Hentai Haven's v1 routes. The Warden endpoint issues a
+    /// scoped API token for an app client; use an honest iOS client identity,
+    /// never a fabricated Android emulator fingerprint.
+    static func havenToken(session: URLSession) async throws -> String {
+        let body = "sdkInt=0&board=ios&brand=Apple&display=QuickTick_iOS&fingerprint=QuickTick_iOS&manufacturer=Apple&model=iOS"
+        let response = try object(await data(session: session,
+            url: url("https://api.hentaihaven.app/v1/warden"), provider: .hhaven,
+            method: "POST", body: Data(body.utf8), headers: [
+                "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                "User-Agent": "HH_xxx_APP", "warden": ""
+            ]))
+        let payload = response["data"] as? [String: Any] ?? [:]
+        let token = text(payload["token"])
+        guard !token.isEmpty else {
+            throw APIError.server("Hentai Haven did not issue a Warden token for this iOS client. Access may require its official app.")
+        }
+        return token
+    }
+
+    static func havenRequest(session: URLSession, token: String, path: String,
+                             parameters: [URLQueryItem] = []) async throws -> [String: Any] {
+        let bytes = try await data(session: session,
+            url: url("https://api.hentaihaven.app/v1/" + path, parameters),
+            provider: .hhaven, headers: ["User-Agent": "HH_xxx_APP", "warden": token])
+        let result = try object(bytes)
+        if let message = result["data"] as? String, message.hasPrefix("502") {
+            throw APIError.providerStatus(.hhaven, 401)
+        }
+        return result
+    }
+
+    static func haven(session: URLSession, token: String, query: ParsedQuery,
+                      page: Int, sort: String, immersive: Bool) async throws -> PostPage {
+        let searching = !query.included.isEmpty
+        if searching && page > 1 { return PostPage(items: [], hasMore: false) }
+        let route: String
+        let parameters: [URLQueryItem]
+        if searching {
+            route = "search"
+            parameters = [.init(name: "q", value: query.included.joined(separator: " "))]
+        } else if sort == "popular" && page == 1 {
+            route = "hentai/home"
+            parameters = []
+        } else {
+            route = "hentai/all"
+            parameters = [.init(name: "p", value: String(max(1, page)))]
+        }
+        let result = try await havenRequest(session: session, token: token,
+                                           path: route, parameters: parameters)
+        let data = result["data"]
+        let payload = data as? [String: Any] ?? [:]
+        let entries = rows(searching ? data :
+            (route == "hentai/home" ? payload["trending_month"] : payload["hentais"]))
+        let posts: [Post] = entries.compactMap { entry in
+            let id = text(entry["post_id"] ?? entry["id"])
+            guard !id.isEmpty, id.allSatisfy(\.isNumber) else { return nil }
+            let title = text(entry["post_title"] ?? entry["title"])
+            var post = Post(key: "hhaven:\(id)", id: id, provider: Provider.hhaven.rawValue,
+                            tags: ["hentai"] + title.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init),
+                            thumbUrl: text(entry["post_thumbnail"] ?? entry["thumbnail"]),
+                            pageUrl: "https://hentaihaven.xxx/", type: "video")
+            post.caption = title
+            return post
+        }
+        let pages = Int(number(payload["total_pages"]))
+        return self.page(posts, hasMore: !searching && route != "hentai/home" &&
+            (pages > 0 ? page < pages : !entries.isEmpty), query: query, immersive: immersive)
+    }
+
+    static func havenResolve(session: URLSession, token: String, post: Post) async throws -> ResolvedMedia {
+        guard !post.id.isEmpty, post.id.allSatisfy(\.isNumber) else { throw APIError.invalidResponse }
+        let details = try await havenRequest(session: session, token: token, path: "hentai/\(post.id)")
+        let payload = details["data"] as? [String: Any] ?? [:]
+        let episodes = rows(payload["episodes"])
+        guard let episode = episodes.first,
+              let episodeID = [text(episode["chapter_id"]), text(episode["id"])].first(where: { !$0.isEmpty && $0.allSatisfy(\.isNumber) })
+        else { throw APIError.server("Hentai Haven returned no available episode for this title.") }
+        let result = try await havenRequest(session: session, token: token,
+                                             path: "hentai/\(post.id)/episode/\(episodeID)")
+        let info = result["data"] as? [String: Any] ?? [:]
+        guard let media = mediaURL(text(info["chapter_content"] ?? info["content"]), provider: .hhaven) else {
+            throw APIError.server("Hentai Haven did not return a playable episode stream.")
+        }
+        return ResolvedMedia(mediaUrl: media.absoluteString,
+                             type: media.pathExtension.lowercased() == "m3u8" ? "hls" : "video")
+    }
+
     static func pornhub(session: URLSession, credentials: ProviderCredentials, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
         // The public webmaster API accepts browsing without a search term.
         // An explicit `search=` with an empty value is not equivalent on all
@@ -403,7 +491,8 @@ extension NativeProviderAPI {
     // Accept both without depending on MIME sniffing or a single deployment.
     static let archiveAcceptHeaders = ["Accept": "application/json, text/css;q=0.9, */*;q=0.5"]
 
-    static func resolve(session: URLSession, credentials: ProviderCredentials, post: Post, redgifsToken: String?) async throws -> ResolvedMedia {
+    static func resolve(session: URLSession, credentials: ProviderCredentials, post: Post,
+                        redgifsToken: String?, havenToken: String? = nil) async throws -> ResolvedMedia {
         // A valid direct media URL can outlive its provider metadata (for
         // example an imported/restored post with a legacy or unknown site).
         // Only use this fallback for actual file/playlist paths, never an
@@ -420,6 +509,9 @@ extension NativeProviderAPI {
         // Keep supporting those only after the provider has been identified.
         if let direct { return ResolvedMedia(mediaUrl: direct.absoluteString, type: post.type) }
         switch provider {
+        case .hhaven:
+            guard let havenToken else { throw APIError.invalidResponse }
+            return try await havenResolve(session: session, token: havenToken, post: post)
         case .rule34:
             let page = try await rule34(session: session, credentials: credentials, query: QueryParser.parse(""), page: 1, sort: "recent", immersive: false, id: post.id)
             guard let media = page.items.first?.mediaUrl else { throw APIError.invalidResponse }

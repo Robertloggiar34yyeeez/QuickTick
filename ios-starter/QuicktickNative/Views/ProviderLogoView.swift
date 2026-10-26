@@ -11,6 +11,7 @@ struct ProviderLogoView: View {
         case .pornhub: "play.rectangle.fill"
         case .eporner: "play.square.fill"
         case .hanime: "sparkles.tv.fill"
+        case .hhaven: "play.tv.fill"
         case .coomer: "waveform.path"
         case .kemono: "photo.stack.fill"
         }
@@ -23,6 +24,7 @@ struct ProviderLogoView: View {
         case .pornhub: domain = "pornhub.com"
         case .eporner: domain = "eporner.com"
         case .hanime: domain = "hanime.tv"
+        case .hhaven: domain = "hentaihaven.xxx"
         case .coomer: domain = "coomer.st"
         case .kemono: domain = "kemono.cr"
         }

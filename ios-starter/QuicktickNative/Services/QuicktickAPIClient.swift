@@ -32,12 +32,38 @@ enum APIError: LocalizedError {
     }
 }
 
+/// HHaven's Warden token is scoped to the Hentai Haven API. Coalesce initial
+/// requests so search, Home and Immersive never compete to obtain a token.
+actor HavenAuthentication {
+    private var token: String?
+    private var expires = Date.distantPast
+    private var flight: Task<String, Error>?
+
+    func value(session: URLSession) async throws -> String {
+        if let token, expires > .now { return token }
+        if let flight { return try await flight.value }
+        let pending = Task { try await NativeProviderAPI.havenToken(session: session) }
+        flight = pending
+        defer { flight = nil }
+        let issued = try await pending.value
+        token = issued
+        expires = .now.addingTimeInterval(20 * 60)
+        return issued
+    }
+
+    func invalidate(expecting stale: String) {
+        guard token == stale else { return }
+        token = nil; expires = .distantPast
+    }
+}
+
 actor QuicktickAPIClient {
     let baseURL: URL?
     let session: URLSession
     var credentials = ProviderCredentials()
     private var cloudSyncEnabled = false
     private let redgifsAuth = RedgifsAuthentication()
+    private let havenAuth = HavenAuthentication()
     private var archivePages: [String: (page: PostPage, expiry: Date)] = [:]
     private var archivePageTasks: [String: Task<PostPage, Error>] = [:]
     private var archiveCreators: [Provider: [ArchiveCreator]] = [:]
@@ -102,7 +128,18 @@ actor QuicktickAPIClient {
             return try await cachedArchivePosts(provider: provider, query: query, page: page, immersive: immersive)
         case .eporner: return try await NativeProviderAPI.eporner(session: session, query: query, page: page, sort: sort, immersive: immersive)
         case .pornhub: return try await NativeProviderAPI.pornhub(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
-        case .hanime: return try await NativeProviderAPI.hanime(session: session, query: query, page: page, sort: sort, immersive: immersive)
+        case .hanime:
+            throw APIError.server("Hanime has been retired from QuickTick. Switch to Hentai Haven.")
+        case .hhaven:
+            let token = try await havenAuth.value(session: session)
+            do { return try await NativeProviderAPI.haven(session: session, token: token, query: query, page: page, sort: sort, immersive: immersive) }
+            catch APIError.providerStatus(.hhaven, 401) {
+                await havenAuth.invalidate(expecting: token)
+                let refreshed = try await havenAuth.value(session: session)
+                return try await NativeProviderAPI.haven(session: session,
+                    token: refreshed, query: query,
+                    page: page, sort: sort, immersive: immersive)
+            }
         case .redgifs:
             let token = try await redgifsAuth.value(session: session)
             do { return try await NativeProviderAPI.redgifs(session: session, token: token, query: query, page: page, sort: sort, immersive: immersive) }
@@ -176,7 +213,18 @@ actor QuicktickAPIClient {
 
     func resolveMedia(_ post: Post) async throws -> ResolvedMedia {
         let token = post.providerKey == .redgifs && NativeProviderAPI.mediaURL(post.mediaUrl, provider: .redgifs) == nil ? try await redgifsAuth.value(session: session) : nil
-        return try await NativeProviderAPI.resolve(session: session, credentials: credentials, post: post, redgifsToken: token)
+        let havenToken = post.providerKey == .hhaven && NativeProviderAPI.mediaURL(post.mediaUrl, provider: .hhaven) == nil
+            ? try await havenAuth.value(session: session) : nil
+        do {
+            return try await NativeProviderAPI.resolve(session: session, credentials: credentials,
+                post: post, redgifsToken: token, havenToken: havenToken)
+        } catch APIError.providerStatus(.hhaven, 401) {
+            guard let havenToken else { throw APIError.invalidResponse }
+            await havenAuth.invalidate(expecting: havenToken)
+            let refreshed = try await havenAuth.value(session: session)
+            return try await NativeProviderAPI.resolve(session: session, credentials: credentials,
+                post: post, redgifsToken: token, havenToken: refreshed)
+        }
     }
 
     func comments(_ post: Post) async throws -> CommentPage {

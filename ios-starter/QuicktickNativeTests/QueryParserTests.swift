@@ -16,7 +16,7 @@ final class QueryParserTests: XCTestCase {
         XCTAssertEqual(QueryParser.parse(QueryParser.formatted(terms)), terms)
         XCTAssertEqual(QueryParser.formatted(terms), "chun_li \"red hair\" -\"long hair\" -watermark")
     }
-    func testVideoIntroPolicyOnlySkipsLongPornhubVideos() {
+    func testVideoIntroPolicySkipsOnlyEnabledPornhubAndHavenIntros() {
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "pornhub"), 10)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "PornHub"), 10)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "rule34"), 0)
@@ -24,6 +24,11 @@ final class QueryParserTests: XCTestCase {
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true, provider: "pornhub"), 0)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: false, provider: "pornhub"), 0)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: .nan, enabled: true, provider: "pornhub"), 0)
+        XCTAssertTrue(VideoIntroPolicy.enabled(provider: "hhaven", pornhub: false, haven: true))
+        XCTAssertFalse(VideoIntroPolicy.enabled(provider: "hhaven", pornhub: true, haven: false))
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "hhaven"), 10)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true, provider: "hhaven"), 0)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: false, provider: "hhaven"), 0)
     }
 
     func testPornhubIntroMustHaveBufferedFramesAfterTenSeconds() {

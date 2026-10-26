@@ -131,31 +131,6 @@ struct ConditionalTasteModel: Sendable {
 /// similarities between skipped posts earn a larger temporary avoidance
 /// penalty; shared background tags and already loved attributes do not.
 struct PassiveSkipPolicy {
-    /// A consistent fast skip of the SAME combination of presentation clues
-    /// is much stronger evidence than skipping a shared background tag.
-    /// Treat this as a reversible session avoidance, never a permanent block.
-    static func repeatedlySkippedPresentation(terms: Set<String>, samples: [ReversibleSkipModel.Evidence],
-                                               favored: [String: Double], ignored: Set<String>) -> Bool {
-        let contextualPrefixes = ["camera:", "scene:", "setting:", "pose:", "gaze:",
-                                  "act:", "position:", "power:", "role:", "tone:", "persona:"]
-        let candidate = Set(terms.map(RecommendationTagRules.canonical).filter { term in
-            contextualPrefixes.contains(where: term.hasPrefix) && !ignored.contains(term)
-                && (favored[term] ?? 0) < 2.5
-        })
-        guard !candidate.isEmpty else { return false }
-        let oneSpecificFacet = candidate.count == 1 && candidate.contains(where: {
-            ["act:", "power:", "position:", "camera:", "scene:", "setting:"].contains(where: $0.hasPrefix)
-        })
-        guard candidate.count >= 2 || oneSpecificFacet else { return false }
-        var distinctIDs: Set<String> = []
-        for sample in samples.reversed() {
-            let overlap = candidate.intersection(sample.terms.map(RecommendationTagRules.canonical))
-            if overlap.count >= 2 || (oneSpecificFacet && overlap.count == 1) { distinctIDs.insert(sample.id) }
-            if distinctIDs.count >= (oneSpecificFacet ? 4 : 3) { return true }
-        }
-        return false
-    }
-
     static func penalty(terms: Set<String>, samples: [ReversibleSkipModel.Evidence],
                         favored: [String: Double], ignored: Set<String>) -> Double {
         var counts: [String: Int] = [:]
@@ -276,6 +251,9 @@ actor RecommendationEngine {
     private var savedFavoriteAffinity: [String: [String: Double]] = [:]
     private var reinforcedFavoriteTerms: [String: Set<String>] = [:]
     private var reinforcedFavoriteFacets: [String: Set<String>] = [:]
+    // A repeated outfit/scene is not automatically a portable preference if
+    // every like was for the same character. Require independent identities.
+    private var transferableFavoriteTerms: [String: Set<String>] = [:]
     private var conditionalTaste = ConditionalTasteModel()
     private var sessionTaste = SessionPreferenceModel()
     private var currentFavorites: [Post] = []
@@ -429,16 +407,24 @@ actor RecommendationEngine {
         trusted3DArtistTags = trusted3DArtistTags.mapValues { Array(Set($0)).sorted() }
         var counts: [String: [String: Int]] = [:]
         var totals: [String: Int] = [:]
+        var termIdentities: [String: [String: Set<String>]] = [:]
         for post in favorites {
             let source = post.provider.lowercased()
             totals[source, default: 0] += 1
+            let features = VisualFeatures.metadata(post, taxonomy: taxonomy)
+            let identities = Set((features?.subjects ?? []).map { "subject:" + $0 }
+                + (features?.artists ?? []).map { "artist:" + $0 })
             for term in Set(terms(for: post)) {
                 counts[source, default: [:]][term, default: 0] += 1
+                if !identities.isEmpty {
+                    termIdentities[source, default: [:]][term, default: []].formUnion(identities)
+                }
             }
         }
         savedFavoriteAffinity = [:]
         reinforcedFavoriteTerms = [:]
         reinforcedFavoriteFacets = [:]
+        transferableFavoriteTerms = [:]
         for source in counts.keys {
             let total = Double(max(1, totals[source] ?? 1))
             savedFavoriteAffinity[source] = counts[source]!.mapValues { count in
@@ -466,6 +452,15 @@ actor RecommendationEngine {
             })
             reinforcedFavoriteTerms[source] = terms
             reinforcedFavoriteFacets[source] = ActionSemantics.facets(Array(terms))
+            transferableFavoriteTerms[source] = Set(terms.filter { term in
+                let canonical = RecommendationTagRules.canonical(term)
+                let isIdentity = taxonomy?.kind(of: canonical) == .character
+                    || taxonomy?.kind(of: canonical) == .artist
+                    || TasteConcepts.characterFranchises[canonical] != nil
+                    || TasteConcepts.franchises.contains(canonical)
+                    || canonical.hasPrefix("artist:") || canonical.hasPrefix("character:")
+                return !isIdentity && (termIdentities[source]?[term]?.count ?? 0) >= 2
+            })
         }
     }
 
@@ -482,25 +477,28 @@ actor RecommendationEngine {
             || favoriteArtists[source]?.contains(unprefixed) == true
     }
 
-    /// A few independent saved identities make unrelated *identified* subjects
-    /// low-quality recommendations, even when they share generic hair/pose tags.
-    /// Unknown identity is not automatically negative: sparse provider metadata
-    /// can still earn its place through an explicitly liked presentation.
-    private func conflictsWithFavoriteIdentity(_ post: Post, taste: TasteChoice) -> Bool {
+    /// An unfamiliar identified subject is negative evidence, not a blacklist.
+    /// A genuinely transferable presentation or visual match can still compete
+    /// for an exploration slot when the usual identities become saturated.
+    private func unfamiliarIdentityPenalty(_ post: Post, taste: TasteChoice) -> Double {
         let source = post.provider.lowercased()
-        guard (identifiedFavoriteCount[source] ?? 0) >= 3,
-              let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { return false }
+        guard let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { return 0 }
         let subjects = Set(features.subjects)
         let artists = Set(features.artists ?? [])
         let likedSubjects = favoriteCharacters[source] ?? []
         let likedArtists = favoriteArtists[source] ?? []
-        if !subjects.isDisjoint(with: likedSubjects) || !artists.isDisjoint(with: likedArtists) { return false }
-        // Explicitly chosen identities take precedence over learned defaults.
+        if !subjects.isDisjoint(with: likedSubjects) || !artists.isDisjoint(with: likedArtists) { return 0 }
         let explicitlyChosen = Set(taste.into.map(TasteConcepts.canonical))
-        if subjects.contains(where: explicitlyChosen.contains) || artists.contains(where: explicitlyChosen.contains) { return false }
-        // Only reject known identity conflicts. Missing/unknown tags stay eligible.
-        if !subjects.isEmpty && !likedSubjects.isEmpty { return true }
-        return subjects.isEmpty && !artists.isEmpty && !likedArtists.isEmpty
+        if subjects.contains(where: explicitlyChosen.contains) || artists.contains(where: explicitlyChosen.contains) { return 0 }
+        let favoriteMismatch = (identifiedFavoriteCount[source] ?? 0) >= 3 &&
+            ((!subjects.isEmpty && !likedSubjects.isEmpty) ||
+             (subjects.isEmpty && !artists.isEmpty && !likedArtists.isEmpty))
+        let chosenCharacters = explicitlyChosen.filter {
+            TasteConcepts.characterFranchises[$0] != nil || taxonomy?.kind(of: $0) == .character
+        }
+        let chosenMismatch = !chosenCharacters.isEmpty && !subjects.isEmpty &&
+            subjects.isDisjoint(with: chosenCharacters)
+        return favoriteMismatch || chosenMismatch ? 12 : 0
     }
     func configureTaxonomy(_ value: VisualTagTaxonomy?) {
         // The idle worker can restart after foregrounding. Recompute large
@@ -537,17 +535,6 @@ actor RecommendationEngine {
         state.reversibleSkips.neutralize(id)
     }
     func hasReversibleSkip(_ id: String) -> Bool { state.reversibleSkips.contains(id) }
-
-    private func repeatedlyRejectedTerms(source: String) -> [String] {
-        let general = profile(for: source)
-        return general.termEvidence.compactMap { term, evidence -> String? in
-            let canonical = RecommendationTagRules.canonical(term)
-            guard !Self.genericTasteTerms.contains(canonical),
-                  evidence.negative >= 1.2,
-                  evidence.negative > evidence.positive * 2.5 + 0.8 else { return nil }
-            return canonical
-        }.sorted()
-    }
 
     func markCandidateDrained(context: String) {
         drainedCandidateQueries = drainedCandidateQueries.filter { $0.value > .now }
@@ -622,8 +609,7 @@ actor RecommendationEngine {
     // Each query owns its cursor in the existing persisted recommendation state.
     func candidateRequest(context: String, provider: Provider, taste: TasteChoice, excluded: [String], forceBroad: Bool = false) -> CandidateRequest {
         let queryExclusions = RecommendationTagRules.queryExclusions(
-            excluded + tasteTokens(source: provider.rawValue, values: taste.notInto)
-            + repeatedlyRejectedTerms(source: provider.rawValue))
+            excluded + tasteTokens(source: provider.rawValue, values: taste.notInto))
         let blocked = Set(queryExclusions.map { $0.lowercased() })
         let chosen = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }
         let hasIdentityFavorites = (identifiedFavoriteCount[provider.rawValue] ?? 0) >= 3
@@ -984,26 +970,12 @@ actor RecommendationEngine {
     }
 
     func isHardDisliked(_ post: Post, taste: TasteChoice) -> Bool {
-        let source = post.provider.lowercased()
-        let recentSkips = state.reversibleSkips.evidence.suffix(36).filter { $0.provider == source }
-        let avoided: Bool
-        if recentSkips.count >= 3 {
-            let approvedIdentities = (favoriteCharacters[source] ?? []).union(favoriteArtists[source] ?? [])
-            let ignored = Self.genericTasteTerms.union(Self.lowSignalDiscoveryTags)
-                .union(Self.broadDiversityTags).union(approvedIdentities)
-            avoided = PassiveSkipPolicy.repeatedlySkippedPresentation(
-                terms: Set(terms(for: post)), samples: recentSkips,
-                favored: savedFavoriteAffinity[source] ?? [:], ignored: ignored)
-        } else { avoided = false }
         return fictionalWildlifeConfusion(post, taste: taste)
             || ActionSemantics.conflicts(selected: ActionSemantics.facets(taste.into),
                                           observed: ActionSemantics.facets(post))
-            || conflictsWithFavoriteIdentity(post, taste: taste)
             || explicitlyOther3DArtist(post, taste: taste)
             || stronglyUnsupportedMedium(post, taste: taste)
             || RecommendationTagRules.rejects(post, exclusions: taste.notInto)
-            || RecommendationTagRules.rejects(post, exclusions: repeatedlyRejectedTerms(source: source))
-            || avoided
     }
 
     func score(_ post: Post, taste: TasteChoice, recent: [Post], collaborativeScores: [String: Double] = [:],
@@ -1030,6 +1002,7 @@ actor RecommendationEngine {
         score += min(3.0, log1p(savedScore) * 0.9)
         score += preferenceGuardPenalty(post)
         score += conditionalTaste.score(post, taxonomy: taxonomy)
+        score -= unfamiliarIdentityPenalty(post, taste: taste)
         // An instant swipe away is an explicitly reversible negative; unlike a
         // thumbs-down it does not change permanent term evidence or visual profiles.
         let candidateTerms = Set(postTerms.map(RecommendationTagRules.canonical))
@@ -1119,18 +1092,37 @@ actor RecommendationEngine {
         let inherited = Set(chosen.flatMap { TasteConcepts.characterFranchises[$0] ?? [] })
         let selected = chosen.subtracting(inherited)
         let observed = Set((cachedTerms ?? terms(for: post)).map(RecommendationTagRules.canonical))
-        // A matching pose must not override a clearly different *identified*
-        // character, even before the user has collected enough favorites for
-        // the learned-identity rejection model to activate. Unknown subjects
-        // remain eligible through explicitly chosen actions and styling.
+        // An identity preference is an anchor, not an exclusive franchise
+        // filter. Transfer to a different known character only when visual
+        // affinity is strong or a specific interest is independently supported.
+        // Generic gaze/hair and a franchise tag must never count as transfer.
         let selectedCharacters = selected.filter {
             TasteConcepts.characterFranchises[$0] != nil || taxonomy?.kind(of: $0) == .character
         }
-        if !selectedCharacters.isEmpty {
-            let candidateCharacters = Set(TasteConcepts.resolve(post.tags, taxonomy: taxonomy).characters)
-            if !candidateCharacters.isEmpty && candidateCharacters.isDisjoint(with: selectedCharacters) {
-                return false
-            }
+        let candidateCharacters = Set(TasteConcepts.resolve(post.tags, taxonomy: taxonomy).characters)
+        let visualTransfer = visual.map { $0.isFinite && $0 >= 3.6 } ?? false
+        let portable = transferableFavoriteTerms[source] ?? []
+        let portableMatch = !portable.isDisjoint(with: observed)
+        let explicitPresentation = Set(selected.subtracting(selectedCharacters)
+            .subtracting(Self.genericTasteTerms).subtracting(Self.lowSignalDiscoveryTags)
+            .filter { term in
+                !TasteConcepts.franchises.contains(term) &&
+                taxonomy?.kind(of: term) != .artist && !term.hasPrefix("artist:")
+            })
+        let independentChoice = !explicitPresentation.isDisjoint(with: observed)
+            || !ActionSemantics.facets(Array(explicitPresentation)).isDisjoint(with: ActionSemantics.facets(post))
+        if !selectedCharacters.isEmpty && !candidateCharacters.isEmpty &&
+            candidateCharacters.isDisjoint(with: selectedCharacters) &&
+            !portableMatch && !independentChoice && !visualTransfer {
+            return false
+        }
+        // An inferred identity from repeated Likes gets the same treatment.
+        // Its co-occurring outfit becomes portable only across independent
+        // people/artists, not from repeating one character dozens of times.
+        if (identifiedFavoriteCount[source] ?? 0) >= 3 && !candidateCharacters.isEmpty &&
+            candidateCharacters.isDisjoint(with: favoriteCharacters[source] ?? []) &&
+            !portableMatch && !independentChoice && !visualTransfer {
+            return false
         }
         let reinforced = (reinforcedFavoriteTerms[source] ?? []).subtracting(inherited)
         let candidateFacets = ActionSemantics.facets(post)
@@ -1145,14 +1137,9 @@ actor RecommendationEngine {
                 !candidateFacets.isDisjoint(with: ActionSemantics.facets(taste.into)) {
                 return true
             }
-            // Strongly reinforced co-tags can rescue poorly credited posts.
-            // A known but different character was rejected above; a shared
-            // outfit alone cannot override an explicit opposite power dynamic.
-            // When the candidate's tags omit the liked character or artist,
-            // repeated visual agreement can still admit it. Keep this rescue
-            // stricter than the no-explicit-interest gate: known different
-            // characters and explicitly conflicting dynamics were rejected
-            // above and by isHardDisliked before reaching this point.
+            // Strongly reinforced co-tags rescue poorly credited posts. A
+            // *known different* identity has already passed the stronger
+            // transferable-interest check; anonymous posts need less evidence.
             return reinforcedMatch || (visual.map { $0.isFinite && $0 >= 3.6 } ?? false)
         }
         if !selected.isEmpty && !selected.isDisjoint(with: observed) { return true }

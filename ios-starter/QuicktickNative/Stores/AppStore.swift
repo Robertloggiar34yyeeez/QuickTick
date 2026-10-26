@@ -635,8 +635,13 @@ final class AppStore: ObservableObject {
         let exclusions = self.exclusions + parsed.excluded
         let first = await recommendations.candidateRequest(
             context: context, provider: provider, taste: taste, excluded: exclusions)
+        // Every batch includes a broad discovery lane. Previously two focused
+        // calls could both fetch the same character, leaving the ranker no
+        // alternative subjects to choose from, no matter how strong its
+        // diversity penalty was.
         var second = await recommendations.candidateRequest(
-            context: context, provider: provider, taste: taste, excluded: exclusions)
+            context: context, provider: provider, taste: taste, excluded: exclusions,
+            forceBroad: true)
         if first.context == second.context {
             let broadKey = context + "|query:"
             let broadCursor: Int
@@ -675,9 +680,9 @@ final class AppStore: ObservableObject {
         let secondaryQuery = b.query
         let secondaryPageNumber = b.page
         let requestedGeneration = generation
-        // The first useful candidate page should not wait up to 15 seconds
-        // for a stalled secondary provider request. Allow a brief grace period
-        // for the other pool (to preserve ranking diversity), then cancel it.
+        // First paint stays bounded, but give discovery a real chance to
+        // arrive; an overly short grace window routinely discarded the broad
+        // lane and silently recreated the same-identity feedback loop.
         // Sparse first pages still wait for the second pool.
         enum CandidateBatch: Sendable {
             case first(PostPage?)
@@ -713,7 +718,7 @@ final class AppStore: ObservableObject {
                 if available >= 20 && !graceStarted {
                     graceStarted = true
                     group.addTask {
-                        try? await Task.sleep(for: .milliseconds(300))
+                        try? await Task.sleep(for: .milliseconds(600))
                         return .graceExpired
                     }
                 }

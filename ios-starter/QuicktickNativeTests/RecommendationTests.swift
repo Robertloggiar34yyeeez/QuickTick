@@ -267,7 +267,7 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(Set(results.map(\.stableID)), Set([relevantOne.stableID, relevantTwo.stableID]))
     }
 
-    func testStrongCachedVisualMatchCanRescueMissingTagsButNotKnownWrongCharacter() async {
+    func testStrongCachedVisualMatchCanExploreAnotherIdentityWithoutLosingFavorite() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let taste = TasteChoice(done: true, into: ["chun_li"], notInto: [])
         let visuallyMatching = Post(key: "rule34:visual-rescue", id: "visual-rescue", provider: "rule34",
@@ -280,7 +280,48 @@ final class RecommendationTests: XCTestCase {
                       identifiedOther.stableID: 3.9]
         let served = await engine.rankFast([unrelated, identifiedOther, visuallyMatching],
                                            taste: taste, recent: [], visualScores: scores, strict: true)
-        XCTAssertEqual(served.map(\.stableID), [visuallyMatching.stableID])
+        XCTAssertEqual(Set(served.map(\.stableID)),
+            Set([visuallyMatching.stableID, identifiedOther.stableID]))
+        XCTAssertEqual(served.first?.stableID, visuallyMatching.stableID,
+            "A new identity needs strong visual evidence and starts below a matching favorite")
+    }
+
+    func testTransferableInterestNeedsIndependentIdentitiesNotRepeatedOneCharacter() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let favoriteChun = (0..<4).map { index in
+            Post(key: "rule34:chun-fav-\(index)", id: "chun-fav-\(index)",
+                 provider: "rule34", tags: ["2d", "chun_li", "qipao"])
+        }
+        let novel = Post(key: "rule34:novel-juri", id: "novel-juri", provider: "rule34",
+                         tags: ["2d", "juri_han", "qipao"])
+        let explicit = TasteChoice(done: true, into: ["chun_li"])
+        await engine.configureFavorites(favoriteChun)
+        let overfit = await engine.rankFast([novel], taste: explicit, recent: [], strict: true)
+        XCTAssertTrue(overfit.isEmpty, "One repeated identity must not teach that its outfit applies to everyone")
+
+        let favoriteSamus = (0..<3).map { index in
+            Post(key: "rule34:samus-fav-\(index)", id: "samus-fav-\(index)",
+                 provider: "rule34", tags: ["2d", "samus_aran", "qipao"])
+        }
+        await engine.configureFavorites(favoriteChun + favoriteSamus)
+        let discovered = await engine.rankFast([novel], taste: explicit, recent: [], strict: true)
+        XCTAssertEqual(discovered.map(\.stableID), [novel.stableID],
+            "A specific preference repeated across different subjects should generalize")
+    }
+
+    func testRecommendedRetrievalPairsFocusedInterestWithBroadDiscovery() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let taste = TasteChoice(done: true, into: ["chun_li"])
+        for _ in 0..<4 {
+            let focused = await engine.candidateRequest(context: "balanced", provider: .rule34,
+                taste: taste, excluded: [])
+            let broad = await engine.candidateRequest(context: "balanced", provider: .rule34,
+                taste: taste, excluded: [], forceBroad: true)
+            XCTAssertTrue(focused.focused)
+            XCTAssertEqual(focused.query.included, ["chun_li"])
+            XCTAssertFalse(broad.focused)
+            XCTAssertTrue(broad.query.included.isEmpty)
+        }
     }
 
     func testImagePromptUsesActionsAndTaxonomyCreditedArtists() {
@@ -513,7 +554,7 @@ final class RecommendationTests: XCTestCase {
         XCTAssertFalse(QuickSkipDecision.dislikes(elapsed: 0.2, from: 1, to: 1))
     }
 
-    func testStrongRepeatedNegativeThemeIsFilteredButSingleDislikeIsNot() async {
+    func testRepeatedNegativeThemeDownranksWithoutSilentlyCreatingBlocklist() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let one = Post(key: "r:1", id: "1", provider: "rule34", tags: ["unwanted_theme", "red_hair"])
         let two = Post(key: "r:2", id: "2", provider: "rule34", tags: ["unwanted_theme", "blue_hair"])
@@ -526,7 +567,14 @@ final class RecommendationTests: XCTestCase {
             await engine.record(.less, post: two)
         }
         let nowRejected = await engine.isHardDisliked(candidate, taste: TasteChoice())
-        XCTAssertTrue(nowRejected)
+        XCTAssertFalse(nowRejected, "Repeated feedback affects ranking, not a hidden hard blacklist")
+        let clean = Post(key: "r:clean", id: "clean", provider: "rule34", tags: ["outside"])
+        let dislikedScore = await engine.score(candidate, taste: TasteChoice(), recent: [])
+        let cleanScore = await engine.score(clean, taste: TasteChoice(), recent: [])
+        XCTAssertLessThan(dislikedScore, cleanScore)
+        let request = await engine.candidateRequest(context: "negative-theme", provider: .rule34,
+            taste: TasteChoice(), excluded: [])
+        XCTAssertFalse(request.query.excluded.contains("unwanted_theme"))
     }
 
     @MainActor func testImportCannotRaceInitialProfileRestoration() async {
@@ -791,7 +839,7 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(ranked.count, 1)
     }
 
-    func testRecurringNegativeCommonDenominatorBecomesHardFilter() async {
+    func testRecurringNegativeCommonDenominatorBecomesRankingPenalty() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)))
         let a = Post(key: "r:1", id: "1", provider: "rule34", tags: ["scat", "blue_hair", "outdoors"], mediaUrl: "https://example.invalid/1.mp4", type: "video")
         let b = Post(key: "r:2", id: "2", provider: "rule34", tags: ["scat", "red_hair", "indoors"], mediaUrl: "https://example.invalid/2.mp4", type: "video")
@@ -801,8 +849,12 @@ final class RecommendationTests: XCTestCase {
             await engine.record(.less, post: a)
             await engine.record(.less, post: b)
         }
-        let ranked = await engine.rank([c], taste: TasteChoice(), recent: [])
-        XCTAssertTrue(ranked.isEmpty)
+        let clean = Post(key: "r:clean", id: "clean", provider: "rule34", tags: ["cosplay"])
+        let ranked = await engine.rankFast([c, clean], taste: TasteChoice(), recent: [])
+        XCTAssertEqual(Set(ranked.map(\.stableID)), Set([c.stableID, clean.stableID]))
+        XCTAssertEqual(ranked.first?.stableID, clean.stableID)
+        let hiddenBlock = await engine.isHardDisliked(c, taste: TasteChoice())
+        XCTAssertFalse(hiddenBlock)
     }
 
     func testCollaborativeHintCannotOverrideHardNotInto() async {

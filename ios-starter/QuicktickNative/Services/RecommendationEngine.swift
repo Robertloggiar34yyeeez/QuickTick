@@ -1182,6 +1182,15 @@ actor RecommendationEngine {
         let concepts = TasteConcepts.resolve(post.tags)
         topics.formUnion(concepts.franchises.map { "franchise:" + $0 })
         topics.formUnion(concepts.characters.map { "character:" + $0 })
+        if post.providerKey == .kemono || post.providerKey == .coomer {
+            // Each archive API post can unfold into twelve media attachments.
+            // Treat those files as one presentation cluster, not independent
+            // votes that push other artists off the first feed screen.
+            if !post.pageUrl.isEmpty { topics.insert("archivepost:" + post.pageUrl) }
+            if let creator = post.creator, !creator.isEmpty {
+                topics.insert("creator:" + RecommendationTagRules.canonical(creator))
+            }
+        }
         return topics
     }
 
@@ -1192,11 +1201,14 @@ actor RecommendationEngine {
                                recent: [Post]) -> [Post] {
         var pool = scored
         var chosen: [Post] = []
-        var window = recent.suffix(20).map { diversityTopics(for: $0) }
-        let target = min(96, pool.count)
+        var window = recent.suffix(16).map { diversityTopics(for: $0) }
+        // The first paint needs a high-quality screenful, not a full 96-item
+        // quadratic diversity pass. The remaining sorted candidates stay in
+        // the output and can be consumed during pagination.
+        let target = min(48, pool.count)
         while chosen.count < target {
-            let lookAhead = min(128, pool.count)
-            let preceding = Array(window.suffix(20))
+            let lookAhead = min(160, pool.count)
+            let preceding = Array(window.suffix(16))
             let discoverySlot = (chosen.count + recent.count) % 6 == 5
             var bestIndex = 0
             var bestScore = -Double.infinity
@@ -1218,7 +1230,10 @@ actor RecommendationEngine {
                 // Franchise/character concentration compounds across the
                 // whole recent window, even when each image has different
                 // generic tags. This is a soft penalty, never a hard block.
-                let anchors = topics.filter { $0.hasPrefix("franchise:") || $0.hasPrefix("character:") }
+                let anchors = topics.filter {
+                    $0.hasPrefix("franchise:") || $0.hasPrefix("character:") ||
+                    $0.hasPrefix("creator:") || $0.hasPrefix("archivepost:")
+                }
                 let repeatCount = preceding.reduce(0) { total, seen in
                     total + (anchors.isDisjoint(with: seen) ? 0 : 1)
                 }
@@ -1330,7 +1345,10 @@ actor RecommendationEngine {
         let termCache = Dictionary((candidates + recent).map { ($0.stableID, terms(for: $0)) }, uniquingKeysWith: { first, _ in first })
         let identityCache = Dictionary((candidates + recent).map { post -> (String, Set<String>) in
             let topics = diversityTopics(for: post, terms: termCache[post.stableID])
-            return (post.stableID, Set(topics.filter { $0.hasPrefix("character:") || $0.hasPrefix("franchise:") }))
+            return (post.stableID, Set(topics.filter {
+                $0.hasPrefix("character:") || $0.hasPrefix("franchise:") ||
+                $0.hasPrefix("creator:") || $0.hasPrefix("archivepost:")
+            }))
         }, uniquingKeysWith: { first, _ in first })
         var unique = Set<String>()
         var pool: [(post: Post, base: Double, tags: Double, seen: Double)] = []

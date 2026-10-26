@@ -463,6 +463,29 @@ final class RecommendationTests: XCTestCase {
         XCTAssertTrue(ranked.allSatisfy { $0.tags.contains("chun_li") || $0.tags.contains("samus_aran") })
     }
 
+    func testArchiveAttachmentsCannotMonopolizeFirstRecommendations() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let attachments = (0..<35).map { index -> Post in
+            var post = Post(key: "kemono:main:\(index)", id: "main-\(index)",
+                provider: "kemono", tags: ["cosplay", "illustration"])
+            post.creator = "repeated_artist"
+            post.pageUrl = "https://kemono.cr/service/user/main/post/123"
+            return post
+        }
+        let alternatives = (0..<8).map { index -> Post in
+            var post = Post(key: "kemono:variety:\(index)", id: "variety-\(index)",
+                provider: "kemono", tags: ["cosplay", "illustration"])
+            post.creator = "another_artist_\(index)"
+            post.pageUrl = "https://kemono.cr/service/user/different/post/\(index)"
+            return post
+        }
+        let ranked = await engine.rankFast(attachments + alternatives,
+            taste: TasteChoice(done: true, into: ["cosplay"]), recent: [], strict: true)
+        XCTAssertEqual(ranked.count, 43)
+        XCTAssertTrue(ranked.prefix(8).contains { $0.creator != "repeated_artist" },
+            "Files attached to one creator post should not crowd out other relevant artists")
+    }
+
     func testPairedDynamicsRemainScopedToSelectedCharacter() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let selected = TasteChoice(done: true, into: ["chun_li", "kratos"],

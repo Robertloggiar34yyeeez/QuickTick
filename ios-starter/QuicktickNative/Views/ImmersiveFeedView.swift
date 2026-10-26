@@ -183,12 +183,11 @@ struct ImmersiveFeedView: View {
             if clips.isEmpty && !offline && collectionTab == nil && !store.isLoading && store.hasMore { await store.loadMore(immersive: true) }
             return
         }
-        // Keep the previous clip for instant reverse swipes and prepare only
-        // one next clip, so Immersive stays responsive without Home's former
-        // aggressive offscreen video loading.
+        // Preload only the imminent clip. Preparing two CDN streams and three
+        // posters on every swipe caused avoidable decoding and network spikes.
         let warmIndices = ImmersivePreloadPlan.retainedIndices(current: index, count: clips.count)
         let forwardIndices = ImmersivePreloadPlan.forwardIndices(current: index, count: clips.count)
-        store.players.capacity = 4
+        store.players.capacity = 3
         store.players.retain(Set(warmIndices.map { clips[$0].stableID }))
         previews.retain(Set(warmIndices.map { clips[$0].stableID }))
         let offlineMode = offline
@@ -227,9 +226,10 @@ struct ImmersiveFeedView: View {
                     }
                 }
             }
-            if !offline, collectionTab == nil, index >= clips.count - 8 {
-                group.addTask { await feedStore.loadMore(immersive: true) }
-            }
+        }
+        if !offline, collectionTab == nil, index >= clips.count - 8 {
+            // Paging must never keep the swipe's preview-prewarm task alive.
+            Task(priority: .utility) { await feedStore.loadMore(immersive: true) }
         }
     }
 
@@ -238,12 +238,12 @@ struct ImmersiveFeedView: View {
 enum ImmersivePreloadPlan {
     static func retainedIndices(current: Int, count: Int) -> [Int] {
         guard count > 0, (0..<count).contains(current) else { return [] }
-        return Array(max(0, current - 1)...min(count - 1, current + 2))
+        return Array(max(0, current - 1)...min(count - 1, current + 1))
     }
 
     static func forwardIndices(current: Int, count: Int) -> [Int] {
         guard count > 0, (0..<count).contains(current), current + 1 < count else { return [] }
-        return Array((current + 1)...min(count - 1, current + 2))
+        return [current + 1]
     }
 
     static func nextIndex(current: Int, count: Int) -> Int? {

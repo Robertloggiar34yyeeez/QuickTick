@@ -11,6 +11,21 @@ struct VisualRefreshProgress: Equatable, Sendable {
     var fraction: Double { total == 0 ? (running ? 0 : 1) : Double(completed) / Double(total) }
 }
 
+/// Prevent a large focused page (especially an archive post with many files)
+/// from filling the ranker's first 384 slots before broad discovery is seen.
+/// Keep both streams in their original provider order for stable pagination.
+enum CandidatePoolMix {
+    static func interleave(_ focused: [Post], _ broad: [Post]) -> [Post] {
+        var mixed: [Post] = []
+        mixed.reserveCapacity(focused.count + broad.count)
+        for index in 0..<max(focused.count, broad.count) {
+            if index < focused.count { mixed.append(focused[index]) }
+            if index < broad.count { mixed.append(broad[index]) }
+        }
+        return mixed
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published var selectedProvider: Provider = .rule34 {
@@ -680,10 +695,11 @@ final class AppStore: ObservableObject {
         let secondaryQuery = b.query
         let secondaryPageNumber = b.page
         let requestedGeneration = generation
-        // First paint stays bounded, but give discovery a real chance to
-        // arrive; an overly short grace window routinely discarded the broad
-        // lane and silently recreated the same-identity feedback loop.
-        // Sparse first pages still wait for the second pool.
+        // Provider requests are independent: an archive cache miss can keep
+        // fetching after its waiter is cancelled. A structured task group
+        // *still waits for that child* before returning, defeating its grace
+        // deadline. Use an async completion stream so the first usable page
+        // can paint while a late archive request warms the provider cache.
         enum CandidateBatch: Sendable {
             case first(PostPage?)
             case second(PostPage?)
@@ -691,22 +707,24 @@ final class AppStore: ObservableObject {
         }
         let client = api
         let fetchStarted = Date()
-        let (firstPage, secondPage) = await withTaskGroup(
-            of: CandidateBatch.self, returning: (PostPage?, PostPage?).self
-        ) { group in
-            group.addTask {
-                .first(try? await client.posts(provider: provider, query: primaryQuery,
-                                              page: primaryPageNumber, sort: sort, immersive: mediaOnly))
-            }
-            group.addTask {
-                .second(try? await client.posts(provider: provider, query: secondaryQuery,
-                                               page: secondaryPageNumber, sort: sort, immersive: mediaOnly))
-            }
+        let (batches, emitter) = AsyncStream.makeStream(
+            of: CandidateBatch.self, bufferingPolicy: .bufferingNewest(4))
+        let primaryFlight = Task(priority: .userInitiated) {
+            let response = try? await client.posts(provider: provider, query: primaryQuery,
+                                                   page: primaryPageNumber, sort: sort, immersive: mediaOnly)
+            emitter.yield(.first(response))
+        }
+        let secondaryFlight = Task(priority: .utility) {
+            let response = try? await client.posts(provider: provider, query: secondaryQuery,
+                                                   page: secondaryPageNumber, sort: sort, immersive: mediaOnly)
+            emitter.yield(.second(response))
+        }
+        let (firstPage, secondPage) = await withTaskCancellationHandler {
             var primary: PostPage?
             var secondary: PostPage?
             var completed = 0
-            var graceStarted = false
-            while let result = await group.next() {
+            var deadline: Task<Void, Never>?
+            for await result in batches {
                 switch result {
                 case .first(let page): primary = page; completed += 1
                 case .second(let page): secondary = page; completed += 1
@@ -715,16 +733,26 @@ final class AppStore: ObservableObject {
                 if completed == 2 { break }
                 if case .graceExpired = result { break }
                 let available = (primary?.items.count ?? 0) + (secondary?.items.count ?? 0)
-                if available >= 20 && !graceStarted {
-                    graceStarted = true
-                    group.addTask {
-                        try? await Task.sleep(for: .milliseconds(600))
-                        return .graceExpired
+                if available >= 8 && deadline == nil {
+                    deadline = Task {
+                        do { try await Task.sleep(for: .milliseconds(160)) } catch { return }
+                        emitter.yield(.graceExpired)
                     }
                 }
             }
-            group.cancelAll()
+            deadline?.cancel()
+            emitter.finish()
+            // Cancellation of an archive waiter does not kill its existing
+            // cache-fill task. For other providers stop unused network work.
+            if provider != .coomer && provider != .kemono {
+                if primary == nil { primaryFlight.cancel() }
+                if secondary == nil { secondaryFlight.cancel() }
+            }
             return (primary, secondary)
+        } onCancel: {
+            emitter.finish()
+            primaryFlight.cancel()
+            secondaryFlight.cancel()
         }
         FeedPerformance.emit("candidate_fetch", started: fetchStarted,
                              count: (firstPage?.items.count ?? 0) + (secondPage?.items.count ?? 0))
@@ -745,7 +773,7 @@ final class AppStore: ObservableObject {
             }
         }
         let combined = PostPage(
-            items: (firstPage?.items ?? []) + (secondPage?.items ?? []),
+            items: CandidatePoolMix.interleave(firstPage?.items ?? [], secondPage?.items ?? []),
             hasMore: (firstPage?.hasMore ?? false) || (secondPage?.hasMore ?? false))
         let used = firstPage != nil ? first : second
         let usedPage = firstPage != nil ? a.page : b.page

@@ -141,14 +141,21 @@ final class IntelligentRecommendationTests: XCTestCase {
         await engine.recordReversibleSkip(sampled[1])
         let before = await engine.isHardDisliked(repeated, taste: TasteChoice())
         XCTAssertFalse(before)
+        let beforePenalty = await engine.score(repeated, taste: TasteChoice(), recent: [])
         await engine.recordReversibleSkip(sampled[2])
+        let afterPenalty = await engine.score(repeated, taste: TasteChoice(), recent: [])
         let nowBlocked = await engine.isHardDisliked(repeated, taste: TasteChoice())
         let unrelatedBlocked = await engine.isHardDisliked(other, taste: TasteChoice())
-        XCTAssertTrue(nowBlocked)
+        XCTAssertLessThan(afterPenalty, beforePenalty,
+            "Quick skips should downrank repeated context without creating a hard tag ban")
+        XCTAssertFalse(nowBlocked)
         XCTAssertFalse(unrelatedBlocked)
         _ = await engine.neutralizeReversibleSkip(sampled[2].stableID)
         let restored = await engine.isHardDisliked(repeated, taste: TasteChoice())
         XCTAssertFalse(restored)
+        let restoredPenalty = await engine.score(repeated, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(restoredPenalty, afterPenalty,
+            "Undoing a skip must restore its ranking weight")
     }
 
     func testIRLVideoCaptionsProvidePresentationEvidenceWithoutInferringIdentity() async throws {

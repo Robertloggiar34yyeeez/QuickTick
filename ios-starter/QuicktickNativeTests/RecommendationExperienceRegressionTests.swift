@@ -13,10 +13,27 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertFalse(gate.finish(translation: CGSize(width: 0, height: 130)))
     }
 
-    func testImmersivePreparesTwoClipsAndRetainsPrevious() {
-        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 2, count: 6), [1, 2, 3, 4])
-        XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 2, count: 6), [3, 4])
+    func testImmersivePreparesOneUpcomingClipAndRetainsPrevious() {
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 2, count: 6), [1, 2, 3])
+        XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 2, count: 6), [3])
         XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 5, count: 6), [])
+    }
+
+    func testBroadCandidatesAreInRankersFirstWindowEvenForHugeCreatorPosts() {
+        let focused = (0..<410).map { index in
+            Post(key: "kemono:f:\(index)", id: "f-\(index)", provider: "kemono",
+                 tags: ["repeated_creator"])
+        }
+        let broad = (0..<12).map { index in
+            Post(key: "kemono:b:\(index)", id: "b-\(index)", provider: "kemono",
+                 tags: ["discovery_artist_\(index)"])
+        }
+        let mixed = CandidatePoolMix.interleave(focused, broad)
+        XCTAssertEqual(mixed.count, 422)
+        XCTAssertEqual(mixed[0].stableID, focused[0].stableID)
+        XCTAssertEqual(mixed[1].stableID, broad[0].stableID)
+        XCTAssertTrue(mixed.prefix(48).contains { $0.stableID == broad[11].stableID })
+        XCTAssertEqual(Set(mixed.map(\.stableID)).count, mixed.count)
     }
 
     func testComfortTempoCapsEvenSpamAndQuad() {

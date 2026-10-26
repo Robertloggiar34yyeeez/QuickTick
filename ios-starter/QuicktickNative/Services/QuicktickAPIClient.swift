@@ -127,10 +127,11 @@ actor QuicktickAPIClient {
         archivePageTasks[key] = task
         defer { archivePageTasks.removeValue(forKey: key) }
         let result = try await task.value
-        // Brief reuse makes tab returns instant and deduplicates simultaneous
-        // requests without keeping an archive feed stale for a whole session.
-        archivePages[key] = (result, .now.addingTimeInterval(30))
-        if archivePages.count > 24 { archivePages = archivePages.filter { $0.value.expiry > .now } }
+        // Archive APIs and attachment normalization can be slow. Keep a short
+        // in-memory window for instant tab returns and for a broad query that
+        // finished after the focused query was already shown to the user.
+        archivePages[key] = (result, .now.addingTimeInterval(120))
+        if archivePages.count > 40 { archivePages = archivePages.filter { $0.value.expiry > .now } }
         return result
     }
 

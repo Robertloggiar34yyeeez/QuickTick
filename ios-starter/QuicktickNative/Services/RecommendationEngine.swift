@@ -408,12 +408,19 @@ actor RecommendationEngine {
         var counts: [String: [String: Int]] = [:]
         var totals: [String: Int] = [:]
         var termIdentities: [String: [String: Set<String>]] = [:]
+        var countedFavoriteIDs = Set<String>()
         for post in favorites {
+            guard countedFavoriteIDs.insert(post.stableID).inserted else { continue }
             let source = post.provider.lowercased()
             totals[source, default: 0] += 1
             let features = VisualFeatures.metadata(post, taxonomy: taxonomy)
-            let identities = Set((features?.subjects ?? []).map { "subject:" + $0 }
-                + (features?.artists ?? []).map { "artist:" + $0 })
+            // Different artists drawing the SAME character must not count as
+            // multiple independent subjects when learning a portable outfit.
+            // Artist identity is the fallback for content without a subject.
+            let subjects = features?.subjects ?? []
+            let identities = subjects.isEmpty
+                ? Set((features?.artists ?? []).map { "artist:" + $0 })
+                : Set(subjects.map { "subject:" + $0 })
             for term in Set(terms(for: post)) {
                 counts[source, default: [:]][term, default: 0] += 1
                 if !identities.isEmpty {

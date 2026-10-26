@@ -299,6 +299,15 @@ final class RecommendationTests: XCTestCase {
         let overfit = await engine.rankFast([novel], taste: explicit, recent: [], strict: true)
         XCTAssertTrue(overfit.isEmpty, "One repeated identity must not teach that its outfit applies to everyone")
 
+        let differentlyCredited = favoriteChun.enumerated().map { index, original in
+            Post(key: "rule34:credited-\(index)", id: "credited-\(index)", provider: "rule34",
+                 tags: original.tags + ["artist:creator_\(index)"])
+        }
+        await engine.configureFavorites(differentlyCredited)
+        let stillOneSubject = await engine.rankFast([novel], taste: explicit, recent: [], strict: true)
+        XCTAssertTrue(stillOneSubject.isEmpty,
+            "Different artists of the same character must not fake independent subject evidence")
+
         let favoriteSamus = (0..<3).map { index in
             Post(key: "rule34:samus-fav-\(index)", id: "samus-fav-\(index)",
                  provider: "rule34", tags: ["2d", "samus_aran", "qipao"])

@@ -21,7 +21,11 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? url.path
         let payload: String
         if path == "/v2/auth/temporary" { payload = #"{"token":"synthetic-provider-token"}"# }
-        else if ["coomer.st", "kemono.cr"].contains(host), path == "/api/v1/posts" {
+        else if ["coomer.st", "kemono.cr"].contains(host), path == "/api/v1/creators" {
+            payload = #"[{"id":"42","service":"fanbox","name":"Fixture Artist","favorited":42},{"id":"51","service":"patreon","name":"Other Creator","favorited":8}]"#
+        }
+        else if ["coomer.st", "kemono.cr"].contains(host),
+                path == "/api/v1/posts" || path == "/api/v1/fanbox/user/42/posts" {
             payload = #"{"posts":[{"id":"p100","service":"fanbox","user":"42","title":"Cosplay fantasy portrait","artist":"Fixture Artist","published":"2026-09-01T10:00:00Z","file":{"name":"portrait.jpg","path":"/ab/cd.jpg"},"attachments":[{"name":"clip.mp4","path":"/ab/ef.mp4"},{"name":"sound.mp3","path":"/ab/sound.mp3"},{"name":"archive.zip","path":"/ab/ignored.zip"}]}]}"#
         }
         else if ["coomer.st", "kemono.cr"].contains(host), path.hasSuffix("/comments") {
@@ -115,7 +119,7 @@ final class NativeProviderAPITests: XCTestCase {
             XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/css")
             let q = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
             XCTAssertEqual(q.first(where: { $0.name == "q" })?.value, "cosplay")
-            XCTAssertEqual(q.first(where: { $0.name == "o" })?.value, "150")
+            XCTAssertEqual(q.first(where: { $0.name == "o" })?.value, "50")
             let sound = try XCTUnwrap(page.items.first(where: { $0.isAudio }))
             XCTAssertTrue(sound.mediaUrl.hasSuffix("/ab/sound.mp3"))
             XCTAssertTrue(sound.cardPreviewURL.isEmpty)
@@ -127,6 +131,29 @@ final class NativeProviderAPITests: XCTestCase {
                 query: ParsedQuery(included: [], excluded: ["cosplay"]), immersive: false)
             XCTAssertTrue(filtered.items.isEmpty)
         }
+    }
+
+    func testArchiveArtistAutocompleteSelectsExactCreatorAndCachesTheIndex() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        for provider in [Provider.kemono, .coomer] {
+            NativeProviderProtocol.log.reset()
+            let matches = try await api.suggestions(provider: provider, query: "fixture")
+            XCTAssertEqual(matches.first?.label, "Fixture Artist · fanbox")
+            XCTAssertEqual(matches.first?.value, "creator:fanbox:42")
+            _ = try await api.suggestions(provider: provider, query: "artist")
+            let creatorRequests = NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/api/v1/creators" }
+            XCTAssertEqual(creatorRequests.count, 1, "Creator index must not be downloaded on every keystroke")
+
+            let results = try await api.posts(provider: provider,
+                query: QueryParser.parse(try XCTUnwrap(matches.first?.value)), page: 2)
+            XCTAssertEqual(results.items.count, 3)
+            let route = try XCTUnwrap(NativeProviderProtocol.log.snapshot()
+                .last(where: { $0.url?.path == "/api/v1/fanbox/user/42/posts" }))
+            let query = URLComponents(url: try XCTUnwrap(route.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(query.first(where: { $0.name == "o" })?.value, "50")
+            XCTAssertNil(query.first(where: { $0.name == "q" }))
+        }
+        XCTAssertNil(NativeProviderAPI.archiveCreatorRoute("creator:fanbox:../evil"))
     }
 
     func testDownloadsRecoverCanonicalProviderFromAliasesKeysAndOriginalPages() {
@@ -410,7 +437,7 @@ final class NativeProviderAPITests: XCTestCase {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         for provider in Provider.allCases {
             let page = try await api.posts(provider: provider, query: QueryParser.parse(""), page: 1)
-            XCTAssertEqual(page.items.count, 1, provider.rawValue)
+            XCTAssertEqual(page.items.count, provider == .kemono || provider == .coomer ? 3 : 1, provider.rawValue)
             XCTAssertEqual(page.items.first?.providerKey, provider)
         }
         let requests = NativeProviderProtocol.log.snapshot()

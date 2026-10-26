@@ -9,17 +9,20 @@ struct NativeSearchBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var form = SearchDraft()
     @State private var suggestions: [TagSuggestion] = []
+    @State private var suggestionsLoading = false
+    @State private var suggestionsUnavailable = false
     @State private var loaded = false
     init(immersive: Bool = false, focusRequested: Binding<Bool> = .constant(false)) {
         self.immersive = immersive; _focusRequested = focusRequested
     }
     private var tab: Int { immersive ? 1 : 0 }
+    private var isArchive: Bool { store.selectedProvider == .kemono || store.selectedProvider == .coomer }
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     inputRow
-                    if store.selectedProvider == .rule34 {
+                    if store.selectedProvider == .rule34 || isArchive {
                         autocompleteRow
                     }
                     filterRow
@@ -28,9 +31,9 @@ struct NativeSearchBar: View {
                         selectedTagGrid
                         Text("Tap a tag name to remove it. Tap its block icon to include or exclude it.").font(.caption).foregroundStyle(.secondary)
                     } else {
-                        Text("Search titles and keywords. Use quotes for phrases (\"red hair\") and -\"phrase\" to exclude them. Providers use free-text search, not Rule34 tags.")
+                        Text(isArchive ? "Search post titles or select an artist suggestion to see that creator's posts." : "Search titles and keywords. Use quotes for phrases (\"red hair\") and -\"phrase\" to exclude them.")
                             .font(.subheadline).foregroundStyle(.secondary)
-                        Button("Clear keywords") { form.text = "" }
+                        Button("Clear keywords") { form.text = ""; form.archiveCreatorReference = nil; form.archiveCreatorLabel = nil }
                             .font(.caption).disabled(form.text.isEmpty)
                     }
                     Button(action: submit) {
@@ -65,19 +68,41 @@ struct NativeSearchBar: View {
                     form.provider = store.selectedProvider
                     store.searchDrafts[tab] = form
                 }
-                .task(id: store.selectedProvider.rawValue + ":" + form.text) {
-                    suggestions = []
+                .task(id: "artist-index-" + store.selectedProvider.rawValue) {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
                     #endif
-                    guard store.selectedProvider == .rule34, let token = form.text.split(whereSeparator: \.isWhitespace).last else { return }
-                    let query = token.hasPrefix("-") ? String(token.dropFirst()) : String(token)
+                    if isArchive { await store.api.prefetchArchiveCreators(for: store.selectedProvider) }
+                }
+                .task(id: store.selectedProvider.rawValue + ":" + form.text) {
+                    suggestions = []
+                    suggestionsLoading = false
+                    suggestionsUnavailable = false
+                    #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
+                    #endif
+                    let provider = store.selectedProvider
+                    guard provider == .rule34 || provider == .kemono || provider == .coomer,
+                          form.archiveCreatorReference == nil else { return }
+                    let query: String
+                    if provider == .rule34 {
+                        guard let token = form.text.split(whereSeparator: \.isWhitespace).last else { return }
+                        query = token.hasPrefix("-") ? String(token.dropFirst()) : String(token)
+                    } else { query = form.text.trimmingCharacters(in: .whitespacesAndNewlines) }
                     guard query.count >= 2 else { return }
                     do {
-                        try await Task.sleep(for: .milliseconds(300))
-                        let values = try await store.api.suggestions(provider: .rule34, query: query)
-                        guard !Task.isCancelled else { return }; suggestions = values
-                    } catch { if !Task.isCancelled { suggestions = [] } }
+                        try await Task.sleep(for: .milliseconds(180))
+                        guard !Task.isCancelled else { return }
+                        suggestionsLoading = true
+                        let values = try await store.api.suggestions(provider: provider, query: query)
+                        guard !Task.isCancelled else { return }
+                        suggestions = values; suggestionsLoading = false
+                    } catch {
+                        if !Task.isCancelled {
+                            suggestions = []; suggestionsLoading = false
+                            suggestionsUnavailable = isArchive
+                        }
+                    }
                 }
         }.background(AppTheme.canvas.ignoresSafeArea())
             .presentationBackground(AppTheme.canvas)
@@ -90,12 +115,18 @@ struct NativeSearchBar: View {
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(focused ? AppTheme.accent : AppTheme.secondaryLabel)
                 .frame(width: 26)
-            TextField(store.selectedProvider == .rule34 ? "Search tags" : "Search titles and keywords", text: $form.text)
+            TextField(store.selectedProvider == .rule34 ? "Search tags" : (isArchive ? "Search artists or posts" : "Search titles and keywords"), text: $form.text)
                 .focused($focused)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
                 .onSubmit { submit() }
+                .onChange(of: form.text) { _, value in
+                    if form.archiveCreatorReference != nil, value != form.archiveCreatorLabel {
+                        form.archiveCreatorReference = nil
+                        form.archiveCreatorLabel = nil
+                    }
+                }
                 .tint(AppTheme.accent)
                 .accessibilityIdentifier("feed-search-input")
             if !form.text.isEmpty {
@@ -135,7 +166,7 @@ struct NativeSearchBar: View {
                     if !suggestions.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack { ForEach(suggestions.prefix(6)) { item in
-                                Button(item.value) { chooseSuggestion(item.value) }
+                                Button(item.label) { chooseSuggestion(item) }
                                     .font(.caption.weight(.medium))
                                     .padding(.horizontal, 12)
                                     .frame(minHeight: 36)
@@ -144,6 +175,14 @@ struct NativeSearchBar: View {
                                     .buttonStyle(QuicktickPressStyle())
                             } }
                         }
+                    } else if isArchive && suggestionsLoading {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Finding artists…").font(.caption).foregroundStyle(.secondary)
+                        }.accessibilityIdentifier("archive-artist-loading")
+                    } else if isArchive && suggestionsUnavailable {
+                        Text("Artist suggestions are temporarily unavailable. Post search still works.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
     }
     private var filterRow: some View {
@@ -206,11 +245,18 @@ struct NativeSearchBar: View {
             else { form.tags.append(tag) }
         }
     }
-    private func chooseSuggestion(_ value: String) {
+    private func chooseSuggestion(_ suggestion: TagSuggestion) {
+        if isArchive {
+            form.archiveCreatorReference = suggestion.value
+            form.archiveCreatorLabel = suggestion.label
+            form.text = suggestion.label
+            suggestions = []
+            return
+        }
         var parts = form.text.split(whereSeparator: \.isWhitespace).map(String.init)
         let excluded = parts.last?.hasPrefix("-") == true
         if !parts.isEmpty { parts.removeLast() }
-        parts.append((excluded ? "-" : "") + value)
+        parts.append((excluded ? "-" : "") + suggestion.value)
         add(parts.joined(separator: " ")); form.text = ""; suggestions = []
     }
     private func addTypedTags() { add(form.text); form.text = ""; suggestions = [] }
@@ -225,7 +271,8 @@ struct NativeSearchBar: View {
             let tags = form.tags.map { ($0.excluded ? "-" : "") + $0.name }.joined(separator: " ")
             query = form.filters.query(tags: tags, provider: store.selectedProvider)
         } else {
-            query = form.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            query = (isArchive ? form.archiveCreatorReference : nil)
+                ?? form.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         store.commitSearch(query: query, sort: form.sort)
         dismiss()

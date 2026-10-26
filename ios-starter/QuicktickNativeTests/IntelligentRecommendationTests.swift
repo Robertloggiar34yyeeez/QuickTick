@@ -311,6 +311,12 @@ final class IntelligentRecommendationTests: XCTestCase {
     }
     func testContentBasedMediaClassificationAcrossProviders() {
         for provider in Provider.allCases {
+            // Coomer's real-life source is intentionally not reclassified by
+            // untrusted metadata tags; its illustrated-looking tags are not proof.
+            if provider == .coomer {
+                XCTAssertEqual(VisualDomain.classify(post("a", ["2d"], provider: provider.rawValue)), .realLife)
+                continue
+            }
             XCTAssertEqual(VisualDomain.classify(post("a", ["2d"], provider: provider.rawValue)), .anime)
             XCTAssertEqual(VisualDomain.classify(post("b", ["3dcg", "anime"], provider: provider.rawValue)), .threeD)
             XCTAssertEqual(VisualDomain.classify(post("c", ["photo"], provider: provider.rawValue)), .realLife)

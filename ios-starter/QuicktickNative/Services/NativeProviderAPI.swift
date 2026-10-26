@@ -58,7 +58,7 @@ enum NativeProviderAPI {
         return url
     }
 
-    static func data(session: URLSession, url: URL, provider: Provider, method: String = "GET", body: Data? = nil, headers: [String: String] = [:]) async throws -> Data {
+    static func data(session: URLSession, url: URL, provider: Provider, method: String = "GET", body: Data? = nil, headers: [String: String] = [:], maxBytes: Int = 8 * 1024 * 1024) async throws -> Data {
         guard url.scheme == "https", let host = url.host, host.lowercased() != quicktickHost else { throw APIError.invalidResponse }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
@@ -84,7 +84,7 @@ enum NativeProviderAPI {
                 continue
             }
             guard (200..<300).contains(http.statusCode) else { throw APIError.providerStatus(provider, http.statusCode) }
-            guard data.count <= 8 * 1024 * 1024 else { throw APIError.server("Provider response is too large.") }
+            guard data.count <= maxBytes else { throw APIError.server("Provider response is too large.") }
             return data
         }
         throw APIError.invalidResponse
@@ -500,20 +500,61 @@ actor RedgifsAuthentication {
 
 
 extension NativeProviderAPI {
+    // Creator identities are exact service/user pairs. They are never put into
+    // arbitrary URL paths without this validation.
+    static func archiveCreatorRoute(_ value: String) -> (service: String, id: String)? {
+        let pieces = value.split(separator: ":").map(String.init)
+        guard pieces.count == 3, pieces[0] == "creator" else { return nil }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        guard [pieces[1], pieces[2]].allSatisfy({ !$0.isEmpty && $0.unicodeScalars.allSatisfy(allowed.contains) }) else { return nil }
+        return (pieces[1], pieces[2])
+    }
+
+    static func archiveCreators(session: URLSession, provider: Provider) async throws -> [ArchiveCreator] {
+        guard provider == .kemono || provider == .coomer else { return [] }
+        // /creators is used by the archive's current frontend; older instances
+        // publish the same JSON list as /creators.txt.
+        var lastError: Error = APIError.invalidResponse
+        for suffix in ["/api/v1/creators", "/api/v1/creators.txt"] {
+            do {
+                let bytes = try await data(session: session, url: url(origin(provider).absoluteString + suffix),
+                    provider: provider, headers: ["Accept": "text/css"], maxBytes: 32 * 1024 * 1024)
+                let json = try JSONSerialization.jsonObject(with: bytes)
+                let entries: [[String: Any]]
+                if let list = json as? [[String: Any]] { entries = list }
+                else { entries = rows((json as? [String: Any])?["creators"]) }
+                guard !entries.isEmpty else { throw APIError.invalidResponse }
+                return entries.compactMap { entry in
+                    let name = text(entry["name"]), service = text(entry["service"]), id = text(entry["id"])
+                    guard !name.isEmpty, !service.isEmpty, !id.isEmpty,
+                          archiveCreatorRoute("creator:\(service):\(id)") != nil else { return nil }
+                    return ArchiveCreator(name: name, service: service, id: id,
+                                          favorites: Int(number(entry["favorited"])))
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { lastError = error }
+        }
+        throw lastError
+    }
+
     // Both public archives expose Kemono API v1-style post lists. Treat them
     // as content sources, never as login credentials or automatic upload targets.
     static func archivePosts(session: URLSession, provider: Provider,
                              query: ParsedQuery, page: Int, immersive: Bool) async throws -> PostPage {
         guard provider == .kemono || provider == .coomer else { throw APIError.invalidResponse }
         let origin = origin(provider).absoluteString
-        let offset = max(0, min(10_000, page - 1)) * 150
+        // The API uses 50 source posts per page, not 150. Skipping by 150
+        // silently lost two pages and made searches appear exhausted.
+        let offset = max(0, min(10_000, page - 1)) * 50
         var parameters: [URLQueryItem] = [.init(name: "o", value: String(offset))]
-        if !query.included.isEmpty {
+        let creator = query.included.count == 1 ? archiveCreatorRoute(query.included[0]) : nil
+        if creator == nil, !query.included.isEmpty {
             parameters.append(.init(name: "q", value: query.included.joined(separator: " ")))
         }
         // The archive endpoint is publication-ordered; it does not expose
         // a supported popularity sort, so QuickTick reranks locally.
-        let endpoint = try url(origin + "/api/v1/posts", parameters)
+        let path = creator.map { "/api/v1/\($0.service)/user/\($0.id)/posts" } ?? "/api/v1/posts"
+        let endpoint = try url(origin + path, parameters)
         let data = try await self.data(session: session, url: endpoint, provider: provider,
                                        headers: ["Accept": "text/css"])
         let decoded = try JSONSerialization.jsonObject(with: data)
@@ -524,7 +565,7 @@ extension NativeProviderAPI {
         else { throw APIError.invalidResponse }
         let normalized = raw.flatMap { archiveItems($0, provider: provider) }
         let total = (decoded as? [String: Any]).map { number($0["true_count"]) } ?? 0
-        let hasMore = total > 0 ? Double(offset + raw.count) < total : raw.count >= 150
+        let hasMore = total > 0 ? Double(offset + raw.count) < total : raw.count >= 50
         return self.page(normalized, hasMore: hasMore, query: query, immersive: immersive)
     }
 

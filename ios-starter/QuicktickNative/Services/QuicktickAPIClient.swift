@@ -6,6 +6,14 @@ struct ProviderCredentials: Sendable {
     var pornhubSession = ""
 }
 
+struct ArchiveCreator: Codable, Sendable {
+    let name: String
+    let service: String
+    let id: String
+    let favorites: Int
+    var reference: String { "creator:\(service):\(id)" }
+}
+
 enum APIError: LocalizedError {
     case missingBaseURL, invalidResponse, server(String), providerStatus(Provider, Int)
     case rateLimited(Provider, Date)
@@ -30,6 +38,10 @@ actor QuicktickAPIClient {
     var credentials = ProviderCredentials()
     private var cloudSyncEnabled = false
     private let redgifsAuth = RedgifsAuthentication()
+    private var archivePages: [String: (page: PostPage, expiry: Date)] = [:]
+    private var archivePageTasks: [String: Task<PostPage, Error>] = [:]
+    private var archiveCreators: [Provider: [ArchiveCreator]] = [:]
+    private var archiveCreatorTasks: [Provider: Task<[ArchiveCreator], Error>] = [:]
 
     init(baseURL: URL? = QuicktickAPIClient.configuredBaseURL(), session: URLSession = .shared, credentials: ProviderCredentials = ProviderCredentials(), cloudSyncEnabled: Bool = false) {
         self.credentials = credentials
@@ -87,8 +99,7 @@ actor QuicktickAPIClient {
         switch provider {
         case .rule34: return try await NativeProviderAPI.rule34(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
         case .coomer, .kemono:
-            return try await NativeProviderAPI.archivePosts(session: session, provider: provider,
-                                                            query: query, page: page, immersive: immersive)
+            return try await cachedArchivePosts(provider: provider, query: query, page: page, immersive: immersive)
         case .eporner: return try await NativeProviderAPI.eporner(session: session, query: query, page: page, sort: sort, immersive: immersive)
         case .pornhub: return try await NativeProviderAPI.pornhub(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
         case .hanime: return try await NativeProviderAPI.hanime(session: session, query: query, page: page, sort: sort, immersive: immersive)
@@ -101,6 +112,60 @@ actor QuicktickAPIClient {
                 return try await NativeProviderAPI.redgifs(session: session, token: redgifsAuth.value(session: session), query: query, page: page, sort: sort, immersive: immersive)
             }
         }
+    }
+
+    private func cachedArchivePosts(provider: Provider, query: ParsedQuery, page: Int,
+                                    immersive: Bool) async throws -> PostPage {
+        let key = "\(provider.rawValue)|\(page)|\(immersive)|\(QueryParser.formatted(query))"
+        if let entry = archivePages[key], entry.expiry > .now { return entry.page }
+        if let running = archivePageTasks[key] { return try await running.value }
+        let session = self.session
+        let task = Task {
+            try await NativeProviderAPI.archivePosts(session: session, provider: provider,
+                                                      query: query, page: page, immersive: immersive)
+        }
+        archivePageTasks[key] = task
+        defer { archivePageTasks.removeValue(forKey: key) }
+        let result = try await task.value
+        // Brief reuse makes tab returns instant and deduplicates simultaneous
+        // requests without keeping an archive feed stale for a whole session.
+        archivePages[key] = (result, .now.addingTimeInterval(30))
+        if archivePages.count > 24 { archivePages = archivePages.filter { $0.value.expiry > .now } }
+        return result
+    }
+
+    private func creatorCacheURL(for provider: Provider) -> URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("quicktick-\(provider.rawValue)-creators-v1.json")
+    }
+
+    private func creators(for provider: Provider) async throws -> [ArchiveCreator] {
+        if let cached = archiveCreators[provider] { return cached }
+        if let running = archiveCreatorTasks[provider] { return try await running.value }
+        if let file = creatorCacheURL(for: provider),
+           let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
+           let modified = attributes[.modificationDate] as? Date,
+           Date().timeIntervalSince(modified) < 3 * 86_400,
+           let data = try? Data(contentsOf: file),
+           let cached = try? JSONDecoder().decode([ArchiveCreator].self, from: data), !cached.isEmpty {
+            archiveCreators[provider] = cached
+            return cached
+        }
+        let session = self.session
+        let running = Task { try await NativeProviderAPI.archiveCreators(session: session, provider: provider) }
+        archiveCreatorTasks[provider] = running
+        defer { archiveCreatorTasks[provider] = nil }
+        let result = try await running.value
+        archiveCreators[provider] = result
+        if let file = creatorCacheURL(for: provider), let data = try? JSONEncoder().encode(result) {
+            try? data.write(to: file, options: .atomic)
+        }
+        return result
+    }
+
+    func prefetchArchiveCreators(for provider: Provider) async {
+        guard provider == .kemono || provider == .coomer else { return }
+        _ = try? await creators(for: provider)
     }
 
     func absoluteMediaURL(_ value: String, provider: Provider? = nil) throws -> URL {
@@ -118,7 +183,24 @@ actor QuicktickAPIClient {
     }
 
     func suggestions(provider: Provider, query: String) async throws -> [TagSuggestion] {
-        guard provider == .rule34, !query.isEmpty else { return [] }
+        guard !query.isEmpty else { return [] }
+        if provider == .coomer || provider == .kemono {
+            let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard needle.count >= 2 else { return [] }
+            let entries = try await creators(for: provider)
+            return entries.filter { $0.name.localizedLowercase.contains(needle) }
+                .sorted {
+                    let a = $0.name.localizedLowercase.hasPrefix(needle)
+                    let b = $1.name.localizedLowercase.hasPrefix(needle)
+                    if a != b { return a }
+                    if $0.favorites != $1.favorites { return $0.favorites > $1.favorites }
+                    return $0.name.localizedCompare($1.name) == .orderedAscending
+                }
+                .prefix(10).map {
+                    TagSuggestion(value: $0.reference, label: "\($0.name) · \($0.service)", count: $0.favorites)
+                }
+        }
+        guard provider == .rule34 else { return [] }
         let bytes = try await NativeProviderAPI.data(session: session, url: NativeProviderAPI.url("https://api.rule34.xxx/autocomplete.php", [.init(name: "q", value: query.replacingOccurrences(of: " ", with: "_"))]), provider: provider)
         let rows = NativeProviderAPI.rows(try JSONSerialization.jsonObject(with: bytes))
         return rows.prefix(10).compactMap { row in

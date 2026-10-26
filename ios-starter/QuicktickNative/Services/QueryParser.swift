@@ -108,6 +108,8 @@ struct SearchTag: Identifiable, Equatable, Sendable {
 }
 struct SearchDraft: Sendable {
     var text = ""
+    var archiveCreatorReference: String? = nil
+    var archiveCreatorLabel: String? = nil
     var tags: [SearchTag] = []
     var filters = SearchFilters()
     var sort = "recommended"

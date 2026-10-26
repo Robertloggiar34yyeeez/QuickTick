@@ -272,15 +272,30 @@ struct HomeFeedView: View {
         }
         .onAppear {
             playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
+            // Tab transitions clear the active player, but the Home feed's
+            // previously visible post is still known before SwiftUI delivers
+            // fresh geometry preferences. Restore it immediately so cards can
+            // start preparing playback rather than waiting for a second scroll.
+            if store.activeTab == 0, store.inlinePlaybackID == nil,
+               let retained = store.retainedHomePlaybackID, playableIDs.contains(retained) {
+                store.inlinePlaybackID = retained
+            }
             // Switching back from Immersive remounts Home. Frame preferences
             // can arrive before the resumed feed is fully laid out, so retry
-            // selection once after the first layout pass.
+            // selection through the first few layout passes.
             Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(180))
-                selectVisiblePlayback(viewport: viewport.size)
+                for delay in [120, 260, 420] {
+                    do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
+                    guard store.activeTab == 0 else { return }
+                    selectVisiblePlayback(viewport: viewport.size)
+                }
             }
         }
-        .onDisappear { scrollRestTask?.cancel(); pullRefreshGate.cancel() }
+        .onDisappear {
+            scrollRestTask?.cancel(); pullRefreshGate.cancel()
+            // Geometry from the outgoing tab is invalid on the next mount.
+            visibleFrames = [:]
+        }
         .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)

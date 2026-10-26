@@ -170,11 +170,13 @@ struct PassiveSkipPolicy {
         }
         return min(30, counts.reduce(0.0) { total, entry in
             let (term, count) = entry
-            guard count >= 2 else { return total }
+            // A single fast skip is weak evidence, but not zero evidence.
+            // It remains reversible and cannot hard-block a topic.
             let trusted = favored[term] ?? 0
             let strength = trusted >= 2.5 ? 0.12 : (trusted >= 1 ? 0.4 : 1.0)
             let contextual = ["power:", "role:", "scene:", "camera:", "setting:", "act:", "position:"].contains(where: term.hasPrefix)
-            return total + Double(min(5, count - 1)) * (contextual ? 4.0 : 2.4) * strength
+            let first = contextual ? 0.9 : 0.4
+            return total + (first + Double(min(5, count - 1)) * (contextual ? 4.0 : 2.4)) * strength
         })
     }
 }

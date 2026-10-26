@@ -101,7 +101,7 @@ struct RhythmTempoPlanner {
         }
         // Subdivisions never multiply the ramp speed. Short steps keep
         // triple/quad patterns smooth while allowing real slowdown sections.
-        let rate = (0.08 + max(0, min(1, intensity)) * 0.09) / subdivisions
+        let rate = (0.16 + max(0, min(1, intensity)) * 0.17) / subdivisions
         currentBPM = max(40.0, min(Self.maximumBPM,
             currentBPM + (targetBPM - currentBPM) * rate))
     }

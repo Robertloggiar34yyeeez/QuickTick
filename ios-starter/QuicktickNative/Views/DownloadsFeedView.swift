@@ -29,6 +29,7 @@ private struct DownloadContent: View {
                         Spacer()
                         Image(systemName: "arrow.down.to.line")
                             .font(.system(size: 23))
+                            .accessibilityHidden(true)
                             .foregroundStyle(.white)
                             .frame(width: 48, height: 48)
                             .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16))

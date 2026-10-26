@@ -230,6 +230,7 @@ struct ActionIcon: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 20, weight: .semibold))
+                .accessibilityHidden(true) // The enclosing button supplies a meaningful action label.
                 .symbolRenderingMode(.hierarchical)
                 .symbolEffect(.bounce, value: selected)
                 .foregroundStyle(selected ? AppTheme.accent : .white.opacity(0.9))

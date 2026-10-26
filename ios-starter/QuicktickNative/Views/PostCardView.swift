@@ -392,6 +392,7 @@ private struct FeedDownloadControl: View {
                     Image(systemName: saved ? "checkmark" : failed ? "arrow.clockwise" : "arrow.down.to.line")
                         .font(.system(size: 20, weight: .semibold))
                         .symbolEffect(.bounce, value: taps)
+                        .accessibilityHidden(true)
                 }
             }
             .foregroundStyle(saved ? AppTheme.accent : .white.opacity(0.9))
@@ -543,6 +544,7 @@ private struct FullComicView: View {
             } else if let preview {
                 Image(uiImage: preview).resizable().scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityHidden(true) // The scroll surface describes the image once it is ready.
                     .overlay(alignment: .bottom) {
                         HStack(spacing: 7) { InfinityLoader(size: 25); Text("Loading full resolution").font(.caption) }
                             .padding(10).background(.black.opacity(0.65), in: Capsule())
@@ -552,7 +554,12 @@ private struct FullComicView: View {
             else { VStack(spacing: 8) { InfinityLoader(size: 50); Text("Loading full image").font(.caption) }.foregroundStyle(.white) }
         }.overlay(alignment: .topTrailing) {
             Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.system(size: 20, weight: .bold)).frame(width: 48, height: 48)
+                // The iPad simulator has crashed while XCTest resolved a
+                // symbol's implicit accessibility localization in this cover.
+                // A text glyph avoids the framework lookup; the button retains
+                // its explicit, localized action label below.
+                Text("×").font(.system(size: 30, weight: .medium, design: .rounded)).frame(width: 48, height: 48)
+                    .accessibilityHidden(true)
                     .background(.ultraThinMaterial, in: Circle())
             }.buttonStyle(.plain).padding(12).accessibilityLabel("Close full image")
         }
@@ -612,6 +619,7 @@ private final class ComicScrollView: UIScrollView, UIScrollViewDelegate {
         imageView.frame = CGRect(origin: .zero, size: image.size); addSubview(imageView)
         contentSize = image.size; bouncesZoom = true
         accessibilityIdentifier = "full-comic-zoom"
+        accessibilityLabel = "Full image"
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layoutSubviews() {
@@ -645,6 +653,11 @@ private final class ComicTileView: UIView {
             tiled.levelsOfDetail = 8; tiled.levelsOfDetailBias = 3
         }
         isOpaque = true; backgroundColor = .black
+        // CATiledLayer's image tiles are visual content, not individual
+        // accessibility nodes. Exposing them can cause repeated AX snapshots
+        // while the tile workers are still painting.
+        isAccessibilityElement = false
+        accessibilityElementsHidden = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     nonisolated override func draw(_ rect: CGRect) {

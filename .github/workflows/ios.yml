@@ -157,13 +157,30 @@ jobs:
           IPAD=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPad" in x["name"]))')
           xcrun simctl boot "$IPAD" || true
           xcrun simctl bootstatus "$IPAD" -b
-          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$IPAD" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -only-testing:QuicktickNativeUITests/NavigationTests/testAdaptiveMediaAcrossOrientationsAndForeground -only-testing:QuicktickNativeUITests/NavigationTests/testHomeInlinePlaybackAndComicClose -only-testing:QuicktickNativeUITests/NavigationTests/testImmersiveIPadCanvasAndSideNavigation -only-testing:QuicktickNativeUITests/NavigationTests/testSearchAppearsOnceBeforeAndAfterSubmitting -only-testing:QuicktickNativeUITests/NavigationTests/testDownloadedImagesUseNormalFeedAndCloseFullComic -resultBundlePath logs/QuicktickIPadTests.xcresult test | tee logs/xcodebuild-ipad-test.txt
+          run_ipad_tests() {
+            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$IPAD" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -only-testing:QuicktickNativeUITests/NavigationTests/testAdaptiveMediaAcrossOrientationsAndForeground -only-testing:QuicktickNativeUITests/NavigationTests/testHomeInlinePlaybackAndComicClose -only-testing:QuicktickNativeUITests/NavigationTests/testImmersiveIPadCanvasAndSideNavigation -only-testing:QuicktickNativeUITests/NavigationTests/testSearchAppearsOnceBeforeAndAfterSubmitting -only-testing:QuicktickNativeUITests/NavigationTests/testDownloadedImagesUseNormalFeedAndCloseFullComic -resultBundlePath "logs/$1.xcresult" test | tee "logs/$2"
+          }
+          if ! run_ipad_tests QuicktickIPadTests xcodebuild-ipad-test.txt; then
+            # The previous run aborted inside Apple's AX symbol-localization
+            # snapshot with a damaged simulator malloc arena. Retry this
+            # *whole* suite once only for a lost simulator connection; keep
+            # real assertion failures red and preserve both sets of logs.
+            if ! grep -q 'Lost connection to the application' logs/xcodebuild-ipad-test.txt; then
+              exit 1
+            fi
+            echo '::warning::iPad accessibility connection crashed; retrying once on a clean simulator'
+            xcrun simctl shutdown "$IPAD" || true
+            xcrun simctl erase "$IPAD"
+            xcrun simctl boot "$IPAD"
+            xcrun simctl bootstatus "$IPAD" -b
+            run_ipad_tests QuicktickIPadRetryTests xcodebuild-ipad-retry-test.txt
+          fi
       - name: Export UI screenshots
         if: always()
         shell: bash
         run: |
           mkdir -p logs/screenshots logs/diagnostics
-          for suite in QuicktickOnboardingTests QuicktickPreferencesTests QuicktickImmersiveTests QuicktickTests QuicktickIPadTests; do
+          for suite in QuicktickOnboardingTests QuicktickPreferencesTests QuicktickImmersiveTests QuicktickTests QuicktickIPadTests QuicktickIPadRetryTests; do
             if [ -d "logs/$suite.xcresult" ]; then
               xcrun xcresulttool export attachments --path "logs/$suite.xcresult" --output-path "logs/screenshots/$suite" || true
               xcrun xcresulttool export diagnostics --path "logs/$suite.xcresult" --output-path "logs/diagnostics/$suite" || true

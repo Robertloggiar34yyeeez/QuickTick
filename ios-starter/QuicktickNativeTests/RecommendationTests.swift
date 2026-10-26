@@ -918,8 +918,13 @@ final class RhythmPhraseTests: XCTestCase {
              section: 1, intensity: 0.9, randomness: 0, randomUnit: 0.5)
         XCTAssertLessThan(firstAdaptiveTarget, 112, "Default Adaptive should slow early, not begin with a progressive sprint")
         let laterBurst = RhythmTempoPlanner.target(mode: .adaptive, baseBPM: 112,
+             section: 3, intensity: 0.9, randomness: 0, randomUnit: 0.5)
+        let recovery = RhythmTempoPlanner.target(mode: .adaptive, baseBPM: 112,
              section: 4, intensity: 0.9, randomness: 0, randomUnit: 0.5)
-        XCTAssertGreaterThan(laterBurst, 112)
+        XCTAssertGreaterThan(laterBurst, firstAdaptiveTarget)
+        XCTAssertLessThanOrEqual(laterBurst, RhythmTempoPlanner.maximumBPM)
+        XCTAssertLessThan(recovery, laterBurst * 0.85,
+                          "The quick burst must lead into a substantial slower recovery")
     }
 
     func testTempoPlannerBuildsThenSlowsDownWithinOneSession() {
@@ -937,9 +942,9 @@ final class RhythmPhraseTests: XCTestCase {
             }
             observed.append(planner.currentBPM)
         }
-        XCTAssertGreaterThan(observed.max() ?? 0, 120)
+        XCTAssertLessThanOrEqual(observed.max() ?? 0, RhythmTempoPlanner.maximumBPM)
         XCTAssertLessThan(observed.suffix(4).min() ?? 1000, observed.max() ?? 0)
-        XCTAssertTrue(observed.allSatisfy { (40...240).contains($0) })
+        XCTAssertTrue(observed.allSatisfy { (40...RhythmTempoPlanner.maximumBPM).contains($0) })
     }
 
     func testTempoPlannerClampsFastQuadAndKeepsCustomTempoSteady() {
@@ -948,7 +953,7 @@ final class RhythmPhraseTests: XCTestCase {
         for _ in 0..<600 {
             planner.tick(division: .quad, mode: .spam, baseBPM: 220,
                          intensity: 1, randomness: 1, bars: 2, randomUnit: 1)
-            XCTAssertTrue((40...240).contains(planner.currentBPM))
+            XCTAssertTrue((40...RhythmTempoPlanner.maximumBPM).contains(planner.currentBPM))
         }
         planner.reset(baseBPM: 103)
         for _ in 0..<200 {

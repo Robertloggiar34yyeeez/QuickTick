@@ -3,6 +3,25 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationExperienceRegressionTests: XCTestCase {
+    func testIPadImmersiveRecognizesShortVerticalFlicksWithoutDiagonalPaging() {
+        let height: CGFloat = 1_080
+        XCTAssertEqual(ImmersivePageSwipePolicy.direction(
+            translation: CGSize(width: 9, height: -56),
+            velocity: CGSize(width: 20, height: -160), viewportHeight: height), 1)
+        XCTAssertEqual(ImmersivePageSwipePolicy.direction(
+            translation: CGSize(width: 4, height: 26),
+            velocity: CGSize(width: 25, height: 720), viewportHeight: height), -1)
+        XCTAssertNil(ImmersivePageSwipePolicy.direction(
+            translation: CGSize(width: 4, height: 26),
+            velocity: CGSize(width: 25, height: 90), viewportHeight: height))
+        XCTAssertNil(ImmersivePageSwipePolicy.direction(
+            translation: CGSize(width: 95, height: 48),
+            velocity: CGSize(width: 700, height: 330), viewportHeight: height))
+        XCTAssertNil(ImmersivePageSwipePolicy.direction(
+            translation: CGSize(width: 4, height: 8),
+            velocity: CGSize(width: 0, height: 950), viewportHeight: height))
+    }
+
     func testDockSwipeChangesOneTabWithoutTriggeringMediaGestures() {
         XCTAssertEqual(TabSwipePolicy.destination(current: 0,
             translation: CGSize(width: -90, height: 5), vertical: false), 1)

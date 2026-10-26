@@ -42,8 +42,9 @@ struct ImmersiveFeedView: View {
                     ImmersiveItemView(post: post, offline: offline, active: true,
                                       presentationActive: presentationActive, playbackOwner: playbackOwner,
                                       collection: collectionTab != nil, previews: previews,
-                                      onPageSwipe: { translation in
+                                      onPageSwipe: { translation, velocity in
                                           pageSwipe(from: post.stableID, translation: translation,
+                                                    velocity: velocity,
                                                     viewportHeight: geo.size.height)
                                       })
                     .frame(width: geo.size.width, height: geo.size.height)
@@ -156,19 +157,21 @@ struct ImmersiveFeedView: View {
             else { Task { await store.selectFeedTab(0) } }
         }
     }
-    private func pageSwipe(from origin: String, translation: CGSize, viewportHeight: CGFloat) {
+    private func pageSwipe(from origin: String, translation: CGSize,
+                           velocity: CGSize, viewportHeight: CGFloat) {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
             print("QUICKTICK_PAGING_INPUT origin=\(origin) dy=\(Int(translation.height)) dx=\(Int(translation.width)) active=\(presentationActive) count=\(mediaPosts.count)")
         }
         #endif
-        guard presentationActive, abs(translation.height) > max(55, viewportHeight * 0.12),
-              abs(translation.height) > abs(translation.width) * 1.25,
+        guard presentationActive,
+              let direction = ImmersivePageSwipePolicy.direction(
+                  translation: translation, velocity: velocity, viewportHeight: viewportHeight),
               let index = mediaPosts.firstIndex(where: { $0.stableID == origin }) else { return }
-        let next = index + (translation.height < 0 ? 1 : -1)
+        let next = index + direction
         guard mediaPosts.indices.contains(next) else { return }
         let key = mediaPosts[next].stableID
-        pageDirection = translation.height < 0 ? 1 : -1
+        pageDirection = direction
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") { print("QUICKTICK_PAGING_SELECTED next=\(key)") }
         #endif
@@ -252,6 +255,23 @@ enum ImmersivePreloadPlan {
     }
 }
 
+/// A quick vertical flick should advance the feed even when the user's finger
+/// travels only a few dozen points on a large iPad. Keep diagonal/horizontal
+/// drags away from paging and scale ordinary swipes to the actual viewport.
+enum ImmersivePageSwipePolicy {
+    static func direction(translation: CGSize, velocity: CGSize,
+                          viewportHeight: CGFloat) -> Int? {
+        let travel = abs(translation.height)
+        let sideways = abs(translation.width)
+        let normalThreshold = min(64, max(38, viewportHeight * 0.055))
+        let deliberateDrag = travel >= normalThreshold && travel > sideways * 1.15
+        let quickFlick = travel >= 16 && travel > sideways * 0.8 &&
+            abs(velocity.height) >= 360 && abs(velocity.height) > abs(velocity.width) * 1.2
+        guard deliberateDrag || quickFlick else { return nil }
+        return translation.height < 0 ? 1 : -1
+    }
+}
+
 /// UIKit owns the media-area tap/pan arbitration. SwiftUI's exclusive double
 /// tap recognizer repeatedly won over both high-priority and simultaneous
 /// DragGesture paging on iPhone, even though it handled the taps correctly.
@@ -260,7 +280,7 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
     let id: String
     let onSingleTap: () -> Void
     let onDoubleTap: () -> Void
-    let onPan: (CGSize) -> Void
+    let onPan: (CGSize, CGSize) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(single: onSingleTap, double: onDoubleTap, pan: onPan)
@@ -298,10 +318,10 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
     final class Coordinator: NSObject {
         var single: () -> Void
         var double: () -> Void
-        var pan: (CGSize) -> Void
+        var pan: (CGSize, CGSize) -> Void
 
         init(single: @escaping () -> Void, double: @escaping () -> Void,
-             pan: @escaping (CGSize) -> Void) {
+             pan: @escaping (CGSize, CGSize) -> Void) {
             self.single = single
             self.double = double
             self.pan = pan
@@ -318,7 +338,9 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
         @objc func panned(_ recognizer: UIPanGestureRecognizer) {
             guard recognizer.state == .ended, let surface = recognizer.view else { return }
             let translation = recognizer.translation(in: surface)
-            pan(CGSize(width: translation.x, height: translation.y))
+            let velocity = recognizer.velocity(in: surface)
+            pan(CGSize(width: translation.x, height: translation.y),
+                CGSize(width: velocity.x, height: velocity.y))
         }
     }
 }
@@ -333,7 +355,7 @@ private struct ImmersiveItemView: View {
     let playbackOwner: String
     let collection: Bool
     @ObservedObject var previews: ImmersivePreviewCache
-    let onPageSwipe: (CGSize) -> Void
+    let onPageSwipe: (CGSize, CGSize) -> Void
     @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
     @State private var ready = false

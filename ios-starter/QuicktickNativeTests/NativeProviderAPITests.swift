@@ -49,7 +49,15 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"{"data":{"token":"fixture-warden-token"}}"#
         }
         else if host == "api.hentaihaven.app", path == "/v1/search" {
-            payload = #"{"data":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}]}"#
+            let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "q" })?.value
+            if q == "unavailable-response" {
+                payload = "<html><head><title>Site Unavailable</title></head><body>Unable to access this site.</body></html>"
+            } else if q == "unmatched-interest" {
+                payload = #"{"data":"No search results"}"#
+            } else {
+                payload = #"{"data":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}]}"#
+            }
         }
         else if host == "api.hentaihaven.app", path == "/v1/hentai/all" {
             payload = #"{"data":{"hentais":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"total_pages":3}}"#
@@ -68,11 +76,17 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if path == "/webmasters/search" || path == "/webmasters/search/" {
             let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                 .first(where: { $0.name == "search" })?.value
-            if search == "unavailable-route" || (path == "/webmasters/search" && search == "route-fixture") {
+            if search == "unavailable-route" || search == "public-html" ||
+               (path == "/webmasters/search" && search == "route-fixture") {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
             }
-            payload = #"{"videos":[{"video_id":"ph1","title":"Fixture","tags":[{"tag_name":"sample"}],"default_thumb":"https://cdn.pornhub.com/thumb.jpg"}]}"#
+            payload = search == "html-response"
+                ? "<html><head><title>404 Not Found</title></head><body>The requested URL was not found on this server.</body></html>"
+                : #"{"videos":[{"video_id":"ph1","title":"Fixture","tags":[{"tag_name":"sample"}],"default_thumb":"https://cdn.pornhub.com/thumb.jpg"}]}"#
+        }
+        else if host == "www.pornhub.com", path == "/video/search" {
+            payload = #"<html><ul><li class="videoblock videoBox" data-video-vkey="phpublic"><a href="/view_video.php?viewkey=phpublic" title="Public &amp; indexed"><img data-thumb_url="https://cdn.pornhub.com/public.jpg" alt="Public video"></a></li></ul></html>"#
         }
         else if path == "/view_video.php" {
             let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
@@ -229,6 +243,57 @@ final class NativeProviderAPITests: XCTestCase {
             $0.value(forHTTPHeaderField: "warden") == "fixture-warden-token" })
         XCTAssertFalse(requests.contains { $0.url?.host == "search.htv-services.com" })
         XCTAssertEqual(VisualDomain.classify(post), .anime)
+    }
+
+    func testHavenHTMLUnavailablePageIsNotMisreportedAsEmptyRecommendedFeed() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        do {
+            _ = try await api.posts(provider: .hhaven,
+                query: QueryParser.parse("unavailable-response"), page: 1)
+            XCTFail("Unavailable HTML from the catalog API must not become a zero-result feed")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Hentai Haven"))
+            XCTAssertTrue(error.localizedDescription.contains("unavailable"))
+        }
+    }
+
+    func testPornhubWebmaster404UsesSameSitePublicCatalog() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let result = try await api.posts(provider: .pornhub,
+            query: QueryParser.parse("public-html"), page: 1)
+        XCTAssertEqual(result.items.map(\.stableID), ["pornhub:phpublic"])
+        XCTAssertEqual(result.items.first?.caption, "Public & indexed")
+        XCTAssertEqual(result.items.first?.thumbUrl, "https://cdn.pornhub.com/public.jpg")
+        let requests = NativeProviderProtocol.log.snapshot()
+        XCTAssertTrue(requests.contains { $0.url?.path == "/webmasters/search" })
+        XCTAssertTrue(requests.contains { $0.url?.path == "/video/search" })
+        XCTAssertFalse(requests.contains { $0.url?.host?.contains("proxy") == true })
+    }
+
+    func testPornhubHTMLMissingPageAlsoFallsBackAndIsNeverTreatedAsJSON() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let result = try await api.posts(provider: .pornhub,
+            query: QueryParser.parse("html-response"), page: 1)
+        XCTAssertEqual(result.items.map(\.stableID), ["pornhub:phpublic"])
+        let unavailable = Data("<html><title>Site Unavailable</title></html>".utf8)
+        XCTAssertTrue(NativeProviderAPI.unavailableHTML(unavailable))
+        XCTAssertFalse(NativeProviderAPI.unavailableHTML(Data(#"{"videos":[]}"#.utf8)))
+    }
+
+    @MainActor func testHavenRecommendedKeepsSafeCatalogDiscoveryWhileWDTasteWarms() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+        await store.bootstrap()
+        store.selectedProvider = .hhaven
+        store.tasteSetup.sources[Provider.hhaven.rawValue] = TasteChoice(done: true, into: ["unmatched-interest"])
+        await store.recommendations.load(RecommendationState())
+        await store.refresh()
+        XCTAssertEqual(store.posts.map(\.stableID), ["hhaven:12"],
+            "A focused title miss must not erase an available public catalog page")
+        XCTAssertNil(store.lastError)
     }
 
     func testUnknownSiteCanDownloadValidDirectMediaWithoutProviderRequest() async throws {

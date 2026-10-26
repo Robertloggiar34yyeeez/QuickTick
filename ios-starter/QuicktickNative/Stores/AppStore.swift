@@ -505,6 +505,7 @@ final class AppStore: ObservableObject {
             guard generation == token, !Task.isCancelled else { return }
             encountered = []
             var filtered: [Post] = []
+            var havenExploration: [Post] = []
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
             var broaden = false
             // Keep an interactive refresh bounded; users can explicitly load
@@ -529,6 +530,12 @@ final class AppStore: ObservableObject {
                 }
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
                 incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
+                if personalized, provider == .hhaven, havenExploration.count < 32 {
+                    // Haven's title index is sparse and has no WD tags until
+                    // the idle visual worker has inspected a poster. Retain a
+                    // bounded, already-exclusion-checked discovery pool.
+                    havenExploration.append(contentsOf: incoming.prefix(32 - havenExploration.count))
+                }
                 if personalized {
                     // Metadata and cached appearance vectors only: no model
                     // loading, network requests or pixel decoding on first paint.
@@ -536,13 +543,25 @@ final class AppStore: ObservableObject {
                     filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
                         recent: [], visualScores: cachedAppearance, strict: true)
                 } else { filtered = incoming }
-                if filtered.isEmpty, let acquisition, acquisition.focused {
+                let focusedMiss = filtered.isEmpty && acquisition?.focused == true
+                if focusedMiss, let acquisition {
                     broaden = true
                     if page.hasMore == false { Task { await recommendations.markCandidateDrained(context: acquisition.context) } }
                 }
-                if !filtered.isEmpty || !hasMore { break }
+                // Even if a focused title search says "no more pages", one
+                // broad catalog request must run before an empty-screen error.
+                if !filtered.isEmpty || (!hasMore && !focusedMiss) { break }
             }
             var immediate = filtered
+            if immediate.isEmpty, personalized, provider == .hhaven, !havenExploration.isEmpty {
+                // A handful of clearly provisional discoveries is preferable
+                // to an empty Recommended page while WD poster evidence warms.
+                // Hard dislikes and exclusions remain enforced by rankFast.
+                let visualEvidence = await visual.scores(havenExploration)
+                immediate = Array((await recommendations.rankFast(havenExploration,
+                    taste: tasteChoice(for: provider), recent: [],
+                    visualScores: visualEvidence, strict: false)).prefix(12))
+            }
             if immediate.isEmpty, provider != .rule34,
                !parsed.included.isEmpty || !parsed.excluded.isEmpty {
                 // Some video providers search titles but omit searchable

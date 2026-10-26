@@ -118,6 +118,15 @@ enum NativeProviderAPI {
         return Double(text(value)) ?? 0
     }
     static func rows(_ value: Any?) -> [[String: Any]] { value as? [[String: Any]] ?? [] }
+
+    /// Some provider/CDN failures arrive as a 200 HTML page, so HTTP status
+    /// alone cannot distinguish a healthy catalog from an unavailable one.
+    static func unavailableHTML(_ bytes: Data) -> Bool {
+        let body = String(decoding: bytes.prefix(2_048), as: UTF8.self).lowercased()
+        return (body.contains("<html") || body.contains("<!doctype html")) &&
+            (body.contains("site unavailable") || body.contains("requested url was not found") ||
+             body.contains("access to this site") || body.contains("404 not found"))
+    }
     static func strings(_ value: Any?) -> [String] {
         if let values = value as? [String] { return values }
         if let values = value as? [[String: Any]] {
@@ -300,12 +309,20 @@ enum NativeProviderAPI {
     /// never a fabricated Android emulator fingerprint.
     static func havenToken(session: URLSession) async throws -> String {
         let body = "sdkInt=0&board=ios&brand=Apple&display=QuickTick_iOS&fingerprint=QuickTick_iOS&manufacturer=Apple&model=iOS"
-        let response = try object(await data(session: session,
+        let bytes = try await data(session: session,
             url: url("https://api.hentaihaven.app/v1/warden"), provider: .hhaven,
             method: "POST", body: Data(body.utf8), headers: [
                 "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
                 "User-Agent": "HH_xxx_APP", "warden": ""
-            ]))
+            ])
+        guard !unavailableHTML(bytes) else {
+            throw APIError.server("Hentai Haven's catalog API is currently unavailable. Its server returned an unavailable page instead of a token.")
+        }
+        guard !String(decoding: bytes.prefix(100), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<") else {
+            throw APIError.server("Hentai Haven returned a web page instead of an API token. The catalog may require access through its official app.")
+        }
+        let response = try object(bytes)
         let payload = response["data"] as? [String: Any] ?? [:]
         let token = text(payload["token"])
         guard !token.isEmpty else {
@@ -319,9 +336,16 @@ enum NativeProviderAPI {
         let bytes = try await data(session: session,
             url: url("https://api.hentaihaven.app/v1/" + path, parameters),
             provider: .hhaven, headers: ["User-Agent": "HH_xxx_APP", "warden": token])
+        guard !unavailableHTML(bytes) else {
+            throw APIError.server("Hentai Haven's catalog API is currently unavailable. Try again when its server is reachable.")
+        }
+        guard !String(decoding: bytes.prefix(100), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<") else {
+            throw APIError.server("Hentai Haven returned a web page instead of catalog data. It may be restricted from this client.")
+        }
         let result = try object(bytes)
         if let message = result["data"] as? String, message.hasPrefix("502") {
-            throw APIError.providerStatus(.hhaven, 401)
+            throw APIError.server("Hentai Haven's catalog server returned an upstream error (502). Try again later.")
         }
         return result
     }
@@ -346,8 +370,12 @@ enum NativeProviderAPI {
                                            path: route, parameters: parameters)
         let data = result["data"]
         let payload = data as? [String: Any] ?? [:]
+        let homeEntries = rows(payload["trending_month"] ?? payload["last"])
         let entries = rows(searching ? data :
-            (route == "hentai/home" ? payload["trending_month"] : payload["hentais"]))
+            (route == "hentai/home" ? (homeEntries.isEmpty ? payload["last"] : payload["trending_month"]) : payload["hentais"]))
+        if !searching, page == 1, entries.isEmpty {
+            throw APIError.server("Hentai Haven returned an empty catalog. Its provider API may be unavailable or may have changed its response format.")
+        }
         let posts: [Post] = entries.compactMap { entry in
             let id = text(entry["post_id"] ?? entry["id"])
             guard !id.isEmpty, id.allSatisfy(\.isNumber) else { return nil }
@@ -400,25 +428,26 @@ enum NativeProviderAPI {
         do { bytes = try await data(session: session, url: url("https://www.pornhub.com/webmasters/search", parameters), provider: .pornhub, headers: cookieHeaders(credentials)) }
         catch APIError.providerStatus(.pornhub, 404) {
             // Same public API and host; some deployments require the canonical
-            // trailing slash. Do not rotate to untrusted proxies or retry an
-            // intentional rate/auth block.
+            // trailing slash. If both public webmaster paths have gone away,
+            // use Pornhub's own public listing HTML. No proxy or bypass.
             do {
                 bytes = try await data(session: session, url: url("https://www.pornhub.com/webmasters/search/", parameters), provider: .pornhub, headers: cookieHeaders(credentials))
             } catch APIError.providerStatus(.pornhub, 404) {
-                throw APIError.server("Pornhub's public catalog endpoint is currently unavailable (404). Please try again later or open Pornhub directly.")
+                return try await pornhubPublicCatalog(session: session, credentials: credentials,
+                    query: query, page: page, sort: sort, immersive: immersive)
             }
         }
-        let result: [String: Any]
-        do { result = try object(bytes) }
-        catch {
-            let body = String(decoding: bytes.prefix(1_024), as: UTF8.self).lowercased()
-            if body.contains("requested url was not found") || body.contains("404 not found") {
-                throw APIError.server("Pornhub's public catalog is returning a missing-page response. Please try again later or open Pornhub directly.")
-            }
-            throw error
+        // A removed webmaster route can return a 200 HTML error. If so, try
+        // the site's documented public browsing pages before giving up.
+        guard let result = try? object(bytes), result["videos"] != nil else {
+            return try await pornhubPublicCatalog(session: session, credentials: credentials,
+                query: query, page: page, sort: sort, immersive: immersive)
         }
-        if result["videos"] == nil { throw APIError.server("Pornhub did not return a public feed. Check provider availability in your region.") }
         let raw = rows(result["videos"])
+        if raw.isEmpty, page == 1, query.included.isEmpty {
+            return try await pornhubPublicCatalog(session: session, credentials: credentials,
+                query: query, page: page, sort: sort, immersive: immersive)
+        }
         let posts = raw.map { row -> Post in
             let id = text(row["video_id"] ?? row["id"])
             var post = Post(key: "pornhub:\(id)", id: id, provider: "Pornhub", score: number(row["views"]),
@@ -427,6 +456,72 @@ enum NativeProviderAPI {
             post.caption = text(row["title"]); post.creator = text(row["username"]); return post
         }
         return self.page(posts, hasMore: raw.count >= 20, query: query, immersive: immersive)
+    }
+
+    /// Best-effort catalog fallback for deployments where the public webmaster
+    /// API has been removed. This only reads Pornhub's own public browse HTML;
+    /// it never follows third-party mirrors or works around a regional block.
+    static func pornhubPublicCatalog(session: URLSession, credentials: ProviderCredentials,
+                                     query: ParsedQuery, page: Int, sort: String,
+                                     immersive: Bool) async throws -> PostPage {
+        let searching = !query.included.isEmpty
+        let route = searching ? "https://www.pornhub.com/video/search" : "https://www.pornhub.com/video"
+        var parameters: [URLQueryItem] = [.init(name: "page", value: String(max(1, page)))]
+        if searching {
+            parameters.append(.init(name: "search", value: query.included.joined(separator: " ")))
+        } else {
+            parameters.append(.init(name: "o", value: sort == "recent" ? "mr" : "mv"))
+        }
+        let bytes: Data
+        do {
+            bytes = try await data(session: session, url: url(route, parameters),
+                                   provider: .pornhub, headers: cookieHeaders(credentials))
+        } catch APIError.providerStatus(.pornhub, 404) {
+            throw APIError.server("Pornhub's public webmaster API and public listing are both unavailable (404). Try again later or open the provider directly.")
+        }
+        guard !unavailableHTML(bytes) else {
+            throw APIError.server("Pornhub is returning an unavailable page from this network. QuickTick cannot load its catalog until access is restored.")
+        }
+        // Bound regex work on pages with large inline player/state scripts.
+        let html = String(decoding: bytes.prefix(2 * 1024 * 1024), as: UTF8.self)
+        let posts = pornhubHTMLPosts(html)
+        guard !posts.isEmpty else {
+            throw APIError.server("Pornhub's public webmaster API is unavailable, and its public page returned no readable videos. The provider may be restricted in your region.")
+        }
+        return self.page(posts, hasMore: posts.count >= 20, query: query, immersive: immersive)
+    }
+
+    /// Extract only public listing metadata, not player scripts, cookies, or
+    /// embedded media URLs. An unrecognized markup version fails explicitly.
+    static func pornhubHTMLPosts(_ html: String) -> [Post] {
+        let blocks = matches(html,
+            #"<li\b[^>]*(?:videoblock|videoBox)[^>]*>.*?</li>"#, group: 0)
+        let candidates = blocks.isEmpty
+            ? matches(html, #"<a\b[^>]*href=["'][^"']*view_video\.php\?viewkey=[^"']*["'][^>]*>.*?</a>"#, group: 0)
+            : blocks
+        var seen = Set<String>()
+        return candidates.prefix(100).compactMap { block -> Post? in
+            let key = matches(block, #"data-video-vkey\s*=\s*["']([a-zA-Z0-9_]+)["']"#).first
+                ?? matches(block, #"view_video\.php\?viewkey=([a-zA-Z0-9_]+)"#).first
+            guard let key, seen.insert(key).inserted else { return nil }
+            let rawTitle = matches(block, #"\btitle\s*=\s*["']([^"']+)["']"#).first
+                ?? matches(block, #"\balt\s*=\s*["']([^"']+)["']"#).first ?? ""
+            let title = rawTitle.replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "&#39;", with: "'")
+            let poster = [#"data-thumb_url\s*=\s*["']([^"']+)["']"#,
+                          #"data-mediumthumb\s*=\s*["']([^"']+)["']"#,
+                          #"\bsrc\s*=\s*["']([^"']+)["']"#]
+                .compactMap { matches(block, $0).first }
+                .compactMap { mediaURL($0.replacingOccurrences(of: "&amp;", with: "&")) }
+                .first?.absoluteString ?? ""
+            var post = Post(key: "pornhub:\(key)", id: key, provider: Provider.pornhub.rawValue,
+                            tags: title.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init),
+                            thumbUrl: poster,
+                            pageUrl: "https://www.pornhub.com/view_video.php?viewkey=\(key)", type: "video")
+            post.caption = title
+            return post
+        }.prefix(40).map { $0 }
     }
 
     static func cookieHeaders(_ credentials: ProviderCredentials) -> [String: String] {

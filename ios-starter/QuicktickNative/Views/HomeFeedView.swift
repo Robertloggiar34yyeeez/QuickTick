@@ -156,7 +156,12 @@ struct HomeFeedView: View {
                     homeCategoryRow
                 }
                 if let error = store.lastError {
-                    ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
+                    ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: {
+                        Button("Try again") { Task { await store.refresh() } }
+                        if store.selectedProvider == .hhaven || store.selectedProvider == .nhentai {
+                            Link("Open provider website", destination: NativeProviderAPI.origin(store.selectedProvider))
+                        }
+                    }
                 } else if store.posts.isEmpty && !store.isLoading {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))
                 }

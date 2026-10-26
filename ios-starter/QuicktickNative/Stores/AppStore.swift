@@ -511,27 +511,28 @@ final class AppStore: ObservableObject {
                 Task(priority: .utility) { await recordSearch(provider: provider, query: search) }
             }
             let personalized = requestedSort == "recommended" && parsed.included.isEmpty
-            // Hentai Haven's finite catalog is browsed by actual pages. Its
-            // historical focused-query cursors can outlive the available
-            // pages and leave Recommended permanently empty.
-            let directHaven = personalized && provider == .hhaven
+            // Hentai Haven has a small finite catalog; NHentai's public v2 API
+            // permits only 15 anonymous catalog calls/minute. Fetch one real
+            // page and rank locally rather than racing focused+broad requests.
+            let directCatalog = personalized && (provider == .hhaven || provider == .nhentai)
             let banned = Set((exclusions + parsed.excluded + tasteChoice(for: provider).notInto).map(RecommendationTagRules.canonical))
             let context = provider.rawValue + "|batch40|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
-            candidateContext = personalized && !directHaven ? context : nil
+            candidateContext = personalized && !directCatalog ? context : nil
             var requestedPage = 1
             guard generation == token, !Task.isCancelled else { return }
             encountered = []
             var filtered: [Post] = []
             var havenExploration: [Post] = []
             var havenSafeCatalog: [Post] = []
+            var nhentaiDiscovery: [Post] = []
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
             var broaden = false
             // Keep an interactive refresh bounded; users can explicitly load
             // more after three sparse/filtered pages without a long spinner.
-            for _ in 0..<3 {
+            for _ in 0..<(provider == .nhentai && directCatalog ? 1 : 3) {
                 guard generation == token, !Task.isCancelled else { return }
                 let response: (page: PostPage, request: RecommendationEngine.CandidateRequest?)
-                if directHaven {
+                if directCatalog {
                     response = try await fetchCandidates(provider: provider, parsed: parsed,
                         context: nil, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly)
                 } else if personalized && !broaden {
@@ -557,6 +558,9 @@ final class AppStore: ObservableObject {
                 }
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
                 incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
+                if personalized, provider == .nhentai {
+                    nhentaiDiscovery.append(contentsOf: incoming.prefix(max(0, 40 - nhentaiDiscovery.count)))
+                }
                 if personalized, provider == .hhaven, havenExploration.count < 32 {
                     // Haven's title index is sparse and has no WD tags until
                     // the idle visual worker has inspected a poster. Retain a
@@ -577,7 +581,7 @@ final class AppStore: ObservableObject {
                 }
                 // Even if a focused title search says "no more pages", one
                 // broad catalog request must run before an empty-screen error.
-                if !filtered.isEmpty || (directHaven && !havenSafeCatalog.isEmpty) || (!hasMore && !focusedMiss) { break }
+                if !filtered.isEmpty || (directCatalog && !havenSafeCatalog.isEmpty) || (!hasMore && !focusedMiss) { break }
             }
             var immediate = filtered
             if immediate.isEmpty, personalized, provider == .hhaven, !havenExploration.isEmpty {
@@ -602,6 +606,20 @@ final class AppStore: ObservableObject {
                 immediate = Array((await recommendations.rankFast(eligible,
                     taste: tasteChoice(for: provider), recent: [],
                     visualScores: visualEvidence, strict: false)).prefix(12))
+            }
+            if immediate.isEmpty, personalized, provider == .nhentai {
+                // V2 list responses contain titles and numeric tag IDs, not
+                // human-readable tags. Don't mistake missing WD evidence for
+                // a dislike and throw away an otherwise healthy catalog.
+                let eligible = feedExclusions.filter(nhentaiDiscovery,
+                    favorites: Array(favorites.values), recommended: false,
+                    favoriteIDs: favoriteExclusionIDs)
+                if !eligible.isEmpty {
+                    let visualEvidence = await visual.scores(eligible)
+                    immediate = Array((await recommendations.rankFast(eligible,
+                        taste: tasteChoice(for: provider), recent: [],
+                        visualScores: visualEvidence, strict: false)).prefix(12))
+                }
             }
             if immediate.isEmpty, provider != .rule34,
                !parsed.included.isEmpty || !parsed.excluded.isEmpty {
@@ -667,8 +685,8 @@ final class AppStore: ObservableObject {
         do {
             let parsed = QueryParser.parse(queryText)
             lastError = nil
-            let directHaven = provider == .hhaven && feedSort == "recommended" && parsed.included.isEmpty
-            let personalizedPage = candidateContext != nil || directHaven
+            let directCatalog = (provider == .hhaven || provider == .nhentai) && feedSort == "recommended" && parsed.included.isEmpty
+            let personalizedPage = candidateContext != nil || directCatalog
             // Skip sparse, duplicate and fully filtered pages without waiting for
             // a last-card onAppear that will never fire again.
             var broaden = false
@@ -698,7 +716,7 @@ final class AppStore: ObservableObject {
                 let cachedAppearance = await visual.scores(candidates)
                 let strict = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                     recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: true)
-                if strict.isEmpty && directHaven {
+                if strict.isEmpty && directCatalog {
                     ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                         recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: false)
                 } else { ranked = strict }

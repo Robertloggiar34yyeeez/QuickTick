@@ -27,6 +27,9 @@ actor ProviderRequestGate {
 // requests in this service use the optional QuickTick Sync origin.
 enum NativeProviderAPI {
     static let userAgent = "QuickTickNative/0.9.6"
+    // nHentai requests specifically ask clients for an identifying UA; keep
+    // the project URL rather than impersonating a browser or official app.
+    static let nhentaiHeaders = ["User-Agent": "QuickTick/0.9.9 (https://github.com/Robertloggiar34yyeeez/QuickTick)"]
     static let quicktickHost = "quick-tick-webb.vercel.app"
 
     static func origin(_ provider: Provider) -> URL {
@@ -153,22 +156,29 @@ enum NativeProviderAPI {
         // The v2 list omits human-readable tag names. Send explicit negatives
         // to the provider, as the local list cannot reliably filter tag IDs.
         let terms = (query.included + query.excluded.map { "-" + $0 }).joined(separator: " ")
+        let popular = terms.isEmpty && sort == "popular"
+        if popular && page > 1 { return PostPage(items: [], hasMore: false) }
         var parameters = [URLQueryItem(name: "page", value: String(max(1, page)))]
         if !terms.isEmpty {
             parameters.append(.init(name: "query", value: terms))
             parameters.append(.init(name: "sort", value: sort == "popular" ? "popular" : "date"))
         }
-        let endpoint = terms.isEmpty ? "https://nhentai.net/api/v2/galleries" : "https://nhentai.net/api/v2/search"
+        let endpoint = popular ? "https://nhentai.net/api/v2/galleries/popular" :
+            (terms.isEmpty ? "https://nhentai.net/api/v2/galleries" : "https://nhentai.net/api/v2/search")
         let bytes: Data
         do {
-            bytes = try await data(session: session, url: url(endpoint, parameters), provider: .nhentai)
+            bytes = try await data(session: session, url: url(endpoint, popular ? [] : parameters), provider: .nhentai,
+                                   headers: nhentaiHeaders)
         } catch APIError.providerStatus(.nhentai, 403) {
-            throw APIError.server("NHentai denied access to its public v2 API (HTTP 403). Check access to nhentai.net on this network.")
+            throw APIError.server("NHentai rejected API access (HTTP 403). Its public v2 endpoint may be restricted on this network. Open nhentai.net in Safari to check access.")
         }
-        guard !unavailableHTML(bytes), let json = try? object(bytes) else {
+        guard !unavailableHTML(bytes),
+              let payload = try? JSONSerialization.jsonObject(with: bytes),
+              (popular ? payload is [[String: Any]] : payload is [String: Any]) else {
             throw APIError.server("NHentai returned an unavailable v2 catalog page. Check access to its public API from this network.")
         }
-        let books = rows(json["result"])
+        let json = payload as? [String: Any] ?? [:]
+        let books = popular ? (payload as? [[String: Any]] ?? []) : rows(json["result"])
         let posts = books.compactMap { book -> Post? in
             let id = text(book["id"]), mediaID = text(book["media_id"])
             guard !id.isEmpty, id.utf8.allSatisfy({ (48...57).contains($0) }),
@@ -186,14 +196,16 @@ enum NativeProviderAPI {
             post.width = number(book["thumbnail_width"]); post.height = number(book["thumbnail_height"])
             return post
         }
-        let filtered = self.page(posts, hasMore: page < max(1, Int(number(json["num_pages"]))), query: query, immersive: false)
+        let filtered = self.page(posts,
+            hasMore: !popular && page < max(1, Int(number(json["num_pages"]))), query: query, immersive: false)
         return filtered
     }
 
     static func nhentaiPages(session: URLSession, bookID: String) async throws -> [URL] {
         guard !bookID.isEmpty, bookID.count <= 12,
               bookID.utf8.allSatisfy({ (48...57).contains($0) }) else { throw APIError.invalidResponse }
-        let bytes = try await data(session: session, url: url("https://nhentai.net/api/v2/galleries/" + bookID), provider: .nhentai)
+        let bytes = try await data(session: session, url: url("https://nhentai.net/api/v2/galleries/" + bookID),
+                                   provider: .nhentai, headers: nhentaiHeaders)
         guard !unavailableHTML(bytes), let gallery = try? object(bytes) else {
             throw APIError.server("Unable to load manga pages from NHentai.")
         }
@@ -412,6 +424,7 @@ enum NativeProviderAPI {
             throw APIError.server("Hentai Haven returned a web page instead of an API token. The catalog may require access through its official app.")
         }
         let response = try object(bytes)
+        try checkHavenEmbeddedStatus(response)
         let payload = response["data"] as? [String: Any] ?? [:]
         let token = text(payload["token"])
         guard !token.isEmpty else {
@@ -433,10 +446,19 @@ enum NativeProviderAPI {
             throw APIError.server("Hentai Haven returned a web page instead of catalog data. It may be restricted from this client.")
         }
         let result = try object(bytes)
-        if let message = result["data"] as? String, message.hasPrefix("502") {
-            throw APIError.server("Hentai Haven's catalog server returned an upstream error (502). Try again later.")
-        }
+        try checkHavenEmbeddedStatus(result)
         return result
+    }
+
+    static func checkHavenEmbeddedStatus(_ result: [String: Any]) throws {
+        // This API can return 200 HTTP with a string body beginning "502" or
+        // "429". Treating those as a successful empty catalog caused repeated
+        // blank feeds and needless refreshes.
+        guard let message = result["data"] as? String,
+              message.count >= 3, let code = Int(message.prefix(3)),
+              (400...599).contains(code) else { return }
+        if code == 429 { throw APIError.rateLimited(.hhaven, .now.addingTimeInterval(30)) }
+        throw APIError.server("Hentai Haven's upstream API returned error \(code). Its catalog may be temporarily unavailable.")
     }
 
     static func haven(session: URLSession, token: String, query: ParsedQuery,

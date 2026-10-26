@@ -53,6 +53,10 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 .first(where: { $0.name == "q" })?.value
             if q == "unavailable-response" {
                 payload = "<html><head><title>Site Unavailable</title></head><body>Unable to access this site.</body></html>"
+            } else if q == "embedded-429" {
+                payload = #"{"data":"429 Too many requests"}"#
+            } else if q == "embedded-502" {
+                payload = #"{"data":"502 Upstream unavailable"}"#
             } else if q == "unmatched-interest" {
                 payload = #"{"data":"No search results"}"#
             } else {
@@ -75,6 +79,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "nhentai.net", path.hasPrefix("/api/galleries") || path.hasPrefix("/api/gallery/") {
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocolDidFinishLoading(self); return
+        }
+        else if host == "nhentai.net", path == "/api/v2/galleries/popular" {
+            payload = #"[{"id":456,"media_id":"321","english_title":"Space adventure","thumbnail":"galleries/321/cover.png","thumbnail_width":600,"thumbnail_height":900}]"#
         }
         else if host == "nhentai.net", path == "/api/v2/galleries" || path == "/api/v2/search" {
             payload = #"{"result":[{"id":456,"media_id":"321","english_title":"Space adventure","japanese_title":null,"thumbnail":"galleries/321/cover.png","thumbnail_width":600,"thumbnail_height":900,"num_pages":3,"tag_ids":[100,200]}],"num_pages":3,"per_page":25}"#
@@ -274,6 +281,22 @@ final class NativeProviderAPITests: XCTestCase {
         }
     }
 
+    func testHavenEmbeddedRateLimitAndUpstreamFailuresAreNotEmptyCatalogs() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        do {
+            _ = try await api.posts(provider: .hhaven, query: QueryParser.parse("embedded-429"), page: 1)
+            XCTFail("Embedded 429 must not silently become an empty page")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("limiting requests"))
+        }
+        do {
+            _ = try await api.posts(provider: .hhaven, query: QueryParser.parse("embedded-502"), page: 1)
+            XCTFail("Embedded 502 must not silently become an empty page")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("upstream"))
+        }
+    }
+
     func testHomeCategoryChipsHaveValidProviderSpecificFilters() {
         let haven = ProviderSearchCategories.suggestions(provider: .hhaven)
         let pornhub = ProviderSearchCategories.suggestions(provider: .pornhub)
@@ -351,6 +374,10 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(home.items.first?.mediaUrl, "https://t1.nhentai.net/galleries/321/cover.png")
         XCTAssertEqual(home.items.first?.caption, "Space adventure")
         XCTAssertEqual(home.hasMore, true)
+        let recentRequest = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first {
+            $0.url?.path == "/api/v2/galleries"
+        })
+        XCTAssertTrue(recentRequest.value(forHTTPHeaderField: "User-Agent")?.contains("QuickTick/0.9.9") == true)
         XCTAssertEqual(NativeProviderAPI.nhentaiImageURL(path: "2.png", mediaID: "321", thumbnail: false)?.absoluteString,
                        "https://i1.nhentai.net/galleries/321/2.png")
         XCTAssertNil(NativeProviderAPI.nhentaiImageURL(path: "https://example.invalid/page.jpg", mediaID: "321", thumbnail: false))
@@ -363,6 +390,15 @@ final class NativeProviderAPITests: XCTestCase {
         let searched = try await api.posts(provider: .nhentai,
             query: QueryParser.parse("cosplay"), page: 2)
         XCTAssertEqual(searched.items.count, 1)
+        let popular = try await api.posts(provider: .nhentai,
+            query: ParsedQuery(included: [], excluded: []), page: 1, sort: "popular")
+        XCTAssertEqual(popular.items.map(\.stableID), ["nhentai:456"])
+        XCTAssertEqual(popular.hasMore, false)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v2/galleries/popular" })
+        let beforeRepeatedBrowse = NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/api/v2/galleries" }.count
+        _ = try await api.posts(provider: .nhentai, query: ParsedQuery(included: [], excluded: []), page: 1)
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/api/v2/galleries" }.count, beforeRepeatedBrowse,
+            "Short catalog cache should avoid spending a second anonymous rate-limit request")
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
             $0.url?.path == "/api/v2/search" &&
                 URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?

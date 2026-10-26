@@ -66,6 +66,8 @@ actor QuicktickAPIClient {
     private let havenAuth = HavenAuthentication()
     private var havenPages: [String: (page: PostPage, expiry: Date)] = [:]
     private var havenPageTasks: [String: Task<PostPage, Error>] = [:]
+    private var nhentaiPages: [String: (page: PostPage, expiry: Date)] = [:]
+    private var nhentaiPageTasks: [String: Task<PostPage, Error>] = [:]
     private var archivePages: [String: (page: PostPage, expiry: Date)] = [:]
     private var archivePageTasks: [String: Task<PostPage, Error>] = [:]
     private var archiveCreators: [Provider: [ArchiveCreator]] = [:]
@@ -126,7 +128,7 @@ actor QuicktickAPIClient {
     func posts(provider: Provider, query: ParsedQuery, page: Int, sort: String = "recommended", immersive: Bool = false) async throws -> PostPage {
         switch provider {
         case .rule34: return try await NativeProviderAPI.rule34(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
-        case .nhentai: return try await NativeProviderAPI.nhentai(session: session, query: query, page: page, sort: sort, immersive: immersive)
+        case .nhentai: return try await cachedNHentaiPosts(query: query, page: page, sort: sort, immersive: immersive)
         case .coomer, .kemono:
             return try await cachedArchivePosts(provider: provider, query: query, page: page, immersive: immersive)
         case .eporner: return try await NativeProviderAPI.eporner(session: session, query: query, page: page, sort: sort, immersive: immersive)
@@ -150,6 +152,36 @@ actor QuicktickAPIClient {
         try await NativeProviderAPI.nhentaiPages(session: session, bookID: bookID)
     }
 
+    private func cachedNHentaiPosts(query: ParsedQuery, page: Int, sort: String,
+                                    immersive: Bool) async throws -> PostPage {
+        if immersive { return PostPage(items: [], hasMore: false) }
+        let key = "\(page)|\(sort)|\(QueryParser.formatted(query))"
+        if let saved = nhentaiPages[key], saved.expiry > .now { return saved.page }
+        if let running = nhentaiPageTasks[key] { return try await running.value }
+        let clientSession = session
+        let request = Task<PostPage, Error> {
+            try await NativeProviderAPI.nhentai(session: clientSession, query: query,
+                page: page, sort: sort, immersive: false)
+        }
+        nhentaiPageTasks[key] = request
+        defer { nhentaiPageTasks[key] = nil }
+        do {
+            let page = try await request.value
+            nhentaiPages[key] = (page, .now.addingTimeInterval(90))
+            if nhentaiPages.count > 32 {
+                nhentaiPages = nhentaiPages.filter { $0.value.expiry > .now }
+            }
+            return page
+        } catch {
+            // A short outage must not immediately blank a catalog that was
+            // fetched successfully during this app session.
+            if let saved = nhentaiPages[key], saved.expiry > .now.addingTimeInterval(-15 * 60) {
+                return saved.page
+            }
+            throw error
+        }
+    }
+
     private func cachedHavenPosts(query: ParsedQuery, page: Int, sort: String,
                                   immersive: Bool) async throws -> PostPage {
         let key = "\(page)|\(sort)|\(immersive)|\(QueryParser.formatted(query))"
@@ -171,12 +203,21 @@ actor QuicktickAPIClient {
         }
         havenPageTasks[key] = request
         defer { havenPageTasks[key] = nil }
-        let response = try await request.value
-        // A short-lived cache enables instant Home/Immersive returns without
-        // baking in stale upstream catalogs for an entire session.
-        havenPages[key] = (response, .now.addingTimeInterval(50))
-        if havenPages.count > 24 { havenPages = havenPages.filter { $0.value.expiry > .now } }
-        return response
+        do {
+            let response = try await request.value
+            // Successful catalogs remain usable for a short outage while
+            // token refreshes and the source's upstream API recover.
+            havenPages[key] = (response, .now.addingTimeInterval(90))
+            if havenPages.count > 24 {
+                havenPages = havenPages.filter { $0.value.expiry > .now.addingTimeInterval(-20 * 60) }
+            }
+            return response
+        } catch {
+            if let saved = havenPages[key], saved.expiry > .now.addingTimeInterval(-20 * 60) {
+                return saved.page
+            }
+            throw error
+        }
     }
 
     private func cachedArchivePosts(provider: Provider, query: ParsedQuery, page: Int,

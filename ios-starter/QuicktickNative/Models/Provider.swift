@@ -1,10 +1,10 @@
 import Foundation
 
 enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
-    case rule34, redgifs, pornhub, eporner, hhaven, coomer, kemono
+    case rule34, redgifs, pornhub, eporner, hhaven, coomer, kemono, nhentai
     // Keep recognizing historical downloads, but don't offer new Hanime feeds.
     case hanime
-    static var allCases: [Provider] { [.rule34, .redgifs, .pornhub, .eporner, .hhaven, .coomer, .kemono] }
+    static var allCases: [Provider] { [.rule34, .redgifs, .pornhub, .eporner, .hhaven, .coomer, .kemono, .nhentai] }
     var id: String { rawValue }
     /// Older imports and restored downloads may use website names instead of
     /// the canonical provider ID. Restrict aliases to known sources rather
@@ -22,6 +22,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         case "hhaven", "hentaihaven", "hentaihavenapp", "hentaihavenxxx": return .hhaven
         case "coomer", "coomerst": return .coomer
         case "kemono", "kemonocr": return .kemono
+        case "nhentai", "nhentainet": return .nhentai
         default: return nil
         }
     }
@@ -33,7 +34,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
                                   ("pornhub.com", .pornhub), ("eporner.com", .eporner),
                                   ("hanime.tv", .hanime), ("hentaihaven.xxx", .hhaven),
                                   ("hentaihaven.app", .hhaven), ("coomer.st", .coomer),
-                                  ("kemono.cr", .kemono)] {
+                                  ("kemono.cr", .kemono), ("nhentai.net", .nhentai)] {
             if host == domain || host.hasSuffix("." + domain) { return source }
         }
         return nil
@@ -48,6 +49,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .hhaven: "HH"
         case .coomer: "CO"
         case .kemono: "KE"
+        case .nhentai: "NH"
         }
     }
     var displayName: String {
@@ -60,6 +62,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .hhaven: "Hentai Haven"
         case .coomer: "Coomer"
         case .kemono: "Kemono"
+        case .nhentai: "NHentai"
         }
     }
 }

@@ -68,6 +68,12 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "api.hentaihaven.app", path == "/v1/genre/17" {
             payload = #"{"data":{"hentais":[{"post_id":34,"post_title":"Maid academy","post_thumbnail":"https://cdn.hentaihaven.app/maid.jpg"}],"total_pages":2}}"#
         }
+        else if host == "nhentai.net", path == "/api/galleries/all" || path == "/api/galleries/search" {
+            payload = #"{"result":[{"id":456,"media_id":"321","title":{"english":"Space adventure"},"images":{"cover":{"t":"p","w":600,"h":900}},"tags":[{"name":"Cosplay"},{"name":"Sci-Fi"}]}],"num_pages":3}"#
+        }
+        else if host == "nhentai.net", path == "/api/gallery/456" {
+            payload = #"{"id":456,"media_id":"321","images":{"pages":[{"t":"j"},{"t":"p"},{"t":"w"}]}}"#
+        }
         else if host == "api.hentaihaven.app", path == "/v1/hentai/12" {
             payload = #"{"data":{"post_id":12,"episodes":[{"chapter_id":34,"chapter_name":"Episode 1"}]}}"#
         }
@@ -290,6 +296,56 @@ final class NativeProviderAPITests: XCTestCase {
                 URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
                     .queryItems?.contains(where: { $0.name == "p" && $0.value == "1" }) == true
         })
+    }
+
+    func testNHentaiGalleryBrowseSearchAndCompletePageManifest() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        XCTAssertEqual(Provider.identify("nhentai.net"), .nhentai)
+        XCTAssertEqual(Provider.identifyPage("https://nhentai.net/g/456/"), .nhentai)
+        XCTAssertEqual(VisualDomain.classify(Post(key: "nhentai:456", id: "456", provider: "nhentai", type: "manga")), .anime)
+        XCTAssertTrue(AnimeVisualRecommendationPolicy.usesWDTagger(
+            Post(key: "nhentai:456", id: "456", provider: "nhentai", type: "manga"), domain: .anime))
+        let home = try await api.posts(provider: .nhentai,
+            query: ParsedQuery(included: [], excluded: []), page: 1)
+        XCTAssertEqual(home.items.map(\.stableID), ["nhentai:456"])
+        XCTAssertEqual(home.items.first?.type, "manga")
+        XCTAssertEqual(home.items.first?.mediaUrl, "https://t1.nhentai.net/galleries/321/cover.png")
+        XCTAssertEqual(home.items.first?.caption, "Space adventure")
+        XCTAssertEqual(home.hasMore, true)
+        let pages = try await api.mangaPages(bookID: "456")
+        XCTAssertEqual(pages.map(\.absoluteString), [
+            "https://i1.nhentai.net/galleries/321/1.jpg",
+            "https://i1.nhentai.net/galleries/321/2.png",
+            "https://i1.nhentai.net/galleries/321/3.webp"
+        ])
+        let searched = try await api.posts(provider: .nhentai,
+            query: QueryParser.parse("cosplay"), page: 2)
+        XCTAssertEqual(searched.items.count, 1)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path == "/api/galleries/search" &&
+                URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?.contains(where: { $0.name == "query" && $0.value == "cosplay" }) == true
+        })
+        let immersivePage = try await api.posts(provider: .nhentai,
+            query: ParsedQuery(included: [], excluded: []), page: 1, immersive: true)
+        XCTAssertTrue(immersivePage.items.isEmpty)
+    }
+
+    func testSuggestedThemesRespectProviderPreferencesAndRequireRealExamples() {
+        let preferred = Post(key: "nhentai:456", id: "456", provider: "nhentai",
+            tags: ["cosplay", "adventure"], thumbUrl: "https://t1.nhentai.net/galleries/321/cover.jpg",
+            type: "manga")
+        let unrelated = Post(key: "rule34:1", id: "1", provider: "rule34",
+            tags: ["cosplay"], thumbUrl: "https://example.com/unrelated.jpg", type: "image")
+        let suggestions = HomeThemeSuggestions.make(provider: .nhentai,
+            learned: ["cosplay"], chosen: [], visual: ["adventure"],
+            favorites: [preferred, unrelated], posts: [], excluded: ["adventure"])
+        XCTAssertEqual(suggestions.map(\.term), ["cosplay"])
+        XCTAssertEqual(suggestions.first?.imageURL, preferred.thumbUrl)
+        XCTAssertTrue(HomeThemeSuggestions.make(provider: .redgifs,
+            learned: ["cosplay"], chosen: [], visual: [],
+            favorites: [preferred], posts: [unrelated], excluded: []).isEmpty)
     }
 
     func testPornhubHomeCategoryUsesActualCategoryParameter() async throws {

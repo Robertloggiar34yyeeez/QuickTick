@@ -39,6 +39,7 @@ enum NativeProviderAPI {
         case .hhaven: URL(string: "https://hentaihaven.xxx")!
         case .coomer: URL(string: "https://coomer.st")!
         case .kemono: URL(string: "https://kemono.cr")!
+        case .nhentai: URL(string: "https://nhentai.net")!
         }
     }
 
@@ -118,6 +119,70 @@ enum NativeProviderAPI {
         return Double(text(value)) ?? 0
     }
     static func rows(_ value: Any?) -> [[String: Any]] { value as? [[String: Any]] ?? [] }
+
+    /// The public nHentai gallery API exposes a book's media ID and per-page
+    /// file types. The linked .NET library documents this URL layout; no .NET
+    /// dependency or HTML scraping is needed inside the iOS client.
+    static func nhentaiExtension(_ value: Any?) -> String {
+        switch text(value).lowercased() {
+        case "p": "png"
+        case "w": "webp"
+        case "g": "gif"
+        default: "jpg"
+        }
+    }
+
+    static func nhentai(session: URLSession, query: ParsedQuery, page: Int,
+                        sort: String, immersive: Bool) async throws -> PostPage {
+        if immersive { return PostPage(items: [], hasMore: false) } // Books are read, not auto-played.
+        let terms = query.included.joined(separator: " ")
+        var parameters = [URLQueryItem(name: "page", value: String(max(1, page)))]
+        if !terms.isEmpty { parameters.append(.init(name: "query", value: terms)) }
+        if sort == "popular" && !terms.isEmpty { parameters.append(.init(name: "sort", value: "popular")) }
+        let endpoint = terms.isEmpty ? "https://nhentai.net/api/galleries/all" : "https://nhentai.net/api/galleries/search"
+        let bytes = try await data(session: session, url: url(endpoint, parameters), provider: .nhentai)
+        guard !unavailableHTML(bytes), let json = try? object(bytes) else {
+            throw APIError.server("NHentai returned an unavailable catalog page. Check that its public API is accessible from this network.")
+        }
+        let books = rows(json["result"])
+        let posts = books.compactMap { book -> Post? in
+            let id = text(book["id"]), mediaID = text(book["media_id"])
+            guard !id.isEmpty, id.utf8.allSatisfy({ (48...57).contains($0) }),
+                  !mediaID.isEmpty, mediaID.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+            let images = book["images"] as? [String: Any] ?? [:]
+            let cover = images["cover"] as? [String: Any] ?? [:]
+            let ext = nhentaiExtension(cover["t"])
+            let title = book["title"] as? [String: Any] ?? [:]
+            let caption = [text(title["english"]), text(title["pretty"]), text(title["japanese"])].first { !$0.isEmpty } ?? "Manga #\(id)"
+            let tags = rows(book["tags"]).map { text($0["name"]).replacingOccurrences(of: " ", with: "_") }.filter { !$0.isEmpty }
+            let coverURL = "https://t1.nhentai.net/galleries/\(mediaID)/cover.\(ext)"
+            var post = Post(key: "nhentai:\(id)", id: id, provider: Provider.nhentai.rawValue,
+                            tags: tags, mediaUrl: coverURL, thumbUrl: coverURL,
+                            pageUrl: "https://nhentai.net/g/\(id)/", type: "manga")
+            post.caption = caption
+            post.width = number(cover["w"]); post.height = number(cover["h"])
+            return post
+        }
+        let filtered = self.page(posts, hasMore: page < max(1, Int(number(json["num_pages"]))), query: query, immersive: false)
+        return filtered
+    }
+
+    static func nhentaiPages(session: URLSession, bookID: String) async throws -> [URL] {
+        guard !bookID.isEmpty, bookID.count <= 12,
+              bookID.utf8.allSatisfy({ (48...57).contains($0) }) else { throw APIError.invalidResponse }
+        let bytes = try await data(session: session, url: url("https://nhentai.net/api/gallery/" + bookID), provider: .nhentai)
+        guard !unavailableHTML(bytes), let gallery = try? object(bytes) else {
+            throw APIError.server("Unable to load manga pages from NHentai.")
+        }
+        let mediaID = text(gallery["media_id"])
+        guard !mediaID.isEmpty, mediaID.utf8.allSatisfy({ (48...57).contains($0) }) else { throw APIError.invalidResponse }
+        let images = gallery["images"] as? [String: Any] ?? [:]
+        let pages = Array(rows(images["pages"]).prefix(800))
+        guard !pages.isEmpty else { throw APIError.server("This manga has no readable pages.") }
+        return pages.enumerated().compactMap { index, descriptor in
+            URL(string: "https://i1.nhentai.net/galleries/\(mediaID)/\(index + 1).\(nhentaiExtension(descriptor["t"]))")
+        }
+    }
 
     /// Some provider/CDN failures arrive as a 200 HTML page, so HTTP status
     /// alone cannot distinguish a healthy catalog from an unavailable one.
@@ -629,6 +694,8 @@ extension NativeProviderAPI {
         // Keep supporting those only after the provider has been identified.
         if let direct { return ResolvedMedia(mediaUrl: direct.absoluteString, type: post.type) }
         switch provider {
+        case .nhentai:
+            throw APIError.server("Open this manga in the full-screen reader to browse its pages.")
         case .hhaven:
             guard let havenToken else { throw APIError.invalidResponse }
             return try await havenResolve(session: session, token: havenToken, post: post)

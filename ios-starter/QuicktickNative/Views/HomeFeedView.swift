@@ -27,6 +27,7 @@ struct HomeFeedView: View {
     @Binding var showSettings: Bool
     @Binding var scrollAnchor: String?
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
+    @AppStorage("quicktick-suggested-themes-v1") private var suggestedThemesEnabled = true
     @State private var showSearch = false
     @State private var immersive = false
     @State private var immersivePostID: String?
@@ -43,6 +44,7 @@ struct HomeFeedView: View {
     @State private var topOffset: CGFloat?
     @State private var pullRefreshInFlight = false
     @State private var pullRefreshGate = HomePullRefreshGate()
+    @State private var visualThemeTerms: [String] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -145,6 +147,7 @@ struct HomeFeedView: View {
                     .accessibilityIdentifier("home-search-button")
                 }
                 .padding(.horizontal, 16)
+                if suggestedThemesEnabled { suggestedThemeRow }
                 if store.selectedProvider == .hhaven || store.selectedProvider == .pornhub {
                     homeCategoryRow
                 }
@@ -347,8 +350,61 @@ struct HomeFeedView: View {
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
+        .task(id: store.selectedProvider) {
+            visualThemeTerms = await store.visual.discoveryTerms(provider: store.selectedProvider)
+        }
         .onChange(of: store.posts) { _, posts in
             playableIDs = Set(posts.filter(\.isImmersiveMedia).map(\.stableID))
+        }
+    }
+
+    /// Personal suggestions work on *every* provider and use real covers or
+    /// thumbnails from posts matching this provider's learned interests.
+    @ViewBuilder private var suggestedThemeRow: some View {
+        let provider = store.selectedProvider
+        let tastes = store.tasteChoice(for: provider)
+        let suggestions = HomeThemeSuggestions.make(provider: provider,
+            learned: store.learnedInterests, chosen: tastes.into,
+            visual: visualThemeTerms, favorites: Array(store.favorites.values),
+            posts: store.posts, excluded: store.exclusions + tastes.notInto)
+        if !suggestions.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
+                    Text("Suggested themes").font(.caption.weight(.semibold))
+                    Text("Based on your taste").font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                    Spacer()
+                }.padding(.horizontal, 16)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 9) {
+                        ForEach(suggestions) { theme in
+                            let selected = QueryParser.parse(store.queryText).included.contains(theme.term)
+                            Button {
+                                let current = QueryParser.parse(store.queryText)
+                                let updated = ParsedQuery(included: selected ? [] : [theme.term],
+                                                          excluded: current.excluded)
+                                store.commitSearch(query: QueryParser.formatted(updated), sort: store.feedSort)
+                                Task { await store.refresh() }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    CachedMediaImage(url: theme.imageURL, pixels: 128, fill: true)
+                                        .frame(width: 48, height: 48)
+                                        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                    Text(theme.label).font(.caption.weight(.semibold))
+                                        .lineLimit(1).foregroundStyle(.white)
+                                        .padding(.trailing, 8)
+                                }
+                                .padding(5)
+                                .background(selected ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface), in: Capsule())
+                                .overlay(Capsule().stroke(selected ? AppTheme.accent : AppTheme.border, lineWidth: 1))
+                            }
+                            .buttonStyle(QuicktickPressStyle())
+                            .accessibilityLabel("Suggested theme: \(theme.label)")
+                            .accessibilityIdentifier("suggested-theme-\(theme.term)")
+                        }
+                    }.padding(.horizontal, 16)
+                }
+            }.accessibilityIdentifier("home-suggested-themes")
         }
     }
 
@@ -473,4 +529,76 @@ private struct HomeTopOffsetPreference: PreferenceKey {
 struct HomeVisibleFrames: PreferenceKey {
     static let defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, next in next }) }
+}
+
+struct HomeThemeSuggestion: Identifiable, Equatable {
+    let term: String
+    let label: String
+    let imageURL: String
+    var id: String { term }
+}
+
+enum HomeThemeSuggestions {
+    private static let generic: Set<String> = ["hentai", "porn", "nsfw", "english", "translated",
+        "uncensored", "video", "image", "animated", "manga", "full_color", "high_quality"]
+
+    static func make(provider: Provider, learned: [String], chosen: [String],
+                     visual: [String], favorites: [Post], posts: [Post],
+                     excluded: [String], limit: Int = 8) -> [HomeThemeSuggestion] {
+        // Bound this to nearby evidence: Home's body is refreshed by scroll
+        // state, so image-chip ranking must never scan a huge saved library.
+        let liked = Array(favorites.lazy.filter { $0.providerKey == provider }.prefix(96))
+            .sorted { $0.stableID < $1.stableID }
+        let visible = Array(posts.lazy.filter { $0.providerKey == provider }.prefix(80))
+        let evidence = liked + visible.filter { candidate in
+            !liked.contains { $0.stableID == candidate.stableID }
+        }
+        let banned = Set(excluded.map(normalize))
+        var scores: [String: Int] = [:]
+        func add(_ tags: [String], weight: Int) {
+            for token in Set(tags.map(normalize)) {
+                guard TasteTagSuggestions.isUseful(token), !generic.contains(token),
+                      !banned.contains(token), !token.contains(":"), !token.contains("/") else { continue }
+                scores[token, default: 0] += weight
+            }
+        }
+        add(learned, weight: 18)
+        add(chosen, weight: 20)
+        add(visual, weight: 17)
+        // Favorites are an explicit signal even before the learned profile
+        // snapshot has been saved by the idle persistence worker.
+        for favorite in liked { add(favorite.tags, weight: 5) }
+        let ranked = scores.keys.sorted {
+            scores[$0, default: 0] == scores[$1, default: 0]
+                ? $0 < $1 : scores[$0, default: 0] > scores[$1, default: 0]
+        }
+        var usedImages = Set<String>()
+        var result: [HomeThemeSuggestion] = []
+        for term in ranked.prefix(32) {
+            let matches = evidence.filter { post in
+                let captionTokens = "_" + normalize(post.caption ?? "")
+                    .map { $0.isLetter || $0.isNumber ? String($0) : "_" }.joined() + "_"
+                return post.tags.contains(where: { normalize($0) == term }) ||
+                captionTokens.contains("_" + term + "_")
+            }
+            guard let sample = matches.first(where: {
+                !$0.cardPreviewURL.isEmpty && !usedImages.contains($0.cardPreviewURL)
+                    && URL(string: $0.cardPreviewURL)?.scheme == "https"
+            }) ?? matches.first(where: {
+                !$0.cardPreviewURL.isEmpty && URL(string: $0.cardPreviewURL)?.scheme == "https"
+            }) else { continue }
+            usedImages.insert(sample.cardPreviewURL)
+            let query = provider == .rule34 ? term : term.replacingOccurrences(of: "_", with: " ")
+            result.append(HomeThemeSuggestion(term: query,
+                label: term.replacingOccurrences(of: "_", with: " ").capitalized,
+                imageURL: sample.cardPreviewURL))
+            if result.count >= limit { break }
+        }
+        return result
+    }
+
+    private static func normalize(_ term: String) -> String {
+        term.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "_")
+    }
 }

@@ -14,6 +14,7 @@ struct ProviderLogoView: View {
         case .hhaven: "play.tv.fill"
         case .coomer: "waveform.path"
         case .kemono: "photo.stack.fill"
+        case .nhentai: "books.vertical.fill"
         }
     }
     private var favicon: URL? {
@@ -27,6 +28,7 @@ struct ProviderLogoView: View {
         case .hhaven: domain = "hentaihaven.xxx"
         case .coomer: domain = "coomer.st"
         case .kemono: domain = "kemono.cr"
+        case .nhentai: domain = "nhentai.net"
         }
         return URL(string: "https://" + domain + "/favicon.ico")
     }

@@ -16,7 +16,7 @@ enum VisualDomain: String, Codable, Sendable {
         // tag. The provider is animated content even when its title supplies
         // no descriptive tags. Explicit photo/3D/mixed evidence above wins.
         if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"])
-            || (!post.isAudio && post.providerKey == .hhaven) { return .anime }
+            || (!post.isAudio && (post.providerKey == .hhaven || post.providerKey == .nhentai)) { return .anime }
         return .uncertain
     }
 }

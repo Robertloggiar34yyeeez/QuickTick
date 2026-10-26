@@ -18,6 +18,7 @@ struct PostCardView: View {
     @State private var comments = false
     @State private var tags = false
     @State private var fullImage = false
+    @State private var readingManga = false
     @State private var pendingVideoFullscreen = false
     @State private var player: AVPlayer?
     @State private var gifURL: URL?
@@ -88,7 +89,7 @@ struct PostCardView: View {
                     ActionIcon(title: "Like", symbol: store.favorites[post.stableID] == nil ? "heart" : "heart.fill", selected: store.favorites[post.stableID] != nil) { store.toggleFavorite(post) }
                     ActionIcon(title: "Less", symbol: "hand.thumbsdown") { store.less(post) }
                         .accessibilityIdentifier("dislike-\(post.stableID)")
-                    FeedDownloadControl(manager: store.downloads, post: post)
+                    if post.providerKey != .nhentai { FeedDownloadControl(manager: store.downloads, post: post) }
                     ActionIcon(title: "Comments", symbol: "bubble.left") { comments = true }
                     }
                 }
@@ -103,6 +104,9 @@ struct PostCardView: View {
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
                 previewURL: post.cardPreviewURL) }
+            .fullScreenCover(isPresented: $readingManga) {
+                MangaReaderView(post: post).environmentObject(store)
+            }
             .fullScreenCover(isPresented: Binding(
                 get: { store.fullScreenPlaybackID == post.stableID },
                 set: { if !$0 { store.fullScreenPlaybackID = nil } }
@@ -239,7 +243,7 @@ struct PostCardView: View {
                 .accessibilityLabel("Open full screen video")
                 .accessibilityIdentifier("fullscreen-\(post.stableID)")
             } else if !post.isImmersiveMedia {
-                Color.clear.contentShape(Rectangle()).onTapGesture { fullImage = true }
+                Color.clear.contentShape(Rectangle()).onTapGesture { openMediaFullscreen() }
             }
         }
         .overlay {
@@ -291,8 +295,8 @@ struct PostCardView: View {
                     .accessibilityLabel(playing ? "Pause media" : "Play media")
                     .accessibilityValue(playing ? "Playing" : "Paused")
             } else {
-                Button { fullImage = true } label: {
-                    Label("View full", systemImage: "arrow.up.left.and.arrow.down.right")
+                Button { openMediaFullscreen() } label: {
+                    Label(post.providerKey == .nhentai ? "Read manga" : "View full", systemImage: post.providerKey == .nhentai ? "book.fill" : "arrow.up.left.and.arrow.down.right")
                         .font(.caption.weight(.semibold)).padding(12).background(.ultraThinMaterial, in: Capsule())
                 }.buttonStyle(.plain).padding(10).accessibilityLabel("View full image")
             }
@@ -300,6 +304,7 @@ struct PostCardView: View {
     }
 
     private func openMediaFullscreen() {
+        if post.providerKey == .nhentai { readingManga = true; return }
         if post.type.lowercased() == "video" {
             if player != nil && introReady { store.fullScreenPlaybackID = post.stableID }
             else {
@@ -679,4 +684,117 @@ private struct ComicTileImage: @unchecked Sendable {
     let image: CGImage?
     let size: CGSize
     let scale: CGFloat
+}
+
+/// A book is a collection of pages, not a single cover image. Keep the reader
+/// independent from Home's scroll/playback lifecycle, and decode only pages
+/// that SwiftUI has brought into view.
+struct MangaReaderView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let post: Post
+    @State private var pages: [URL] = []
+    @State private var index = 0
+    @State private var loading = true
+    @State private var error: String?
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if loading {
+                    VStack(spacing: 12) {
+                        ProgressView().tint(AppTheme.accent)
+                        Text("Opening manga…").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else if let error {
+                    ContentUnavailableView {
+                        Label("Could not open manga", systemImage: "book.closed")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        Button("Retry") { Task { await loadPages() } }
+                    }
+                } else {
+                    TabView(selection: $index) {
+                        ForEach(pages.indices, id: \.self) { page in
+                            MangaReaderPage(url: pages[page], size: geometry.size)
+                                .tag(page)
+                                .accessibilityLabel("Page \(page + 1) of \(pages.count)")
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .accessibilityIdentifier("manga-page-reader")
+                }
+            }
+            .overlay(alignment: .top) {
+                HStack(spacing: 10) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .bold))
+                            .frame(width: 44, height: 44)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close manga")
+                    Spacer()
+                    Text(post.caption ?? "Manga")
+                        .font(.caption.weight(.semibold)).lineLimit(1)
+                    Spacer()
+                    Text(pages.isEmpty ? "–" : "\(index + 1)/\(pages.count)")
+                        .font(.caption.monospacedDigit()).frame(minWidth: 48)
+                }
+                .padding(.horizontal, 16).padding(.top, 8)
+            }
+        }
+        .preferredColorScheme(.dark)
+        .task(id: post.id) { await loadPages() }
+    }
+
+    private func loadPages() async {
+        loading = true; error = nil
+        do {
+            let result = try await store.api.mangaPages(bookID: post.id)
+            guard !Task.isCancelled else { return }
+            pages = result; index = 0
+        } catch {
+            if !Task.isCancelled { self.error = error.localizedDescription }
+        }
+        loading = false
+    }
+}
+
+private struct MangaReaderPage: View {
+    let url: URL
+    let size: CGSize
+    @State private var image: UIImage?
+    @State private var failure: String?
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if let image {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .frame(width: size.width, height: size.height)
+            } else if let failure {
+                VStack(spacing: 10) {
+                    Image(systemName: "photo.badge.exclamationmark")
+                    Text(failure).font(.caption).multilineTextAlignment(.center)
+                    Button("Try page again") { Task { await fetch() } }
+                }.foregroundStyle(.white).padding(24)
+            } else { ProgressView().tint(AppTheme.accent) }
+        }
+        .task(id: url) { await fetch() }
+        .onDisappear { image = nil }
+    }
+
+    private func fetch() async {
+        failure = nil
+        do {
+            let decoded = try await MediaImagePipeline.shared.fullImage(url: url)
+            if !Task.isCancelled { image = UIImage(cgImage: decoded.image) }
+        } catch {
+            if !Task.isCancelled { failure = "Page unavailable. Swipe to continue or retry." }
+        }
+    }
 }

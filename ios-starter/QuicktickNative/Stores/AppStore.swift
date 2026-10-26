@@ -517,6 +517,7 @@ final class AppStore: ObservableObject {
             encountered = []
             var filtered: [Post] = []
             var havenExploration: [Post] = []
+            var havenSafeCatalog: [Post] = []
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
             var broaden = false
             // Keep an interactive refresh bounded; users can explicitly load
@@ -538,6 +539,9 @@ final class AppStore: ObservableObject {
                 var incoming = page.items.filter { post in
                     encountered.insert(post.stableID).inserted && (!mediaOnly || post.isImmersiveMedia)
                         && !RecommendationTagRules.rejects(post, exclusions: Array(banned))
+                }
+                if personalized, provider == .hhaven, havenSafeCatalog.count < 48 {
+                    havenSafeCatalog.append(contentsOf: incoming.prefix(48 - havenSafeCatalog.count))
                 }
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
                 incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
@@ -570,6 +574,20 @@ final class AppStore: ObservableObject {
                 // Hard dislikes and exclusions remain enforced by rankFast.
                 let visualEvidence = await visual.scores(havenExploration)
                 immediate = Array((await recommendations.rankFast(havenExploration,
+                    taste: tasteChoice(for: provider), recent: [],
+                    visualScores: visualEvidence, strict: false)).prefix(12))
+            }
+            if immediate.isEmpty, personalized, provider == .hhaven, !havenSafeCatalog.isEmpty {
+                // Haven has a small catalog and sparse title metadata. Once
+                // every post has been offered, novelty filtering previously
+                // produced a permanent empty Home screen. Revisit diversified
+                // safe entries only after exhausting truly fresh candidates.
+                // Explicit dislikes, favorites and hard exclusions still apply.
+                let eligible = feedExclusions.filter(havenSafeCatalog.shuffled(),
+                    favorites: Array(favorites.values), recommended: false,
+                    favoriteIDs: favoriteExclusionIDs)
+                let visualEvidence = await visual.scores(eligible)
+                immediate = Array((await recommendations.rankFast(eligible,
                     taste: tasteChoice(for: provider), recent: [],
                     visualScores: visualEvidence, strict: false)).prefix(12))
             }

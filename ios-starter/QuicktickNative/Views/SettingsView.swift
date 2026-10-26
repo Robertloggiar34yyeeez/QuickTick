@@ -8,6 +8,7 @@ struct SettingsView: View {
     // updates the visible tabs even before the Settings sheet dismisses.
     @Binding var showAITab: Bool
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
+    @AppStorage("quicktick-suggested-themes-v1") private var suggestedThemesEnabled = true
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
@@ -169,11 +170,13 @@ struct SettingsView: View {
                         .accessibilityIdentifier("show-ai-tab-toggle")
                         .frame(minWidth: 52, minHeight: 44)
                 }
+                .modifier(SettingsControlRow())
                 Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
                     .font(.footnote).foregroundStyle(.secondary)
             }.id(SettingsDestination.navigation.rawValue)
             SettingsGroup(title: "Appearance", icon: "paintbrush.pointed") {
                 Toggle("Modern interface", isOn: $modernUI)
+                    .modifier(SettingsControlRow())
                     .accessibilityIdentifier("modern-ui-toggle")
                 Text(modernUI ? "Rounded surfaces, compact chips and animated navigation." : "Previous QuickTick interface restored.")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -200,6 +203,11 @@ struct SettingsView: View {
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
             }.disabled(store.isSyncing).id(SettingsDestination.access.rawValue)
             SettingsGroup(title: "Learned interests · \(store.selectedProvider.displayName)", icon: "sparkles") {
+                Toggle("Suggested themes on Home", isOn: $suggestedThemesEnabled)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("suggested-themes-toggle")
+                Text("Show image-backed suggestions from this provider's likes, learned preferences and visual taste. Turn off to keep Home focused on posts.")
+                    .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
                 swipeableProviderProfiles
                 Button { onboarding = true } label: {
                     HStack(spacing: 12) {
@@ -278,6 +286,7 @@ struct SettingsView: View {
             }
             SettingsGroup(title: "Visual intelligence", icon: "eye") {
                 Toggle("Learn visual taste while browsing", isOn: $store.visualAnalysisEnabled)
+                    .modifier(SettingsControlRow())
                 Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
                 Button {
                     guard !mobileCLIPInstalling, !mobileCLIPInstalled else { return }
@@ -312,14 +321,19 @@ struct SettingsView: View {
             }
             SettingsGroup(title: "Playback", icon: "play.rectangle") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
+                    .modifier(SettingsControlRow())
                 Toggle("Mute", isOn: $store.muted)
+                    .modifier(SettingsControlRow())
                 Toggle("Autoplay in Home & cards", isOn: $autoplayVideos)
+                    .modifier(SettingsControlRow())
                     .accessibilityIdentifier("autoplay-videos-toggle")
                 Text("When off, videos in Home and other card views stay on previews until you tap Play. Immersive always autoplays as you swipe.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
+                    .modifier(SettingsControlRow())
                     .accessibilityIdentifier("skip-video-intros-toggle")
                 Toggle("Skip Hentai Haven intros (10 seconds)", isOn: $skipHavenIntros)
+                    .modifier(SettingsControlRow())
                     .accessibilityIdentifier("skip-hhaven-intros-toggle")
                 Text("For enabled providers with videos longer than 12 seconds, QuickTick waits for the 0:10 position to load before showing playback. Hentai Haven is enabled by default.")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -329,7 +343,9 @@ struct SettingsView: View {
                     ForEach(RhythmPattern.allCases) { mode in Text(mode.title).tag(mode.rawValue) }
                 }
                 Toggle("Metronome sounds", isOn: $rhythmClicks)
+                    .modifier(SettingsControlRow())
                 Toggle("Beat haptics", isOn: $rhythmHaptics)
+                    .modifier(SettingsControlRow())
                 TextField("Completion message", text: $rhythmFinishText, axis: .vertical)
                     .lineLimit(2...4)
                     .modifier(SettingsTextFieldSurface())
@@ -340,6 +356,7 @@ struct SettingsView: View {
                     ForEach(["Scale", "Slide", "Fade"], id: \.self) { Text($0) }
                 }
                 Toggle("Mute feed audio during floating video", isOn: $store.pipMuteFeed)
+                    .modifier(SettingsControlRow())
                 Text("Otherwise feed audio is reduced to 15% while a floating video plays. Normal audio returns when it closes.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -673,6 +690,19 @@ private struct SettingsGroup<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+    }
+}
+
+/// The same interactive row surface is shared by Settings switches across
+/// appearance, personalization, media and rhythm preferences.
+private struct SettingsControlRow: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 12)
+            .frame(minHeight: 50)
+            .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.65), lineWidth: 1))
     }
 }
 

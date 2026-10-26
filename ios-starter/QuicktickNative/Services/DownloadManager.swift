@@ -37,7 +37,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     savedRecords = catalog.records
                 } else { savedRecords = try JSONDecoder().decode([DownloadRecord].self, from: data) }
                 let paths = DownloadPathStorage(root: root)
-                records = savedRecords.map { paths.restore($0) }
+                records = Self.newestFirst(savedRecords.map { paths.restore($0) })
                 // Older builds serialized the app container's absolute UUID path.
                 // iOS can change that UUID on an update even though the files survive.
                 // Rewrite recovered entries as container-relative references now.
@@ -61,13 +61,13 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }
     #if DEBUG
     func useUITestDownloads(_ posts: [Post]) {
-        records = posts.map { post in
+        records = Self.newestFirst(posts.map { post in
             var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: "Saved fixture", tags: post.tags, thumbnailRemoteURL: "", localMediaPath: URL(string: post.mediaUrl)?.path, kind: .file, state: .complete, progress: 1, createdAt: .now)
             record.mediaType = post.type == "image" ? nil : post.type
             if let path = record.localMediaPath,
                let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber { record.fileSize = size.int64Value }
             return record
-        }
+        })
     }
     #endif
     func download(_ post: Post, refreshSource: Bool = false) {
@@ -151,7 +151,16 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }
     private func upsert(_ record: DownloadRecord) {
         if let index = records.firstIndex(where: { $0.key == record.key }) { records[index] = record } else { records.insert(record, at: 0) }
+        records = Self.newestFirst(records)
         save()
+    }
+    /// Persist and display one chronological list across every provider.
+    /// Progress callbacks must not reorder older transfers ahead of new ones.
+    static func newestFirst(_ records: [DownloadRecord]) -> [DownloadRecord] {
+        records.sorted {
+            if $0.createdAt == $1.createdAt { return $0.key < $1.key }
+            return $0.createdAt > $1.createdAt
+        }
     }
     private func save() {
         do {

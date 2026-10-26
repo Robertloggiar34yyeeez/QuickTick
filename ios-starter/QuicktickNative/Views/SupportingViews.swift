@@ -96,6 +96,25 @@ struct CommentsView: View {
                     .padding(.vertical, 13)
                 }
                 .scrollIndicators(.hidden)
+                // These sources expose comment reads but no documented
+                // authenticated comment-create API. Hand writing off to the
+                // verified post page instead of pretending to submit locally.
+                if let source = URL(string: post.pageUrl), source.scheme == "https",
+                   let provider = post.providerKey, Provider.identifyPage(post.pageUrl) == provider {
+                    Link(destination: source) {
+                        Label("Write a comment on source", systemImage: "square.and.arrow.up")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 4)
+                    Text("Opens the original post. Sign in there to comment; QuickTick does not send comments to this provider's API.")
+                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 10)
+                }
             }
             .background(AppTheme.canvas)
             .toolbar(.hidden, for: .navigationBar)
@@ -130,6 +149,8 @@ struct TasteOnboardingView: View {
     @State private var into = Set<String>()
     @State private var notInto = Set<String>()
     @State private var suggestedTags: [String] = []
+    @State private var artistDraft = ""
+    @State private var creditedArtists: [String] = []
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -154,6 +175,7 @@ struct TasteOnboardingView: View {
                         .background(AppTheme.accent.opacity(0.13), in: Capsule())
                     TasteTagSection(preferred: true, selected: $into, opposite: $notInto,
                                     candidates: suggestedTags, provider: store.selectedProvider)
+                    artistPreferences
                     TasteTagSection(preferred: false, selected: $notInto, opposite: $into,
                                     candidates: suggestedTags, provider: store.selectedProvider)
                     Label("Suggestions use your liked posts, learned interests and matching source tags. Your history remains private on this device.",
@@ -171,7 +193,10 @@ struct TasteOnboardingView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { store.setTaste(into: into.sorted(), notInto: notInto.sorted()); dismiss() }
+                    Button("Save") {
+                        store.setTaste(into: into.sorted(), notInto: notInto.sorted(), artists: creditedArtists)
+                        dismiss()
+                    }
                         .fontWeight(.semibold)
                         .accessibilityIdentifier("save-taste")
                 }
@@ -181,10 +206,81 @@ struct TasteOnboardingView: View {
         .onAppear {
             let taste = store.tasteChoice(for: store.selectedProvider)
             into = Set(taste.into); notInto = Set(taste.notInto)
+            creditedArtists = taste.artists
             suggestedTags = TasteTagSuggestions.rank(learned: store.learnedInterests,
                 favorites: Array(store.favorites.values.prefix(250)), posts: Array(store.posts.prefix(80)),
                 provider: store.selectedProvider)
         }
+    }
+
+    private var artistPreferences: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Label("Artists & creators", systemImage: "paintbrush.pointed.fill")
+                .font(.headline)
+            Text("Enter credited artists you like. QuickTick compares their saved posts for recurring poses, actions and styles, while still exploring new creators.")
+                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            HStack(spacing: 8) {
+                TextField("Artist or creator name", text: $artistDraft)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onSubmit(addArtist)
+                    .accessibilityIdentifier("taste-artist-input")
+                Button("Add", action: addArtist)
+                    .disabled(artistDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .buttonStyle(.borderedProminent)
+            }
+            if !creditedArtists.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(creditedArtists, id: \.self) { artist in
+                            Button { creditedArtists.removeAll { $0 == artist } } label: {
+                                Label(artist.replacingOccurrences(of: "_", with: " "), systemImage: "xmark.circle.fill")
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 11).padding(.vertical, 9)
+                                    .background(AppTheme.accent.opacity(0.16), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Remove artist \(artist)")
+                        }
+                    }
+                }
+                Text(artistInsight)
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            }
+        }
+        .padding(14)
+        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private func addArtist() {
+        let name = TasteConcepts.canonical(artistDraft)
+        guard !name.isEmpty, name.count <= 80, !creditedArtists.contains(name) else { return }
+        creditedArtists.append(name)
+        artistDraft = ""
+    }
+
+    private var artistInsight: String {
+        let selected = Set(creditedArtists)
+        let matches = store.favorites.values.filter { post in
+            post.providerKey == store.selectedProvider &&
+            !Set(ArtistAttribution.credited(in: post)).isDisjoint(with: selected)
+        }
+        guard !matches.isEmpty else {
+            return "No saved likes from these credited artists yet. Their posts will help QuickTick learn the overlap."
+        }
+        var counts: [String: Int] = [:]
+        for post in matches.prefix(180) {
+            for facet in ActionSemantics.facets(post) { counts[facet, default: 0] += 1 }
+            if let features = VisualFeatures.metadata(post) {
+                for feature in features.attributes.keys where ["pose:", "style:", "clothing:", "setting:", "appearance:"].contains(where: feature.hasPrefix) {
+                    counts[feature, default: 0] += 1
+                }
+            }
+        }
+        let common = counts.keys.sorted {
+            counts[$0, default: 0] == counts[$1, default: 0] ? $0 < $1 : counts[$0, default: 0] > counts[$1, default: 0]
+        }.prefix(3)
+        return "\(matches.count) liked posts match. Common tagged traits: \(common.isEmpty ? "still learning" : common.joined(separator: ", "))."
     }
 }
 

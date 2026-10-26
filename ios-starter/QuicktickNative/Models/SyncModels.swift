@@ -27,18 +27,22 @@ struct TasteChoice: Codable, Equatable, Sendable {
     var done: Bool = false
     var into: [String] = []
     var notInto: [String] = []
+    // Credited creators are tracked separately from poses/actions so a
+    // preference for one artist never turns their style into a global tag.
+    var artists: [String] = []
     // Optional context for a *particular* character. These must never become
     // global positive tags: liking one character in a femdom scene doesn't
     // imply wanting that scene with every unrelated character.
     var characterTags: [String: [String]] = [:]
 
-    private enum CodingKeys: String, CodingKey { case done, into, notInto, characterTags }
+    private enum CodingKeys: String, CodingKey { case done, into, notInto, artists, characterTags }
 
     init(done: Bool = false, into: [String] = [], notInto: [String] = [],
-         characterTags: [String: [String]] = [:]) {
+         characterTags: [String: [String]] = [:], artists: [String] = []) {
         self.done = done
         self.into = into
         self.notInto = notInto
+        self.artists = artists
         self.characterTags = characterTags
     }
 
@@ -47,6 +51,7 @@ struct TasteChoice: Codable, Equatable, Sendable {
         done = try container.decodeIfPresent(Bool.self, forKey: .done) ?? false
         into = try container.decodeIfPresent([String].self, forKey: .into) ?? []
         notInto = try container.decodeIfPresent([String].self, forKey: .notInto) ?? []
+        artists = try container.decodeIfPresent([String].self, forKey: .artists) ?? []
         characterTags = try container.decodeIfPresent([String: [String]].self, forKey: .characterTags) ?? [:]
     }
 

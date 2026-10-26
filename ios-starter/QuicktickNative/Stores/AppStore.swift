@@ -147,9 +147,10 @@ final class AppStore: ObservableObject {
             // updates. Neither model inference nor network work blocks taps.
             favoriteSyncTask?.cancel()
             let snapshot = Array(favorites.values)
+            let likedAt = local.snapshot.favoriteMeta.mapValues(\.updatedAt)
             favoriteSyncTask = Task(priority: .utility) { [weak self] in
                 guard let self, !Task.isCancelled else { return }
-                await self.recommendations.configureFavorites(snapshot)
+                await self.recommendations.configureFavorites(snapshot, likedAt: likedAt)
                 guard !Task.isCancelled else { return }
                 await self.visual.reconcileFavorites(snapshot)
             }
@@ -296,7 +297,8 @@ final class AppStore: ObservableObject {
                 await recommendationPersistence.save(migrated)
             }
         }
-        await recommendations.configureFavorites(Array(favorites.values))
+        await recommendations.configureFavorites(Array(favorites.values),
+            likedAt: local.snapshot.favoriteMeta.mapValues(\.updatedAt))
         await visual.reconcileFavorites(Array(favorites.values))
         let recommendationWarning = await recommendationPersistence.lastError
         if let recommendationWarning { storageWarning = recommendationWarning }
@@ -817,12 +819,14 @@ final class AppStore: ObservableObject {
                 if completed == 2 { break }
                 if case .graceExpired = result { break }
                 let available = (primary?.items.count ?? 0) + (secondary?.items.count ?? 0)
-                // A sparse provider can return only 1-4 posts on its fast
-                // lane. Waiting for eight before starting the grace timer
-                // made first paint depend on the slowest request (up to 15s).
+                // The old unconditional 120 ms deadline discarded the broad
+                // lane on almost every focused response. Give it a bounded
+                // chance to contribute, especially for sparse pages, without
+                // blocking first paint on an indefinitely slow provider.
                 if available > 0 && deadline == nil {
+                    let grace = available < 10 ? 420 : 260
                     deadline = Task {
-                        do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+                        do { try await Task.sleep(for: .milliseconds(grace)) } catch { return }
                         emitter.yield(.graceExpired)
                     }
                 }
@@ -914,7 +918,10 @@ final class AppStore: ObservableObject {
 
     func toggleFavorite(_ post: Post) {
         let event: RecommendationEvent
-        if favorites[post.stableID] != nil {
+        let wasLiked = favorites[post.stableID] != nil
+        // Update timestamps before @Published fires its background model sync.
+        local.snapshot.favoriteMeta[post.stableID] = FavoriteMeta(liked: !wasLiked, updatedAt: timestamp())
+        if wasLiked {
             favorites.removeValue(forKey: post.stableID)
             event = .unlike
         } else {
@@ -922,7 +929,6 @@ final class AppStore: ObservableObject {
             event = .like
         }
         Task(priority: .utility) { await record(event, post: post) }
-        local.snapshot.favoriteMeta[post.stableID] = FavoriteMeta(liked: favorites[post.stableID] != nil, updatedAt: timestamp())
         persistLocal(); queueSync()
     }
 
@@ -1433,17 +1439,33 @@ final class AppStore: ObservableObject {
         if generation == token, selectedProvider == provider, learnedInterests != interests { learnedInterests = interests }
     }
 
-    func setTaste(into: [String], notInto: [String], characterTags: [String: [String]]? = nil) {
+    func setTaste(into: [String], notInto: [String], characterTags: [String: [String]]? = nil,
+                  artists: [String]? = nil) {
         let negative = TasteChoice.normalized(notInto)
         let positive = TasteChoice.normalized(into).filter { !negative.contains($0) }
         let existing = tasteChoice(for: selectedProvider).characterTags
         let contextual = characterTags ?? existing
+        let artistChoices = TasteChoice.normalized(artists ?? tasteChoice(for: selectedProvider).artists)
+            .map(TasteConcepts.canonical).filter { !$0.isEmpty }
         let sanitized = contextual.filter { positive.contains(RecommendationTagRules.canonical($0.key)) }
             .mapValues { TasteChoice.normalized($0).filter { !negative.contains($0) } }
         tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(
-            done: true, into: positive, notInto: negative, characterTags: sanitized)
+            done: true, into: positive, notInto: negative, characterTags: sanitized, artists: artistChoices)
         local.snapshot.preferences.updatedAt = timestamp()
         persistLocal(); queueSync(); Task { await refresh() }
+    }
+
+    func preferArtist(_ artist: String, from post: Post) {
+        guard let provider = post.providerKey,
+              ArtistAttribution.credited(in: post).contains(TasteConcepts.canonical(artist)) else { return }
+        var choice = tasteChoice(for: provider)
+        let name = TasteConcepts.canonical(artist)
+        choice.artists = TasteChoice.normalized(choice.artists + [name])
+        choice.done = true
+        tasteSetup.sources[provider.rawValue] = choice
+        local.snapshot.preferences.updatedAt = timestamp()
+        persistLocal(); queueSync()
+        if selectedProvider == provider { Task { await refresh(immersive: activeTab == 1) } }
     }
 
     func setExclusions(_ tags: [String]) {

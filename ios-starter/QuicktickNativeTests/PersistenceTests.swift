@@ -2,6 +2,18 @@ import XCTest
 @testable import QuicktickNative
 
 final class PersistenceTests: XCTestCase {
+    @MainActor func testDownloadsRestoreNewestFirstAcrossProviders() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let oldest = DownloadRecord(key: "rule34:1", provider: "Rule34", postID: "1", title: "oldest", tags: [], thumbnailRemoteURL: "", localMediaPath: "", kind: .file, state: .complete, progress: 1, createdAt: Date(timeIntervalSince1970: 100))
+        let newest = DownloadRecord(key: "kemono:3", provider: "Kemono", postID: "3", title: "newest", tags: [], thumbnailRemoteURL: "", localMediaPath: "", kind: .file, state: .complete, progress: 1, createdAt: Date(timeIntervalSince1970: 300))
+        let middle = DownloadRecord(key: "coomer:2", provider: "Coomer", postID: "2", title: "middle", tags: [], thumbnailRemoteURL: "", localMediaPath: "", kind: .file, state: .complete, progress: 1, createdAt: Date(timeIntervalSince1970: 200))
+        try JSONEncoder().encode([oldest, newest, middle]).write(to: dir.appendingPathComponent("downloads.json"))
+        let manager = DownloadManager(resolver: MediaResolver(api: QuicktickAPIClient()), directory: dir)
+        XCTAssertEqual(manager.records.map(\.key), [newest.key, middle.key, oldest.key])
+    }
+
     func testLocalStateRoundTripAndUnknownVersionIsPreserved() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }

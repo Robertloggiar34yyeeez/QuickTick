@@ -2,6 +2,34 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
+    func testExplicitArtistRanksCreditedWorkWithoutTreatingPoseAsIdentity() async {
+        let engine = RecommendationEngine()
+        var selected = Post(key: "nhentai:1", id: "1", provider: "nhentai", tags: ["manga", "kneeling"], type: "image")
+        selected.creator = "favorite_artist"
+        var other = Post(key: "nhentai:2", id: "2", provider: "nhentai", tags: ["manga", "kneeling"], type: "image")
+        other.creator = "unrelated_artist"
+        let taste = TasteChoice(done: true, artists: ["favorite_artist"])
+        let preferred = await engine.score(selected, taste: taste, recent: [])
+        let unrelated = await engine.score(other, taste: taste, recent: [])
+        XCTAssertGreaterThan(preferred, unrelated)
+    }
+
+    func testHugeLikeLibraryUsesRecentWindowForDiscoveryInsteadOfHistoricalMonopoly() async {
+        let engine = RecommendationEngine()
+        let posts: [Post] = (0..<430).map { index in
+            Post(key: "rule34:\(index)", id: "\(index)", provider: "rule34",
+                 tags: [index < 30 ? "old_motif" : "recent_motif"], type: "image")
+        }
+        let timestamps = Dictionary(uniqueKeysWithValues: posts.enumerated().map { (index, post) in
+            (post.stableID, Int64(index + 1))
+        })
+        await engine.configureFavorites(posts, likedAt: timestamps)
+        let request = await engine.candidateRequest(context: "rule34|large_history", provider: .rule34,
+            taste: TasteChoice(), excluded: [])
+        XCTAssertTrue(request.query.included.contains("recent_motif"))
+        XCTAssertFalse(request.query.included.contains("old_motif"))
+    }
+
     func testOfflineAliasTableMatchesIdentityButNeverConflatesFranchiseCharacters() async {
         XCTAssertEqual(TasteConcepts.canonical("Chun-Li (Street Fighter)"), "chun_li")
         XCTAssertEqual(TasteConcepts.canonical("Han Juri"), "juri_han")

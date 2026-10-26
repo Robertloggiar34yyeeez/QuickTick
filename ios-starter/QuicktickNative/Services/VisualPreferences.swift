@@ -113,8 +113,35 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             }
         }
         result.subjects = Array(Set(result.subjects)).sorted()
+        // Archives and comics expose an explicit credited creator, even when
+        // their posts have no booru-style artist: tag. This is attribution,
+        // never an artist guess from WD appearance labels or a face.
+        if domain != .realLife && domain != .mixed {
+            result.artists = (result.artists ?? []) + ArtistAttribution.credited(in: post, taxonomy: taxonomy)
+        }
         if let artists = result.artists { result.artists = Array(Set(artists)).sorted() }
         return result
+    }
+}
+
+enum ArtistAttribution {
+    static func credited(in post: Post, taxonomy: VisualTagTaxonomy? = nil) -> [String] {
+        var artists = Set<String>()
+        for tag in post.tags.prefix(128) {
+            let term = TasteConcepts.canonical(tag)
+            if term.hasPrefix("artist:") {
+                let name = String(term.dropFirst(7))
+                if !name.isEmpty { artists.insert(name) }
+            } else if post.providerKey == .rule34 && taxonomy?.kind(of: term) == .artist {
+                artists.insert(term)
+            }
+        }
+        if let provider = post.providerKey, [.kemono, .nhentai, .coomer].contains(provider),
+           let name = post.creator?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty, name.count <= 80 {
+            artists.insert(TasteConcepts.canonical(name))
+        }
+        return artists.sorted()
     }
 }
 

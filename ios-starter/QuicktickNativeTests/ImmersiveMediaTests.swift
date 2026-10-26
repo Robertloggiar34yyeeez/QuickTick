@@ -4,12 +4,15 @@ import AVFoundation
 
 final class ImmersiveMediaTests: XCTestCase {
     func testImmersivePreloadsTwoUpcomingPostsAndRetainsPreviousForReverseSwipe() {
-        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 0, count: 5), [0, 1])
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 0, count: 5), [0, 1, 2])
+        XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 0, count: 5), [1, 2])
         XCTAssertEqual(ImmersivePreloadPlan.nextIndex(current: 0, count: 5), 1)
-        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 2, count: 5), [1, 2, 3])
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 2, count: 5), [1, 2, 3, 4])
+        XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 2, count: 5), [3, 4])
         XCTAssertEqual(ImmersivePreloadPlan.nextIndex(current: 2, count: 5), 3)
         XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 4, count: 5), [3, 4])
         XCTAssertNil(ImmersivePreloadPlan.nextIndex(current: 4, count: 5))
+        XCTAssertTrue(ImmersivePreloadPlan.forwardIndices(current: 4, count: 5).isEmpty)
         XCTAssertTrue(ImmersivePreloadPlan.retainedIndices(current: 0, count: 0).isEmpty)
         XCTAssertNil(ImmersivePreloadPlan.nextIndex(current: -1, count: 5))
     }

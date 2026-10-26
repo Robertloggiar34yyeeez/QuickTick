@@ -165,7 +165,7 @@ struct HomeFeedView: View {
                         .frame(maxWidth: .infinity)
                         .id(post.stableID)
                         .onAppear {
-                        if store.activeTab == 0, let index = store.posts.firstIndex(where: { $0.stableID == post.stableID }), index >= store.posts.count - 4 { Task { await store.loadMore() } }
+                        if store.activeTab == 0, let index = store.posts.firstIndex(where: { $0.stableID == post.stableID }), index >= store.posts.count - 12 { Task { await store.loadMore() } }
                     }
                 }
                 if store.isLoading {
@@ -531,8 +531,12 @@ struct HomeFeedView: View {
         // offscreen AVPlayer downloaded multiple videos while the user swiped,
         // fighting the visible player and the UI compositor for bandwidth.
         store.players.retain([key])
-        guard let next = store.posts.dropFirst(index + 1).first else { return }
-        _ = try? await MediaImagePipeline.shared.image(raw: next.cardPreviewURL, pixels: 512)
+        // Decode modest previews before they enter the viewport. Video CDN
+        // resolution remains exclusive to the visible player.
+        for next in store.posts.dropFirst(index + 1).prefix(2) {
+            guard !Task.isCancelled else { return }
+            _ = try? await MediaImagePipeline.shared.image(raw: next.cardPreviewURL, pixels: 384)
+        }
     }
 
     private var searchBar: some View {

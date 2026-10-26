@@ -76,6 +76,29 @@ final class VisualTasteTests: XCTestCase {
         let real = try XCTUnwrap(VisualFeatures.metadata(realPost, taxonomy: taxonomy))
         XCTAssertTrue(real.subjects.isEmpty); XCTAssertTrue((real.artists ?? []).isEmpty)
     }
+    func testCreditedArchiveArtistBecomesIdentityButPhotoUploaderDoesNot() throws {
+        var kemono = Post(key: "kemono:42", id: "42", provider: "kemono", tags: ["sitting", "indoors"], type: "image")
+        kemono.creator = "Studio Artist"
+        XCTAssertEqual(ArtistAttribution.credited(in: kemono), ["studio_artist"])
+        let anime = try XCTUnwrap(VisualFeatures.metadata(kemono))
+        XCTAssertEqual(anime.artists, ["studio_artist"])
+
+        var comic = Post(key: "nhentai:17", id: "17", provider: "nhentai", tags: ["manga", "kneeling"], type: "image")
+        comic.creator = "Studio Artist"
+        XCTAssertEqual(VisualFeatures.metadata(comic)?.artists, ["studio_artist"])
+
+        var real = Post(key: "coomer:55", id: "55", provider: "coomer", tags: ["photo"], type: "image")
+        real.creator = "Studio Artist"
+        XCTAssertEqual(ArtistAttribution.credited(in: real), ["studio_artist"])
+        XCTAssertTrue(VisualFeatures.metadata(real)?.artists?.isEmpty ?? true)
+    }
+
+    func testArtistPreferencesDecodeFromLegacyChoiceAndRoundTrip() throws {
+        let old = try JSONDecoder().decode(TasteChoice.self, from: Data(#"{"done":true,"into":["pose"]}"#.utf8))
+        XCTAssertTrue(old.artists.isEmpty)
+        let chosen = TasteChoice(done: true, into: ["pose"], artists: ["artist_one"])
+        XCTAssertEqual(try JSONDecoder().decode(TasteChoice.self, from: JSONEncoder().encode(chosen)).artists, ["artist_one"])
+    }
     func testBundledArtistTaxonomyAndLegacyProfileMigration() throws {
         let url = try XCTUnwrap(Bundle.main.url(forResource: "visual-tag-taxonomy", withExtension: "json"))
         let taxonomy = try JSONDecoder().decode(VisualTagTaxonomy.self, from: Data(contentsOf: url))

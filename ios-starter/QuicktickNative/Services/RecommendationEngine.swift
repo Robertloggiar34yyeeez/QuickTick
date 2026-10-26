@@ -257,6 +257,7 @@ actor RecommendationEngine {
     private var conditionalTaste = ConditionalTasteModel()
     private var sessionTaste = SessionPreferenceModel()
     private var currentFavorites: [Post] = []
+    private var favoriteTimestamps: [String: Int64] = [:]
     // Unlike generic tag weights, these preserve *which* 3D artists were
     // liked. Unknown 3D creators never inherit a character's positive score.
     private var trusted3DCredits: [String: Set<String>] = [:]
@@ -292,6 +293,7 @@ actor RecommendationEngine {
            !creator.isEmpty {
             result.insert("uploader:" + creator)
         }
+        result.formUnion(ArtistAttribution.credited(in: post, taxonomy: taxonomy).map { "artist:" + $0 })
         return result
     }
 
@@ -360,9 +362,19 @@ actor RecommendationEngine {
         return credited.isEmpty ? -18 : -34
     }
 
-    func configureFavorites(_ favorites: [Post]) {
-        currentFavorites = favorites
-        conditionalTaste.train(favorites, taxonomy: taxonomy)
+    func configureFavorites(_ favorites: [Post], likedAt: [String: Int64] = [:]) {
+        if !likedAt.isEmpty { favoriteTimestamps = likedAt }
+        // Repeated Likes from years of browsing previously made every common
+        // tag a permanent "strong" preference. Train the immediate serving
+        // model on a bounded, newest-first window while keeping the persisted
+        // long-term feedback profile and all user-selected interests intact.
+        let recent = Array(favorites.sorted { lhs, rhs in
+            let a = favoriteTimestamps[lhs.stableID] ?? Int64(lhs.createdAt ?? 0)
+            let b = favoriteTimestamps[rhs.stableID] ?? Int64(rhs.createdAt ?? 0)
+            return a == b ? lhs.stableID < rhs.stableID : a > b
+        }.prefix(384))
+        currentFavorites = recent
+        conditionalTaste.train(recent, taxonomy: taxonomy)
         trusted3DCredits = [:]
         trusted3DArtistTags = [:]
         sourcesWithRougeLikes = []
@@ -373,7 +385,7 @@ actor RecommendationEngine {
         favoriteArtists = [:]
         identifiedFavoriteCount = [:]
         var uniqueFavoriteIDs = Set<String>()
-        for post in favorites {
+        for post in recent {
             let source = post.provider.lowercased()
             guard uniqueFavoriteIDs.insert(post.stableID).inserted else { continue }
             if let medium = VisualDomain.classify(post) {
@@ -409,7 +421,7 @@ actor RecommendationEngine {
         var totals: [String: Int] = [:]
         var termIdentities: [String: [String: Set<String>]] = [:]
         var countedFavoriteIDs = Set<String>()
-        for post in favorites {
+        for post in recent {
             guard countedFavoriteIDs.insert(post.stableID).inserted else { continue }
             let source = post.provider.lowercased()
             totals[source, default: 0] += 1
@@ -495,7 +507,7 @@ actor RecommendationEngine {
         let likedSubjects = favoriteCharacters[source] ?? []
         let likedArtists = favoriteArtists[source] ?? []
         if !subjects.isDisjoint(with: likedSubjects) || !artists.isDisjoint(with: likedArtists) { return 0 }
-        let explicitlyChosen = Set(taste.into.map(TasteConcepts.canonical))
+        let explicitlyChosen = Set((taste.into + taste.artists).map(TasteConcepts.canonical))
         if subjects.contains(where: explicitlyChosen.contains) || artists.contains(where: explicitlyChosen.contains) { return 0 }
         let favoriteMismatch = (identifiedFavoriteCount[source] ?? 0) >= 3 &&
             ((!subjects.isEmpty && !likedSubjects.isEmpty) ||
@@ -512,7 +524,7 @@ actor RecommendationEngine {
         // favorites snapshots only when the credited-artist taxonomy changes.
         guard taxonomy?.version != value?.version else { return }
         taxonomy = value
-        if !currentFavorites.isEmpty { configureFavorites(currentFavorites) }
+        if !currentFavorites.isEmpty { configureFavorites(currentFavorites, likedAt: favoriteTimestamps) }
     }
     // Both models are metadata-only, so ranking stays safe on the scrolling path.
     func unseenRecommendations(_ posts: [Post]) -> [Post] {
@@ -618,10 +630,12 @@ actor RecommendationEngine {
         let queryExclusions = RecommendationTagRules.queryExclusions(
             excluded + tasteTokens(source: provider.rawValue, values: taste.notInto))
         let blocked = Set(queryExclusions.map { $0.lowercased() })
-        let chosen = tasteTokens(source: provider.rawValue, values: taste.into).filter { !blocked.contains($0) }
+        let chosen = tasteTokens(source: provider.rawValue, values: selectedTasteValues(taste))
+            .filter { !blocked.contains($0) }
         let hasIdentityFavorites = (identifiedFavoriteCount[provider.rawValue] ?? 0) >= 3
         let explicit = hasIdentityFavorites
             ? chosen.filter { isFavoriteIdentity($0, source: provider.rawValue)
+                || $0.hasPrefix("artist:")
                 || taxonomy?.kind(of: $0) == .character || taxonomy?.kind(of: $0) == .artist }
             : chosen
         // Keep learned acquisition separate: adding many explicit tags must not
@@ -753,6 +767,9 @@ actor RecommendationEngine {
         if focused, let deadline = drainedCandidateQueries[context + "|query:" + terms.joined(separator: " ")], deadline > .now {
             focused = false; terms = []
         }
+        // Provider search APIs index credited names, not QuickTick's internal
+        // artist: identity prefix. Keep that prefix for ranking only.
+        terms = terms.map { $0.hasPrefix("artist:") ? String($0.dropFirst(7)) : $0 }
         let key = context + "|query:" + terms.joined(separator: " ")
         return CandidateRequest(context: key, query: ParsedQuery(included: terms, excluded: queryExclusions), page: candidatePage(context: key), focused: focused)
     }
@@ -779,7 +796,8 @@ actor RecommendationEngine {
 
     func terms(for post: Post) -> [String] {
         let source = post.provider.lowercased()
-        let raw = (post.tags + [post.caption, post.category].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let artistCredits = ArtistAttribution.credited(in: post, taxonomy: taxonomy).map { "artist:" + $0 }
+        let raw = (post.tags + artistCredits + [post.caption, post.category].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         if source == Provider.rule34.rawValue || source == Provider.kemono.rawValue {
             let values = raw.flatMap { value in
                 let tag = value.lowercased()
@@ -800,7 +818,7 @@ actor RecommendationEngine {
                 if out.count >= 30 { return Array(Set(out + presentations)).sorted() }
             }
         }
-        return Array(Set(out + presentations)).sorted()
+        return Array(Set(out + presentations + artistCredits)).sorted()
     }
 
     func themeSignatures(for post: Post) -> [String] {
@@ -957,7 +975,7 @@ actor RecommendationEngine {
     func positiveTerms(provider: Provider, taste: TasteChoice, limit: Int = 16) -> [String] {
         let source = provider.rawValue
         let p = profile(for: source)
-        let terms = Set(p.terms.keys).union(tasteTokens(source: source, values: taste.into)).union(tasteTokens(source: source, values: taste.notInto))
+        let terms = Set(p.terms.keys).union(tasteTokens(source: source, values: selectedTasteValues(taste))).union(tasteTokens(source: source, values: taste.notInto))
         return terms.map { ($0, effectiveTermScore(source: source, term: $0, taste: taste)) }
             .filter { $0.1 > 0.2 }
             .sorted { $0.1 > $1.1 }
@@ -993,7 +1011,7 @@ actor RecommendationEngine {
         let general = profile(for: source)
         let p = contextualRanking ? (state.scopedProfiles[scopedKey] ?? RecommendationProfile()) : general
         let postTerms = cachedTerms ?? terms(for: post)
-        let into = Set(tasteTokens(source: source, values: taste.into))
+        let into = Set(tasteTokens(source: source, values: selectedTasteValues(taste)))
         let notInto = Set(tasteTokens(source: source, values: taste.notInto))
         if !alreadyApproved && isHardDisliked(post, taste: taste) { return -1_000 }
         var score = log1p(max(0, post.score)) * 0.07
@@ -1091,7 +1109,7 @@ actor RecommendationEngine {
     /// broad for novelty and future preference exploration.
     private func matchesExplicitInterest(_ post: Post, taste: TasteChoice, visual: Double?, cachedTerms: [String]? = nil) -> Bool {
         let source = post.provider.lowercased()
-        let chosen = Set(tasteTokens(source: source, values: taste.into)
+        let chosen = Set(tasteTokens(source: source, values: selectedTasteValues(taste))
             .map(RecommendationTagRules.canonical))
         // Legacy Simple onboarding saved a chosen character AND its parent
         // franchise as two equally strong explicit preferences. Treat that
@@ -1254,7 +1272,7 @@ actor RecommendationEngine {
         let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(384, candidates.count)) }
         guard let first = candidates.first else { return [] }
         let p = profile(for: first.provider.lowercased())
-        let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !savedFavoriteAffinity.isEmpty || !taste.into.isEmpty || !taste.notInto.isEmpty || !taste.characterTags.isEmpty
+        let hasSignal = !state.contextualProfiles.isEmpty || !state.scopedProfiles.isEmpty || !savedFavoriteAffinity.isEmpty || !taste.into.isEmpty || !taste.artists.isEmpty || !taste.notInto.isEmpty || !taste.characterTags.isEmpty
             || !p.terms.isEmpty || !p.negativeThemes.isEmpty || !p.termEvidence.isEmpty
         guard hasSignal || !state.reversibleSkips.evidence.isEmpty || !visualScores.isEmpty else {
             let allowed = candidates.filter { post in
@@ -1476,6 +1494,10 @@ actor RecommendationEngine {
         return term.count >= 3 && !stopwords.contains(term) && Int(term) == nil
     }
 
+    private func selectedTasteValues(_ taste: TasteChoice) -> [String] {
+        taste.into + taste.artists.map { "artist:" + TasteConcepts.canonical($0) }
+    }
+
     private func tasteTokens(source: String, values: [String]) -> [String] {
         if source == Provider.rule34.rawValue || source == Provider.kemono.rawValue {
             var used = Set<String>()
@@ -1484,6 +1506,11 @@ actor RecommendationEngine {
         }
         var out: [String] = []
         for value in values {
+            if value.hasPrefix("artist:") {
+                let term = "artist:" + TasteConcepts.canonical(String(value.dropFirst(7)))
+                if term.count > 7 && !out.contains(term) { out.append(term) }
+                continue
+            }
             for raw in value.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ").split(whereSeparator: { $0.isWhitespace }) {
                 let clean = String(raw).lowercased().filter { $0.isLetter || $0.isNumber || $0 == "'" }
                 if isTermAllowed(source: source, term: clean), !out.contains(clean) { out.append(clean) }
@@ -1503,11 +1530,15 @@ actor RecommendationEngine {
             return min(0, learned?.terms[term] ?? profile(for: source).terms[term] ?? 0)
         }
         let p = learned ?? profile(for: source)
-        var score = p.terms[term] ?? 0
+        let raw = p.terms[term] ?? 0
+        // A thousand historical Likes should not pin a generic word at +70
+        // forever. Compress only positive legacy weights; explicit negatives
+        // retain their strength, and newer evidence still changes the score.
+        var score = min(14, log1p(max(0, raw)) * 3.3) + min(0, raw)
         let e = p.termEvidence[term] ?? RecommendationTermEvidence()
-        score += min(24, e.positive * 3.2 + e.search * 4.5)
+        score += min(8, log1p(e.positive) * 3) + min(8, e.search * 3.0)
         score -= min(30, e.negative * 5.2)
-        let into = tasteTokens(source: source, values: taste.into)
+        let into = tasteTokens(source: source, values: selectedTasteValues(taste))
         let notInto = tasteTokens(source: source, values: taste.notInto)
         if into.contains(term) { score += 16 }
         if notInto.contains(term) { score -= 28 }
@@ -1516,7 +1547,7 @@ actor RecommendationEngine {
 
     private func positiveTermEntries(source: String, taste: TasteChoice, limit: Int, learned: RecommendationProfile? = nil) -> [(String, Double)] {
         let p = learned ?? profile(for: source)
-        let candidates = Set(p.terms.keys).union(tasteTokens(source: source, values: taste.into)).union(tasteTokens(source: source, values: taste.notInto))
+        let candidates = Set(p.terms.keys).union(tasteTokens(source: source, values: selectedTasteValues(taste))).union(tasteTokens(source: source, values: taste.notInto))
         return candidates.map { ($0, effectiveTermScore(source: source, term: $0, taste: taste, learned: p)) }
             .filter { $0.1 > 0.2 }.sorted { $0.1 > $1.1 }.prefix(limit).map { $0 }
     }

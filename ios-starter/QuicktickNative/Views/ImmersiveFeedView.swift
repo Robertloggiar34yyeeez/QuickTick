@@ -196,8 +196,8 @@ struct ImmersiveFeedView: View {
             if clips.isEmpty && !offline && collectionTab == nil && !store.isLoading && store.hasMore { await store.loadMore(immersive: true) }
             return
         }
-        // Preload only the imminent clip. Preparing two CDN streams and three
-        // posters on every swipe caused avoidable decoding and network spikes.
+        // Keep lightweight posters two swipes ahead, but open only the next
+        // video's stream. This avoids a blank page on rapid iPad swipes.
         let warmIndices = ImmersivePreloadPlan.retainedIndices(current: index, count: clips.count)
         let forwardIndices = ImmersivePreloadPlan.forwardIndices(current: index, count: clips.count)
         store.players.capacity = 3
@@ -209,7 +209,7 @@ struct ImmersiveFeedView: View {
         let resolver = store.resolver
         let pool = store.players
         let previewCache = previews
-        if !offline, collectionTab == nil, index >= clips.count - 8 {
+        if !offline, collectionTab == nil, index >= clips.count - 16 {
             // Pagination must not wait for future CDN video prewarming. A
             // stalled preload previously delayed the next batch of posts.
             Task(priority: .utility) { await feedStore.loadMore(immersive: true) }
@@ -225,7 +225,7 @@ struct ImmersiveFeedView: View {
                 group.addTask(priority: distance == 0 ? .userInitiated : .utility) {
                     await previewCache.load(post)
                 }
-                if ["video", "gif"].contains(post.type.lowercased()) {
+                if distance == 0 && ["video", "gif"].contains(post.type.lowercased()) {
                     group.addTask(priority: .utility) {
                         // Let the visible clip acquire its stream and render
                         // a frame before the next clip competes for bandwidth.
@@ -256,12 +256,12 @@ struct ImmersiveFeedView: View {
 enum ImmersivePreloadPlan {
     static func retainedIndices(current: Int, count: Int) -> [Int] {
         guard count > 0, (0..<count).contains(current) else { return [] }
-        return Array(max(0, current - 1)...min(count - 1, current + 1))
+        return Array(max(0, current - 1)...min(count - 1, current + 2))
     }
 
     static func forwardIndices(current: Int, count: Int) -> [Int] {
         guard count > 0, (0..<count).contains(current), current + 1 < count else { return [] }
-        return [current + 1]
+        return Array((current + 1)...min(count - 1, current + 2))
     }
 
     static func nextIndex(current: Int, count: Int) -> Int? {
@@ -628,6 +628,21 @@ private struct ImmersiveItemView: View {
             if !offline {
                 railButton("Less", symbol: "minus.circle") { interacted = true; store.less(post) }
                 railButton("Comments", symbol: "bubble.right") { showComments = true }
+                if !ArtistAttribution.credited(in: post).isEmpty {
+                    Menu {
+                        ForEach(ArtistAttribution.credited(in: post).prefix(3), id: \.self) { artist in
+                            Button("More from \(artist.replacingOccurrences(of: "_", with: " "))") {
+                                interacted = true; store.preferArtist(artist, from: post)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "paintbrush.pointed.fill")
+                            .font(.system(size: 22, weight: .semibold))
+                            .frame(width: 48, height: 48)
+                            .background(.black.opacity(0.25), in: Circle())
+                    }
+                    .accessibilityLabel("More from this artist")
+                }
                 ImmersiveDownloadControl(manager: store.downloads, post: post, active: active && presentationActive)
             }
             if post.isImmersiveMedia {

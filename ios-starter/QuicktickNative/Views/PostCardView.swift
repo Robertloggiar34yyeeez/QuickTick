@@ -99,6 +99,15 @@ struct PostCardView: View {
         }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: cardRadius))
             .clipShape(RoundedRectangle(cornerRadius: cardRadius))
             .overlay(RoundedRectangle(cornerRadius: cardRadius).stroke(.white.opacity(0.07), lineWidth: 1))
+            .contextMenu {
+                ForEach(ArtistAttribution.credited(in: post).prefix(3), id: \.self) { artist in
+                    Button {
+                        store.preferArtist(artist, from: post)
+                    } label: {
+                        Label("More from \(artist.replacingOccurrences(of: "_", with: " "))", systemImage: "paintbrush.pointed.fill")
+                    }
+                }
+            }
             .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
             .sheet(isPresented: $comments) { CommentsView(post: post) }
             .sheet(isPresented: $tags) { PostTagsView(post: post) }

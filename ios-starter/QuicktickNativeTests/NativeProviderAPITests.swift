@@ -60,21 +60,27 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             }
         }
         else if host == "api.hentaihaven.app", path == "/v1/hentai/all" {
-            payload = request.value(forHTTPHeaderField: "warden") == "fallback-test-token"
+            payload = ["fallback-test-token", "category-only-test-token"].contains(request.value(forHTTPHeaderField: "warden") ?? "")
                 ? #"{"data":{"hentais":[],"total_pages":0}}"#
                 : #"{"data":{"hentais":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"total_pages":3}}"#
         }
         else if host == "api.hentaihaven.app", path == "/v1/hentai/home" {
-            payload = #"{"data":{"trending_month":[{"post_id":12,"post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"yuri":[{"post_id":19,"post_title":"Yuri romance","post_thumbnail":"https://cdn.hentaihaven.app/yuri.jpg"}]}}"#
+            payload = request.value(forHTTPHeaderField: "warden") == "category-only-test-token"
+                ? #"{"data":{"trending_month":[],"last":[],"yuri":[{"post_id":19,"post_title":"Yuri romance","post_thumbnail":"https://cdn.hentaihaven.app/yuri.jpg"}]}}"#
+                : #"{"data":{"trending_month":[{"post_id":12,"post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"yuri":[{"post_id":19,"post_title":"Yuri romance","post_thumbnail":"https://cdn.hentaihaven.app/yuri.jpg"}]}}"#
         }
         else if host == "api.hentaihaven.app", path == "/v1/genre/17" {
             payload = #"{"data":{"hentais":[{"post_id":34,"post_title":"Maid academy","post_thumbnail":"https://cdn.hentaihaven.app/maid.jpg"}],"total_pages":2}}"#
         }
-        else if host == "nhentai.net", path == "/api/galleries/all" || path == "/api/galleries/search" {
-            payload = #"{"result":[{"id":456,"media_id":"321","title":{"english":"Space adventure"},"images":{"cover":{"t":"p","w":600,"h":900}},"tags":[{"name":"Cosplay"},{"name":"Sci-Fi"}]}],"num_pages":3}"#
+        else if host == "nhentai.net", path.hasPrefix("/api/galleries") || path.hasPrefix("/api/gallery/") {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self); return
         }
-        else if host == "nhentai.net", path == "/api/gallery/456" {
-            payload = #"{"id":456,"media_id":"321","images":{"pages":[{"t":"j"},{"t":"p"},{"t":"w"}]}}"#
+        else if host == "nhentai.net", path == "/api/v2/galleries" || path == "/api/v2/search" {
+            payload = #"{"result":[{"id":456,"media_id":"321","english_title":"Space adventure","japanese_title":null,"thumbnail":"galleries/321/cover.png","thumbnail_width":600,"thumbnail_height":900,"num_pages":3,"tag_ids":[100,200]}],"num_pages":3,"per_page":25}"#
+        }
+        else if host == "nhentai.net", path == "/api/v2/galleries/456" {
+            payload = #"{"id":456,"media_id":"321","title":{"english":"Space adventure","pretty":"Space adventure"},"pages":[{"number":1,"path":"galleries/321/1.jpg"},{"number":2,"path":"2.png"},{"number":3,"path":"3.webp"}]}"#
         }
         else if host == "api.hentaihaven.app", path == "/v1/hentai/12" {
             payload = #"{"data":{"post_id":12,"episodes":[{"chapter_id":34,"chapter_name":"Episode 1"}]}}"#
@@ -306,10 +312,18 @@ final class NativeProviderAPITests: XCTestCase {
         let result = try await NativeProviderAPI.haven(session: session, token: "fallback-test-token",
             query: ParsedQuery(included: [], excluded: []), page: 1,
             sort: "recommended", immersive: false)
-        XCTAssertEqual(result.items.map(\.stableID), ["hhaven:12"])
+        XCTAssertEqual(result.items.map(\.stableID), ["hhaven:12", "hhaven:19"])
         let paths = NativeProviderProtocol.log.snapshot().compactMap { $0.url?.path }
         XCTAssertTrue(paths.contains("/v1/hentai/all"))
         XCTAssertTrue(paths.contains("/v1/hentai/home"))
+    }
+
+    func testHavenHomeFallbackUsesAvailableCategoriesWhenTrendingAndRecentAreEmpty() async throws {
+        let (_, session) = client(); defer { session.invalidateAndCancel() }
+        let result = try await NativeProviderAPI.haven(session: session, token: "category-only-test-token",
+            query: ParsedQuery(included: [], excluded: []), page: 1,
+            sort: "recommended", immersive: false)
+        XCTAssertEqual(result.items.map(\.stableID), ["hhaven:19"])
     }
 
     func testHavenShortCacheReusesTheSameFirstPage() async throws {
@@ -337,6 +351,9 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(home.items.first?.mediaUrl, "https://t1.nhentai.net/galleries/321/cover.png")
         XCTAssertEqual(home.items.first?.caption, "Space adventure")
         XCTAssertEqual(home.hasMore, true)
+        XCTAssertEqual(NativeProviderAPI.nhentaiImageURL(path: "2.png", mediaID: "321", thumbnail: false)?.absoluteString,
+                       "https://i1.nhentai.net/galleries/321/2.png")
+        XCTAssertNil(NativeProviderAPI.nhentaiImageURL(path: "https://example.invalid/page.jpg", mediaID: "321", thumbnail: false))
         let pages = try await api.mangaPages(bookID: "456")
         XCTAssertEqual(pages.map(\.absoluteString), [
             "https://i1.nhentai.net/galleries/321/1.jpg",
@@ -347,9 +364,19 @@ final class NativeProviderAPITests: XCTestCase {
             query: QueryParser.parse("cosplay"), page: 2)
         XCTAssertEqual(searched.items.count, 1)
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
-            $0.url?.path == "/api/galleries/search" &&
+            $0.url?.path == "/api/v2/search" &&
                 URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
                     .queryItems?.contains(where: { $0.name == "query" && $0.value == "cosplay" }) == true
+        })
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path.hasPrefix("/api/galleries") == true || $0.url?.path.hasPrefix("/api/gallery/") == true
+        }, "The retired v1 API returns HTTP 403; every catalog and reader request must use v2")
+        _ = try await api.posts(provider: .nhentai,
+            query: QueryParser.parse("adventure -violence"), page: 1)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path == "/api/v2/search" &&
+                URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?.contains(where: { $0.name == "query" && $0.value == "adventure -violence" }) == true
         })
         let immersivePage = try await api.posts(provider: .nhentai,
             query: ParsedQuery(included: [], excluded: []), page: 1, immersive: true)

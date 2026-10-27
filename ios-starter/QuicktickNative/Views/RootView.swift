@@ -3,38 +3,70 @@ import SwiftUI
 /// Directional swipes belong to the navigation controls only. Media and the
 /// rest of the screen keep their own horizontal/vertical gestures.
 enum TabSwipePolicy {
-    static func destination(current: Int, translation: CGSize, vertical: Bool) -> Int? {
-        guard (0...3).contains(current) else { return nil }
+    /// Scrub at actual button spacing, including the Create gap. Translation
+    /// moves the active indicator one point per point of finger movement;
+    /// velocity never predicts an extra page and cannot skip to an edge.
+    static func scrubDestination(current: Int, translation: CGSize, vertical: Bool,
+                                 axisLength: CGFloat, visibleIndices: [Int]) -> Int? {
+        guard let layout = layout(current: current, axisLength: axisLength,
+                                  visibleIndices: visibleIndices, vertical: vertical) else { return nil }
         let primary = vertical ? translation.height : translation.width
         let cross = vertical ? translation.width : translation.height
-        guard abs(primary) >= 42, abs(primary) > abs(cross) * 1.45 else { return nil }
-        // The selection follows the direction of the user's finger: pushing
-        // the Home dock to the right reaches Immersive on its right. The iPad
-        // side dock follows the same rule from top to bottom.
-        let next = current + (primary > 0 ? 1 : -1)
-        return (0...3).contains(next) ? next : nil
+        guard abs(primary) >= 16, abs(primary) > abs(cross) * 1.5 else { return nil }
+        let position = min(layout.last, max(layout.first, layout.start + primary))
+        let best = layout.feeds.min { lhs, rhs in
+            let lhsDistance = abs(lhs.center - position) - (lhs.id == current ? 8 : 0)
+            let rhsDistance = abs(rhs.center - position) - (rhs.id == current ? 8 : 0)
+            return lhsDistance < rhsDistance
+        }
+        guard let best, best.id != current else { return nil }
+        return best.id
     }
 
-
-    /// A continuous dock drag can travel across several feeds. Nothing is
-    /// selected until the finger lifts, at which point the highlighted feed
-    /// becomes the drop target. The Create action is not a feed destination.
-    static func dropDestination(current: Int, translation: CGSize, vertical: Bool) -> Int? {
-        guard (0...3).contains(current) else { return nil }
+    /// One continuous pill lives behind the whole dock. Moving it by absolute
+    /// finger distance avoids a visual jump while crossing the Create gap.
+    static func indicatorPosition(current: Int, translation: CGSize,
+                                  vertical: Bool, axisLength: CGFloat,
+                                  visibleIndices: [Int]) -> CGFloat {
+        guard let layout = layout(current: current, axisLength: axisLength,
+                                  visibleIndices: visibleIndices, vertical: vertical) else { return 0 }
         let primary = vertical ? translation.height : translation.width
         let cross = vertical ? translation.width : translation.height
-        guard abs(primary) >= 42, abs(primary) > abs(cross) * 1.45 else { return nil }
-        let steps = 1 + Int((abs(primary) - 42) / 90)
-        let desired = current + (primary > 0 ? steps : -steps)
-        let clamped = min(3, max(0, desired))
-        return clamped == current ? nil : clamped
+        guard abs(primary) >= 16, abs(primary) > abs(cross) * 1.5 else { return layout.start }
+        return min(layout.last, max(layout.first, layout.start + primary))
+    }
+
+    private struct Layout {
+        let feeds: [(id: Int, center: CGFloat)]
+        let start: CGFloat
+        let first: CGFloat
+        let last: CGFloat
+        let step: CGFloat
+    }
+
+    private static func layout(current: Int, axisLength: CGFloat,
+                               visibleIndices: [Int], vertical: Bool) -> Layout? {
+        guard (0...3).contains(current), axisLength > 0,
+              !visibleIndices.isEmpty else { return nil }
+        let step = vertical ? CGFloat(52) : axisLength / CGFloat(visibleIndices.count)
+        var cursor: CGFloat = 0
+        var feeds: [(id: Int, center: CGFloat)] = []
+        for visualID in visibleIndices {
+            let length = vertical ? CGFloat(visualID == 2 ? 52 : 46) : step
+            if visualID != 2 {
+                feeds.append((visualID < 2 ? visualID : visualID - 1, cursor + length / 2))
+            }
+            cursor += length + (vertical ? 6 : 0)
+        }
+        guard let start = feeds.first(where: { $0.id == current })?.center,
+              let first = feeds.first?.center, let last = feeds.last?.center else { return nil }
+        return Layout(feeds: feeds, start: start, first: first, last: last, step: step)
     }
 }
 
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var navigationSelection
     @State private var brieflyNamedTab: Int?
     @State private var tabNameTask: Task<Void, Never>?
     @State private var refreshingTab: Int?
@@ -61,6 +93,8 @@ struct RootView: View {
     var body: some View {
         GeometryReader { geometry in
             let sideNavigation = store.activeTab == 1 && geometry.size.width > 600
+            let bottomAxisLength = max(1, geometry.size.width - CGFloat((modernUI ? 8 : 4) * 2))
+            let sideAxisLength = CGFloat(visibleTabIndices.count * 46 + max(0, visibleTabIndices.count - 1) * 6 + (aiTabVisible ? 6 : 0))
             // Keep a single mounted navigation stack for playback and VoiceOver.
             VStack(spacing: 0) {
                 Group {
@@ -82,11 +116,22 @@ struct RootView: View {
                         .padding(.bottom, 3)
                     // Full-width dock with a raised, high-contrast creation
                     // action in the center. Preserve safe-area touch targets.
-                    HStack(spacing: 0) { tabButtons(vertical: false) }
+                    HStack(spacing: 0) { tabButtons(vertical: false, axisLength: bottomAxisLength) }
                         .contentShape(Rectangle())
+                        .background(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: modernUI ? 18 : 12, style: .continuous)
+                                .fill(AppTheme.gradient)
+                                .frame(width: bottomAxisLength / CGFloat(visibleTabIndices.count), height: 54)
+                                .offset(x: TabSwipePolicy.indicatorPosition(current: store.activeTab,
+                                    translation: navigationDrag, vertical: false,
+                                    axisLength: bottomAxisLength, visibleIndices: visibleTabIndices)
+                                    - bottomAxisLength / CGFloat(visibleTabIndices.count) / 2)
+                                .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86), value: store.activeTab)
+                                .allowsHitTesting(false)
+                        }
                         .highPriorityGesture(DragGesture(minimumDistance: 16)
                             .updating($navigationDrag) { value, state, _ in state = value.translation }
-                            .onEnded { swipeTabs($0.translation, vertical: false) })
+                            .onEnded { swipeTabs($0.translation, vertical: false, axisLength: bottomAxisLength) })
                         .padding(.horizontal, modernUI ? 8 : 4)
                         .padding(.top, modernUI ? 8 : 4)
                         .padding(.bottom, 0)
@@ -105,7 +150,7 @@ struct RootView: View {
                             }
                         }
                         .overlay(alignment: .top) {
-                            if let destination = swipePreview(vertical: false) {
+                            if let destination = swipePreview(vertical: false, axisLength: bottomAxisLength) {
                                 Text(feedName(destination))
                                     .font(.caption.weight(.semibold))
                                     .padding(.horizontal, 14).padding(.vertical, 7)
@@ -115,6 +160,7 @@ struct RootView: View {
                                     .allowsHitTesting(false)
                             }
                         }
+                        .sensoryFeedback(.selection, trigger: swipePreview(vertical: false, axisLength: bottomAxisLength) ?? store.activeTab)
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("bottom-navigation-bar")
                         .id(aiTabVisible ? "five-tabs" : "four-tabs")
@@ -124,18 +170,28 @@ struct RootView: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
             .overlay(alignment: .leading) {
                 if sideNavigation {
-                    VStack(spacing: 6) { tabButtons(vertical: true) }
+                    VStack(spacing: 6) { tabButtons(vertical: true, axisLength: sideAxisLength) }
                         .contentShape(Rectangle())
+                        .background(alignment: .top) {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(AppTheme.gradient)
+                                .frame(width: 46, height: 46)
+                                .offset(y: TabSwipePolicy.indicatorPosition(current: store.activeTab,
+                                    translation: navigationDrag, vertical: true,
+                                    axisLength: sideAxisLength, visibleIndices: visibleTabIndices) - 23)
+                                .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86), value: store.activeTab)
+                                .allowsHitTesting(false)
+                        }
                         .highPriorityGesture(DragGesture(minimumDistance: 16)
                             .updating($navigationDrag) { value, state, _ in state = value.translation }
-                            .onEnded { swipeTabs($0.translation, vertical: true) })
+                            .onEnded { swipeTabs($0.translation, vertical: true, axisLength: sideAxisLength) })
                         .padding(6)
                         .background(AppTheme.prefersOpaqueChrome ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
                                     in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
                         .shadow(color: .black.opacity(AppTheme.isDeSlopified ? 0 : 0.4), radius: 18, y: 4)
                         .overlay(alignment: .trailing) {
-                            if let destination = swipePreview(vertical: true) {
+                            if let destination = swipePreview(vertical: true, axisLength: sideAxisLength) {
                                 Text(feedName(destination))
                                     .font(.caption.weight(.semibold))
                                     .padding(.horizontal, 12).padding(.vertical, 7)
@@ -145,6 +201,7 @@ struct RootView: View {
                                     .allowsHitTesting(false)
                             }
                         }
+                        .sensoryFeedback(.selection, trigger: swipePreview(vertical: true, axisLength: sideAxisLength) ?? store.activeTab)
                         .padding(.leading, 16)
                         .id(aiTabVisible ? "five-side-tabs" : "four-side-tabs")
                         .transition(.move(edge: .leading).combined(with: .opacity))
@@ -222,10 +279,11 @@ struct RootView: View {
         .overlay(alignment: .topTrailing) { FloatingPiPView().environmentObject(store) }
     }
 
-    private func swipeTabs(_ translation: CGSize, vertical: Bool) {
+    private func swipeTabs(_ translation: CGSize, vertical: Bool, axisLength: CGFloat) {
         guard !showStudio, !showSettings,
-              let tab = TabSwipePolicy.dropDestination(current: store.activeTab,
-                                                         translation: translation, vertical: vertical)
+              let tab = TabSwipePolicy.scrubDestination(current: store.activeTab,
+                                                         translation: translation, vertical: vertical,
+                                                         axisLength: axisLength, visibleIndices: visibleTabIndices)
         else { return }
         tabSelectionTask?.cancel()
         let refresh = store.beginFeedTabSelection(tab)
@@ -235,10 +293,11 @@ struct RootView: View {
         }
     }
 
-    private func swipePreview(vertical: Bool) -> Int? {
+    private func swipePreview(vertical: Bool, axisLength: CGFloat) -> Int? {
         guard !showStudio, !showSettings else { return nil }
-        return TabSwipePolicy.dropDestination(current: store.activeTab,
-                                              translation: navigationDrag, vertical: vertical)
+        return TabSwipePolicy.scrubDestination(current: store.activeTab,
+                                               translation: navigationDrag, vertical: vertical,
+                                               axisLength: axisLength, visibleIndices: visibleTabIndices)
     }
 
     private func feedName(_ tab: Int) -> String {
@@ -250,8 +309,8 @@ struct RootView: View {
         }
     }
 
-    @ViewBuilder private func tabButtons(vertical: Bool) -> some View {
-        let highlightedTab = swipePreview(vertical: vertical) ?? store.activeTab
+    @ViewBuilder private func tabButtons(vertical: Bool, axisLength: CGFloat) -> some View {
+        let highlightedTab = swipePreview(vertical: vertical, axisLength: axisLength) ?? store.activeTab
         ForEach(visibleTabIndices, id: \.self) { index in
             if index == 2 {
                 Button {
@@ -332,13 +391,6 @@ struct RootView: View {
                     .frame(width: vertical ? 46 : nil, height: vertical ? 46 : 54)
                     .frame(maxWidth: vertical ? nil : .infinity)
                     .contentShape(Rectangle())
-                    .background {
-                        if highlightedTab == tabID {
-                            RoundedRectangle(cornerRadius: vertical ? 18 : (modernUI ? 18 : 12), style: .continuous)
-                                .fill(AppTheme.gradient)
-                                .matchedGeometryEffect(id: "selected-tab", in: navigationSelection)
-                        }
-                    }
                 }
                 .buttonStyle(QuicktickPressStyle())
                 .animation(reduceMotion ? nil : AppTheme.spring, value: store.activeTab)

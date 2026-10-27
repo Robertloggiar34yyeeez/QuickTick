@@ -28,38 +28,43 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
             velocity: CGSize(width: 0, height: 950), viewportHeight: height))
     }
 
-    func testDockSwipeChangesOneTabWithoutTriggeringMediaGestures() {
-        XCTAssertEqual(TabSwipePolicy.destination(current: 0,
-            translation: CGSize(width: 90, height: 5), vertical: false), 1)
-        XCTAssertEqual(TabSwipePolicy.destination(current: 2,
-            translation: CGSize(width: -110, height: 2), vertical: false), 1)
-        XCTAssertNil(TabSwipePolicy.destination(current: 0,
-            translation: CGSize(width: -100, height: 1), vertical: false))
-        XCTAssertNil(TabSwipePolicy.destination(current: 1,
-            translation: CGSize(width: 90, height: 85), vertical: false))
-        XCTAssertNil(TabSwipePolicy.destination(current: 1,
-            translation: CGSize(width: 25, height: 4), vertical: false))
-        XCTAssertEqual(TabSwipePolicy.destination(current: 1,
-            translation: CGSize(width: 1, height: 95), vertical: true), 2)
-        XCTAssertEqual(TabSwipePolicy.destination(current: 1,
-            translation: CGSize(width: 1, height: -95), vertical: true), 0)
-        XCTAssertNil(TabSwipePolicy.destination(current: 3,
-            translation: CGSize(width: 1, height: 95), vertical: true))
+    func testDockScrubUsesActualButtonDistancesWithoutSkippingToEdges() {
+        let slots = [0, 1, 2, 3, 4] // Create stays in the layout, never a feed target.
+        func target(_ current: Int, _ x: CGFloat, _ y: CGFloat = 0) -> Int? {
+            TabSwipePolicy.scrubDestination(current: current,
+                translation: CGSize(width: x, height: y), vertical: false,
+                axisLength: 390, visibleIndices: slots)
+        }
+        XCTAssertEqual(target(0, 85), 1)
+        XCTAssertEqual(target(0, 145), 1) // Do not rush across the Create gap.
+        XCTAssertEqual(target(0, 172), 2)
+        XCTAssertEqual(target(0, 290), 3)
+        XCTAssertEqual(target(3, -85), 2)
+        XCTAssertNil(target(0, -100)) // Beyond the Home end.
+        XCTAssertNil(target(1, 25)) // Too little movement to change a slot.
+        XCTAssertNil(target(1, 90, 85)) // Media-like diagonal drag.
     }
 
-    func testDockDragPreviewsMultipleFeedsAndCommitsOnlyOnRelease() {
-        XCTAssertEqual(TabSwipePolicy.dropDestination(current: 0,
-            translation: CGSize(width: 250, height: 4), vertical: false), 3)
-        XCTAssertEqual(TabSwipePolicy.dropDestination(current: 3,
-            translation: CGSize(width: -150, height: 2), vertical: false), 1)
-        XCTAssertEqual(TabSwipePolicy.dropDestination(current: 1,
-            translation: CGSize(width: 1, height: 145), vertical: true), 3)
-        XCTAssertNil(TabSwipePolicy.dropDestination(current: 3,
-            translation: CGSize(width: 120, height: 2), vertical: false))
-        XCTAssertNil(TabSwipePolicy.dropDestination(current: 1,
-            translation: CGSize(width: 38, height: 2), vertical: false))
-        XCTAssertNil(TabSwipePolicy.dropDestination(current: 1,
-            translation: CGSize(width: 80, height: 90), vertical: false))
+    func testIPadSideRailScrubsPreciselyAndHiddenCreateClosesItsGap() {
+        let allTabs = [0, 1, 2, 3, 4]
+        func side(_ current: Int, _ y: CGFloat) -> Int? {
+            TabSwipePolicy.scrubDestination(current: current,
+                translation: CGSize(width: 1, height: y), vertical: true,
+                axisLength: 260, visibleIndices: allTabs)
+        }
+        XCTAssertNil(side(1, 28))
+        XCTAssertEqual(side(1, 65), 2)
+        XCTAssertEqual(side(1, 145), 3)
+        XCTAssertEqual(side(1, -55), 0)
+        XCTAssertNil(side(3, 90))
+
+        XCTAssertEqual(TabSwipePolicy.scrubDestination(current: 1,
+            translation: CGSize(width: 60, height: 2), vertical: false,
+            axisLength: 388, visibleIndices: [0, 1, 3, 4]), 2)
+        let position = TabSwipePolicy.indicatorPosition(current: 0,
+            translation: CGSize(width: 85, height: 0), vertical: false,
+            axisLength: 390, visibleIndices: allTabs)
+        XCTAssertEqual(position, 124, accuracy: 0.01)
     }
 
     @MainActor func testTypedArtistSelectionCanBeSavedFromTagsWithoutPrefix() {

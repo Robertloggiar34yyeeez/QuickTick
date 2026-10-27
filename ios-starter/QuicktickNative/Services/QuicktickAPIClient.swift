@@ -203,20 +203,31 @@ actor QuicktickAPIClient {
                 }
             } catch let apiFailure {
                 try Task.checkCancellation()
-                // Independent public catalog, not a forged token or a proxy.
-                // Retain the original API path when it works and only degrade
-                // to real website watch pages on an authenticated API failure.
+                guard page == 1, !immersive else { throw apiFailure }
+                // API Anything's read-only strategy: try plain HTTP first,
+                // then load the actual public site in iOS WebKit. The latter
+                // can succeed when an upstream proxy replaces URLSession's
+                // response with HTML saying "Site Unavailable".
                 do {
                     let page = try await NativeProviderAPI.havenWebsiteCatalog(session: session,
                         query: query, page: page, sort: sort, immersive: immersive)
-                    // Preserve the real upstream error when a website index
-                    // cannot satisfy an explicit query. This is an outage,
-                    // not an empty search result.
-                    if page.items.isEmpty { throw apiFailure }
-                    return page
-                } catch {
-                    throw apiFailure
-                }
+                    if !page.items.isEmpty { return page }
+                } catch is CancellationError { throw CancellationError() }
+                catch { }
+                try Task.checkCancellation()
+                // Injected URLProtocol sessions are deterministic unit/UI
+                // tests. Do not escape their fixture transport by opening a
+                // real WKWebView against the public internet.
+                guard session.configuration.protocolClasses?.isEmpty != false else { throw apiFailure }
+                do {
+                    let html = try await HavenBrowserCatalog.html(query: query, sort: sort)
+                    let page = try NativeProviderAPI.havenWebsitePage(html, query: query)
+                    if !page.items.isEmpty { return page }
+                } catch is CancellationError { throw CancellationError() }
+                catch { }
+                // An inaccessible website is not proof the user searched
+                // for something nonexistent. Preserve the upstream reason.
+                throw APIError.server("Hentai Haven's API and public website could not load a usable catalog. Try Browse inside QuickTick. \(apiFailure.localizedDescription)")
             }
         }
         havenPageTasks[key] = request

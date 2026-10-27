@@ -1,4 +1,5 @@
 import Foundation
+import WebKit
 
 // Shared by provider APIs and download preparation. A new screen or Retry tap
 // cannot bypass a host's advertised cooldown. Entries are bounded and transient.
@@ -20,6 +21,59 @@ actor ProviderRequestGate {
         if slot > .now { try await Task.sleep(for: .seconds(slot.timeIntervalSinceNow)) }
         try Task.checkCancellation()
         if let date = deadlines[host], date > .now { throw APIError.rateLimited(provider, date) }
+    }
+}
+
+/// Website-driven fallback inspired by API Anything's read-only browser tier.
+/// The public page is rendered with iOS WebKit when the first-party API and a
+/// plain HTTP catalog read fail. Nothing here bypasses a sign-in or access wall:
+/// the parser only accepts public titles visible in the loaded document.
+@MainActor
+enum HavenBrowserCatalog {
+    static func html(query: ParsedQuery, sort: String) async throws -> String {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let browser = WKWebView(frame: .zero, configuration: config)
+        guard let url = NativeProviderAPI.havenWebsiteURL(sort: sort, query: query) else {
+            throw APIError.server("This Hentai Haven category is only available through its catalog API.")
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        _ = browser.load(request)
+        defer { browser.stopLoading() }
+
+        // API Anything's browser tier observes the page's useful response,
+        // not every ad/tracker finishing. Read as soon as a real watch link
+        // appears instead of waiting for the entire document's load event.
+        var settled = 0
+        for tick in 0..<48 {
+            try Task.checkCancellation()
+            guard let current = browser.url else {
+                try await Task.sleep(for: .milliseconds(250))
+                continue
+            }
+            guard current.scheme == "https", ["hentaihaven.xxx", "www.hentaihaven.xxx"].contains(current.host?.lowercased() ?? "") else {
+                throw APIError.server("Hentai Haven redirected to another website; QuickTick did not read it.")
+            }
+            if tick.isMultiple(of: 2), let markup = await renderedWatchMarkup(in: browser) {
+                return markup
+            }
+            settled = browser.isLoading ? 0 : settled + 1
+            if settled >= 8 { break }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        throw APIError.server("Hentai Haven's in-app browser could not read a public catalog.")
+    }
+
+    private static func renderedWatchMarkup(in browser: WKWebView) async -> String? {
+        await withCheckedContinuation { continuation in
+            browser.evaluateJavaScript(
+                #"document.querySelector('a[href*="/watch/"]') ? document.documentElement.outerHTML : ''"#
+            ) { value, _ in
+                let html = value as? String
+                continuation.resume(returning: html?.isEmpty == false ? html : nil)
+            }
+        }
     }
 }
 
@@ -63,10 +117,10 @@ enum NativeProviderAPI {
         return url
     }
 
-    static func data(session: URLSession, url: URL, provider: Provider, method: String = "GET", body: Data? = nil, headers: [String: String] = [:], maxBytes: Int = 8 * 1024 * 1024) async throws -> Data {
+    static func data(session: URLSession, url: URL, provider: Provider, method: String = "GET", body: Data? = nil, headers: [String: String] = [:], maxBytes: Int = 8 * 1024 * 1024, timeout: TimeInterval = 15) async throws -> Data {
         guard url.scheme == "https", let host = url.host, host.lowercased() != quicktickHost else { throw APIError.invalidResponse }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 15
+        request.timeoutInterval = timeout
         request.httpMethod = method; request.httpBody = body
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json, application/xml;q=0.9, text/html;q=0.8", forHTTPHeaderField: "Accept")
@@ -415,7 +469,7 @@ enum NativeProviderAPI {
             method: "POST", body: Data(body.utf8), headers: [
                 "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
                 "User-Agent": "HH_xxx_APP", "warden": ""
-            ])
+            ], timeout: 6)
         guard !unavailableHTML(bytes) else {
             throw APIError.server("Hentai Haven's catalog API is currently unavailable. Its server returned an unavailable page instead of a token.")
         }
@@ -437,7 +491,7 @@ enum NativeProviderAPI {
                              parameters: [URLQueryItem] = []) async throws -> [String: Any] {
         let bytes = try await data(session: session,
             url: url("https://api.hentaihaven.app/v1/" + path, parameters),
-            provider: .hhaven, headers: ["User-Agent": "HH_xxx_APP", "warden": token])
+            provider: .hhaven, headers: ["User-Agent": "HH_xxx_APP", "warden": token], timeout: 7)
         guard !unavailableHTML(bytes) else {
             throw APIError.server("Hentai Haven's catalog API is currently unavailable. Try again when its server is reachable.")
         }
@@ -543,32 +597,62 @@ enum NativeProviderAPI {
     static func havenWebsiteCatalog(session: URLSession, query: ParsedQuery,
                                     page: Int, sort: String, immersive: Bool) async throws -> PostPage {
         guard page == 1, !immersive else { return PostPage(items: [], hasMore: false) }
-        let route = sort == "popular" ? "https://hentaihaven.xxx/browse/trending/" : "https://hentaihaven.xxx/"
-        let bytes = try await data(session: session, url: url(route), provider: .hhaven,
-                                   headers: ["Accept": "text/html,application/xhtml+xml"], maxBytes: 5 * 1024 * 1024)
-        guard !unavailableHTML(bytes) else {
-            throw APIError.server("Hentai Haven's website and Warden API are unavailable from this network.")
+        guard let website = havenWebsiteURL(sort: sort, query: query) else {
+            throw APIError.server("This Hentai Haven category is only available through its catalog API.")
         }
-        let posts = parseHavenWebsiteCatalog(String(decoding: bytes, as: UTF8.self))
+        let bytes = try await data(session: session, url: website, provider: .hhaven,
+                                   headers: ["Accept": "text/html,application/xhtml+xml"], maxBytes: 5 * 1024 * 1024,
+                                   timeout: 5)
+        return try havenWebsitePage(String(decoding: bytes, as: UTF8.self), query: query)
+    }
+
+    static func havenWebsiteURL(sort: String, query: ParsedQuery) -> URL? {
+        let section = ProviderSearchCategories.split(query, provider: .hhaven).category
+        if let section, section.hasPrefix("category:genre:") { return nil }
+        let slug = section?.replacingOccurrences(of: "category:section:", with: "") ?? ""
+        let path: String
+        switch slug {
+        case "trending_month": path = "/browse/trending/"
+        case "last": path = "/"
+        case "": path = sort == "popular" ? "/browse/trending/" : "/"
+        default: path = "/series/\(slug)/"
+        }
+        return URL(string: "https://hentaihaven.xxx" + path)
+    }
+
+    /// The same strict parser is used for a normal HTTP response and, if the
+    /// website blocks raw URLSession requests, the page loaded by WebKit.
+    /// Browser-generated HTML is still untrusted input: only canonical watch
+    /// links become catalog entries, and unrelated search results are dropped.
+    static func havenWebsitePage(_ html: String, query: ParsedQuery) throws -> PostPage {
+        guard !unavailableHTML(Data(html.utf8)) else {
+            throw APIError.server("Hentai Haven's public site returned an unavailable page.")
+        }
+        let selection = ProviderSearchCategories.split(query, provider: .hhaven)
+        let posts = parseHavenWebsiteCatalog(html).map { item -> Post in
+            var post = item
+            if let category = selection.category { post.category = category }
+            return post
+        }
         guard !posts.isEmpty else {
-            throw APIError.server("Hentai Haven's website did not expose readable titles; its catalog API is also unavailable.")
+            throw APIError.server("Hentai Haven's website did not expose readable watch links.")
         }
         // The public homepage is not a search endpoint. Filtering locally is
         // essential: otherwise a failed search silently turns into unrelated
         // homepage recommendations and teaches the taste model false positives.
         let matched = posts.filter { post in
-            query.included.allSatisfy { containsKeyword($0, in: post) }
+            selection.keywords.allSatisfy { containsKeyword($0, in: post) }
         }
         return self.page(matched, hasMore: false, query: query, immersive: false)
     }
 
     static func parseHavenWebsiteCatalog(_ html: String) -> [Post] {
-        let pattern = #"(?i)href\s*=\s*["'](?:https://hentaihaven\.xxx)?(/watch/([a-z0-9-]+)/?)["']"#
+        let pattern = #"(?i)href\s*=\s*["'](?:https://(?:www\.)?hentaihaven\.xxx)?(/watch/([a-z0-9-]+)/?)["']"#
         guard let linkPattern = try? NSRegularExpression(pattern: pattern) else { return [] }
         let content = html as NSString
         let matches = linkPattern.matches(in: html, range: NSRange(location: 0, length: content.length))
         let imagePattern = try? NSRegularExpression(pattern:
-            #"(?i)(?:data-src|src)\s*=\s*["'](https://img\.hentaihaven\.xxx/[^"']+)["']"#)
+            #"(?i)(?:data-src|src)\s*=\s*["'](https://(?:img\.hentaihaven\.xxx|coverlanyvd\.org)/[^"']+)["']"#)
         let titlePattern = try? NSRegularExpression(pattern: #"(?i)(?:alt|title)\s*=\s*["']([^"']{3,180})["']"#)
         var unique = Set<String>()
         var posts: [Post] = []

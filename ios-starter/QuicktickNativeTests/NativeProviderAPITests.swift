@@ -102,6 +102,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "hentaihaven.xxx", path == "/" {
             payload = #"<html><a href="/watch/fallback-web/"><img src="https://img.hentaihaven.xxx/poster.jpg" alt="Fallback web fantasy"></a><a href="/watch/another-title/"><img src="https://img.hentaihaven.xxx/second.jpg" alt="Another title"></a></html>"#
         }
+        else if host == "hentaihaven.xxx", path == "/series/yuri/" {
+            payload = #"<html><a href="/watch/genre-entry/"><img src="https://coverlanyvd.org/cover.jpg" alt="Genre entry"></a></html>"#
+        }
         else if host == "search.htv-services.com" { payload = #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fixture\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"}]}]"}"# }
         else if path == "/api/v8/video" { payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/full.m3u8"}]}]}}"# }
         else if path == "/webmasters/search" || path == "/webmasters/search/" {
@@ -401,6 +404,25 @@ final class NativeProviderAPITests: XCTestCase {
             query: QueryParser.parse("fallback-web"), page: 1)
         XCTAssertEqual(response.items.map(\.stableID), ["hhaven:web:fallback-web"])
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.host == "hentaihaven.xxx" })
+    }
+
+    func testHavenWebsiteCatalogUsesRealCategoryPagesAndRejectsBlockedHTML() async throws {
+        let (_, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let selection = QueryParser.parse("category:section:yuri")
+        let page = try await NativeProviderAPI.havenWebsiteCatalog(session: session,
+            query: selection, page: 1, sort: "recommended", immersive: false)
+        XCTAssertEqual(page.items.map(\.stableID), ["hhaven:web:genre-entry"])
+        XCTAssertEqual(page.items.first?.thumbUrl, "https://coverlanyvd.org/cover.jpg")
+        XCTAssertEqual(page.items.first?.category, "category:section:yuri")
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().last?.url?.path, "/series/yuri/")
+        XCTAssertNil(NativeProviderAPI.havenWebsiteURL(sort: "recommended",
+            query: QueryParser.parse("category:genre:17")))
+
+        let unavailable = "<html><head><title>Site Unavailable</title></head><body>Unable to access this site.</body></html>"
+        XCTAssertThrowsError(try NativeProviderAPI.havenWebsitePage(unavailable, query: QueryParser.parse("")))
+        let mistaken = #"<a href="https://different.invalid/watch/not-our-site/">Wrong host</a>"#
+        XCTAssertThrowsError(try NativeProviderAPI.havenWebsitePage(mistaken, query: QueryParser.parse("")))
     }
 
     func testNHentaiGalleryBrowseSearchAndCompletePageManifest() async throws {

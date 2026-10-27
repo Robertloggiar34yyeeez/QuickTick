@@ -198,7 +198,7 @@ struct HomeFeedView: View {
                 }
             }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.bottom, 18)
         }
-        return scrollContent
+        let restoredScroll = scrollContent
         // A regular feed must keep free scroll offsets through rotation and
         // keyboard changes. Restore its anchor only when this host mounts;
         // continuously binding a .top target fought scrollTo and focus changes.
@@ -212,6 +212,7 @@ struct HomeFeedView: View {
             visibleTopSince = .distantPast
             proxy.scrollTo("home-top", anchor: .top)
         }
+        let scrollControls = restoredScroll
         .overlay(alignment: .bottomLeading) {
             if !isScrollMoving {
                 Button {
@@ -239,6 +240,7 @@ struct HomeFeedView: View {
         }
         .coordinateSpace(name: "home-viewport")
         .onPreferenceChange(HomeTopOffsetPreference.self) { topOffset = $0 }
+        let gesturedScroll = scrollControls
         .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { touch in
             let gutter = (viewport.size.width - AppTheme.feedWidth) / 2
             guard gutter >= 48,
@@ -258,6 +260,7 @@ struct HomeFeedView: View {
             guard pullRefreshGate.finish(translation: drag.translation) else { return }
             Task { await refreshFromGesture() }
         })
+        let trackedScroll = gesturedScroll
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
             guard store.feedRevision == revision else { return }
             guard frames != visibleFrames else { return }
@@ -292,6 +295,7 @@ struct HomeFeedView: View {
             store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
             selectVisiblePlayback(viewport: viewport.size)
         }
+        let mountedScroll = trackedScroll
         .onAppear {
             playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
             homeRemountGraceUntil = Date().addingTimeInterval(0.85)
@@ -319,6 +323,7 @@ struct HomeFeedView: View {
             // Geometry from the outgoing tab is invalid on the next mount.
             visibleFrames = [:]
         }
+        let preparedScroll = mountedScroll
         .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)
@@ -345,6 +350,7 @@ struct HomeFeedView: View {
             }
         }
         #if DEBUG
+        let debugScroll = preparedScroll
         .overlay(alignment: .bottomTrailing) {
             if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
                 Text("active=\(store.inlinePlaybackID ?? "nil") candidate=\(visibleCandidate(viewport: viewport.size) ?? "nil") paused=\(store.pausedPlaybackID ?? "nil") foreground=\(store.isForeground) frames=\(visibleFrames.count) player=\(store.players.activeKey ?? "nil") owner=\(store.players.activeOwner ?? "nil")")
@@ -352,7 +358,10 @@ struct HomeFeedView: View {
                     .accessibilityIdentifier("home-playback-debug")
             }
         }
+        #else
+        let debugScroll = preparedScroll
         #endif
+        let navigableScroll = debugScroll
         .background(AppTheme.canvas)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -384,6 +393,7 @@ struct HomeFeedView: View {
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
+        let suggestionsScroll = navigableScroll
         .task(id: store.selectedProvider) {
             let provider = store.selectedProvider
             let discovered = await store.visual.discoveryTerms(provider: provider)
@@ -412,6 +422,7 @@ struct HomeFeedView: View {
             themeSuggestions = []
             refreshThemeSuggestions()
         }
+        return suggestionsScroll
     }
 
     private func refreshThemeSuggestions() {

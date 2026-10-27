@@ -1,6 +1,48 @@
 import SwiftUI
 import UIKit
 
+/// Present exports from the active window rather than from a narrow SwiftUI
+/// ShareLink inside a lazy scroll row. A full-height activity sheet on iPhone
+/// and a generously sized form sheet on iPad keep the actions tappable.
+@MainActor
+enum DownloadExporter {
+    static func localFileURL(_ address: String) -> URL? {
+        guard let url = URL(string: address), url.isFileURL,
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    static func share(_ urls: [URL]) {
+        guard !urls.isEmpty,
+              let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }),
+              let root = scene.windows.first(where: \.isKeyWindow)?.rootViewController else { return }
+
+        var presenter = root
+        while let next = presenter.presentedViewController { presenter = next }
+        guard !(presenter is UIActivityViewController) else { return }
+
+        let activity = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+        let isPad = scene.traitCollection.userInterfaceIdiom == .pad
+        activity.modalPresentationStyle = isPad ? .formSheet : .pageSheet
+        activity.preferredContentSize = CGSize(width: 620, height: 680)
+        if let sheet = activity.sheetPresentationController {
+            sheet.detents = [.large()]
+            sheet.prefersGrabberVisible = true
+        }
+        // Required on iPad if the system adapts its share presentation into
+        // a popover, even though we request a larger form sheet by default.
+        if let popover = activity.popoverPresentationController {
+            popover.sourceView = presenter.view
+            popover.sourceRect = CGRect(x: presenter.view.bounds.midX,
+                                        y: presenter.view.bounds.midY, width: 1, height: 1)
+            popover.permittedArrowDirections = []
+        }
+        presenter.present(activity, animated: true)
+    }
+}
+
 struct DownloadsFeedView: View {
     @EnvironmentObject private var store: AppStore
     var body: some View { DownloadContent(manager: store.downloads) }
@@ -142,7 +184,7 @@ private struct DownloadContent: View {
             }
             HStack(spacing: 10) {
                 if !exportURLs.isEmpty {
-                    ShareLink(items: exportURLs) {
+                    Button { DownloadExporter.share(exportURLs) } label: {
                         Label("Export \(exportURLs.count)", systemImage: "square.and.arrow.up")
                             .frame(maxWidth: .infinity, minHeight: 40)
                     }
@@ -216,7 +258,9 @@ private struct DownloadCachedCardRow: View, Equatable {
                         .accessibilityIdentifier("download-size-\(record.key)")
                     Spacer()
                     if !selecting, let url = record.exportURL {
-                        ShareLink(item: url) { Label("Export", systemImage: "square.and.arrow.up") }
+                        Button { DownloadExporter.share([url]) } label: {
+                            Label("Export", systemImage: "square.and.arrow.up")
+                        }
                             .accessibilityIdentifier("export-download-\(record.key)")
                     }
                 }

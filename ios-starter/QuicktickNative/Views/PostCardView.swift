@@ -154,7 +154,12 @@ struct PostCardView: View {
                    store.pausedPlaybackID != post.stableID,
                    (autoplayVideos || manualPlaybackRequested) { player?.play() }
             }) {
-                if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
+                if let player {
+                    FullScreenVideoView(player: player, postID: post.stableID,
+                                        exportURL: offline ? DownloadExporter.localFileURL(post.mediaUrl) : nil) {
+                        store.fullScreenPlaybackID = nil
+                    }
+                }
             }
             .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(manualPlaybackRequested)") {
                 guard !Task.isCancelled, !post.isAudio else { return }
@@ -464,6 +469,7 @@ private struct FullScreenVideoView: View {
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     let player: AVPlayer
     let postID: String
+    let exportURL: URL?
     let onClose: () -> Void
     var body: some View {
         FullScreenPlayerController(player: player, onSwipeDown: {
@@ -471,13 +477,24 @@ private struct FullScreenVideoView: View {
             onClose()
         }).ignoresSafeArea()
             .overlay(alignment: .topTrailing) {
-                Button {
-                    store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
-                    onClose()
-                } label: {
-                    Image(systemName: "xmark").font(.system(size: 20, weight: .bold))
-                        .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
-                }.buttonStyle(.plain).foregroundStyle(.white).padding(12).accessibilityLabel("Close full screen video")
+                HStack(spacing: 10) {
+                    if let exportURL {
+                        Button { DownloadExporter.share([exportURL]) } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 19, weight: .semibold))
+                                .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
+                        }
+                        .accessibilityLabel("Share downloaded video")
+                        .accessibilityIdentifier("fullscreen-download-share")
+                    }
+                    Button {
+                        store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
+                        onClose()
+                    } label: {
+                        Image(systemName: "xmark").font(.system(size: 20, weight: .bold))
+                            .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
+                    }.accessibilityLabel("Close full screen video")
+                }.buttonStyle(.plain).foregroundStyle(.white).padding(12)
             }
             .background(.black)
             .quicktickEdgeBack {
@@ -601,15 +618,26 @@ private struct FullComicView: View {
             } else if let error { Text(error).foregroundStyle(.white).padding() }
             else { VStack(spacing: 8) { InfinityLoader(size: 50); Text("Loading full image").font(.caption) }.foregroundStyle(.white) }
         }.overlay(alignment: .topTrailing) {
-            Button { dismiss() } label: {
-                // The iPad simulator has crashed while XCTest resolved a
-                // symbol's implicit accessibility localization in this cover.
-                // A text glyph avoids the framework lookup; the button retains
-                // its explicit, localized action label below.
-                Text("×").font(.system(size: 30, weight: .medium, design: .rounded)).frame(width: 48, height: 48)
-                    .accessibilityHidden(true)
-                    .background(.ultraThinMaterial, in: Circle())
-            }.buttonStyle(.plain).padding(12).accessibilityLabel("Close full image")
+            HStack(spacing: 10) {
+                if let local = DownloadExporter.localFileURL(url) {
+                    Button { DownloadExporter.share([local]) } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 19, weight: .semibold))
+                            .frame(width: 48, height: 48)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .accessibilityLabel("Share downloaded image")
+                    .accessibilityIdentifier("fullscreen-download-share")
+                }
+                Button { dismiss() } label: {
+                    // Keep the explicit accessible label; the iPad simulator
+                    // cannot reliably resolve the implicit symbol label here.
+                    Text("×").font(.system(size: 30, weight: .medium, design: .rounded))
+                        .frame(width: 48, height: 48)
+                        .accessibilityHidden(true)
+                        .background(.ultraThinMaterial, in: Circle())
+                }.accessibilityLabel("Close full image")
+            }.buttonStyle(.plain).padding(12)
         }
         .quicktickEdgeBack { dismiss() }
         // Reuse the card's bounded decoded thumbnail from MediaImagePipeline.

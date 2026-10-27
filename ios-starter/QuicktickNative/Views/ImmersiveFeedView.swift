@@ -635,6 +635,11 @@ private struct ImmersiveItemView: View {
             railButton("Like", symbol: "heart.fill", selected: store.favorites[post.stableID] != nil) {
                 interacted = true; store.toggleFavorite(post)
             }.accessibilityValue(store.favorites[post.stableID] == nil ? "Not liked" : "Liked")
+            if offline, let local = DownloadExporter.localFileURL(post.mediaUrl) {
+                railButton("Share", symbol: "square.and.arrow.up") {
+                    DownloadExporter.share([local])
+                }
+            }
             if !offline {
                 railButton("Less", symbol: "minus.circle") { interacted = true; store.less(post) }
                 railButton("Comments", symbol: "bubble.right") { showComments = true }

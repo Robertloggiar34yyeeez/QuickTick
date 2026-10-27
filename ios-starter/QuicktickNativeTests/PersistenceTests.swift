@@ -2,6 +2,15 @@ import XCTest
 @testable import QuicktickNative
 
 final class PersistenceTests: XCTestCase {
+    @MainActor func testExportOnlyUsesExistingLocalFiles() throws {
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        defer { try? FileManager.default.removeItem(at: local) }
+        XCTAssertNil(DownloadExporter.localFileURL(local.absoluteString))
+        XCTAssertNil(DownloadExporter.localFileURL("https://example.com/video.mp4"))
+        try Data([0, 1, 2]).write(to: local)
+        XCTAssertEqual(DownloadExporter.localFileURL(local.absoluteString), local)
+    }
+
     @MainActor func testFavoritesNewestFirstUsesLikeTimeAcrossProviders() {
         let posts = [
             Post(key: "rule34:900", id: "900", provider: "Rule34"),

@@ -90,131 +90,11 @@ struct RootView: View {
     private var aiTabVisible: Bool { aiTabSessionOverride ?? showAITab }
     private var visibleTabIndices: [Int] { aiTabVisible ? [0, 1, 2, 3, 4] : [0, 1, 3, 4] }
 
-    var body: some View {
+    var body: some View { presentedRoot }
+
+    private var rootShell: some View {
         GeometryReader { geometry in
-            let sideNavigation = store.activeTab == 1 && geometry.size.width > 600
-            let bottomAxisLength = max(1, geometry.size.width - CGFloat((modernUI ? 8 : 4) * 2))
-            let sideAxisLength = CGFloat(visibleTabIndices.count * 46 + max(0, visibleTabIndices.count - 1) * 6 + (aiTabVisible ? 6 : 0))
-            // Keep a single mounted navigation stack for playback and VoiceOver.
-            VStack(spacing: 0) {
-                Group {
-                    switch store.activeTab {
-                    case 1:
-                        NavigationStack { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersiveAnchor, showSettings: $showSettings) }
-                    case 2:
-                        NavigationStack { FavoritesView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }
-                    case 3:
-                        NavigationStack { DownloadsFeedView().toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) } } }
-                    default:
-                        NavigationStack { HomeFeedView(showSettings: $showSettings, scrollAnchor: $homeAnchor) }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if !sideNavigation {
-                    BackgroundAudioMiniPlayer(audio: store.audio)
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 3)
-                    // Full-width dock with a raised, high-contrast creation
-                    // action in the center. Preserve safe-area touch targets.
-                    HStack(spacing: 0) { tabButtons(vertical: false, axisLength: bottomAxisLength) }
-                        .contentShape(Rectangle())
-                        .background(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: modernUI ? 18 : 12, style: .continuous)
-                                .fill(AppTheme.gradient)
-                                .frame(width: bottomAxisLength / CGFloat(visibleTabIndices.count), height: 54)
-                                .offset(x: TabSwipePolicy.indicatorPosition(current: store.activeTab,
-                                    translation: navigationDrag, vertical: false,
-                                    axisLength: bottomAxisLength, visibleIndices: visibleTabIndices)
-                                    - bottomAxisLength / CGFloat(visibleTabIndices.count) / 2)
-                                .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86), value: store.activeTab)
-                                .allowsHitTesting(false)
-                        }
-                        .highPriorityGesture(DragGesture(minimumDistance: 16)
-                            .updating($navigationDrag) { value, state, _ in state = value.translation }
-                            .onEnded { swipeTabs($0.translation, vertical: false, axisLength: bottomAxisLength) })
-                        .padding(.horizontal, modernUI ? 8 : 4)
-                        .padding(.top, modernUI ? 8 : 4)
-                        .padding(.bottom, 0)
-                        .background {
-                            if modernUI && !AppTheme.prefersOpaqueChrome {
-                                Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(edges: .bottom)
-                            } else {
-                                AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
-                            }
-                        }
-                        .overlay(alignment: .top) {
-                            if modernUI {
-                                Rectangle().fill(.white.opacity(0.15)).frame(height: 0.5)
-                            } else {
-                                AppTheme.gradient.frame(height: 1).opacity(0.55)
-                            }
-                        }
-                        .overlay(alignment: .top) {
-                            if let destination = swipePreview(vertical: false, axisLength: bottomAxisLength) {
-                                Text(feedName(destination))
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 14).padding(.vertical, 7)
-                                    .background(AppTheme.elevatedSurface, in: Capsule())
-                                    .overlay(Capsule().stroke(AppTheme.border))
-                                    .offset(y: -40)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-                        .sensoryFeedback(.selection, trigger: swipePreview(vertical: false, axisLength: bottomAxisLength) ?? store.activeTab)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("bottom-navigation-bar")
-                        .id(aiTabVisible ? "five-tabs" : "four-tabs")
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .frame(width: geometry.size.width, height: geometry.size.height)
-            .overlay(alignment: .leading) {
-                if sideNavigation {
-                    VStack(spacing: 6) { tabButtons(vertical: true, axisLength: sideAxisLength) }
-                        .contentShape(Rectangle())
-                        .background(alignment: .top) {
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .fill(AppTheme.gradient)
-                                .frame(width: 46, height: 46)
-                                .offset(y: TabSwipePolicy.indicatorPosition(current: store.activeTab,
-                                    translation: navigationDrag, vertical: true,
-                                    axisLength: sideAxisLength, visibleIndices: visibleTabIndices) - 23)
-                                .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86), value: store.activeTab)
-                                .allowsHitTesting(false)
-                        }
-                        .highPriorityGesture(DragGesture(minimumDistance: 16)
-                            .updating($navigationDrag) { value, state, _ in state = value.translation }
-                            .onEnded { swipeTabs($0.translation, vertical: true, axisLength: sideAxisLength) })
-                        .padding(6)
-                        .background(AppTheme.prefersOpaqueChrome ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
-                                    in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
-                        .shadow(color: .black.opacity(AppTheme.isDeSlopified ? 0 : 0.4), radius: 18, y: 4)
-                        .overlay(alignment: .trailing) {
-                            if let destination = swipePreview(vertical: true, axisLength: sideAxisLength) {
-                                Text(feedName(destination))
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 12).padding(.vertical, 7)
-                                    .background(AppTheme.elevatedSurface, in: Capsule())
-                                    .overlay(Capsule().stroke(AppTheme.border))
-                                    .offset(x: 100)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-                        .sensoryFeedback(.selection, trigger: swipePreview(vertical: true, axisLength: sideAxisLength) ?? store.activeTab)
-                        .padding(.leading, 16)
-                        .id(aiTabVisible ? "five-side-tabs" : "four-side-tabs")
-                        .transition(.move(edge: .leading).combined(with: .opacity))
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if sideNavigation {
-                    BackgroundAudioMiniPlayer(audio: store.audio)
-                        .frame(maxWidth: 350)
-                        .padding(.bottom, 10)
-                }
-            }
-            .animation(reduceMotion ? nil : .spring(response: 0.48, dampingFraction: 0.84), value: sideNavigation)
+            navigationLayout(size: geometry.size)
         }
         .onChange(of: store.activeTab) { _, tab in
             tabNameTask?.cancel()
@@ -238,6 +118,10 @@ struct RootView: View {
         .tint(AppTheme.accent)
         .background(ThemeBackdrop().id(showsCustomBackground))
         .modifier(ProfileImportConfirmation(enabled: !showSettings && firstRunCompleted))
+    }
+
+    private var presentedRoot: some View {
+        rootShell
         .fullScreenCover(isPresented: Binding(
             get: {
                 store.bootstrapped && !firstRunCompleted
@@ -277,6 +161,153 @@ struct RootView: View {
             .tint(AppTheme.accent)
         }
         .overlay(alignment: .topTrailing) { FloatingPiPView().environmentObject(store) }
+    }
+
+    @ViewBuilder private var activeFeed: some View {
+        switch store.activeTab {
+        case 1:
+            NavigationStack {
+                ImmersiveFeedView(posts: store.posts, offline: false,
+                                  activePostID: $immersiveAnchor, showSettings: $showSettings)
+            }
+        case 2:
+            NavigationStack {
+                FavoritesView().toolbar {
+                    ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) }
+                }
+            }
+        case 3:
+            NavigationStack {
+                DownloadsFeedView().toolbar {
+                    ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) }
+                }
+            }
+        default:
+            NavigationStack { HomeFeedView(showSettings: $showSettings, scrollAnchor: $homeAnchor) }
+        }
+    }
+
+    private func navigationLayout(size: CGSize) -> some View {
+        let sideNavigation = store.activeTab == 1 && size.width > 600
+        let bottomLength = max(1, size.width - CGFloat((modernUI ? 8 : 4) * 2))
+        let sideLength = CGFloat(visibleTabIndices.count * 46
+            + max(0, visibleTabIndices.count - 1) * 6 + (aiTabVisible ? 6 : 0))
+        return VStack(spacing: 0) {
+            activeFeed.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !sideNavigation {
+                BackgroundAudioMiniPlayer(audio: store.audio)
+                    .padding(.horizontal, 12).padding(.bottom, 3)
+                bottomDock(axisLength: bottomLength)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .overlay(alignment: .leading) {
+            if sideNavigation { sideDock(axisLength: sideLength) }
+        }
+        .overlay(alignment: .bottom) {
+            if sideNavigation {
+                BackgroundAudioMiniPlayer(audio: store.audio)
+                    .frame(maxWidth: 350).padding(.bottom, 10)
+            }
+        }
+        .animation(reduceMotion ? nil : .spring(response: 0.48, dampingFraction: 0.84),
+                   value: sideNavigation)
+    }
+
+    private func dockDrag(vertical: Bool, axisLength: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 16)
+            .updating($navigationDrag) { value, state, _ in state = value.translation }
+            .onEnded { swipeTabs($0.translation, vertical: vertical, axisLength: axisLength) }
+    }
+
+    private func bottomSelectionIndicator(axisLength: CGFloat) -> some View {
+        let slotWidth = axisLength / CGFloat(visibleTabIndices.count)
+        let center = TabSwipePolicy.indicatorPosition(
+            current: store.activeTab, translation: navigationDrag, vertical: false,
+            axisLength: axisLength, visibleIndices: visibleTabIndices)
+        return RoundedRectangle(cornerRadius: modernUI ? 18 : 12, style: .continuous)
+            .fill(AppTheme.gradient)
+            .frame(width: slotWidth, height: 54)
+            .offset(x: center - slotWidth / 2)
+            .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86),
+                       value: store.activeTab)
+            .allowsHitTesting(false)
+    }
+
+    private func sideSelectionIndicator(axisLength: CGFloat) -> some View {
+        let center = TabSwipePolicy.indicatorPosition(
+            current: store.activeTab, translation: navigationDrag, vertical: true,
+            axisLength: axisLength, visibleIndices: visibleTabIndices)
+        return RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(AppTheme.gradient)
+            .frame(width: 46, height: 46)
+            .offset(y: center - 23)
+            .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86),
+                       value: store.activeTab)
+            .allowsHitTesting(false)
+    }
+
+    @ViewBuilder private func dockDestinationHint(vertical: Bool, axisLength: CGFloat) -> some View {
+        if let destination = swipePreview(vertical: vertical, axisLength: axisLength) {
+            Text(feedName(destination))
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, vertical ? 12 : 14).padding(.vertical, 7)
+                .background(AppTheme.elevatedSurface, in: Capsule())
+                .overlay(Capsule().stroke(AppTheme.border))
+                .offset(x: vertical ? 100 : 0, y: vertical ? 0 : -40)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func bottomDock(axisLength: CGFloat) -> some View {
+        HStack(spacing: 0) { tabButtons(vertical: false, axisLength: axisLength) }
+            .contentShape(Rectangle())
+            .background(alignment: .leading) { bottomSelectionIndicator(axisLength: axisLength) }
+            .highPriorityGesture(dockDrag(vertical: false, axisLength: axisLength))
+            .padding(.horizontal, modernUI ? 8 : 4)
+            .padding(.top, modernUI ? 8 : 4)
+            .padding(.bottom, 0)
+            .background {
+                if modernUI && !AppTheme.prefersOpaqueChrome {
+                    Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(edges: .bottom)
+                } else {
+                    AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
+                }
+            }
+            .overlay(alignment: .top) {
+                if modernUI {
+                    Rectangle().fill(.white.opacity(0.15)).frame(height: 0.5)
+                } else {
+                    AppTheme.gradient.frame(height: 1).opacity(0.55)
+                }
+            }
+            .overlay(alignment: .top) { dockDestinationHint(vertical: false, axisLength: axisLength) }
+            .sensoryFeedback(.selection,
+                trigger: swipePreview(vertical: false, axisLength: axisLength) ?? store.activeTab)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("bottom-navigation-bar")
+            .id(aiTabVisible ? "five-tabs" : "four-tabs")
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private func sideDock(axisLength: CGFloat) -> some View {
+        VStack(spacing: 6) { tabButtons(vertical: true, axisLength: axisLength) }
+            .contentShape(Rectangle())
+            .background(alignment: .top) { sideSelectionIndicator(axisLength: axisLength) }
+            .highPriorityGesture(dockDrag(vertical: true, axisLength: axisLength))
+            .padding(6)
+            .background(AppTheme.prefersOpaqueChrome
+                ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
+                in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous)
+                .stroke(AppTheme.border, lineWidth: 1))
+            .shadow(color: .black.opacity(AppTheme.isDeSlopified ? 0 : 0.4), radius: 18, y: 4)
+            .overlay(alignment: .trailing) { dockDestinationHint(vertical: true, axisLength: axisLength) }
+            .sensoryFeedback(.selection,
+                trigger: swipePreview(vertical: true, axisLength: axisLength) ?? store.activeTab)
+            .padding(.leading, 16)
+            .id(aiTabVisible ? "five-side-tabs" : "four-side-tabs")
+            .transition(.move(edge: .leading).combined(with: .opacity))
     }
 
     private func swipeTabs(_ translation: CGSize, vertical: Bool, axisLength: CGFloat) {

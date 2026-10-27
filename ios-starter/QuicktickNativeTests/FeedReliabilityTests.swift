@@ -39,6 +39,21 @@ private final class CandidatePageProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 final class FeedReliabilityTests: XCTestCase {
+    func testDownloadResponseRejectsPornhubHTMLAndPreservesBinaryMedia() {
+        let url = URL(string: "https://cdn.pornhub.com/video.mp4")!
+        let htmlResponse = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                           headerFields: ["Content-Type": "text/html"])!
+        XCTAssertNotNil(DownloadResponseValidator.failure(response: htmlResponse,
+                        header: Data("<html>Unavailable</html>".utf8)))
+        let disguisedResponse = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                               headerFields: ["Content-Type": "application/octet-stream"])!
+        XCTAssertNotNil(DownloadResponseValidator.failure(response: disguisedResponse,
+                        header: Data("<!DOCTYPE html><html></html>".utf8)))
+        XCTAssertNil(DownloadResponseValidator.failure(response: disguisedResponse,
+                     header: Data([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D])))
+        let forbidden = HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: [:])!
+        XCTAssertTrue(DownloadResponseValidator.failure(response: forbidden, header: Data())?.contains("403") == true)
+    }
     @MainActor func testRecommendedContinuesPastPageRemovedByNegativePreferences() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }

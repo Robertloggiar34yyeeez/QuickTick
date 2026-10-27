@@ -17,6 +17,7 @@ struct PostCardView: View {
     @State private var nativeSize: CGSize?
     @State private var comments = false
     @State private var tags = false
+    @State private var havenBrowser = false
     @State private var creditedArtists: [String] = []
     @State private var fullImage = false
     @State private var readingManga = false
@@ -46,7 +47,7 @@ struct PostCardView: View {
             post.type.lowercased() == "image" && $0.height > $0.width * 4
                 ? CGFloat(2) / 3 : $0.width / $0.height
         }) ?? mediaAspect
-        return fullBleed
+        return fullBleed || (offline && playbackTab == 3)
             ? MediaSizing.feedCard(aspect: aspect, available: available)
             : MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: aspect, available: available)
     }
@@ -62,7 +63,22 @@ struct PostCardView: View {
                 }
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("post-media-\(post.stableID)")
-            if let playbackError { Text(playbackError).font(.caption).foregroundStyle(.orange).padding(8) }
+            if let playbackError {
+                VStack(spacing: 8) {
+                    Text(playbackError).font(.caption).foregroundStyle(.orange)
+                    if post.providerKey == .hhaven,
+                       let url = URL(string: post.pageUrl),
+                       url.scheme == "https",
+                       ["hentaihaven.xxx", "www.hentaihaven.xxx"].contains(url.host?.lowercased() ?? "") {
+                        Button { havenBrowser = true } label: {
+                            Label("Watch in QuickTick browser", systemImage: "play.rectangle.on.rectangle")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 14).frame(minHeight: 38)
+                                .background(AppTheme.elevatedSurface, in: Capsule())
+                        }
+                    }
+                }.padding(8)
+            }
             VStack(spacing: 6) {
                 HStack(spacing: 8) {
                     Circle().fill(AppTheme.accent).frame(width: 6, height: 6)
@@ -122,6 +138,9 @@ struct PostCardView: View {
             .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
             .sheet(isPresented: $comments) { CommentsView(post: post) }
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
+            .sheet(isPresented: $havenBrowser) {
+                if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
+            }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
                 previewURL: post.cardPreviewURL) }
             .fullScreenCover(isPresented: $readingManga) {

@@ -80,7 +80,7 @@ enum HavenBrowserCatalog {
 // Provider networking lives on the API actor, never on a scrolling view. No
 // requests in this service use the optional QuickTick Sync origin.
 enum NativeProviderAPI {
-    static let userAgent = "QuickTickNative/0.9.6"
+    static let userAgent = "QuickTickNative/1.0"
     // nHentai requests specifically ask clients for an identifying UA; keep
     // the project URL rather than impersonating a browser or official app.
     static let nhentaiHeaders = ["User-Agent": "QuickTick/0.9.9 (https://github.com/Robertloggiar34yyeeez/QuickTick)"]

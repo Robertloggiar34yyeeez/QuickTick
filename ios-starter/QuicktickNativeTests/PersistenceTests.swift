@@ -66,6 +66,32 @@ final class PersistenceTests: XCTestCase {
         XCTAssertTrue(DownloadManager(resolver: MediaResolver(api: QuicktickAPIClient()), directory: dir).records.isEmpty)
     }
 
+    @MainActor func testBatchDeleteKeepsUnselectedDownloadsAndPersistsOnce() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var fixtures: [DownloadRecord] = []
+        for id in 1...3 {
+            let media = root.appendingPathComponent("media-\(id).mp4")
+            try Data([1, 2, 3]).write(to: media)
+            fixtures.append(DownloadRecord(key: "rule34:\(id)", provider: "Rule34", postID: "\(id)",
+                title: "File \(id)", tags: [], thumbnailRemoteURL: "", localMediaPath: media.path,
+                kind: .file, state: .complete, progress: 1,
+                createdAt: Date(timeIntervalSince1970: Double(id))))
+        }
+        try JSONEncoder().encode(fixtures).write(to: root.appendingPathComponent("downloads.json"))
+        let manager = DownloadManager(resolver: MediaResolver(api: QuicktickAPIClient()), directory: root)
+        manager.delete(keys: ["rule34:1", "rule34:3"])
+        for _ in 0..<50 where manager.records.count != 1 {
+            try await Task.sleep(for: .milliseconds(40))
+        }
+        XCTAssertEqual(manager.records.map(\.key), ["rule34:2"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("media-2.mp4").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("media-1.mp4").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("media-3.mp4").path))
+        XCTAssertEqual(DownloadManager(resolver: MediaResolver(api: QuicktickAPIClient()), directory: root).records.map(\.key), ["rule34:2"])
+    }
+
     @MainActor func testLegacyDownloadPathsSurviveRepeatedAppContainerChanges() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: base) }

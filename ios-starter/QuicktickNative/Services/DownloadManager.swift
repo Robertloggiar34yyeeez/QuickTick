@@ -31,6 +31,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     nonisolated let root: URL
     private var tasks: [String: URLSessionTask] = [:]
     private var preparing = Set<String>()
+    private var refreshedPornhubTransfers = Set<String>()
     nonisolated private let progressGate = DownloadProgressGate()
     private var metadataFailed = false
     // Native URLSession transfers already survive app suspension. Delegate
@@ -111,6 +112,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 thumbnailRemoteURL: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl,
                 kind: .file, state: .queued, progress: 0, createdAt: .now)
             record.mediaType = post.type
+            record.pageURL = post.pageUrl
             return record
         }()
         upsert(pending)
@@ -140,7 +142,17 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 if hls {
                     guard let transfer = hlsSession.makeAssetDownloadTask(asset: AVURLAsset(url: url), assetTitle: record.title, assetArtworkData: nil, options: nil) else { throw APIError.server("This HLS stream cannot be stored offline.") }
                     task = transfer
-                } else { task = directSession.downloadTask(with: url) }
+                } else {
+                    var request = URLRequest(url: url)
+                    if post.providerKey == .pornhub {
+                        // Pornhub's CDN checks the source page on some media
+                        // URLs. No account cookies are sent to CDN hosts.
+                        request.setValue(NativeProviderAPI.userAgent, forHTTPHeaderField: "User-Agent")
+                        request.setValue("https://www.pornhub.com/", forHTTPHeaderField: "Referer")
+                        request.setValue("video/*, application/octet-stream;q=0.9, */*;q=0.7", forHTTPHeaderField: "Accept")
+                    }
+                    task = directSession.downloadTask(with: request)
+                }
                 task.taskDescription = record.key
                 record.remoteURL = url.absoluteString; record.state = .downloading
                 record.mediaType = media.type
@@ -167,6 +179,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         let retainedURL = identity.providerKey == nil ? (record.remoteURL ?? "") : ""
         download(Post(key: record.key, id: record.postID, provider: record.provider, tags: record.tags,
                       mediaUrl: retainedURL, thumbUrl: record.thumbnailRemoteURL,
+                      pageUrl: record.pageURL ?? "",
                       type: record.mediaType ?? (record.kind == .hlsPackage ? "hls" : "video")),
                  refreshSource: identity.providerKey != nil)
     }
@@ -178,6 +191,44 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             if FileManager.default.fileExists(atPath: dir.path) { try FileManager.default.removeItem(at: dir) }
             records.removeAll { $0.key == record.key }; save()
         } catch { update(record.key) { $0.errorMessage = error.localizedDescription } }
+    }
+    /// Remove a selected batch off the main actor so deleting large HLS
+    /// packages does not block the Downloads scroll view. Commit metadata once.
+    func delete(keys: Set<String>) {
+        guard !keys.isEmpty else { return }
+        let targets = records.filter { keys.contains($0.key) }
+        for record in targets {
+            tasks.removeValue(forKey: record.key)?.cancel()
+            progressGate.clear(key: record.key)
+        }
+        for index in records.indices where keys.contains(records[index].key) {
+            records[index].state = .cancelled
+        }
+        let storageRoot = root
+        Task {
+            let failures = await Task.detached(priority: .utility) { () -> [String: String] in
+                var failures: [String: String] = [:]
+                for record in targets {
+                    do {
+                        if let path = record.localMediaPath, FileManager.default.fileExists(atPath: path) {
+                            try FileManager.default.removeItem(at: URL(fileURLWithPath: path))
+                        }
+                        let name = record.key.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression)
+                        let folder = storageRoot.appendingPathComponent(name, isDirectory: true)
+                        if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
+                    } catch { failures[record.key] = error.localizedDescription }
+                }
+                return failures
+            }.value
+            records.removeAll { keys.contains($0.key) && failures[$0.key] == nil }
+            for (key, message) in failures {
+                if let index = records.firstIndex(where: { $0.key == key }) {
+                    records[index].state = .failed
+                    records[index].errorMessage = "Could not delete: \(message)"
+                }
+            }
+            save()
+        }
     }
     private func update(_ key: String, _ mutation: (inout DownloadRecord) -> Void) {
         guard var record = records.first(where: { $0.key == key }) else { return }
@@ -251,7 +302,14 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             return
         }
         do {
-            guard let response = downloadTask.response as? HTTPURLResponse, (200..<300).contains(response.statusCode), !(response.mimeType ?? "").contains("text"), !(response.mimeType ?? "").contains("json") else { throw APIError.invalidResponse }
+            let response = downloadTask.response as? HTTPURLResponse
+            let handle = try FileHandle(forReadingFrom: location)
+            let header = handle.readData(ofLength: 256)
+            try? handle.close()
+            if let reason = DownloadResponseValidator.failure(response: response, header: header) {
+                Task { @MainActor in self.failedTransfer(key, reason: reason) }
+                return
+            }
             let dir = root.appendingPathComponent(Self.safeName(key))
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let ext = downloadTask.originalRequest?.url?.pathExtension ?? ""
@@ -261,6 +319,19 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             try FileManager.default.moveItem(at: location, to: file)
             Task { @MainActor in self.finished(key, location: file) }
         } catch { let message = error.localizedDescription; Task { @MainActor in self.update(key) { $0.state = .failed; $0.errorMessage = message } } }
+    }
+    private func failedTransfer(_ key: String, reason: String) {
+        tasks.removeValue(forKey: key)
+        guard let record = records.first(where: { $0.key == key }), record.state != .cancelled else { return }
+        if record.provider.lowercased() == Provider.pornhub.rawValue,
+           !refreshedPornhubTransfers.contains(key) {
+            refreshedPornhubTransfers.insert(key)
+            // The cached video URL may have expired or returned an HTML error
+            // page. Resolve one fresh signed URL from the original post.
+            retry(record)
+        } else {
+            update(key) { $0.state = .failed; $0.errorMessage = reason }
+        }
     }
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         guard let key = downloadTask.taskDescription else { return }
@@ -296,6 +367,23 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         guard let identifier = session.configuration.identifier else { return }
         Task { @MainActor in BackgroundDownloadEvents.complete(identifier) }
+    }
+}
+
+enum DownloadResponseValidator {
+    static func failure(response: HTTPURLResponse?, header: Data) -> String? {
+        guard let response else { return "The download server returned no HTTP response." }
+        guard (200..<300).contains(response.statusCode) else {
+            return "The media server returned HTTP \(response.statusCode). The source may have expired or be unavailable in your region."
+        }
+        let mime = response.mimeType?.lowercased() ?? ""
+        let prefix = String(decoding: header, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if mime.contains("text/") || mime.contains("json") || mime.contains("html") ||
+           prefix.hasPrefix("<html") || prefix.hasPrefix("<!doctype html") ||
+           prefix.hasPrefix("{\"error\"") || prefix.hasPrefix("{\"message\"") {
+            return "The server returned a webpage or error instead of a video file. Check provider access or retry."
+        }
+        return nil
     }
 }
 

@@ -26,6 +26,9 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var remoteURL: String?
     var errorMessage: String?
     var mediaType: String?
+    /// Retain the canonical provider post URL for signed-media retries.
+    /// Older saved catalogs decode this optional field as nil.
+    var pageURL: String?
     var formattedSize: String {
         guard let fileSize, fileSize >= 0 else { return "Size unavailable" }
         return ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)

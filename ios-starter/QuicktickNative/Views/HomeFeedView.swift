@@ -28,6 +28,7 @@ struct HomeFeedView: View {
     @Binding var scrollAnchor: String?
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage("quicktick-suggested-themes-v1") private var suggestedThemesEnabled = true
+    @AppStorage(SuggestedThemeMode.storageKey) private var suggestedThemesMode = SuggestedThemeMode.balanced.rawValue
     @State private var showSearch = false
     @State private var showProviderWebsite = false
     @State private var immersive = false
@@ -164,7 +165,7 @@ struct HomeFeedView: View {
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: {
                         Button("Try again") { Task { await store.refresh() } }
-                        if [.nhentai, .kemono, .coomer].contains(store.selectedProvider) {
+                        if [.nhentai, .kemono, .coomer, .hhaven].contains(store.selectedProvider) {
                             Button("Browse inside QuickTick") { showProviderWebsite = true }
                         }
                     }
@@ -405,6 +406,7 @@ struct HomeFeedView: View {
         .onChange(of: store.tasteChoice(for: store.selectedProvider)) { _, _ in refreshThemeSuggestions() }
         .onChange(of: store.exclusions) { _, _ in refreshThemeSuggestions() }
         .onChange(of: suggestedThemesEnabled) { _, _ in refreshThemeSuggestions() }
+        .onChange(of: suggestedThemesMode) { _, _ in refreshThemeSuggestions() }
         .onChange(of: store.selectedProvider) { _, _ in
             visualThemeTerms = []
             themeSuggestions = []
@@ -420,7 +422,8 @@ struct HomeFeedView: View {
             learned: store.learnedInterests, chosen: taste.into,
             visual: visualThemeTerms, favorites: Array(store.favorites.values),
             posts: store.posts, excluded: store.exclusions + taste.notInto,
-            limit: 5, rotation: themeRefreshCycle)
+            limit: 5, rotation: themeRefreshCycle,
+            mode: SuggestedThemeMode(rawValue: suggestedThemesMode) ?? .balanced)
         if proposed != themeSuggestions { themeSuggestions = proposed }
     }
 
@@ -432,7 +435,9 @@ struct HomeFeedView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
                     Text("Suggested themes").font(.caption.weight(.semibold))
-                    Text("Based on your taste").font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                    Text(store.selectedProvider == .rule34 && suggestedThemesMode == SuggestedThemeMode.franchises.rawValue
+                         ? "Franchise discovery" : "Based on your taste")
+                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
                 }.padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -615,7 +620,21 @@ struct HomeThemeSuggestion: Identifiable, Equatable {
     let term: String
     let label: String
     let imageURL: String
-    var id: String { term }
+    var kind: String = "tag"
+    var id: String { kind + ":" + term }
+}
+
+enum SuggestedThemeMode: String, CaseIterable, Identifiable {
+    static let storageKey = "quicktick-suggested-r34-mode-v1"
+    case tags, franchises, balanced
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .tags: "Tags"
+        case .franchises: "Franchises"
+        case .balanced: "Mix"
+        }
+    }
 }
 
 enum HomeThemeSuggestions {
@@ -624,7 +643,8 @@ enum HomeThemeSuggestions {
 
     static func make(provider: Provider, learned: [String], chosen: [String],
                      visual: [String], favorites: [Post], posts: [Post],
-                     excluded: [String], limit: Int = 8, rotation: Int = 0) -> [HomeThemeSuggestion] {
+                     excluded: [String], limit: Int = 8, rotation: Int = 0,
+                     mode: SuggestedThemeMode = .tags) -> [HomeThemeSuggestion] {
         // Bound this to nearby evidence: Home's body is refreshed by scroll
         // state, so image-chip ranking must never scan a huge saved library.
         let liked = Array(favorites.lazy.filter { $0.providerKey == provider }.prefix(96))
@@ -632,7 +652,7 @@ enum HomeThemeSuggestions {
         let visible = Array(posts.lazy.filter { $0.providerKey == provider }.prefix(80))
         let evidence = liked + visible.filter { candidate in
             !liked.contains { $0.stableID == candidate.stableID }
-        }
+        }.filter { !RecommendationTagRules.rejects($0, exclusions: excluded) }
         let banned = Set(excluded.map(normalize))
         var scores: [String: Int] = [:]
         func add(_ tags: [String], weight: Int) {
@@ -682,11 +702,119 @@ enum HomeThemeSuggestions {
                 imageURL: sample.cardPreviewURL))
             if result.count >= limit { break }
         }
-        return result
+        guard provider == .rule34, mode != .tags else { return result }
+        let franchises = FranchiseThemeSuggestions.make(evidence: evidence,
+            favorites: Set(liked.map(\.stableID)), learned: learned,
+            chosen: chosen, visual: visual, excluded: excluded,
+            limit: limit, rotation: rotation)
+        if mode == .franchises { return franchises }
+        // Discovery mixes popular, actually observed franchises with familiar
+        // tags. Alternate categories to prevent a single liked character or
+        // an overrepresented franchise from owning the entire chip row.
+        var diverse: [HomeThemeSuggestion] = []
+        var seenImages = Set<String>()
+        for index in 0..<max(result.count, franchises.count) {
+            let candidates = index.isMultiple(of: 2)
+                ? [franchises[safe: index], result[safe: index]]
+                : [result[safe: index], franchises[safe: index]]
+            for suggestion in candidates.compactMap({ $0 }) {
+                guard diverse.count < limit,
+                      !diverse.contains(where: { $0.term == suggestion.term }),
+                      seenImages.insert(suggestion.imageURL).inserted else { continue }
+                diverse.append(suggestion)
+            }
+            if diverse.count == limit { break }
+        }
+        return diverse
     }
 
     private static func normalize(_ term: String) -> String {
         term.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: " ", with: "_")
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+/// Small reviewed franchise dictionary. A chip appears only when it has a
+/// real preview from this provider; these names never manufacture a result.
+enum FranchiseThemeSuggestions {
+    static let names: [String: String] = [
+        "street_fighter": "Street Fighter", "brawl_stars": "Brawl Stars",
+        "fortnite": "Fortnite", "sonic_the_hedgehog": "Sonic",
+        "final_fantasy": "Final Fantasy", "metroid": "Metroid",
+        "tomb_raider": "Tomb Raider", "super_mario_bros": "Super Mario",
+        "god_of_war": "God of War", "pokemon": "Pokémon",
+        "genshin_impact": "Genshin Impact", "honkai_star_rail": "Honkai: Star Rail",
+        "overwatch": "Overwatch", "league_of_legends": "League of Legends",
+        "the_legend_of_zelda": "Zelda", "one_piece": "One Piece",
+        "naruto": "Naruto", "dragon_ball": "Dragon Ball",
+        "my_hero_academia": "My Hero Academia", "demon_slayer": "Demon Slayer",
+        "jujutsu_kaisen": "Jujutsu Kaisen", "chainsaw_man": "Chainsaw Man",
+        "resident_evil": "Resident Evil", "nier_automata": "NieR: Automata",
+        "mortal_kombat": "Mortal Kombat", "apex_legends": "Apex Legends"
+    ]
+    private static let aliases: [String: String] = [
+        "pokemon_(series)": "pokemon", "pocket_monsters": "pokemon",
+        "overwatch_(game)": "overwatch", "zelda": "the_legend_of_zelda",
+        "legend_of_zelda": "the_legend_of_zelda",
+        "super_mario": "super_mario_bros", "mario": "super_mario_bros",
+        "nier:_automata": "nier_automata", "kimetsu_no_yaiba": "demon_slayer",
+        "boku_no_hero_academia": "my_hero_academia",
+        "jjk": "jujutsu_kaisen", "honkai:_star_rail": "honkai_star_rail"
+    ]
+    private static func canonical(_ raw: String) -> String {
+        let cleaned = raw.hasPrefix("franchise:") ? String(raw.dropFirst("franchise:".count)) : raw
+        let base = TasteConcepts.canonical(cleaned)
+        return aliases[base] ?? base
+    }
+    static func identified(in post: Post) -> Set<String> {
+        let direct = Set(post.tags.prefix(128).map(canonical))
+        let reviewed = TasteConcepts.resolve(post.tags).franchises
+        return Set(direct.union(reviewed).filter { names[$0] != nil })
+    }
+    static func make(evidence: [Post], favorites: Set<String>,
+                     learned: [String], chosen: [String], visual: [String],
+                     excluded: [String], limit: Int, rotation: Int) -> [HomeThemeSuggestion] {
+        let banned = Set(excluded.map(canonical))
+        let affinity = Set((learned + chosen + visual).map(canonical))
+        var scores: [String: Double] = [:]
+        var examples: [String: [Post]] = [:]
+        for post in evidence {
+            let popularity = log2(max(0, post.score) + 2)
+            for franchise in identified(in: post) where !banned.contains(franchise) {
+                scores[franchise, default: 0] += (favorites.contains(post.stableID) ? 10 : 3)
+                    + min(10, popularity) * 0.65 + (affinity.contains(franchise) ? 14 : 0)
+                examples[franchise, default: []].append(post)
+            }
+        }
+        let ranked = scores.keys.sorted {
+            scores[$0, default: 0] == scores[$1, default: 0]
+                ? $0 < $1 : scores[$0, default: 0] > scores[$1, default: 0]
+        }
+        let pool = Array(ranked.prefix(max(limit, 14)))
+        let shift = pool.isEmpty ? 0 : (rotation % pool.count + pool.count) % pool.count
+        let ordered = Array(pool.dropFirst(shift)) + Array(pool.prefix(shift))
+            + Array(ranked.dropFirst(pool.count))
+        var seen = Set<String>(), result: [HomeThemeSuggestion] = []
+        for franchise in ordered {
+            let choices = examples[franchise] ?? []
+            let index = choices.isEmpty ? 0 : rotation % choices.count
+            let rotated = Array(choices.dropFirst(index)) + Array(choices.prefix(index))
+            guard let sample = rotated.first(where: {
+                !$0.cardPreviewURL.isEmpty && URL(string: $0.cardPreviewURL)?.scheme == "https"
+                    && !seen.contains($0.cardPreviewURL)
+            }) else { continue }
+            seen.insert(sample.cardPreviewURL)
+            // Search the *actual* booru tag spelling when the alias database
+            // maps it to a canonical franchise name.
+            let searchTag = sample.tags.first(where: { canonical($0) == franchise }) ?? franchise
+            result.append(HomeThemeSuggestion(term: searchTag,
+                label: names[franchise] ?? franchise, imageURL: sample.cardPreviewURL, kind: "franchise"))
+            if result.count >= limit { break }
+        }
+        return result
     }
 }

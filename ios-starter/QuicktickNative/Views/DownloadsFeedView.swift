@@ -11,6 +11,12 @@ private struct DownloadContent: View {
     @State private var immersive = false
     @State private var rhythm = false
     @State private var immersivePostID: String?
+    @State private var selecting = false
+    @State private var selectedKeys: Set<String> = []
+    @State private var confirmDelete = false
+    private var exportURLs: [URL] {
+        manager.records.filter { selectedKeys.contains($0.key) }.compactMap(\.exportURL)
+    }
     var body: some View {
         Group {
             if immersive { ImmersiveFeedView(posts: localPosts, offline: true, activePostID: $immersivePostID, onClose: { immersive = false }) }
@@ -35,17 +41,19 @@ private struct DownloadContent: View {
                             .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16))
                     }
                     .padding(.top, 2)
+                    if selecting { selectionControls }
                     if let error = manager.storageError { Text(error).foregroundStyle(.orange) }
                     if manager.records.isEmpty { ContentUnavailableView("No downloads yet", systemImage: "arrow.down.to.line", description: Text("Save posts to view them offline here.")) }
                     ForEach(manager.records) { record in
                         if let post = record.offlinePost {
-                            PostCardView(post: post, available: CGSize(width: min(680, geometry.size.width - 32), height: geometry.size.height), playbackTab: 3, offline: true, onDelete: { manager.delete(record) })
+                            PostCardView(post: post, available: CGSize(width: min(AppTheme.feedWidth, geometry.size.width - 32), height: geometry.size.height), playbackTab: 3, offline: true, onDelete: { manager.delete(record) })
                                 .frame(maxWidth: .infinity)
+                                .overlay { if selecting { selectionOverlay(for: record) } }
                             HStack {
                                 Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                                     .accessibilityIdentifier("download-size-\(record.key)")
                                 Spacer()
-                                if let url = record.exportURL {
+                                if !selecting, let url = record.exportURL {
                                     ShareLink(item: url) { Label("Export", systemImage: "square.and.arrow.up") }
                                         .accessibilityIdentifier("export-download-\(record.key)")
                                 }
@@ -80,12 +88,14 @@ private struct DownloadContent: View {
                                     Button("Restore") { manager.retry(record) }
                                         .accessibilityIdentifier("restore-download-\(record.key)")
                                 }
-                                Spacer(); Button("Delete", role: .destructive) { manager.delete(record) }
+                                Spacer()
+                                if !selecting { Button("Delete", role: .destructive) { manager.delete(record) } }
                             }.buttonStyle(.bordered)
                         }
                         .padding(14)
                         .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
                         .overlay(RoundedRectangle(cornerRadius: 18).stroke(AppTheme.border))
+                        .overlay { if selecting { selectionOverlay(for: record) } }
                         }
                     }
                 }.padding(16).frame(maxWidth: .infinity)
@@ -100,9 +110,77 @@ private struct DownloadContent: View {
                         .accessibilityIdentifier("downloads-rhythm")
                     Button(immersive ? "Feed" : "Offline Immersive") { immersive.toggle() }
                         .disabled(!immersive && !localPosts.contains(where: \.isImmersiveMedia))
+                    Button(selecting ? "Done" : "Select") {
+                        selecting.toggle()
+                        if !selecting { selectedKeys.removeAll() }
+                    }
+                    .disabled(manager.records.isEmpty)
+                    .accessibilityIdentifier("downloads-select")
                 }
             }
             .fullScreenCover(isPresented: $rhythm) { RhythmSessionView(posts: localPosts, offline: true) }
+            .confirmationDialog("Delete \(selectedKeys.count) downloads?", isPresented: $confirmDelete,
+                                titleVisibility: .visible) {
+                Button("Delete selected files", role: .destructive) {
+                    manager.delete(keys: selectedKeys)
+                    selectedKeys.removeAll()
+                    selecting = false
+                }
+            } message: { Text("The saved files will be removed from this device. This cannot be undone.") }
+    }
+    private var selectionControls: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Text("\(selectedKeys.count) selected")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button(selectedKeys.count == manager.records.count ? "Clear" : "Select all") {
+                    selectedKeys = selectedKeys.count == manager.records.count
+                        ? [] : Set(manager.records.map(\.key))
+                }
+                .font(.caption.weight(.semibold))
+            }
+            HStack(spacing: 10) {
+                if !exportURLs.isEmpty {
+                    ShareLink(items: exportURLs) {
+                        Label("Export \(exportURLs.count)", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity, minHeight: 40)
+                    }
+                    .accessibilityIdentifier("downloads-export-selected")
+                }
+                Button { confirmDelete = true } label: {
+                    Label("Delete", systemImage: "trash")
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                }
+                .disabled(selectedKeys.isEmpty)
+                .foregroundStyle(.orange)
+                .accessibilityIdentifier("downloads-delete-selected")
+            }
+            .font(.subheadline.weight(.semibold))
+            .buttonStyle(.bordered)
+        }
+        .padding(14)
+        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(AppTheme.border))
+        .accessibilityIdentifier("downloads-selection-controls")
+    }
+    private func selectionOverlay(for record: DownloadRecord) -> some View {
+        Button {
+            if !selectedKeys.insert(record.key).inserted { selectedKeys.remove(record.key) }
+        } label: {
+            RoundedRectangle(cornerRadius: 19).fill(.black.opacity(0.001))
+                .overlay(alignment: .topLeading) {
+                    Image(systemName: selectedKeys.contains(record.key) ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 29, weight: .semibold))
+                        .foregroundStyle(selectedKeys.contains(record.key) ? AppTheme.accent : .white)
+                        .shadow(color: .black.opacity(0.6), radius: 5)
+                        .padding(13)
+                }
+                .overlay(RoundedRectangle(cornerRadius: 19).stroke(selectedKeys.contains(record.key) ? AppTheme.accent : .clear, lineWidth: 2))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(selectedKeys.contains(record.key) ? "Deselect" : "Select") \(record.title)")
+        .accessibilityIdentifier("select-download-\(record.key)")
     }
     private var localPosts: [Post] {
         manager.records.compactMap(\.offlinePost)

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PhotosUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
@@ -9,7 +10,13 @@ struct SettingsView: View {
     @Binding var showAITab: Bool
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @AppStorage("quicktick-suggested-themes-v1") private var suggestedThemesEnabled = true
+    @AppStorage(SuggestedThemeMode.storageKey) private var suggestedThemesMode = SuggestedThemeMode.balanced.rawValue
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
+    @AppStorage(BackgroundArtworkStore.enabledKey) private var customBackgroundEnabled = false
+    @AppStorage(BackgroundArtworkStore.revisionKey) private var customBackgroundRevision = 0
+    @State private var selectedBackgroundPhoto: PhotosPickerItem?
+    @State private var backgroundImporting = false
+    @State private var backgroundError: String?
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
@@ -183,8 +190,41 @@ struct SettingsView: View {
                 Label("Color theme", systemImage: "paintpalette.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
                 SettingsPaletteSelector(selected: $accentPalette)
-                Text("Choose OLED Black for true-black screens, or explore five new dark finishes. Every theme updates menus, cards and navigation.")
+                Text("Choose OLED Black for true-black screens, or explore dark gradients. Every theme updates menus, cards and navigation.")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                HStack(spacing: 10) {
+                    Image(systemName: "photo.artframe")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(AppTheme.accent)
+                        .frame(width: 45, height: 45)
+                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Blurred photo background").font(.subheadline.weight(.semibold))
+                        Text("Your image stays on this device. Blur is created only once on import.")
+                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                    Spacer(minLength: 0)
+                }
+                Toggle("Show custom background", isOn: $customBackgroundEnabled)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("custom-background-toggle")
+                PhotosPicker(selection: $selectedBackgroundPhoto, matching: .images) {
+                    Label(backgroundImporting ? "Preparing background…" : "Choose background image", systemImage: "photo.on.rectangle.angled")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .disabled(backgroundImporting)
+                .accessibilityIdentifier("choose-background-photo")
+                if customBackgroundEnabled {
+                    Button(role: .destructive) {
+                        customBackgroundEnabled = false
+                    } label: {
+                        Label("Use theme background instead", systemImage: "paintpalette")
+                            .font(.caption.weight(.medium))
+                    }
+                }
+                if let backgroundError { Text(backgroundError).font(.caption).foregroundStyle(.orange) }
             }.id(SettingsDestination.appearance.rawValue)
             SettingsGroup(title: "Provider access", icon: "lock.shield") {
                 TextField("Rule34 user ID", text: $user).textInputAutocapitalization(.never)
@@ -202,12 +242,34 @@ struct SettingsView: View {
                     .accessibilityIdentifier("pornhub-session-input").accessibilityLabel("Supported Pornhub session")
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
             }.disabled(store.isSyncing).id(SettingsDestination.access.rawValue)
-            SettingsGroup(title: "Learned interests · \(store.selectedProvider.displayName)", icon: "sparkles") {
+            SettingsGroup(title: "Suggested themes", icon: "square.grid.2x2.fill") {
                 Toggle("Suggested themes on Home", isOn: $suggestedThemesEnabled)
                     .modifier(SettingsControlRow())
                     .accessibilityIdentifier("suggested-themes-toggle")
-                Text("Show image-backed suggestions from this provider's likes, learned preferences and visual taste. Turn off to keep Home focused on posts.")
+                Text("Use image-backed themes from your likes and learned interests. The row changes on every Home refresh.")
                     .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
+                Text("Rule34 discovery style")
+                    .font(.subheadline.weight(.semibold))
+                HStack(spacing: 8) {
+                    ForEach(SuggestedThemeMode.allCases) { mode in
+                        let selected = suggestedThemesMode == mode.rawValue
+                        Button { suggestedThemesMode = mode.rawValue } label: {
+                            Text(mode.label)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(selected ? .white : AppTheme.secondaryLabel)
+                                .frame(maxWidth: .infinity, minHeight: 42)
+                                .background(selected ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface), in: Capsule())
+                                .overlay(Capsule().stroke(selected ? AppTheme.accent : AppTheme.border))
+                        }
+                        .buttonStyle(QuicktickPressStyle())
+                        .accessibilityIdentifier("suggested-mode-\(mode.rawValue)")
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
+                }
+                Text("Tags follows your favorite attributes. Franchises recommends popular series detected in Rule34 posts using a curated name database. Mix alternates both for discovery. Other providers continue using their own tags and categories.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            }.id(SettingsDestination.suggestions.rawValue)
+            SettingsGroup(title: "Learned interests · \(store.selectedProvider.displayName)", icon: "sparkles") {
                 swipeableProviderProfiles
                 Button { onboarding = true } label: {
                     HStack(spacing: 12) {
@@ -369,6 +431,23 @@ struct SettingsView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(AppTheme.canvas)
+        .background(ThemeBackdrop())
+        .onChange(of: selectedBackgroundPhoto) { _, item in
+            guard let item else { return }
+            backgroundImporting = true
+            backgroundError = nil
+            Task {
+                defer { backgroundImporting = false }
+                do {
+                    guard let data = try await item.loadTransferable(type: Data.self) else {
+                        throw APIError.server("Could not read the selected photo.")
+                    }
+                    try await BackgroundArtworkStore.install(data)
+                    customBackgroundRevision &+= 1
+                    customBackgroundEnabled = true
+                } catch { backgroundError = error.localizedDescription }
+            }
+        }
         .navigationTitle("Settings")
         .toolbarBackground(AppTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
@@ -447,11 +526,12 @@ struct SettingsView: View {
 }
 
 private enum SettingsDestination: String, CaseIterable, Identifiable {
-    case appearance, navigation, recommendations, playback, access
+    case appearance, suggestions, navigation, recommendations, playback, access
     var id: String { rawValue }
     var title: String {
         switch self {
         case .appearance: "Appearance"
+        case .suggestions: "Themes"
         case .navigation: "Navigation"
         case .recommendations: "For you"
         case .playback: "Playback"
@@ -461,6 +541,7 @@ private enum SettingsDestination: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .appearance: "paintpalette"
+        case .suggestions: "square.grid.2x2.fill"
         case .navigation: "square.grid.2x2"
         case .recommendations: "sparkles"
         case .playback: "play.rectangle"
@@ -495,7 +576,7 @@ private struct SettingsPaletteSelector: View {
                                                  startPoint: .topLeading, endPoint: .bottomTrailing))
                             .frame(height: 49)
                             .overlay {
-                                if [.galaxy, .darkCosmos, .auroraNight, .solarEclipse, .oledBlack, .graphite, .midnightBlue, .emeraldNoir, .crimsonNoir].contains(palette) {
+                                if [.galaxy, .darkCosmos, .auroraNight, .solarEclipse, .oledBlack, .graphite, .midnightBlue, .emeraldNoir, .crimsonNoir, .nebulaDrift, .obsidianGold, .polarNight].contains(palette) {
                                     HStack(alignment: .top) {
                                         Image(systemName: "sparkle").font(.system(size: 13, weight: .light))
                                         Spacer()

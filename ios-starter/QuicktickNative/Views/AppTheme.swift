@@ -1,9 +1,13 @@
 import SwiftUI
+import CoreImage
+import ImageIO
+import UIKit
 
 enum AppTheme {
     enum AccentPalette: String, CaseIterable, Identifiable {
         case violet, ocean, sunset, mint, rose, cobalt, amber, cherry, teal, lime, indigo, coral, galaxy
         case darkCosmos, auroraNight, solarEclipse, oledBlack, graphite, midnightBlue, emeraldNoir, crimsonNoir
+        case nebulaDrift, obsidianGold, polarNight
         var id: String { rawValue }
         var name: String {
             switch self {
@@ -15,6 +19,9 @@ enum AppTheme {
             case .midnightBlue: "Midnight Blue"
             case .emeraldNoir: "Emerald Noir"
             case .crimsonNoir: "Crimson Noir"
+            case .nebulaDrift: "Nebula Drift"
+            case .obsidianGold: "Obsidian Gold"
+            case .polarNight: "Polar Night"
             default: rawValue.capitalized
             }
         }
@@ -41,6 +48,9 @@ enum AppTheme {
             case .midnightBlue: Color(red: 0.27, green: 0.59, blue: 1.0)
             case .emeraldNoir: Color(red: 0.19, green: 0.84, blue: 0.67)
             case .crimsonNoir: Color(red: 1.0, green: 0.37, blue: 0.49)
+            case .nebulaDrift: Color(red: 0.81, green: 0.46, blue: 0.94)
+            case .obsidianGold: Color(red: 0.94, green: 0.69, blue: 0.35)
+            case .polarNight: Color(red: 0.37, green: 0.79, blue: 0.98)
             }
         }
         var secondary: Color {
@@ -66,6 +76,9 @@ enum AppTheme {
             case .midnightBlue: Color(red: 0.18, green: 0.84, blue: 0.95)
             case .emeraldNoir: Color(red: 0.20, green: 0.59, blue: 0.91)
             case .crimsonNoir: Color(red: 0.95, green: 0.52, blue: 0.71)
+            case .nebulaDrift: Color(red: 0.29, green: 0.64, blue: 0.96)
+            case .obsidianGold: Color(red: 0.78, green: 0.48, blue: 0.35)
+            case .polarNight: Color(red: 0.62, green: 0.87, blue: 0.73)
             }
         }
         var gradientColors: [Color] {
@@ -83,6 +96,9 @@ enum AppTheme {
             case .midnightBlue: [Color(red: 0.08, green: 0.23, blue: 0.50), primary, secondary]
             case .emeraldNoir: [Color(red: 0.06, green: 0.30, blue: 0.25), primary, secondary]
             case .crimsonNoir: [Color(red: 0.33, green: 0.06, blue: 0.13), primary, secondary]
+            case .nebulaDrift: [Color(red: 0.28, green: 0.10, blue: 0.45), primary, secondary]
+            case .obsidianGold: [Color(red: 0.18, green: 0.12, blue: 0.09), primary, secondary]
+            case .polarNight: [Color(red: 0.05, green: 0.22, blue: 0.30), primary, secondary]
             default: [primary, secondary]
             }
         }
@@ -94,7 +110,7 @@ enum AppTheme {
     static var isGalaxy: Bool { palette == .galaxy }
     static var isCosmic: Bool {
         switch palette {
-        case .galaxy, .darkCosmos, .auroraNight, .solarEclipse, .oledBlack, .graphite, .midnightBlue, .emeraldNoir, .crimsonNoir: return true
+        case .galaxy, .darkCosmos, .auroraNight, .solarEclipse, .oledBlack, .graphite, .midnightBlue, .emeraldNoir, .crimsonNoir, .nebulaDrift, .obsidianGold, .polarNight: return true
         default: return false
         }
     }
@@ -111,6 +127,9 @@ enum AppTheme {
         case .midnightBlue: return Color(red: 0.012, green: 0.024, blue: 0.056)
         case .emeraldNoir: return Color(red: 0.010, green: 0.035, blue: 0.030)
         case .crimsonNoir: return Color(red: 0.039, green: 0.013, blue: 0.022)
+        case .nebulaDrift: return Color(red: 0.026, green: 0.015, blue: 0.055)
+        case .obsidianGold: return Color(red: 0.026, green: 0.019, blue: 0.014)
+        case .polarNight: return Color(red: 0.010, green: 0.033, blue: 0.049)
         default: break
         }
         return modernUI ? Color(red: 0.035, green: 0.035, blue: 0.065) : .black
@@ -126,6 +145,9 @@ enum AppTheme {
         case .midnightBlue: return Color(red: 0.040, green: 0.070, blue: 0.120)
         case .emeraldNoir: return Color(red: 0.030, green: 0.079, blue: 0.065)
         case .crimsonNoir: return Color(red: 0.091, green: 0.037, blue: 0.056)
+        case .nebulaDrift: return Color(red: 0.086, green: 0.044, blue: 0.126)
+        case .obsidianGold: return Color(red: 0.083, green: 0.060, blue: 0.043)
+        case .polarNight: return Color(red: 0.034, green: 0.082, blue: 0.099)
         default: break
         }
         return modernUI ? Color(red: 0.073, green: 0.073, blue: 0.11) : Color(white: 0.055)
@@ -141,6 +163,9 @@ enum AppTheme {
         case .midnightBlue: return Color(red: 0.075, green: 0.110, blue: 0.177)
         case .emeraldNoir: return Color(red: 0.057, green: 0.120, blue: 0.101)
         case .crimsonNoir: return Color(red: 0.155, green: 0.061, blue: 0.085)
+        case .nebulaDrift: return Color(red: 0.132, green: 0.069, blue: 0.184)
+        case .obsidianGold: return Color(red: 0.142, green: 0.102, blue: 0.066)
+        case .polarNight: return Color(red: 0.057, green: 0.125, blue: 0.143)
         default: break
         }
         return modernUI ? Color(red: 0.10, green: 0.095, blue: 0.15) : Color(red: 0.09, green: 0.09, blue: 0.13)
@@ -156,6 +181,9 @@ enum AppTheme {
         case .midnightBlue: Color(red: 0.022, green: 0.046, blue: 0.090)
         case .emeraldNoir: Color(red: 0.016, green: 0.055, blue: 0.045)
         case .crimsonNoir: Color(red: 0.064, green: 0.020, blue: 0.036)
+        case .nebulaDrift: Color(red: 0.058, green: 0.028, blue: 0.097)
+        case .obsidianGold: Color(red: 0.054, green: 0.039, blue: 0.027)
+        case .polarNight: Color(red: 0.018, green: 0.054, blue: 0.069)
         default: Color(red: 0.045, green: 0.04, blue: 0.075)
         }
     }
@@ -168,7 +196,12 @@ enum AppTheme {
     static var gradient: LinearGradient {
         LinearGradient(colors: palette.gradientColors, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
-    static var canvas: Color { background }
+    // Feed backgrounds are deliberately translucent only while a user-picked
+    // backdrop is enabled. All cards and controls keep opaque readable chrome.
+    static var canvas: Color {
+        UserDefaults.standard.bool(forKey: BackgroundArtworkStore.enabledKey)
+            ? background.opacity(0.58) : background
+    }
     static let small: CGFloat = 8
     static let contentMargin: CGFloat = 16
     static let sectionGap: CGFloat = 24
@@ -176,6 +209,78 @@ enum AppTheme {
     static let controlRadius: CGFloat = 14
     static let cardRadius: CGFloat = 22
     static let feedWidth: CGFloat = 680
+}
+
+enum BackgroundArtworkStore {
+    static let enabledKey = "quicktick-custom-background-enabled-v1"
+    static let revisionKey = "quicktick-custom-background-revision-v1"
+    static var fileURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Quicktick/Appearance/background.jpg")
+    }
+
+    /// Prepare the photo once at import time. Blurring every frame of a
+    /// scrolling feed causes GPU work and visible jank on older devices.
+    static func install(_ data: Data) async throws {
+        guard !data.isEmpty, data.count <= 30_000_000 else {
+            throw APIError.server("Choose an image smaller than 30 MB.")
+        }
+        try await Task.detached(priority: .utility) {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 1500
+                  ] as CFDictionary) else {
+                throw APIError.server("This image format is not supported.")
+            }
+            let input = CIImage(cgImage: thumb)
+            let output = input.clampedToExtent()
+                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 24])
+                .cropped(to: input.extent)
+            guard let blurred = CIContext(options: [.useSoftwareRenderer: false])
+                    .createCGImage(output, from: input.extent),
+                  let jpeg = UIImage(cgImage: blurred).jpegData(compressionQuality: 0.78) else {
+                throw APIError.server("Could not prepare the background image.")
+            }
+            let destination = fileURL
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try jpeg.write(to: destination, options: .atomic)
+        }.value
+    }
+}
+
+/// One bounded, pre-blurred image behind the entire navigation hierarchy.
+/// It does not participate in cell layout or per-frame media rendering.
+struct ThemeBackdrop: View {
+    @AppStorage(BackgroundArtworkStore.enabledKey) private var enabled = false
+    @AppStorage(BackgroundArtworkStore.revisionKey) private var revision = 0
+    @State private var artwork: UIImage?
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                AppTheme.background
+                if enabled, let artwork {
+                    Image(uiImage: artwork)
+                        .resizable().scaledToFill()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                        .overlay(.black.opacity(0.33))
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .task(id: "\(enabled):\(revision)") {
+            guard enabled else { artwork = nil; return }
+            let saved = await Task.detached(priority: .utility) {
+                try? Data(contentsOf: BackgroundArtworkStore.fileURL)
+            }.value
+            guard !Task.isCancelled else { return }
+            artwork = saved.flatMap(UIImage.init(data:))
+        }
+        .accessibilityHidden(true)
+    }
 }
 
 // Native SwiftUI interpretation of beUI's spring-press interaction.

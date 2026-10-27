@@ -563,6 +563,29 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(refreshed.allSatisfy { !$0.imageURL.isEmpty && terms.contains($0.term) })
     }
 
+    func testSuggestedThemeModeDiscoversObservedPopularFranchisesAndMixesTags() {
+        let popular = Post(key: "rule34:pokemon", id: "1", provider: "rule34", score: 125,
+            tags: ["pokemon", "portrait"], thumbUrl: "https://example.com/pokemon.jpg", type: "image")
+        let niche = Post(key: "rule34:streetfighter", id: "2", provider: "rule34", score: 5,
+            tags: ["street_fighter", "dynamic_pose"], thumbUrl: "https://example.com/sf.jpg", type: "image")
+        let settings = (learned: ["portrait"], chosen: [String](), visual: ["dynamic_pose"])
+        let series = HomeThemeSuggestions.make(provider: .rule34, learned: settings.learned,
+            chosen: settings.chosen, visual: settings.visual, favorites: [], posts: [popular, niche],
+            excluded: [], limit: 2, mode: .franchises)
+        XCTAssertEqual(series.first?.term, "pokemon")
+        XCTAssertEqual(Set(series.map(\.term)), ["pokemon", "street_fighter"])
+        XCTAssertTrue(series.allSatisfy { $0.kind == "franchise" && !$0.imageURL.isEmpty })
+        let mixed = HomeThemeSuggestions.make(provider: .rule34, learned: settings.learned,
+            chosen: settings.chosen, visual: settings.visual, favorites: [popular], posts: [popular, niche],
+            excluded: [], limit: 3, mode: .balanced)
+        XCTAssertTrue(mixed.contains(where: { $0.kind == "franchise" }))
+        XCTAssertTrue(mixed.contains(where: { $0.kind == "tag" }))
+        let blocked = HomeThemeSuggestions.make(provider: .rule34, learned: settings.learned,
+            chosen: settings.chosen, visual: settings.visual, favorites: [], posts: [popular, niche],
+            excluded: ["pokemon"], limit: 2, mode: .franchises)
+        XCTAssertFalse(blocked.contains(where: { $0.term == "pokemon" }))
+    }
+
     func testPornhubHomeCategoryUsesActualCategoryParameter() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()

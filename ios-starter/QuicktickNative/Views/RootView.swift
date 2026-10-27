@@ -31,6 +31,7 @@ struct RootView: View {
     @State private var aiTabSessionOverride: Bool?
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
+    @AppStorage(BackgroundArtworkStore.enabledKey) private var showsCustomBackground = false
     @State private var showSettings = false
     @State private var showStudio = false
     @State private var homeAnchor: String?
@@ -141,7 +142,7 @@ struct RootView: View {
         // A single environment tint reaches NavigationStacks, toolbars,
         // menus and all presented settings/model-library sheets.
         .tint(AppTheme.accent)
-        .background(AppTheme.background)
+        .background(ThemeBackdrop().id(showsCustomBackground))
         .modifier(ProfileImportConfirmation(enabled: !showSettings && firstRunCompleted))
         .fullScreenCover(isPresented: Binding(
             get: {

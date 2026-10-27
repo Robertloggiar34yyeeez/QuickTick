@@ -652,7 +652,7 @@ enum HomeThemeSuggestions {
         let visible = Array(posts.lazy.filter { $0.providerKey == provider }.prefix(80))
         let evidence = liked + visible.filter { candidate in
             !liked.contains { $0.stableID == candidate.stableID }
-        }.filter { !RecommendationTagRules.rejects($0, exclusions: excluded) }
+        }
         let banned = Set(excluded.map(normalize))
         var scores: [String: Int] = [:]
         func add(_ tags: [String], weight: Int) {
@@ -703,7 +703,10 @@ enum HomeThemeSuggestions {
             if result.count >= limit { break }
         }
         guard provider == .rule34, mode != .tags else { return result }
-        let franchises = FranchiseThemeSuggestions.make(evidence: evidence,
+        let validFranchiseEvidence = evidence.filter {
+            !RecommendationTagRules.rejects($0, exclusions: excluded)
+        }
+        let franchises = FranchiseThemeSuggestions.make(evidence: validFranchiseEvidence,
             favorites: Set(liked.map(\.stableID)), learned: learned,
             chosen: chosen, visual: visual, excluded: excluded,
             limit: limit, rotation: rotation)

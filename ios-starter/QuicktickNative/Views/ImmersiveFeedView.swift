@@ -89,6 +89,7 @@ struct ImmersiveFeedView: View {
                 .contentShape(Rectangle())
                 .clipped()
         }
+        .background(ThemeBackdrop())
         .navigationTitle(offline ? "Offline Immersive" : "Immersive")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(AppTheme.background, for: .navigationBar)

@@ -49,19 +49,17 @@ private struct DownloadContent: View {
                     if let error = manager.storageError { Text(error).foregroundStyle(.orange) }
                     if manager.records.isEmpty { ContentUnavailableView("No downloads yet", systemImage: "arrow.down.to.line", description: Text("Save posts to view them offline here.")) }
                     ForEach(manager.records) { record in
-                        if let post = record.offlinePost {
-                            PostCardView(post: post, available: CGSize(width: min(AppTheme.feedWidth, geometry.size.width - 32), height: geometry.size.height), playbackTab: 3, offline: true, onDelete: { manager.delete(record) })
-                                .frame(maxWidth: .infinity)
-                                .overlay { if selecting { selectionOverlay(for: record) } }
-                            HStack {
-                                Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                    .accessibilityIdentifier("download-size-\(record.key)")
-                                Spacer()
-                                if !selecting, let url = record.exportURL {
-                                    ShareLink(item: url) { Label("Export", systemImage: "square.and.arrow.up") }
-                                        .accessibilityIdentifier("export-download-\(record.key)")
-                                }
+                        if record.state == .complete {
+                            // Transfer progress changes the parent several times a second.
+                            // Equatable completed rows keep expensive media/card state
+                            // mounted without rebuilding on unrelated progress packets.
+                            DownloadCachedCardRow(record: record,
+                                                  available: CGSize(width: min(AppTheme.feedWidth, geometry.size.width - 32), height: geometry.size.height),
+                                                  manager: manager, selecting: selecting,
+                                                  selected: selectedKeys.contains(record.key)) {
+                                toggleSelection(record.key)
                             }
+                            .equatable()
                         } else {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
@@ -77,10 +75,6 @@ private struct DownloadContent: View {
                                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                                     Text(record.formattedSize).font(.caption.monospacedDigit())
                                     ProgressView(value: record.progress).tint(AppTheme.accent)
-                                    if record.state == .complete && record.offlinePost == nil {
-                                        Text("Saved file unavailable. Try restoring it from the source.")
-                                            .foregroundStyle(.orange).font(.caption)
-                                    }
                                     if let error = record.errorMessage { Text(error).foregroundStyle(.orange).font(.caption) }
                                 }
                             }
@@ -88,10 +82,6 @@ private struct DownloadContent: View {
                                 if record.state == .downloading { Button("Pause") { manager.pause(record) }; Button("Cancel") { manager.cancel(record) } }
                                 if record.state == .paused { Button("Resume") { manager.resume(record) }; Button("Cancel") { manager.cancel(record) } }
                                 if record.state == .failed || record.state == .cancelled { Button("Retry") { manager.retry(record) } }
-                                if record.state == .complete && record.offlinePost == nil {
-                                    Button("Restore") { manager.retry(record) }
-                                        .accessibilityIdentifier("restore-download-\(record.key)")
-                                }
                                 Spacer()
                                 if !selecting { Button("Delete", role: .destructive) { manager.delete(record) } }
                             }.buttonStyle(.bordered)
@@ -112,7 +102,7 @@ private struct DownloadContent: View {
                 }
                 }
             }
-        }.scrollContentBackground(.hidden).background(AppTheme.canvas).navigationTitle("Downloads")
+        }.scrollContentBackground(.hidden).background(ThemeBackdrop()).navigationTitle("Downloads")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { rhythm = true } label: { Label("Rhythm", systemImage: "waveform.path") }
@@ -175,9 +165,7 @@ private struct DownloadContent: View {
         .accessibilityIdentifier("downloads-selection-controls")
     }
     private func selectionOverlay(for record: DownloadRecord) -> some View {
-        Button {
-            if !selectedKeys.insert(record.key).inserted { selectedKeys.remove(record.key) }
-        } label: {
+        Button { toggleSelection(record.key) } label: {
             RoundedRectangle(cornerRadius: 19).fill(.black.opacity(0.001))
                 .overlay(alignment: .topLeading) {
                     Image(systemName: selectedKeys.contains(record.key) ? "checkmark.circle.fill" : "circle")
@@ -194,5 +182,79 @@ private struct DownloadContent: View {
     }
     private var localPosts: [Post] {
         manager.records.compactMap(\.offlinePost)
+    }
+    private func toggleSelection(_ key: String) {
+        if !selectedKeys.insert(key).inserted { selectedKeys.remove(key) }
+    }
+}
+
+/// Isolates completed media cards from other downloads' progress publishes.
+/// The parent can refresh status labels without recreating decoded images,
+/// video surfaces, context menus, and SwiftUI playback observers in each card.
+private struct DownloadCachedCardRow: View, Equatable {
+    let record: DownloadRecord
+    let available: CGSize
+    let manager: DownloadManager
+    let selecting: Bool
+    let selected: Bool
+    let onSelect: () -> Void
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.record == rhs.record && lhs.available == rhs.available &&
+            lhs.selecting == rhs.selecting && lhs.selected == rhs.selected
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            if let post = record.offlinePost {
+                PostCardView(post: post, available: available, playbackTab: 3, offline: true,
+                             onDelete: { manager.delete(record) })
+                    .frame(maxWidth: .infinity)
+                    .overlay { if selecting { selectionOverlay } }
+                HStack {
+                    Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("download-size-\(record.key)")
+                    Spacer()
+                    if !selecting, let url = record.exportURL {
+                        ShareLink(item: url) { Label("Export", systemImage: "square.and.arrow.up") }
+                            .accessibilityIdentifier("export-download-\(record.key)")
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(record.title).font(.headline).lineLimit(2)
+                    Text("Saved file unavailable. Try restoring it from the source.")
+                        .font(.caption).foregroundStyle(.orange)
+                    HStack {
+                        Button("Restore") { manager.retry(record) }
+                            .accessibilityIdentifier("restore-download-\(record.key)")
+                        Spacer()
+                        if !selecting { Button("Delete", role: .destructive) { manager.delete(record) } }
+                    }.buttonStyle(.bordered)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
+                .overlay { if selecting { selectionOverlay } }
+            }
+        }
+    }
+
+    private var selectionOverlay: some View {
+        Button(action: onSelect) {
+            RoundedRectangle(cornerRadius: 19).fill(.black.opacity(0.001))
+                .overlay(alignment: .topLeading) {
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 29, weight: .semibold))
+                        .foregroundStyle(selected ? AppTheme.accent : .white)
+                        .shadow(color: .black.opacity(0.6), radius: 5)
+                        .padding(13)
+                }
+                .overlay(RoundedRectangle(cornerRadius: 19)
+                    .stroke(selected ? AppTheme.accent : .clear, lineWidth: 2))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(selected ? "Deselect" : "Select") \(record.title)")
+        .accessibilityIdentifier("select-download-\(record.key)")
     }
 }

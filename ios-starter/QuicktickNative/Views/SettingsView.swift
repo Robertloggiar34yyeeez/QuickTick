@@ -432,7 +432,6 @@ struct SettingsView: View {
         }
         }
         .scrollDismissesKeyboard(.interactively)
-        .background(AppTheme.canvas)
         .background(ThemeBackdrop())
         .onChange(of: selectedBackgroundPhoto) { _, item in
             guard let item else { return }

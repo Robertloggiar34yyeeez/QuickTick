@@ -47,6 +47,21 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
             translation: CGSize(width: 1, height: 95), vertical: true))
     }
 
+    func testDockDragPreviewsMultipleFeedsAndCommitsOnlyOnRelease() {
+        XCTAssertEqual(TabSwipePolicy.dropDestination(current: 0,
+            translation: CGSize(width: 250, height: 4), vertical: false), 3)
+        XCTAssertEqual(TabSwipePolicy.dropDestination(current: 3,
+            translation: CGSize(width: -150, height: 2), vertical: false), 1)
+        XCTAssertEqual(TabSwipePolicy.dropDestination(current: 1,
+            translation: CGSize(width: 1, height: 145), vertical: true), 3)
+        XCTAssertNil(TabSwipePolicy.dropDestination(current: 3,
+            translation: CGSize(width: 120, height: 2), vertical: false))
+        XCTAssertNil(TabSwipePolicy.dropDestination(current: 1,
+            translation: CGSize(width: 38, height: 2), vertical: false))
+        XCTAssertNil(TabSwipePolicy.dropDestination(current: 1,
+            translation: CGSize(width: 80, height: 90), vertical: false))
+    }
+
     @MainActor func testTypedArtistSelectionCanBeSavedFromTagsWithoutPrefix() {
         let store = AppStore()
         let post = Post(key: "rule34:typed-artist", id: "typed-artist", provider: "rule34",

@@ -14,6 +14,21 @@ enum TabSwipePolicy {
         let next = current + (primary > 0 ? 1 : -1)
         return (0...3).contains(next) ? next : nil
     }
+
+
+    /// A continuous dock drag can travel across several feeds. Nothing is
+    /// selected until the finger lifts, at which point the highlighted feed
+    /// becomes the drop target. The Create action is not a feed destination.
+    static func dropDestination(current: Int, translation: CGSize, vertical: Bool) -> Int? {
+        guard (0...3).contains(current) else { return nil }
+        let primary = vertical ? translation.height : translation.width
+        let cross = vertical ? translation.width : translation.height
+        guard abs(primary) >= 42, abs(primary) > abs(cross) * 1.45 else { return nil }
+        let steps = 1 + Int((abs(primary) - 42) / 90)
+        let desired = current + (primary > 0 ? steps : -steps)
+        let clamped = min(3, max(0, desired))
+        return clamped == current ? nil : clamped
+    }
 }
 
 struct RootView: View {
@@ -89,6 +104,17 @@ struct RootView: View {
                                 AppTheme.gradient.frame(height: 1).opacity(0.55)
                             }
                         }
+                        .overlay(alignment: .top) {
+                            if let destination = swipePreview(vertical: false) {
+                                Text(feedName(destination))
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 14).padding(.vertical, 7)
+                                    .background(AppTheme.elevatedSurface, in: Capsule())
+                                    .overlay(Capsule().stroke(AppTheme.border))
+                                    .offset(y: -40)
+                                    .allowsHitTesting(false)
+                            }
+                        }
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("bottom-navigation-bar")
                         .id(aiTabVisible ? "five-tabs" : "four-tabs")
@@ -108,6 +134,17 @@ struct RootView: View {
                                     in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
                         .shadow(color: .black.opacity(AppTheme.isDeSlopified ? 0 : 0.4), radius: 18, y: 4)
+                        .overlay(alignment: .trailing) {
+                            if let destination = swipePreview(vertical: true) {
+                                Text(feedName(destination))
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 12).padding(.vertical, 7)
+                                    .background(AppTheme.elevatedSurface, in: Capsule())
+                                    .overlay(Capsule().stroke(AppTheme.border))
+                                    .offset(x: 100)
+                                    .allowsHitTesting(false)
+                            }
+                        }
                         .padding(.leading, 16)
                         .id(aiTabVisible ? "five-side-tabs" : "four-side-tabs")
                         .transition(.move(edge: .leading).combined(with: .opacity))
@@ -187,8 +224,8 @@ struct RootView: View {
 
     private func swipeTabs(_ translation: CGSize, vertical: Bool) {
         guard !showStudio, !showSettings,
-              let tab = TabSwipePolicy.destination(current: store.activeTab,
-                                                     translation: translation, vertical: vertical)
+              let tab = TabSwipePolicy.dropDestination(current: store.activeTab,
+                                                         translation: translation, vertical: vertical)
         else { return }
         tabSelectionTask?.cancel()
         let refresh = store.beginFeedTabSelection(tab)
@@ -198,7 +235,23 @@ struct RootView: View {
         }
     }
 
+    private func swipePreview(vertical: Bool) -> Int? {
+        guard !showStudio, !showSettings else { return nil }
+        return TabSwipePolicy.dropDestination(current: store.activeTab,
+                                              translation: navigationDrag, vertical: vertical)
+    }
+
+    private func feedName(_ tab: Int) -> String {
+        switch tab {
+        case 1: "Immersive"
+        case 2: "Favorites"
+        case 3: "Downloads"
+        default: "Home"
+        }
+    }
+
     @ViewBuilder private func tabButtons(vertical: Bool) -> some View {
+        let highlightedTab = swipePreview(vertical: vertical) ?? store.activeTab
         ForEach(visibleTabIndices, id: \.self) { index in
             if index == 2 {
                 Button {
@@ -264,7 +317,7 @@ struct RootView: View {
                             .frame(width: 23, height: 23)
                             .accessibilityLabel("Refreshing feed")
                             .transition(.opacity.combined(with: .scale(scale: 0.65)))
-                        } else if store.activeTab == tabID && brieflyNamedTab == tabID {
+                        } else if highlightedTab == tabID && brieflyNamedTab == tabID {
                             Text(tabs[index].0)
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                                 .lineLimit(1).minimumScaleFactor(0.8)
@@ -275,22 +328,21 @@ struct RootView: View {
                                 .transition(.opacity)
                         }
                     }
-                    .foregroundStyle(store.activeTab == tabID ? .white : .white.opacity(0.62))
+                    .foregroundStyle(highlightedTab == tabID ? .white : .white.opacity(0.62))
                     .frame(width: vertical ? 46 : nil, height: vertical ? 46 : 54)
                     .frame(maxWidth: vertical ? nil : .infinity)
                     .contentShape(Rectangle())
                     .background {
-                        if store.activeTab == tabID {
+                        if highlightedTab == tabID {
                             RoundedRectangle(cornerRadius: vertical ? 18 : (modernUI ? 18 : 12), style: .continuous)
                                 .fill(AppTheme.gradient)
                                 .matchedGeometryEffect(id: "selected-tab", in: navigationSelection)
-                                .offset(x: vertical || reduceMotion ? 0 : min(34, max(-34, navigationDrag.width * 0.45)),
-                                        y: !vertical || reduceMotion ? 0 : min(34, max(-34, navigationDrag.height * 0.45)))
                         }
                     }
                 }
                 .buttonStyle(QuicktickPressStyle())
                 .animation(reduceMotion ? nil : AppTheme.spring, value: store.activeTab)
+                .animation(reduceMotion ? nil : .interactiveSpring(response: 0.25, dampingFraction: 0.87), value: highlightedTab)
                 .animation(reduceMotion ? nil : .smooth(duration: 0.26), value: refreshingTab)
                 .accessibilityLabel(tabs[index].0)
                 .accessibilityIdentifier("tab-\(tabs[index].0)")

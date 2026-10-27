@@ -368,7 +368,7 @@ struct HomeFeedView: View {
         let debugScroll = preparedScroll
         #endif
         let navigableScroll = debugScroll
-        .background(AppTheme.canvas)
+        .background(ThemeBackdrop())
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(AppTheme.background, for: .navigationBar)

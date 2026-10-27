@@ -233,8 +233,8 @@ enum BackgroundArtworkStore {
             .appendingPathComponent("Quicktick/Appearance/background.jpg")
     }
 
-    /// Prepare the photo once at import time. Blurring every frame of a
-    /// scrolling feed causes GPU work and visible jank on older devices.
+    /// Prepare the photo once at import time. A light blur softens details
+    /// without destroying the chosen image, and avoids per-frame GPU filters.
     static func install(_ data: Data) async throws {
         guard !data.isEmpty, data.count <= 30_000_000 else {
             throw APIError.server("Choose an image smaller than 30 MB.")
@@ -250,7 +250,7 @@ enum BackgroundArtworkStore {
             }
             let input = CIImage(cgImage: thumb)
             let output = input.clampedToExtent()
-                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 24])
+                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 5])
                 .cropped(to: input.extent)
             guard let blurred = CIContext(options: [.useSoftwareRenderer: false])
                     .createCGImage(output, from: input.extent),
@@ -264,8 +264,8 @@ enum BackgroundArtworkStore {
     }
 }
 
-/// One bounded, pre-blurred image behind the entire navigation hierarchy.
-/// It does not participate in cell layout or per-frame media rendering.
+/// Each screen can mount this static image behind its scroll content; opaque
+/// NavigationStack/ScrollView backgrounds otherwise hide a root-only image.
 struct ThemeBackdrop: View {
     @AppStorage(BackgroundArtworkStore.enabledKey) private var enabled = false
     @AppStorage(BackgroundArtworkStore.revisionKey) private var revision = 0
@@ -280,7 +280,7 @@ struct ThemeBackdrop: View {
                         .resizable().scaledToFill()
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .clipped()
-                        .overlay(.black.opacity(0.33))
+                        .overlay(.black.opacity(0.18))
                 }
             }
         }

@@ -119,7 +119,7 @@ struct CommentsView: View {
                     .sheet(isPresented: $writeInApp) { SourceWebsiteView(url: source).ignoresSafeArea() }
                 }
             }
-            .background(AppTheme.canvas)
+            .background(ThemeBackdrop())
             .toolbar(.hidden, for: .navigationBar)
         }
         .presentationDetents([.fraction(0.38), .large])
@@ -207,7 +207,7 @@ struct TasteOnboardingView: View {
                 .padding(20)
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(AppTheme.canvas)
+            .background(ThemeBackdrop())
             .navigationTitle("Your interests")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1188,7 +1188,7 @@ struct FavoritesView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .background(AppTheme.canvas)
+        .background(ThemeBackdrop())
         .navigationTitle("Favorites")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {

@@ -11,7 +11,9 @@ private final class DownloadProgressGate: @unchecked Sendable {
     func shouldPublish(key: String, progress: Double) -> Bool {
         lock.lock(); defer { lock.unlock() }
         let now = Date.timeIntervalSinceReferenceDate
-        if progress < 0.999, let prior = last[key], now - prior < 0.35 { return false }
+        // Completion is always immediate; intermediate progress is sampled
+        // slowly enough that multiple active transfers cannot flood the feed.
+        if progress < 0.999, let prior = last[key], now - prior < 0.80 { return false }
         last[key] = now
         return true
     }

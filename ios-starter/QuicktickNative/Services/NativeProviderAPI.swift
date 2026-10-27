@@ -711,8 +711,11 @@ enum NativeProviderAPI {
             let tags = caption.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
                 .prefix(16).map(String.init)
             let pageURL = "https://hentaihaven.xxx" + path
+            // The public catalog only supplies watch-page metadata. Treat it
+            // as an unresolved *video*: the player resolves media privately
+            // in the app and never navigates the user to a web browser.
             var post = Post(key: "hhaven:web:\(slug)", id: slug, provider: Provider.hhaven.rawValue,
-                            tags: tags, thumbUrl: image, pageUrl: pageURL, type: "web", embedUrl: pageURL)
+                            tags: tags, thumbUrl: image, pageUrl: pageURL, type: "video")
             post.caption = caption
             posts.append(post)
         }
@@ -735,6 +738,59 @@ enum NativeProviderAPI {
         }
         return ResolvedMedia(mediaUrl: media.absoluteString,
                              type: media.pathExtension.lowercased() == "m3u8" ? "hls" : "video")
+    }
+
+    /// Read a public watch page only for a canonical Haven catalog entry.
+    /// It is a best-effort fallback when Warden is inaccessible; it never
+    /// returns the HTML page as a video URL or follows a cross-site redirect.
+    static func havenPublicResolve(session: URLSession, post: Post) async throws -> ResolvedMedia {
+        guard let page = URL(string: post.pageUrl), page.scheme == "https",
+              ["hentaihaven.xxx", "www.hentaihaven.xxx"].contains(page.host?.lowercased() ?? ""),
+              page.path.hasPrefix("/watch/"), page.user == nil, page.password == nil else {
+            throw APIError.invalidResponse
+        }
+        var request = URLRequest(url: page)
+        request.timeoutInterval = 10
+        request.setValue("text/html", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let status = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard status.statusCode == 200 else { throw APIError.providerStatus(.hhaven, status.statusCode) }
+        guard let destination = status.url,
+              ["hentaihaven.xxx", "www.hentaihaven.xxx"].contains(destination.host?.lowercased() ?? ""),
+              destination.path.hasPrefix("/watch/") else {
+            throw APIError.server("Hentai Haven redirected its player outside the provider; no external website was opened.")
+        }
+        guard data.count < 2 * 1024 * 1024 else { throw APIError.invalidResponse }
+        let html = String(decoding: data, as: UTF8.self)
+        guard !unavailableHTML(data), let media = havenWatchMedia(html, page: destination) else {
+            throw APIError.server("Hentai Haven did not expose a playable in-app stream for this title.")
+        }
+        return media
+    }
+
+    static func havenWatchMedia(_ html: String, page: URL) -> ResolvedMedia? {
+        guard !unavailableHTML(Data(html.utf8)) else { return nil }
+        // Prefer player-specific sources over unrelated promotional links.
+        // The fallback deliberately accepts only direct HTTPS video assets.
+        let patterns = [
+            #"(?is)<source\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#,
+            #"(?is)<video\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#,
+            #"(?i)["'](?:file|hls|video_url|stream_url|contentUrl)["']\s*:\s*["']([^"']+)["']"#,
+            #"(?i)(?:file|src)\s*:\s*["']([^"']+)["']"#
+        ]
+        for pattern in patterns {
+            for raw in matches(html, pattern).prefix(12) {
+                let decoded = raw.replacingOccurrences(of: "\\/", with: "/")
+                    .replacingOccurrences(of: "&amp;", with: "&")
+                guard let asset = URL(string: decoded, relativeTo: page)?.absoluteURL,
+                      asset.scheme == "https", asset.user == nil, asset.password == nil,
+                      ["mp4", "m4v", "mov", "m3u8"].contains(asset.pathExtension.lowercased()) else { continue }
+                return ResolvedMedia(mediaUrl: asset.absoluteString,
+                                     type: asset.pathExtension.lowercased() == "m3u8" ? "hls" : "video")
+            }
+        }
+        return nil
     }
 
     static func pornhub(session: URLSession, credentials: ProviderCredentials, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {

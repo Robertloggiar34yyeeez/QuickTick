@@ -105,6 +105,12 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "hentaihaven.xxx", path == "/series/yuri/" {
             payload = #"<html><a href="/watch/genre-entry/"><img src="https://coverlanyvd.org/cover.jpg" alt="Genre entry"></a></html>"#
         }
+        else if host == "hentaihaven.xxx", path == "/watch/fallback-web/" {
+            payload = #"<html><video controls><source src="https://media.hentaihaven.xxx/episode.m3u8" type="application/vnd.apple.mpegurl"></video></html>"#
+        }
+        else if host == "hentaihaven.xxx", path == "/watch/no-public-stream/" {
+            payload = #"<html><div class="player">Player temporarily unavailable</div></html>"#
+        }
         else if host == "search.htv-services.com" { payload = #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fixture\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"}]}]"}"# }
         else if path == "/api/v8/video" { payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/full.m3u8"}]}]}}"# }
         else if path == "/webmasters/search" || path == "/webmasters/search/" {
@@ -391,7 +397,7 @@ final class NativeProviderAPITests: XCTestCase {
             query: QueryParser.parse("fallback-web"), page: 1,
             sort: "recommended", immersive: false)
         XCTAssertEqual(result.items.map(\.stableID), ["hhaven:web:fallback-web"])
-        XCTAssertEqual(result.items.first?.type, "web")
+        XCTAssertEqual(result.items.first?.type, "video")
         XCTAssertEqual(result.items.first?.pageUrl, "https://hentaihaven.xxx/watch/fallback-web/")
         XCTAssertEqual(result.items.first?.thumbUrl, "https://img.hentaihaven.xxx/poster.jpg")
         XCTAssertEqual(result.hasMore, false)
@@ -439,6 +445,30 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(first.hasMore, true)
         let last = try NativeProviderAPI.havenWebsitePage(cards, query: popular, page: 50, sort: "popular")
         XCTAssertEqual(last.hasMore, false)
+    }
+
+    func testHavenCatalogPlaysDirectlyWithoutOpeningAnyWebsiteView() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let catalog = try await api.posts(provider: .hhaven,
+            query: QueryParser.parse("fallback-web"), page: 1)
+        let post = try XCTUnwrap(catalog.items.first)
+        XCTAssertTrue(post.isImmersiveMedia)
+        XCTAssertEqual(post.type, "video")
+        let stream = try await api.resolveMedia(post)
+        XCTAssertEqual(stream.mediaUrl, "https://media.hentaihaven.xxx/episode.m3u8")
+        XCTAssertEqual(stream.type, "hls")
+        let urls = NativeProviderProtocol.log.snapshot().compactMap(\.url)
+        XCTAssertTrue(urls.contains { $0.host == "hentaihaven.xxx" && $0.path == "/watch/fallback-web/" })
+        XCTAssertFalse(urls.contains { $0.path == "/v1/hentai/fallback-web" })
+        let missing = Post(key: "hhaven:web:no-public-stream", id: "no-public-stream", provider: "hhaven",
+            pageUrl: "https://hentaihaven.xxx/watch/no-public-stream/", type: "video")
+        do {
+            _ = try await api.resolveMedia(missing)
+            XCTFail("An HTML watch page must never be handed to AVPlayer as a media URL")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("playable in-app stream"))
+        }
     }
 
     func testNHentaiGalleryBrowseSearchAndCompletePageManifest() async throws {

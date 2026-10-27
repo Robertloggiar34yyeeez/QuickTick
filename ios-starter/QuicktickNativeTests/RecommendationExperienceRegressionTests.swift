@@ -30,21 +30,29 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
 
     func testDockSwipeChangesOneTabWithoutTriggeringMediaGestures() {
         XCTAssertEqual(TabSwipePolicy.destination(current: 0,
-            translation: CGSize(width: -90, height: 5), vertical: false), 1)
+            translation: CGSize(width: 90, height: 5), vertical: false), 1)
         XCTAssertEqual(TabSwipePolicy.destination(current: 2,
-            translation: CGSize(width: 110, height: 2), vertical: false), 1)
+            translation: CGSize(width: -110, height: 2), vertical: false), 1)
         XCTAssertNil(TabSwipePolicy.destination(current: 0,
-            translation: CGSize(width: 100, height: 1), vertical: false))
+            translation: CGSize(width: -100, height: 1), vertical: false))
         XCTAssertNil(TabSwipePolicy.destination(current: 1,
             translation: CGSize(width: 90, height: 85), vertical: false))
         XCTAssertNil(TabSwipePolicy.destination(current: 1,
             translation: CGSize(width: 25, height: 4), vertical: false))
         XCTAssertEqual(TabSwipePolicy.destination(current: 1,
-            translation: CGSize(width: 1, height: -95), vertical: true), 2)
+            translation: CGSize(width: 1, height: 95), vertical: true), 2)
         XCTAssertEqual(TabSwipePolicy.destination(current: 1,
-            translation: CGSize(width: 1, height: 95), vertical: true), 0)
+            translation: CGSize(width: 1, height: -95), vertical: true), 0)
         XCTAssertNil(TabSwipePolicy.destination(current: 3,
-            translation: CGSize(width: 1, height: -95), vertical: true))
+            translation: CGSize(width: 1, height: 95), vertical: true))
+    }
+
+    @MainActor func testTypedArtistSelectionCanBeSavedFromTagsWithoutPrefix() {
+        let store = AppStore()
+        let post = Post(key: "rule34:typed-artist", id: "typed-artist", provider: "rule34",
+                        tags: ["sample_artist", "chun_li", "sitting"], type: "image")
+        store.preferArtist("sample_artist", from: post)
+        XCTAssertTrue(store.tasteChoice(for: .rule34).artists.contains("sample_artist"))
     }
 
     @MainActor func testChangingProviderDropsStaleArchiveCreatorRoute() {

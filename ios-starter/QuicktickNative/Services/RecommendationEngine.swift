@@ -28,12 +28,14 @@ struct ConditionalTasteModel: Sendable {
     private var artistsByMedium: [String: Set<String>] = [:]
     private var approvedPairs: [String: Set<String>] = [:]
     private var actionsByMedium: [String: [String: Int]] = [:]
+    private var actionsByIdentity: [String: [String: Int]] = [:]
     private var presentationsByIdentity: [String: [String: Int]] = [:]
     private var realLifePresentations: [String: [String: Int]] = [:]
 
     private static func presentation(_ key: String) -> Bool {
         ["clothing:", "pose:", "gaze:", "scene:", "setting:", "camera:",
-         "power:", "role:", "tone:", "persona:", "expression:"].contains(where: key.hasPrefix)
+         "power:", "role:", "tone:", "persona:", "expression:",
+         "appearance:", "style:", "interest:", "motion:"].contains(where: key.hasPrefix)
     }
 
     private static func mediumKey(_ post: Post) -> String {
@@ -45,31 +47,43 @@ struct ConditionalTasteModel: Sendable {
         artistsByMedium.removeAll(keepingCapacity: true)
         approvedPairs.removeAll(keepingCapacity: true)
         actionsByMedium.removeAll(keepingCapacity: true)
+        actionsByIdentity.removeAll(keepingCapacity: true)
         presentationsByIdentity.removeAll(keepingCapacity: true)
         realLifePresentations.removeAll(keepingCapacity: true)
         for post in favorites {
             let key = Self.mediumKey(post)
             let irlTags = RealLifePresentation.tags(post)
-            guard (!key.hasSuffix("|uncertain") || !irlTags.isEmpty), !key.hasSuffix("|mixed"),
+            guard !key.hasSuffix("|mixed"),
                   let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { continue }
+            // Rule34 does not consistently label 2D. An unclassified post
+            // with a *verified* artist or character still has useful context;
+            // keep it in the uncertain bucket instead of discarding its Like.
+            guard !key.hasSuffix("|uncertain") || !irlTags.isEmpty ||
+                  !features.subjects.isEmpty || !(features.artists ?? []).isEmpty else { continue }
             for tag in irlTags {
                 realLifePresentations[key, default: [:]][tag, default: 0] += 1
             }
             let subjects = Set(features.subjects)
             let artists = Set(features.artists ?? [])
+            let franchises = Set(features.franchises ?? [])
             subjectsByMedium[key, default: []].formUnion(subjects)
             artistsByMedium[key, default: []].formUnion(artists)
             for subject in subjects where !artists.isEmpty {
                 approvedPairs[key + "|" + subject, default: []].formUnion(artists)
             }
-            for facet in ActionSemantics.facets(post) {
+            let actions = ActionSemantics.facets(post)
+            for facet in actions {
                 actionsByMedium[key, default: [:]][facet, default: 0] += 1
             }
             let presentation = features.attributes.keys.filter(Self.presentation)
-            for identity in subjects.map({ "subject:" + $0 }) + artists.map({ "artist:" + $0 }) {
+            for identity in subjects.map({ "subject:" + $0 }) + artists.map({ "artist:" + $0 })
+                + franchises.map({ "franchise:" + $0 }) {
                 let context = key + "|" + identity
                 for facet in presentation {
                     presentationsByIdentity[context, default: [:]][facet, default: 0] += 1
+                }
+                for facet in actions {
+                    actionsByIdentity[context, default: [:]][facet, default: 0] += 1
                 }
             }
         }
@@ -78,10 +92,13 @@ struct ConditionalTasteModel: Sendable {
     func score(_ post: Post, taxonomy: VisualTagTaxonomy?) -> Double {
         let key = Self.mediumKey(post)
         let irlTags = RealLifePresentation.tags(post)
-        guard (!key.hasSuffix("|uncertain") || !irlTags.isEmpty), !key.hasSuffix("|mixed"),
-              let features = VisualFeatures.metadata(post, taxonomy: taxonomy) else { return 0 }
+        guard !key.hasSuffix("|mixed"),
+              let features = VisualFeatures.metadata(post, taxonomy: taxonomy),
+              !key.hasSuffix("|uncertain") || !irlTags.isEmpty ||
+                !features.subjects.isEmpty || !(features.artists ?? []).isEmpty else { return 0 }
         let subjects = Set(features.subjects)
         let artists = Set(features.artists ?? [])
+        let franchises = Set(features.franchises ?? [])
         let exactSubject = !subjects.isDisjoint(with: subjectsByMedium[key] ?? [])
         let exactArtist = !artists.isDisjoint(with: artistsByMedium[key] ?? [])
         let approvedPair = subjects.contains { subject in
@@ -89,41 +106,57 @@ struct ConditionalTasteModel: Sendable {
         }
         let likedActions = actionsByMedium[key] ?? [:]
         let candidateActions = ActionSemantics.facets(post)
+        // Unknown medium is not permission to revive the historic "liked
+        // character dominates everything" bug. Reward an untyped Rule34
+        // candidate only when the artist or a subject+action is also known.
+        if key.hasSuffix("|uncertain"), !exactArtist, !approvedPair,
+           (candidateActions.isEmpty || !exactSubject) { return 0 }
+        let identityKeys = subjects.map { key + "|subject:" + $0 }
+            + artists.map { key + "|artist:" + $0 }
+            + franchises.map { key + "|franchise:" + $0 }
+        let isRealLife = VisualDomain.classify(post) == .realLife
         let actionBoost = candidateActions.reduce(0.0) { value, facet in
-            value + min(3.5, Double(likedActions[facet] ?? 0) * 1.4)
+            // For fictional media, reward *this character/artist/franchise*
+            // performing the liked action. Unrelated characters sharing an
+            // action get only weak exploratory credit.
+            let paired = identityKeys.map { actionsByIdentity[$0]?[facet] ?? 0 }.max() ?? 0
+            let contextual = paired >= 2 ? min(4.0, Double(paired) * 1.6) : (paired == 1 ? 1.4 : 0)
+            let generic = isRealLife ? 0 : min(0.6, Double(likedActions[facet] ?? 0) * 0.12)
+            return value + contextual + generic
         }
         // Penalize explicitly conflicting presentations with repeated
         // evidence. Untagged images remain unknown, never automatically bad.
         let actionConflict = candidateActions.reduce(0.0) { value, facet in
-            let competing = likedActions.filter {
-                ActionSemantics.axis($0.key) == ActionSemantics.axis(facet) && $0.key != facet
-            }
-            let count = competing.values.max() ?? 0
+            guard !isRealLife, !identityKeys.isEmpty else { return value }
+            let competingCount = identityKeys.map { identity in
+                (actionsByIdentity[identity] ?? [:]).filter {
+                    ActionSemantics.axis($0.key) == ActionSemantics.axis(facet) && $0.key != facet
+                }.values.max() ?? 0
+            }.max() ?? 0
+            let matchingCount = identityKeys.map { actionsByIdentity[$0]?[facet] ?? 0 }.max() ?? 0
             // Directional dominance is a strong contextual mismatch, whereas
             // two different poses are merely a weak novelty signal. Neither
             // is a hard blacklist learned from a handful of favorites.
             let mismatch = ActionSemantics.axis(facet) == "power" ? 16.0 : 2.5
-            return value + (count >= 3 && likedActions[facet] == nil ? mismatch : 0)
+            return value + (competingCount >= 3 && matchingCount == 0 ? mismatch : 0)
         }
         // This is the answer to "why this subject?": preserve repeated
         // subject/artist + outfit/pose/setting pairings. A character's identity
         // alone is intentionally worth little, and incidental co-tags from a
         // single like cannot dictate future recommendations.
-        let identityKeys = subjects.map { key + "|subject:" + $0 }
-            + artists.map { key + "|artist:" + $0 }
         let contextual = features.attributes.keys.filter(Self.presentation).reduce(0.0) { sum, facet in
             let frequency = identityKeys.map { presentationsByIdentity[$0]?[facet] ?? 0 }.max() ?? 0
             return sum + (frequency >= 2 ? min(0.5, Double(frequency) * 0.15) : 0)
         }
         let irlMatch = irlTags.reduce(0.0) { sum, facet in
             let count = realLifePresentations[key]?[facet] ?? 0
-            return sum + (count >= 2 ? min(1.25, Double(count) * 0.42) : 0)
+            return sum + (count >= 2 ? min(2.0, log1p(Double(count)) * 0.85) : 0)
         }
         // One matched character alone cannot outweigh an unapproved credited
         // artist. Confident pairs win; unknown creators get no artist boost.
         return (exactSubject ? 2.0 : 0) + (exactArtist ? 3.0 : 0) + (approvedPair ? 4.0 : 0)
             + min(6.0, actionBoost) + min(1.0, contextual)
-            + min(3.0, irlMatch) - min(22.0, actionConflict)
+            + min(isRealLife ? 5.0 : 3.0, irlMatch) - min(22.0, actionConflict)
     }
 }
 
@@ -798,7 +831,8 @@ actor RecommendationEngine {
         let source = post.provider.lowercased()
         let artistCredits = ArtistAttribution.credited(in: post, taxonomy: taxonomy).map { "artist:" + $0 }
         let raw = (post.tags + artistCredits + [post.caption, post.category].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        if source == Provider.rule34.rawValue || source == Provider.kemono.rawValue {
+        if [Provider.rule34.rawValue, Provider.kemono.rawValue,
+            Provider.nhentai.rawValue, Provider.hhaven.rawValue].contains(source) {
             let values = raw.flatMap { value in
                 let tag = value.lowercased()
                 let canonical = RecommendationTagRules.canonical(tag)
@@ -809,6 +843,15 @@ actor RecommendationEngine {
         // Preserve trusted scene/camera phrases for IRL videos; generic
         // title tokens remain low-weight, and no face identity is inferred.
         let presentations = RealLifePresentation.tags(post).sorted()
+        if VisualDomain.classify(post) == .realLife {
+            // IRL sources are much noisier than a booru tag index. Learn a
+            // small set of provider-supplied tags and camera/scene/setting
+            // facets, rather than every word of a promotional video title.
+            let providerTags = post.tags.prefix(24).map(RecommendationTagRules.canonical)
+                .filter { $0.count >= 3 && $0.count <= 44 && !stopwords.contains($0) }
+            let facets = Array(ActionSemantics.facets(post))
+            return Array(Set(Array(providerTags.prefix(12)) + presentations + facets)).sorted()
+        }
         var out: [String] = []
         for value in raw.prefix(24) {
             for token in value.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ").split(whereSeparator: { $0.isWhitespace }) {

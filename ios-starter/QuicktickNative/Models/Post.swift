@@ -14,7 +14,10 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
     var type: String = ""
     var embedUrl: String? = nil
 
-    var isImmersiveMedia: Bool { ["video", "gif"].contains(type.lowercased()) }
+    var isImmersiveMedia: Bool {
+        ["video", "gif"].contains(type.lowercased()) ||
+            (providerKey == .hhaven && type.lowercased() == "web")
+    }
     var isAudio: Bool { type.lowercased() == "audio" }
     var cardPreviewURL: String {
         if type.lowercased() == "image" {

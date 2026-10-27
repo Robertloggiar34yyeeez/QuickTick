@@ -8,7 +8,10 @@ enum TabSwipePolicy {
         let primary = vertical ? translation.height : translation.width
         let cross = vertical ? translation.width : translation.height
         guard abs(primary) >= 42, abs(primary) > abs(cross) * 1.45 else { return nil }
-        let next = current + (primary < 0 ? 1 : -1)
+        // The selection follows the direction of the user's finger: pushing
+        // the Home dock to the right reaches Immersive on its right. The iPad
+        // side dock follows the same rule from top to bottom.
+        let next = current + (primary > 0 ? 1 : -1)
         return (0...3).contains(next) ? next : nil
     }
 }
@@ -21,6 +24,7 @@ struct RootView: View {
     @State private var tabNameTask: Task<Void, Never>?
     @State private var refreshingTab: Int?
     @State private var tabSelectionTask: Task<Void, Never>?
+    @GestureState private var navigationDrag = CGSize.zero
     @State private var refreshSpinDegrees = 0.0
     @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage("quicktick-show-ai-tab-v1") private var showAITab = true
@@ -64,7 +68,8 @@ struct RootView: View {
                     // action in the center. Preserve safe-area touch targets.
                     HStack(spacing: 0) { tabButtons(vertical: false) }
                         .contentShape(Rectangle())
-                        .simultaneousGesture(DragGesture(minimumDistance: 24)
+                        .highPriorityGesture(DragGesture(minimumDistance: 16)
+                            .updating($navigationDrag) { value, state, _ in state = value.translation }
                             .onEnded { swipeTabs($0.translation, vertical: false) })
                         .padding(.horizontal, modernUI ? 8 : 4)
                         .padding(.top, modernUI ? 8 : 4)
@@ -94,7 +99,8 @@ struct RootView: View {
                 if sideNavigation {
                     VStack(spacing: 6) { tabButtons(vertical: true) }
                         .contentShape(Rectangle())
-                        .simultaneousGesture(DragGesture(minimumDistance: 24)
+                        .highPriorityGesture(DragGesture(minimumDistance: 16)
+                            .updating($navigationDrag) { value, state, _ in state = value.translation }
                             .onEnded { swipeTabs($0.translation, vertical: true) })
                         .padding(6)
                         .background(AppTheme.isCosmic ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
@@ -277,6 +283,8 @@ struct RootView: View {
                             RoundedRectangle(cornerRadius: vertical ? 18 : (modernUI ? 18 : 12), style: .continuous)
                                 .fill(AppTheme.gradient)
                                 .matchedGeometryEffect(id: "selected-tab", in: navigationSelection)
+                                .offset(x: vertical || reduceMotion ? 0 : min(34, max(-34, navigationDrag.width * 0.45)),
+                                        y: !vertical || reduceMotion ? 0 : min(34, max(-34, navigationDrag.height * 0.45)))
                         }
                     }
                 }

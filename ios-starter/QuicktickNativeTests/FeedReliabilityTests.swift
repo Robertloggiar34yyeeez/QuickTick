@@ -248,6 +248,21 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertFalse(RecommendationTagRules.rejects(battle, exclusions: ["bat"]))
     }
 
+    func testFurryAliasDatabaseBlocksBooruSpeciesButNotWildlifePhotos() {
+        for alias in ["carnivore", "canid", "canidae", "felid", "anthropomorphic_wolf", "scalie", "feral_fox"] {
+            let illustration = Post(key: "rule34:\(alias)", id: alias, provider: "rule34",
+                                    tags: [alias], type: "image")
+            XCTAssertTrue(RecommendationTagRules.rejects(illustration, exclusions: ["furry"]),
+                          "Expected furry umbrella exclusion for \(alias)")
+        }
+        let wildlife = Post(key: "redgifs:wildlife", id: "wildlife", provider: "redgifs",
+                            tags: ["canid", "wildlife", "photo"], type: "video")
+        XCTAssertFalse(RecommendationTagRules.rejects(wildlife, exclusions: ["furry"]))
+        let unrelated = Post(key: "rule34:other", id: "other", provider: "rule34",
+                             tags: ["portrait", "landscape"], type: "image")
+        XCTAssertFalse(RecommendationTagRules.rejects(unrelated, exclusions: ["furry"]))
+    }
+
     func testSizingMatrixForPhoneTabletAndSplitWindows() {
         for available in [CGSize(width: 358,height: 750),CGSize(width: 810,height: 1080),CGSize(width: 1180,height: 720),CGSize(width: 480,height: 1024)] {
             for native in [CGSize(width: 240,height: 426),CGSize(width: 1920,height: 1080),CGSize(width: 3000,height: 5000),CGSize(width: 320,height: 320)] {

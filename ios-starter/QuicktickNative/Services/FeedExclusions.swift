@@ -1,5 +1,46 @@
 import Foundation
 
+/// Small, offline concept database shared by all provider filters. Booru
+/// species labels are often shorthand for anthropomorphic art; keep those
+/// separate from explicit furry labels so wildlife photos are not blocked.
+enum FurryTagAliases {
+    static let explicit: Set<String> = [
+        "furry", "furries", "furry_art", "furry_character", "furry_fandom",
+        "anthro", "anthropomorphic", "anthropomorphism", "anthropomorphic_animal",
+        "anthropomorphic_character", "anthro_character", "anthro_furry",
+        "feral", "feral_furry", "scalie", "scaly", "scalie_furry",
+        "fursona", "fur_sona", "fursuit", "fursuiting", "fursuiter",
+        "kemono_furry", "furry_anthro", "furry_ears", "furry_tail",
+        "animal_humanoid", "humanoid_animal", "animal_person", "beast_person",
+        "anthropomorphic_mammal", "anthropomorphic_reptile", "anthropomorphic_bird"
+    ]
+    static let artSpecies: Set<String> = [
+        "carnivore", "carnivora", "carnivoran", "canid", "canidae", "canine",
+        "felid", "felidae", "feline", "vulpine", "ursid", "ursidae", "ursine",
+        "mustelid", "mustelidae", "lupine", "hyaenid", "hyenidae",
+        "equid", "equidae", "equine", "bovid", "bovidae", "bovine",
+        "caprine", "cervid", "cervidae", "rodent", "rodentia", "murine",
+        "lagomorph", "lagomorpha", "leporid", "leporidae", "procyonid",
+        "procyonidae", "avian", "reptilian", "draconic", "serpentine",
+        "wolf", "fox", "jackal", "coyote", "dog", "cat", "lion",
+        "tiger", "hyena", "bear", "raccoon", "otter", "ferret",
+        "rabbit", "hare", "deer", "horse", "dragon", "lizard"
+    ]
+    private static let variants = ["furry_", "anthro_", "anthropomorphic_", "feral_", "scalie_"]
+
+    static func matches(_ post: Post) -> Bool {
+        let tags = Set((post.tags + [post.category].compactMap { $0 })
+            .map(RecommendationTagRules.canonical))
+        if tags.contains(where: { tag in explicit.contains(tag) || variants.contains(where: { tag.hasPrefix($0) }) }) { return true }
+        // Species and biology words are insufficient evidence on their own
+        // for photos or mixed-content providers.
+        let illustrated = post.providerKey.map { [Provider.rule34, .kemono, .nhentai, .hhaven].contains($0) } ?? false
+        let domain = VisualDomain.classify(post)
+        return (illustrated || domain == .anime || domain == .threeD) && domain != .realLife
+            && !tags.isDisjoint(with: artSpecies)
+    }
+}
+
 /// Match exclusions locally without fuzzy-blocking unrelated provider content.
 enum RecommendationTagRules {
     static func canonical(_ raw: String) -> String {
@@ -23,6 +64,8 @@ enum RecommendationTagRules {
     }
     static func rejects(_ post: Post, exclusions: [String]) -> Bool {
         guard !exclusions.isEmpty else { return false }
+        let blocked = Set(exclusions.map(canonical))
+        if blocked.contains("furry"), FurryTagAliases.matches(post) { return true }
         // On keyword providers a banned topic may appear only in the title,
         // category or credited creator. Preserve whole-word boundaries, so
         // banning "bat" does not hide "battle".
@@ -35,7 +78,6 @@ enum RecommendationTagRules {
         if !ActionSemantics.facets(post.tags).isDisjoint(with: ActionSemantics.facets(exclusions)) {
             return true
         }
-        let blocked = Set(exclusions.map(canonical))
         return post.tags.contains { raw in
             let tag = canonical(raw)
             if blocked.contains(tag) { return true }

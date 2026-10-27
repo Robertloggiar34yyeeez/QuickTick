@@ -17,9 +17,9 @@ struct PostCardView: View {
     @State private var nativeSize: CGSize?
     @State private var comments = false
     @State private var tags = false
+    @State private var creditedArtists: [String] = []
     @State private var fullImage = false
     @State private var readingManga = false
-    @State private var viewingSourcePage = false
     @State private var pendingVideoFullscreen = false
     @State private var player: AVPlayer?
     @State private var gifURL: URL?
@@ -70,7 +70,7 @@ struct PostCardView: View {
                         .font(.system(size: 11, weight: .bold, design: .rounded))
                         .tracking(1.4).foregroundStyle(.white.opacity(0.85))
                     Text("·").foregroundStyle(AppTheme.secondaryLabel)
-                    Text(isWebsitePost ? "Watch page" : (post.isAudio ? "Audio" : (post.isImmersiveMedia ? "Motion" : "Image")))
+                    Text(post.isAudio ? "Audio" : (post.isImmersiveMedia ? "Motion" : "Image"))
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
                     Button { tags = true } label: {
@@ -91,7 +91,7 @@ struct PostCardView: View {
                     ActionIcon(title: "Like", symbol: store.favorites[post.stableID] == nil ? "heart" : "heart.fill", selected: store.favorites[post.stableID] != nil) { store.toggleFavorite(post) }
                     ActionIcon(title: "Less", symbol: "hand.thumbsdown") { store.less(post) }
                         .accessibilityIdentifier("dislike-\(post.stableID)")
-                    if post.providerKey != .nhentai && !isWebsitePost { FeedDownloadControl(manager: store.downloads, post: post) }
+                    if post.providerKey != .nhentai { FeedDownloadControl(manager: store.downloads, post: post) }
                     ActionIcon(title: "Comments", symbol: "bubble.left") { comments = true }
                     }
                 }
@@ -102,13 +102,18 @@ struct PostCardView: View {
             .clipShape(RoundedRectangle(cornerRadius: cardRadius))
             .overlay(RoundedRectangle(cornerRadius: cardRadius).stroke(.white.opacity(0.07), lineWidth: 1))
             .contextMenu {
-                ForEach(ArtistAttribution.credited(in: post).prefix(3), id: \.self) { artist in
+                ForEach(creditedArtists.prefix(3), id: \.self) { artist in
                     Button {
                         store.preferArtist(artist, from: post)
                     } label: {
                         Label("More from \(artist.replacingOccurrences(of: "_", with: " "))", systemImage: "paintbrush.pointed.fill")
                     }
                 }
+            }
+            .task(id: "artists:\(post.stableID)") {
+                let taxonomy = await store.visual.metadataTaxonomy()
+                guard !Task.isCancelled else { return }
+                creditedArtists = ArtistAttribution.credited(in: post, taxonomy: taxonomy)
             }
             .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
             .sheet(isPresented: $comments) { CommentsView(post: post) }
@@ -117,12 +122,6 @@ struct PostCardView: View {
                 previewURL: post.cardPreviewURL) }
             .fullScreenCover(isPresented: $readingManga) {
                 MangaReaderView(post: post).environmentObject(store)
-            }
-            .sheet(isPresented: $viewingSourcePage) {
-                if let url = URL(string: post.pageUrl), url.scheme == "https",
-                   Provider.identifyPage(post.pageUrl) == post.providerKey {
-                    SourceWebsiteView(url: url).ignoresSafeArea()
-                }
             }
             .fullScreenCover(isPresented: Binding(
                 get: { store.fullScreenPlaybackID == post.stableID },
@@ -135,7 +134,7 @@ struct PostCardView: View {
                 if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
             }
             .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(manualPlaybackRequested)") {
-                guard !Task.isCancelled, !post.isAudio, !isWebsitePost else { return }
+                guard !Task.isCancelled, !post.isAudio else { return }
                 guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
                 guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
                 // Autoplay is optional during a fast Home swipe. Wait for a
@@ -183,9 +182,7 @@ struct PostCardView: View {
 
     @ViewBuilder private var media: some View {
         Group {
-            if isWebsitePost {
-                PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
-            } else if post.isAudio {
+            if post.isAudio {
                 ZStack {
                     AppTheme.gradient.opacity(0.20)
                     VStack(spacing: 10) {
@@ -219,13 +216,7 @@ struct PostCardView: View {
         .frame(width: mediaSize.width, height: mediaSize.height)
         .allowsHitTesting(false)
         .overlay {
-            if isWebsitePost {
-                Button { viewingSourcePage = true } label: {
-                    Color.clear.contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Open Hentai Haven watch page inside QuickTick")
-            } else if post.isAudio {
+            if post.isAudio {
                 Button { store.audio.toggle(post) } label: {
                     Color.clear.contentShape(Rectangle())
                 }
@@ -258,7 +249,7 @@ struct PostCardView: View {
                     .accessibilityLabel("Open full screen \(post.type.lowercased() == "video" ? "video" : "image")")
                     .accessibilityHint("Double tap the media to like")
                     .accessibilityIdentifier("fullscreen-\(post.stableID)")
-            } else if post.type.lowercased() == "video" {
+            } else if post.type.lowercased() == "video" || isWebsitePost {
                 Button {
                     openMediaFullscreen()
                 } label: {
@@ -329,9 +320,8 @@ struct PostCardView: View {
     }
 
     private func openMediaFullscreen() {
-        if isWebsitePost { viewingSourcePage = true; return }
         if post.providerKey == .nhentai { readingManga = true; return }
-        if post.type.lowercased() == "video" {
+        if post.type.lowercased() == "video" || isWebsitePost {
             if player != nil && introReady { store.fullScreenPlaybackID = post.stableID }
             else {
                 pendingVideoFullscreen = true

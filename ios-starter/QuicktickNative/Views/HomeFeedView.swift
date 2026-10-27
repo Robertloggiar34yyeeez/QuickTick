@@ -164,7 +164,7 @@ struct HomeFeedView: View {
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: {
                         Button("Try again") { Task { await store.refresh() } }
-                        if [.hhaven, .nhentai, .kemono, .coomer].contains(store.selectedProvider) {
+                        if [.nhentai, .kemono, .coomer].contains(store.selectedProvider) {
                             Button("Browse inside QuickTick") { showProviderWebsite = true }
                         }
                     }

@@ -1507,10 +1507,17 @@ final class AppStore: ObservableObject {
     }
 
     func preferArtist(_ artist: String, from post: Post) {
-        guard let provider = post.providerKey,
-              ArtistAttribution.credited(in: post).contains(TasteConcepts.canonical(artist)) else { return }
-        var choice = tasteChoice(for: provider)
         let name = TasteConcepts.canonical(artist)
+        let explicitCredit = ArtistAttribution.credited(in: post).contains(name)
+        // The tags sheet recognizes artists using the offline typed Rule34
+        // taxonomy. Accept an exact tag from that post even when the actor's
+        // taxonomy has not yet been loaded in this synchronous store method.
+        let exactProviderTag = post.tags.contains {
+            let term = TasteConcepts.canonical($0)
+            return term == name || term == "artist:" + name
+        }
+        guard let provider = post.providerKey, explicitCredit || exactProviderTag else { return }
+        var choice = tasteChoice(for: provider)
         choice.artists = TasteChoice.normalized(choice.artists + [name])
         choice.done = true
         tasteSetup.sources[provider.rawValue] = choice

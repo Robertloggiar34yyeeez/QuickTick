@@ -250,9 +250,56 @@ struct PostTagsView: View {
     @EnvironmentObject private var store: AppStore
     let post: Post
     @Environment(\.dismiss) private var dismiss
+    @State private var creditedArtists: [String] = []
+    private var remainingTags: [String] {
+        let credits = Set(creditedArtists.map(RecommendationTagRules.canonical))
+        return Array(Set(post.tags)).filter { tag in
+            let canonical = RecommendationTagRules.canonical(tag)
+            let bare = canonical.hasPrefix("artist:") ? String(canonical.dropFirst(7)) : canonical
+            return !credits.contains(bare)
+        }.sorted()
+    }
+
+    private func searchArtist(_ artist: String) {
+        if let provider = post.providerKey { store.selectedProvider = provider }
+        // Rule34 indexes the literal artist tag, not an artist: pseudo-tag.
+        store.includeTag(artist)
+        dismiss()
+    }
+
+    private func blockArtist(_ artist: String) {
+        let key = RecommendationTagRules.canonical(artist)
+        store.setExclusions(Array(Set(store.exclusions + [key])).sorted())
+        Task { await store.refresh(immersive: store.activeTab == 1) }
+    }
     var body: some View {
         NavigationStack {
             ScrollView {
+                if !creditedArtists.isEmpty {
+                    VStack(alignment: .leading, spacing: 9) {
+                        Label("Credited artists", systemImage: "paintbrush.pointed.fill")
+                            .font(.headline).foregroundStyle(AppTheme.accent)
+                        Text("Artist credits come from the provider or its tag index, not an image-based guess.")
+                            .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                        ForEach(creditedArtists, id: \.self) { artist in
+                            Menu {
+                                Button { searchArtist(artist) } label: { Label("Search this artist", systemImage: "magnifyingglass") }
+                                Button { store.preferArtist(artist, from: post) } label: { Label("More from this artist", systemImage: "heart") }
+                                Button(role: .destructive) { blockArtist(artist) } label: { Label("Block this artist", systemImage: "nosign") }
+                            } label: {
+                                Label(artist.replacingOccurrences(of: "_", with: " "), systemImage: "paintbrush")
+                                    .font(.subheadline.weight(.semibold))
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    .padding(.horizontal, 12)
+                                    .background(AppTheme.accent.opacity(0.16), in: Capsule())
+                            }
+                            .accessibilityLabel("Artist \(artist)")
+                        }
+                    }
+                    .padding(14)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 16))
+                    .padding(.horizontal, 16).padding(.top, 16)
+                }
                 let actions = ActionSemantics.facets(post.tags).sorted()
                 if !actions.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -271,12 +318,19 @@ struct PostTagsView: View {
                     .padding(.top, 16)
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 10)], spacing: 10) {
-                    ForEach(Array(Set(post.tags)).sorted(), id: \.self) { tag in
+                    ForEach(remainingTags, id: \.self) { tag in
                         let blocked = store.exclusions.map(RecommendationTagRules.canonical)
                             .contains(RecommendationTagRules.canonical(tag))
                         Menu {
                             Button("Add to search") { store.includeTag(tag) }
                             Button("Exclude from search") { store.excludeTag(tag) }
+                            if FurryTagAliases.explicit.contains(RecommendationTagRules.canonical(tag))
+                                || FurryTagAliases.artSpecies.contains(RecommendationTagRules.canonical(tag)) {
+                                Button(role: .destructive) {
+                                    store.setExclusions(Array(Set(store.exclusions + ["furry"])).sorted())
+                                    Task { await store.refresh(immersive: store.activeTab == 1) }
+                                } label: { Label("Block furry and related tags", systemImage: "nosign") }
+                            }
                             Button(blocked ? "Remove persistent block" : "Block in all feeds", role: blocked ? .cancel : .destructive) {
                                 let key = RecommendationTagRules.canonical(tag)
                                 let result = blocked
@@ -306,6 +360,10 @@ struct PostTagsView: View {
                 if post.tags.isEmpty { Text("No tags available").foregroundStyle(.secondary).padding() }
             }.background(AppTheme.canvas).navigationTitle("Tags")
                 .toolbar { Button("Done") { dismiss() } }
+                .task(id: post.stableID) {
+                    let taxonomy = await store.visual.metadataTaxonomy()
+                    creditedArtists = ArtistAttribution.credited(in: post, taxonomy: taxonomy)
+                }
         }.tint(AppTheme.accent)
     }
 }

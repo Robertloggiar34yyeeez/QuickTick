@@ -341,6 +341,13 @@ actor QuicktickAPIClient {
     }
 
     func resolveMedia(_ post: Post) async throws -> ResolvedMedia {
+        // Public Haven catalog entries use stable watch-page slugs, not the
+        // numeric IDs expected by Warden. Resolve the public player directly
+        // inside QuickTick; never redirect the user to a website sheet.
+        if post.providerKey == .hhaven, !post.id.isEmpty,
+           !post.id.allSatisfy(\.isNumber), post.mediaUrl.isEmpty {
+            return try await NativeProviderAPI.havenPublicResolve(session: session, post: post)
+        }
         let token = post.providerKey == .redgifs && NativeProviderAPI.mediaURL(post.mediaUrl, provider: .redgifs) == nil ? try await redgifsAuth.value(session: session) : nil
         let havenToken = post.providerKey == .hhaven && NativeProviderAPI.mediaURL(post.mediaUrl, provider: .hhaven) == nil
             ? try await havenAuth.value(session: session) : nil

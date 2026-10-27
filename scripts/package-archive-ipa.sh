@@ -14,7 +14,10 @@ import pathlib, plistlib, re
 root = pathlib.Path.cwd()
 info = plistlib.loads((root/'build/QuicktickNative.xcarchive/Products/Applications/QuicktickNative.app/Info.plist').read_bytes())
 version, build = info['CFBundleShortVersionString'], info['CFBundleVersion']
-assert re.fullmatch(r'\d+\.\d+\.\d+', version), f'Unexpected app version: {version}'
+# CFBundleShortVersionString can be a two- or three-part numeric version.
+# QuickTick 1.0 deliberately uses "1.0"; requiring "1.0.0" blocked IPA
+# packaging even after Xcode successfully archived the app.
+assert re.fullmatch(r'\d+\.\d+(?:\.\d+)?', version), f'Unexpected app version: {version}'
 assert build.isdigit() and int(build) > 0, f'Unexpected build number: {build}'
 project = (root/'ios-starter/QuicktickNative.xcodeproj/project.pbxproj').read_text()
 assert f'"MARKETING_VERSION" = "{version}";' in project, 'Archive version differs from Xcode project'

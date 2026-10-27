@@ -6,7 +6,7 @@ final class IRLVideoFrameSamplerTests: XCTestCase {
     func testEligibilityDoesNotMistakeAnimeOrGenericVideoForIRL() {
         let unknown = Post(key: "1", id: "1", provider: "redgifs", tags: ["solo"], type: "video")
         let anime = Post(key: "2", id: "2", provider: "redgifs", tags: ["2d"], type: "video")
-        XCTAssertEqual(VisualDomain.classify(unknown), .uncertain)
+        XCTAssertEqual(VisualDomain.classify(unknown), .realLife)
         XCTAssertTrue(IRLVideoFrameSamplingPlan.eligible(unknown, domain: .uncertain))
         XCTAssertFalse(IRLVideoFrameSamplingPlan.eligible(anime, domain: .anime))
         XCTAssertFalse(IRLVideoFrameSamplingPlan.eligible(

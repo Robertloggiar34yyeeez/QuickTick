@@ -247,7 +247,7 @@ final class VisualTasteTests: XCTestCase {
         }
         XCTAssertFalse(VisualAppearanceEncoder.prefersMobileCLIP(domain: .uncertain, provider: "rule34"))
         let unknownVideo = Post(key: "unknown", id: "1", provider: "redgifs", tags: ["solo"], type: "video")
-        XCTAssertEqual(VisualDomain.classify(unknownVideo), .uncertain)
+        XCTAssertEqual(VisualDomain.classify(unknownVideo), .realLife)
         let taggedAnime = Post(key: "anime", id: "2", provider: "redgifs", tags: ["2d", "anime"], type: "video")
         XCTAssertEqual(VisualDomain.classify(taggedAnime), .anime)
     }

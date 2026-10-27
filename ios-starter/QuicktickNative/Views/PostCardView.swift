@@ -111,6 +111,10 @@ struct PostCardView: View {
                 }
             }
             .task(id: "artists:\(post.stableID)") {
+                guard post.providerKey == .rule34 else {
+                    creditedArtists = ArtistAttribution.credited(in: post)
+                    return
+                }
                 let taxonomy = await store.visual.metadataTaxonomy()
                 guard !Task.isCancelled else { return }
                 creditedArtists = ArtistAttribution.credited(in: post, taxonomy: taxonomy)

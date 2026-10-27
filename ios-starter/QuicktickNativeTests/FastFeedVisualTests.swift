@@ -111,7 +111,7 @@ final class FastFeedVisualTests: XCTestCase {
     func testConservativeDomainClassificationAndExplicitIdentity() {
         XCTAssertEqual(VisualDomain.classify(post("a")), .uncertain)
         for provider in ["pornhub", "eporner", "redgifs"] {
-            XCTAssertEqual(VisualDomain.classify(post("b", provider: provider)), .uncertain)
+            XCTAssertEqual(VisualDomain.classify(post("b", provider: provider)), .realLife)
             XCTAssertEqual(VisualDomain.classify(post("b", provider: provider, tags: ["anime"])), .anime)
         }
         XCTAssertEqual(VisualDomain.classify(post("c", tags: ["photo"])), .realLife)

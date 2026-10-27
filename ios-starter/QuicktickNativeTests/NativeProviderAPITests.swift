@@ -117,10 +117,10 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             }
             payload = search == "html-response"
                 ? "<html><head><title>404 Not Found</title></head><body>The requested URL was not found on this server.</body></html>"
-                : #"{"videos":[{"video_id":"ph1","title":"Fixture","tags":[{"tag_name":"sample"}],"default_thumb":"https://cdn.pornhub.com/thumb.jpg"}]}"#
+                : #"{"videos":[{"video_id":"ph1","title":"Fixture","tags":[{"tag_name":"sample"}],"default_thumb":"https://cdn.pornhub.com/thumb.jpg","thumbs":[{"size":"small","src":"https://cdn.pornhub.com/thumb-small.jpg"}]}]}"#
         }
         else if host == "www.pornhub.com", path == "/video/search" {
-            payload = #"<html><ul><li class="videoblock videoBox" data-video-vkey="phpublic"><a href="/view_video.php?viewkey=phpublic" title="Public &amp; indexed"><img data-thumb_url="https://cdn.pornhub.com/public.jpg" alt="Public video"></a></li></ul></html>"#
+            payload = #"<html><ul><li class="videoblock videoBox" data-video-vkey="phpublic"><a href="/view_video.php?viewkey=phpublic" title="Public &amp; indexed"><img data-thumb_url="https://cdn.pornhub.com/public.jpg" src="https://cdn.pornhub.com/public-small.jpg" alt="Public video"></a></li></ul></html>"#
         }
         else if path == "/view_video.php" {
             let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
@@ -523,6 +523,9 @@ final class NativeProviderAPITests: XCTestCase {
         let page = try await api.posts(provider: .pornhub,
             query: QueryParser.parse("category:hentai"), page: 1)
         XCTAssertEqual(page.items.map(\.stableID), ["pornhub:ph1"])
+        XCTAssertEqual(page.items.first?.previewImageURLs, [
+            "https://cdn.pornhub.com/thumb.jpg", "https://cdn.pornhub.com/thumb-small.jpg"
+        ], "If the large poster is missing or blocked, Home must still try the provider's alternate thumbnail")
         let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first {
             $0.url?.path == "/webmasters/search"
         })
@@ -540,6 +543,9 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(result.items.map(\.stableID), ["pornhub:phpublic"])
         XCTAssertEqual(result.items.first?.caption, "Public & indexed")
         XCTAssertEqual(result.items.first?.thumbUrl, "https://cdn.pornhub.com/public.jpg")
+        XCTAssertEqual(result.items.first?.previewImageURLs, [
+            "https://cdn.pornhub.com/public.jpg", "https://cdn.pornhub.com/public-small.jpg"
+        ])
         let requests = NativeProviderProtocol.log.snapshot()
         XCTAssertTrue(requests.contains { $0.url?.path == "/webmasters/search" })
         XCTAssertTrue(requests.contains { $0.url?.path == "/video/search" })
@@ -749,6 +755,29 @@ final class NativeProviderAPITests: XCTestCase {
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             XCTAssertTrue(query.contains { $0.name == "limit" && $0.value == "40" })
             XCTAssertTrue(query.contains { $0.name == "pid" && $0.value == "1" })
+        }
+    }
+    func testRule34ExcessExclusionsStayLocalRatherThanBreakingTheProviderQuery() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let bans = ["filler1", "filler2", "filler3", "filler4", "filler5", "car"]
+        let page = try await api.posts(provider: .rule34,
+            query: ParsedQuery(included: [], excluded: bans), page: 1)
+        XCTAssertTrue(page.items.isEmpty, "Locally excluded tags must still be enforced even when omitted from the API URL")
+        let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first)
+        let remote = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "tags" }?.value ?? ""
+        XCTAssertEqual(remote.split(separator: " ").count, 5)
+        XCTAssertFalse(remote.contains("-car"))
+    }
+    func testRule34DAPIEmptyAndRejectedResponsesAreNotGenericInvalidServerErrors() throws {
+        XCTAssertTrue(try NativeProviderAPI.rule34Payload(Data("{}".utf8)).posts.isEmpty)
+        XCTAssertTrue(try NativeProviderAPI.rule34Payload(Data(#"{"count":0}"#.utf8)).posts.isEmpty)
+        let single = Data(#"{"count":1,"post":{"id":17}}"#.utf8)
+        XCTAssertEqual(try NativeProviderAPI.rule34Payload(single).posts.count, 1)
+        let rejected = Data(#"{"success":false,"message":"search down"}"#.utf8)
+        XCTAssertThrowsError(try NativeProviderAPI.rule34Payload(rejected)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("search down"))
         }
     }
     private func rateSession() -> URLSession {

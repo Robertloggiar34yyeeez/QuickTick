@@ -184,7 +184,7 @@ struct PostCardView: View {
     @ViewBuilder private var media: some View {
         Group {
             if isWebsitePost {
-                PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
+                PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
             } else if post.isAudio {
                 ZStack {
                     AppTheme.gradient.opacity(0.20)
@@ -202,7 +202,7 @@ struct PostCardView: View {
                 }
             } else if let player, store.fullScreenPlaybackID != post.stableID {
                 ZStack {
-                    PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
+                    PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
                     NativePlayerSurface(player: player, fill: false, ready: $ready)
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready && introReady ? 1 : 0)
@@ -214,7 +214,7 @@ struct PostCardView: View {
                     nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height)
                     store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
                 }
-            } else { PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
+            } else { PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
         }
         .frame(width: mediaSize.width, height: mediaSize.height)
         .allowsHitTesting(false)

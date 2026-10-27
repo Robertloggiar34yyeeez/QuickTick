@@ -344,25 +344,23 @@ enum NativeProviderAPI {
             throw APIError.server("Add your Rule34 user ID and API key in Settings. They are sent directly to Rule34.")
         }
         let limit = id == nil ? 40 : 1
-        var tags = query.included + query.excluded.map { "-" + $0 }
+        var tags = query.included
         if immersive { tags.append("( video ~ animated_gif )") }
         if sort == "popular", !tags.contains(where: { $0.lowercased().hasPrefix("sort:") }) { tags.append("sort:score") }
+        // A heavily trained profile may contain dozens of exclusions. Sending
+        // every one as a tag makes Rule34 reject the entire DAPI query. Apply
+        // the complete set locally below; only a small subset belongs in the
+        // provider request. Preserve the user's explicit positive tags.
+        let remaining = max(0, 5 - tags.count)
+        tags += query.excluded.prefix(remaining).map { "-" + $0 }
         let items = [URLQueryItem(name: "page", value: "dapi"), .init(name: "s", value: "post"), .init(name: "q", value: "index"),
                      .init(name: "pid", value: String(max(0, page - 1))), .init(name: "limit", value: String(limit)),
                      .init(name: "tags", value: tags.joined(separator: " ")), .init(name: "json", value: "1"),
                      .init(name: "user_id", value: credentials.rule34User), .init(name: "api_key", value: credentials.rule34Key)] + (id.map { [URLQueryItem(name: "id", value: $0)] } ?? [])
         let bytes = try await data(session: session, url: url("https://api.rule34.xxx/index.php", items), provider: .rule34)
-        let raw: [[String: Any]]
-        var total = 0
-        if let json = try? JSONSerialization.jsonObject(with: bytes) {
-            if let array = json as? [[String: Any]] { raw = array }
-            else if let object = json as? [String: Any], object["post"] != nil {
-                raw = rows(object["post"]); total = Int(number(object["count"]))
-            } else { throw APIError.invalidResponse }
-        } else {
-            let xml = try ProviderXML.parse(bytes)
-            raw = xml.posts.map { $0 as [String: Any] }; total = xml.total
-        }
+        let result = try rule34Payload(bytes)
+        let raw = result.posts
+        let total = result.total
         let posts = raw.compactMap { row -> Post? in
             let id = text(row["id"]), rawMedia = text(row["file_url"] ?? row["sample_url"] ?? row["preview_url"])
             guard !id.isEmpty, let media = mediaURL(rawMedia, provider: .rule34) else { return nil }
@@ -377,6 +375,33 @@ enum NativeProviderAPI {
             post.createdAt = number(row["created_at"]); return post
         }
         return self.page(posts, hasMore: total > 0 ? page * limit < total : raw.count >= limit, query: query, immersive: immersive)
+    }
+
+    static func rule34Payload(_ bytes: Data) throws -> (posts: [[String: Any]], total: Int) {
+        // DAPI returns either a JSON array or a wrapped JSON object, and some
+        // deployments represent a zero-match search with `{}` or `{"count":0}`.
+        // Neither case should turn into a broken feed with a generic error.
+        if let json = try? JSONSerialization.jsonObject(with: bytes) {
+            if let array = json as? [[String: Any]] { return (array, 0) }
+            if let object = json as? [String: Any] {
+                if object["success"] as? Bool == false || object["error"] != nil {
+                    let reason = text(object["message"] ?? object["reason"] ?? object["error"])
+                    let detail = reason.isEmpty ? "The source rejected this search." : String(reason.prefix(160))
+                    throw APIError.server("Rule34 API: " + detail)
+                }
+                let total = Int(number(object["count"]))
+                if let array = object["post"] as? [[String: Any]] { return (array, total) }
+                if let single = object["post"] as? [String: Any] { return ([single], total) }
+                if object.isEmpty || total == 0 && object["count"] != nil { return ([], 0) }
+            }
+            throw APIError.server("Rule34 API returned an unrecognized JSON format. Please retry shortly.")
+        }
+        if unavailableHTML(bytes) || String(decoding: bytes.prefix(64), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<html") {
+            throw APIError.server("Rule34 returned a website error page instead of posts. Please retry shortly.")
+        }
+        let xml = try ProviderXML.parse(bytes)
+        return (xml.posts.map { $0 as [String: Any] }, xml.total)
     }
 
     static func eporner(session: URLSession, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
@@ -746,8 +771,15 @@ enum NativeProviderAPI {
         }
         let posts = raw.map { row -> Post in
             let id = text(row["video_id"] ?? row["id"])
+            let images = [text(row["default_thumb"]), text(row["thumb"]), text(row["hd_thumb"])]
+                + rows(row["thumbs"]).map { text($0["src"] ?? $0["url"]) }
+            var posters: [String] = []
+            for candidate in images where !candidate.isEmpty {
+                if let valid = mediaURL(candidate)?.absoluteString, !posters.contains(valid) { posters.append(valid) }
+            }
             var post = Post(key: "pornhub:\(id)", id: id, provider: "Pornhub", score: number(row["views"]),
-                            tags: strings(row["tags"]) + strings(row["categories"]), thumbUrl: text(row["default_thumb"] ?? row["thumb"]),
+                            tags: strings(row["tags"]) + strings(row["categories"]),
+                            previewUrl: posters.first ?? "", thumbUrl: posters.dropFirst().first ?? posters.first ?? "",
                             pageUrl: text(row["url"]), type: "video")
             post.caption = text(row["title"]); post.creator = text(row["username"]); return post
         }
@@ -809,15 +841,18 @@ enum NativeProviderAPI {
             let title = rawTitle.replacingOccurrences(of: "&amp;", with: "&")
                 .replacingOccurrences(of: "&quot;", with: "\"")
                 .replacingOccurrences(of: "&#39;", with: "'")
-            let poster = [#"data-thumb_url\s*=\s*["']([^"']+)["']"#,
+            let posterCandidates = [#"data-thumb_url\s*=\s*["']([^"']+)["']"#,
                           #"data-mediumthumb\s*=\s*["']([^"']+)["']"#,
                           #"\bsrc\s*=\s*["']([^"']+)["']"#]
                 .compactMap { matches(block, $0).first }
                 .compactMap { mediaURL($0.replacingOccurrences(of: "&amp;", with: "&")) }
-                .first?.absoluteString ?? ""
+                .map(\.absoluteString)
+            let poster = posterCandidates.reduce(into: [String]()) { result, candidate in
+                if !result.contains(candidate) { result.append(candidate) }
+            }
             var post = Post(key: "pornhub:\(key)", id: key, provider: Provider.pornhub.rawValue,
                             tags: title.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init),
-                            thumbUrl: poster,
+                            previewUrl: poster.first ?? "", thumbUrl: poster.dropFirst().first ?? poster.first ?? "",
                             pageUrl: "https://www.pornhub.com/view_video.php?viewkey=\(key)", type: "video")
             post.caption = title
             return post

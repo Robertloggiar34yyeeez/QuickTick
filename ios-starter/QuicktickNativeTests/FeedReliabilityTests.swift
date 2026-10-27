@@ -273,6 +273,24 @@ final class FeedReliabilityTests: XCTestCase {
         let hits = await pipeline.hits;XCTAssertEqual(hits,1)
         print("QUICKTICK_METRIC image cold_ms=\(cold*1000) warm_ms=\(warm*1000)")
     }
+    func testCardPreviewsKeepFallbackThumbnailsWithoutFetchingVideosAsImages() {
+        let video = Post(key: "pornhub:fixture", id: "fixture", provider: "Pornhub",
+            mediaUrl: "https://media.example.invalid/video.mp4", previewUrl: "https://img.example.invalid/large.jpg",
+            thumbUrl: "https://img.example.invalid/small.jpg", type: "video")
+        XCTAssertEqual(video.previewImageURLs, [
+            "https://img.example.invalid/large.jpg", "https://img.example.invalid/small.jpg"
+        ])
+        let noPoster = Post(key: "pornhub:empty", id: "empty", provider: "Pornhub",
+            mediaUrl: "https://media.example.invalid/video.mp4", type: "video")
+        XCTAssertTrue(noPoster.previewImageURLs.isEmpty,
+            "The UI must display its designed fallback instead of decoding a movie as a poster")
+        let image = Post(key: "rule34:fixture", id: "fixture", provider: "Rule34",
+            mediaUrl: "https://media.example.invalid/original.jpg", previewUrl: "https://media.example.invalid/thumb.jpg",
+            thumbUrl: "https://media.example.invalid/thumb.jpg", type: "image")
+        XCTAssertEqual(image.previewImageURLs, [
+            "https://media.example.invalid/thumb.jpg", "https://media.example.invalid/original.jpg"
+        ])
+    }
     func testLargeComicPreviewIsBoundedAndKeepsNativeMetadata() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".png")
         defer { try? FileManager.default.removeItem(at:url) }

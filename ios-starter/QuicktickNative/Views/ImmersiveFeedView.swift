@@ -420,10 +420,16 @@ private struct ImmersiveItemView: View {
                             if let image = previews.images[post.stableID] {
                                 Image(uiImage: image).resizable().scaledToFill()
                             } else if active {
-                                // Keep the tinted surface visible rather than
-                                // flashing the image view's black placeholder.
-                                // The cache replaces this with a blurred still.
-                                Color.clear
+                                VStack(spacing: 12) {
+                                    Image(systemName: "play.rectangle.on.rectangle")
+                                        .font(.system(size: 40, weight: .light))
+                                    Text(post.caption?.isEmpty == false ? (post.caption ?? "") : post.provider)
+                                        .font(.headline).lineLimit(3).multilineTextAlignment(.center)
+                                    Text("Preparing preview")
+                                        .font(.caption).foregroundStyle(.white.opacity(0.6))
+                                }
+                                .foregroundStyle(.white.opacity(0.85))
+                                .padding(25)
                             }
                         }
                         .frame(width: geo.size.width, height: geo.size.height)
@@ -449,7 +455,10 @@ private struct ImmersiveItemView: View {
                     .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "image" {
-                    CachedMediaImage(url: post.cardPreviewURL, pixels: 1440, comic: false)
+                    CachedMediaImage(url: post.cardPreviewURL,
+                        alternatives: post.previewImageURLs.filter { $0 != post.cardPreviewURL },
+                        pixels: 1440, comic: false,
+                        placeholderTitle: post.caption ?? "", placeholderProvider: post.provider)
                         .frame(width: geo.size.width, height: geo.size.height).allowsHitTesting(false)
                 }
                 if let player {
@@ -827,16 +836,36 @@ private struct ImmersiveDownloadControl: View {
 
 struct PosterView: View {
     let url: String
-    var onDecoded: ((DecodedMediaImage) -> Void)? = nil
-    var body: some View { CachedMediaImage(url: url, pixels: 1024, onDecoded: onDecoded) }
+    let alternatives: [String]
+    let title: String
+    let provider: String
+    var onDecoded: ((DecodedMediaImage) -> Void)?
+
+    init(url: String, onDecoded: ((DecodedMediaImage) -> Void)? = nil) {
+        self.url = url; alternatives = []; title = ""; provider = ""; self.onDecoded = onDecoded
+    }
+    init(post: Post, onDecoded: ((DecodedMediaImage) -> Void)? = nil) {
+        url = post.cardPreviewURL
+        alternatives = post.previewImageURLs.filter { $0 != post.cardPreviewURL }
+        title = post.caption ?? ""
+        provider = post.provider
+        self.onDecoded = onDecoded
+    }
+    var body: some View {
+        CachedMediaImage(url: url, alternatives: alternatives, pixels: 1024,
+                         placeholderTitle: title, placeholderProvider: provider, onDecoded: onDecoded)
+    }
 }
 
 struct CachedMediaImage: View {
     let url: String
     var preview = ""
+    var alternatives: [String] = []
     var pixels = 1024
     var comic = false
     var fill = false
+    var placeholderTitle = ""
+    var placeholderProvider = ""
     var onDecoded: ((DecodedMediaImage) -> Void)?
     @State private var decoded: DecodedMediaImage?
     @State private var previewDecoded: DecodedMediaImage?
@@ -844,17 +873,38 @@ struct CachedMediaImage: View {
     var body: some View {
         Group {
             if let image = decoded ?? previewDecoded { Image(uiImage: UIImage(cgImage: image.image)).resizable().aspectRatio(contentMode: fill ? .fill : .fit) }
-            else { Color(white: 0.035).overlay { Image(systemName: failed ? "photo.badge.exclamationmark" : "photo").foregroundStyle(.white.opacity(0.25)) } }
+            else {
+                ZStack {
+                    LinearGradient(colors: [AppTheme.accent.opacity(0.24), Color(white: 0.07), AppTheme.accent.opacity(0.12)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                    VStack(spacing: 11) {
+                        Image(systemName: failed ? "play.rectangle.on.rectangle" : "photo.on.rectangle.angled")
+                            .font(.system(size: 34, weight: .light))
+                            .foregroundStyle(.white.opacity(0.65))
+                        Text(placeholderTitle.isEmpty ? (placeholderProvider.isEmpty ? "QuickTick" : placeholderProvider) : placeholderTitle)
+                            .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.88))
+                            .lineLimit(3).multilineTextAlignment(.center)
+                        Text(failed ? "Preview not available from source" : "Loading preview…")
+                            .font(.caption).foregroundStyle(.white.opacity(0.55))
+                    }
+                    .padding(26)
+                }
+            }
         }.task(id: "\(url):\(pixels):\(comic)") {
             decoded = nil; failed = false
             do { let image = try await MediaImagePipeline.shared.image(raw: url, pixels: pixels, comicPreview: comic); try Task.checkCancellation(); decoded = image; onDecoded?(image) }
-            catch { if !Task.isCancelled { failed = !url.isEmpty } }
+            catch { if !Task.isCancelled { failed = true } }
         }
-        .task(id: "\(url):\(preview)") {
+        .task(id: "\(url):\(preview):\(alternatives.joined(separator: "|"))") {
             previewDecoded = nil
-            guard !preview.isEmpty, preview != url else { return }
-            if let image = try? await MediaImagePipeline.shared.image(raw: preview, pixels: 512, comicPreview: comic), !Task.isCancelled {
-                previewDecoded = image
+            let options = ([preview] + alternatives).filter { !$0.isEmpty && $0 != url }
+            var tried = Set<String>()
+            for candidate in options where tried.insert(candidate).inserted {
+                guard !Task.isCancelled else { return }
+                if let image = try? await MediaImagePipeline.shared.image(raw: candidate, pixels: 512, comicPreview: comic), !Task.isCancelled {
+                    previewDecoded = image; onDecoded?(image); return
+                }
             }
         }
         .onDisappear {
@@ -884,13 +934,7 @@ struct CachedMediaImage: View {
             return
         }
         #endif
-        let urls = [post.thumbUrl, post.cardPreviewURL]
-            .filter { !$0.isEmpty }
-            .reduce(into: [String]()) { result, raw in
-                let ext = URL(string: raw)?.pathExtension.lowercased() ?? ""
-                guard !["mp4", "webm", "mov", "m3u8", "gif"].contains(ext) else { return }
-                if !result.contains(raw) { result.append(raw) }
-            }
+        let urls = post.previewImageURLs
         for raw in urls {
             guard !Task.isCancelled, retained.contains(key) else { return }
             guard let decoded = try? await MediaImagePipeline.shared.image(raw: raw, pixels: 384) else { continue }

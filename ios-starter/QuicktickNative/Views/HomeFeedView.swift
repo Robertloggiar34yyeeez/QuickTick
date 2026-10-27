@@ -324,6 +324,23 @@ struct HomeFeedView: View {
             guard !Task.isCancelled, store.activeTab == 0, store.isForeground, !store.isStudioPresented, store.feedRevision == revision else { return }
             await warmNext(after: store.inlinePlaybackID)
         }
+        .task(id: "\(store.feedRevision):\(store.posts.first?.stableID ?? "")") {
+            guard !Task.isCancelled, store.activeTab == 0, store.isForeground, !store.isStudioPresented else { return }
+            // Start the first visible posters immediately, including when
+            // autoplay is disabled. Match the 1024px card cache bucket so a
+            // first scroll never redownloads what look-ahead already fetched.
+            let firstScreen = Array(store.posts.prefix(3))
+            await withTaskGroup(of: Void.self) { group in
+                for post in firstScreen {
+                    group.addTask(priority: .utility) {
+                        for url in post.previewImageURLs {
+                            guard !Task.isCancelled else { return }
+                            if (try? await MediaImagePipeline.shared.image(raw: url, pixels: 1024)) != nil { return }
+                        }
+                    }
+                }
+            }
+        }
         #if DEBUG
         .overlay(alignment: .bottomTrailing) {
             if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
@@ -552,7 +569,10 @@ struct HomeFeedView: View {
         // resolution remains exclusive to the visible player.
         for next in store.posts.dropFirst(index + 1).prefix(2) {
             guard !Task.isCancelled else { return }
-            _ = try? await MediaImagePipeline.shared.image(raw: next.cardPreviewURL, pixels: 384)
+            for candidate in next.previewImageURLs {
+                guard !Task.isCancelled else { return }
+                if (try? await MediaImagePipeline.shared.image(raw: candidate, pixels: 1024)) != nil { break }
+            }
         }
     }
 

@@ -30,11 +30,11 @@ actor ProviderRequestGate {
 /// the parser only accepts public titles visible in the loaded document.
 @MainActor
 enum HavenBrowserCatalog {
-    static func html(query: ParsedQuery, sort: String) async throws -> String {
+    static func html(query: ParsedQuery, sort: String, page: Int = 1) async throws -> String {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         let browser = WKWebView(frame: .zero, configuration: config)
-        guard let url = NativeProviderAPI.havenWebsiteURL(sort: sort, query: query) else {
+        guard let url = NativeProviderAPI.havenWebsiteURL(sort: sort, query: query, page: page) else {
             throw APIError.server("This Hentai Haven category is only available through its catalog API.")
         }
         var request = URLRequest(url: url)
@@ -621,35 +621,42 @@ enum NativeProviderAPI {
     /// watch page is an AVPlayer-compatible stream or downloadable media file.
     static func havenWebsiteCatalog(session: URLSession, query: ParsedQuery,
                                     page: Int, sort: String, immersive: Bool) async throws -> PostPage {
-        guard page == 1, !immersive else { return PostPage(items: [], hasMore: false) }
-        guard let website = havenWebsiteURL(sort: sort, query: query) else {
+        guard !immersive else { return PostPage(items: [], hasMore: false) }
+        guard let website = havenWebsiteURL(sort: sort, query: query, page: page) else {
             throw APIError.server("This Hentai Haven category is only available through its catalog API.")
         }
         let bytes = try await data(session: session, url: website, provider: .hhaven,
                                    headers: ["Accept": "text/html,application/xhtml+xml"], maxBytes: 5 * 1024 * 1024,
                                    timeout: 5)
-        return try havenWebsitePage(String(decoding: bytes, as: UTF8.self), query: query)
+        return try havenWebsitePage(String(decoding: bytes, as: UTF8.self), query: query,
+                                    page: page, sort: sort)
     }
 
-    static func havenWebsiteURL(sort: String, query: ParsedQuery) -> URL? {
+    static func havenWebsiteURL(sort: String, query: ParsedQuery, page: Int = 1) -> URL? {
+        guard (1...50).contains(page) else { return nil }
         let section = ProviderSearchCategories.split(query, provider: .hhaven).category
         if let section, section.hasPrefix("category:genre:") { return nil }
         let slug = section?.replacingOccurrences(of: "category:section:", with: "") ?? ""
         let path: String
         switch slug {
         case "trending_month": path = "/browse/trending/"
-        case "last": path = "/"
-        case "": path = sort == "popular" ? "/browse/trending/" : "/"
-        default: path = "/series/\(slug)/"
+        case "last": guard page == 1 else { return nil }; path = "/"
+        case "" where sort == "popular": path = "/browse/trending/"
+        case "": guard page == 1 else { return nil }; path = "/"
+        default: guard page == 1 else { return nil }; path = "/series/\(slug)/"
         }
-        return URL(string: "https://hentaihaven.xxx" + path)
+        // Verified against Hentai Haven's public page-two link. Do not assume
+        // the site's other category or search routes use this pagination.
+        let suffix = page > 1 ? "page/\(page)/" : ""
+        return URL(string: "https://hentaihaven.xxx" + path + suffix)
     }
 
     /// The same strict parser is used for a normal HTTP response and, if the
     /// website blocks raw URLSession requests, the page loaded by WebKit.
     /// Browser-generated HTML is still untrusted input: only canonical watch
     /// links become catalog entries, and unrelated search results are dropped.
-    static func havenWebsitePage(_ html: String, query: ParsedQuery) throws -> PostPage {
+    static func havenWebsitePage(_ html: String, query: ParsedQuery,
+                                 page: Int = 1, sort: String = "recommended") throws -> PostPage {
         guard !unavailableHTML(Data(html.utf8)) else {
             throw APIError.server("Hentai Haven's public site returned an unavailable page.")
         }
@@ -668,7 +675,10 @@ enum NativeProviderAPI {
         let matched = posts.filter { post in
             selection.keywords.allSatisfy { containsKeyword($0, in: post) }
         }
-        return self.page(matched, hasMore: false, query: query, immersive: false)
+        let trending = selection.category == "category:section:trending_month" ||
+            selection.category == nil && sort == "popular"
+        return self.page(matched, hasMore: trending && matched.count >= 20 && page < 50,
+                         query: query, immersive: false)
     }
 
     static func parseHavenWebsiteCatalog(_ html: String) -> [Post] {

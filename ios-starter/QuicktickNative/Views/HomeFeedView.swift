@@ -33,6 +33,7 @@ struct HomeFeedView: View {
     @State private var immersive = false
     @State private var immersivePostID: String?
     @State private var visibleFrames: [String: CGRect] = [:]
+    @State private var homeRemountGraceUntil = Date.distantPast
     // Video eligibility changes only when the feed changes, not on every
     // scroll/layout pass. Avoid rebuilding a Set from the whole feed per frame.
     @State private var playableIDs: Set<String> = []
@@ -292,6 +293,7 @@ struct HomeFeedView: View {
         }
         .onAppear {
             playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
+            homeRemountGraceUntil = Date().addingTimeInterval(0.85)
             // Tab transitions clear the active player, but the Home feed's
             // previously visible post is still known before SwiftUI delivers
             // fresh geometry preferences. Restore it immediately so cards can
@@ -304,7 +306,7 @@ struct HomeFeedView: View {
             // can arrive before the resumed feed is fully laid out, so retry
             // selection through the first few layout passes.
             Task { @MainActor in
-                for delay in [120, 260, 420] {
+                for delay in [120, 260, 420, 1_100] {
                     do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
                     guard store.activeTab == 0 else { return }
                     selectVisiblePlayback(viewport: viewport.size)
@@ -556,7 +558,20 @@ struct HomeFeedView: View {
            playableIDs.contains(retained), store.posts.contains(where: { $0.stableID == retained }) {
             return retained
         }
-        return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playableIDs)
+        let selected = VisiblePostSelector.select(frames: visibleFrames,
+            viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID,
+            eligible: playableIDs)
+        if let selected { return selected }
+        // Partial layout preferences can describe only the header or an
+        // offscreen cell during a tab remount. Don't clear a known playable
+        // card in that brief window; a final selection runs once layout has
+        // stabilized. Ordinary scrolling never uses this fallback.
+        if Date() < homeRemountGraceUntil,
+           let retained = store.retainedHomePlaybackID, playableIDs.contains(retained),
+           store.posts.contains(where: { $0.stableID == retained }) {
+            return retained
+        }
+        return nil
     }
     private func warmNext(after key: String?) async {
         guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented, !Task.isCancelled else { return }

@@ -1120,7 +1120,7 @@ struct FavoritesView: View {
     @State private var activeID: String?
     @State private var shuffleLikes = false
     @State private var randomizedIDs: [String] = []
-    private var orderedLikes: [Post] { store.favorites.values.sorted { $0.stableID < $1.stableID } }
+    private var orderedLikes: [Post] { store.newestFavorites }
     private var saved: [Post] {
         guard shuffleLikes else { return orderedLikes }
         let byID = Dictionary(uniqueKeysWithValues: orderedLikes.map { ($0.stableID, $0) })

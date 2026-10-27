@@ -415,7 +415,8 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(page.items.map(\.stableID), ["hhaven:web:genre-entry"])
         XCTAssertEqual(page.items.first?.thumbUrl, "https://coverlanyvd.org/cover.jpg")
         XCTAssertEqual(page.items.first?.category, "category:section:yuri")
-        XCTAssertEqual(NativeProviderProtocol.log.snapshot().last?.url?.path, "/series/yuri/")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().last?.url?.absoluteString.contains("/series/yuri/") == true,
+            "URL.path may normalize trailing slashes; the actual request must retain the category route")
         XCTAssertNil(NativeProviderAPI.havenWebsiteURL(sort: "recommended",
             query: QueryParser.parse("category:genre:17")))
 
@@ -423,6 +424,21 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertThrowsError(try NativeProviderAPI.havenWebsitePage(unavailable, query: QueryParser.parse("")))
         let mistaken = #"<a href="https://different.invalid/watch/not-our-site/">Wrong host</a>"#
         XCTAssertThrowsError(try NativeProviderAPI.havenWebsitePage(mistaken, query: QueryParser.parse("")))
+    }
+    func testHavenVerifiedTrendingPaginationAndRealCards() throws {
+        let popular = ParsedQuery(included: [], excluded: [])
+        XCTAssertEqual(NativeProviderAPI.havenWebsiteURL(sort: "popular", query: popular, page: 2)?.absoluteString,
+                       "https://hentaihaven.xxx/browse/trending/page/2/")
+        XCTAssertNil(NativeProviderAPI.havenWebsiteURL(sort: "recommended", query: popular, page: 2))
+        XCTAssertNil(NativeProviderAPI.havenWebsiteURL(sort: "popular", query: popular, page: 51))
+        let cards = (1...20).map { id in
+            #"<a href="/watch/fixture-\#(id)/"><img src="https://img.hentaihaven.xxx/\#(id).jpg" alt="Fixture \#(id)"></a>"#
+        }.joined()
+        let first = try NativeProviderAPI.havenWebsitePage(cards, query: popular, page: 1, sort: "popular")
+        XCTAssertEqual(first.items.count, 20)
+        XCTAssertEqual(first.hasMore, true)
+        let last = try NativeProviderAPI.havenWebsitePage(cards, query: popular, page: 50, sort: "popular")
+        XCTAssertEqual(last.hasMore, false)
     }
 
     func testNHentaiGalleryBrowseSearchAndCompletePageManifest() async throws {
@@ -542,7 +558,8 @@ final class NativeProviderAPITests: XCTestCase {
             query: QueryParser.parse("public-html"), page: 1)
         XCTAssertEqual(result.items.map(\.stableID), ["pornhub:phpublic"])
         XCTAssertEqual(result.items.first?.caption, "Public & indexed")
-        XCTAssertEqual(result.items.first?.thumbUrl, "https://cdn.pornhub.com/public.jpg")
+        XCTAssertEqual(result.items.first?.previewUrl, "https://cdn.pornhub.com/public.jpg")
+        XCTAssertEqual(result.items.first?.thumbUrl, "https://cdn.pornhub.com/public-small.jpg")
         XCTAssertEqual(result.items.first?.previewImageURLs, [
             "https://cdn.pornhub.com/public.jpg", "https://cdn.pornhub.com/public-small.jpg"
         ])
@@ -733,7 +750,7 @@ final class NativeProviderAPITests: XCTestCase {
             query: QueryParser.parse("unavailable-route"), page: 1)
         XCTAssertEqual(fallback.items.map(\.stableID), ["pornhub:phpublic"])
         let paths = NativeProviderProtocol.log.snapshot().compactMap { $0.url?.path }
-        XCTAssertEqual(paths, ["/webmasters/search", "/webmasters/search/", "/video/search"],
+        XCTAssertEqual(paths, ["/webmasters/search", "/webmasters/search", "/video/search"],
             "Both public API routes may fail, in which case the verified same-site catalog is used")
     }
     func testPornhubUsesCanonicalPageAndSurvivesRemovedMP4Definition() async throws {

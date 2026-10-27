@@ -38,17 +38,30 @@ actor HavenAuthentication {
     private var token: String?
     private var expires = Date.distantPast
     private var flight: Task<String, Error>?
+    private var unavailableUntil = Date.distantPast
 
     func value(session: URLSession) async throws -> String {
         if let token, expires > .now { return token }
         if let flight { return try await flight.value }
+        // The Warden endpoint often fails independently of the public site.
+        // Do not spend another six seconds and another request on each Home
+        // refresh while the first failure is still fresh.
+        if unavailableUntil > .now {
+            throw APIError.server("Hentai Haven authentication is temporarily unavailable; checking its public catalog.")
+        }
         let pending = Task { try await NativeProviderAPI.havenToken(session: session) }
         flight = pending
         defer { flight = nil }
-        let issued = try await pending.value
-        token = issued
-        expires = .now.addingTimeInterval(20 * 60)
-        return issued
+        do {
+            let issued = try await pending.value
+            token = issued
+            expires = .now.addingTimeInterval(20 * 60)
+            unavailableUntil = .distantPast
+            return issued
+        } catch {
+            if !Task.isCancelled { unavailableUntil = .now.addingTimeInterval(30) }
+            throw error
+        }
     }
 
     func invalidate(expecting stale: String) {
@@ -193,17 +206,28 @@ actor QuicktickAPIClient {
             do {
                 let token = try await auth.value(session: session)
                 do {
-                    return try await NativeProviderAPI.haven(session: session, token: token,
+                    let result = try await NativeProviderAPI.haven(session: session, token: token,
                         query: query, page: page, sort: sort, immersive: immersive)
+                    // Some Warden deployments answer HTTP 200 with an empty
+                    // catalog despite public website titles being available.
+                    // Don't cache that as a successful first page.
+                    if result.items.isEmpty && page == 1 && !immersive {
+                        throw APIError.server("Hentai Haven's API returned an empty catalog.")
+                    }
+                    return result
                 } catch APIError.providerStatus(.hhaven, 401) {
                     await auth.invalidate(expecting: token)
                     let replacement = try await auth.value(session: session)
-                    return try await NativeProviderAPI.haven(session: session, token: replacement,
+                    let result = try await NativeProviderAPI.haven(session: session, token: replacement,
                         query: query, page: page, sort: sort, immersive: immersive)
+                    if result.items.isEmpty && page == 1 && !immersive {
+                        throw APIError.server("Hentai Haven's API returned an empty catalog.")
+                    }
+                    return result
                 }
             } catch let apiFailure {
                 try Task.checkCancellation()
-                guard page == 1, !immersive else { throw apiFailure }
+                guard !immersive, NativeProviderAPI.havenWebsiteURL(sort: sort, query: query, page: page) != nil else { throw apiFailure }
                 // API Anything's read-only strategy: try plain HTTP first,
                 // then load the actual public site in iOS WebKit. The latter
                 // can succeed when an upstream proxy replaces URLSession's
@@ -220,9 +244,10 @@ actor QuicktickAPIClient {
                 // real WKWebView against the public internet.
                 guard session.configuration.protocolClasses?.isEmpty != false else { throw apiFailure }
                 do {
-                    let html = try await HavenBrowserCatalog.html(query: query, sort: sort)
-                    let page = try NativeProviderAPI.havenWebsitePage(html, query: query)
-                    if !page.items.isEmpty { return page }
+                    let html = try await HavenBrowserCatalog.html(query: query, sort: sort, page: page)
+                    let webPage = try NativeProviderAPI.havenWebsitePage(html, query: query,
+                        page: page, sort: sort)
+                    if !webPage.items.isEmpty { return webPage }
                 } catch is CancellationError { throw CancellationError() }
                 catch { }
                 // An inaccessible website is not proof the user searched

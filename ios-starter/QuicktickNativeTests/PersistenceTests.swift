@@ -2,6 +2,28 @@ import XCTest
 @testable import QuicktickNative
 
 final class PersistenceTests: XCTestCase {
+    @MainActor func testFavoritesNewestFirstUsesLikeTimeAcrossProviders() {
+        let posts = [
+            Post(key: "rule34:900", id: "900", provider: "Rule34"),
+            Post(key: "kemono:1", id: "1", provider: "Kemono"),
+            Post(key: "coomer:7", id: "7", provider: "Coomer"),
+            Post(key: "hhaven:old", id: "old", provider: "hhaven")
+        ]
+        let collection = Dictionary(uniqueKeysWithValues: posts.map { ($0.stableID, $0) })
+        let dates: [String: FavoriteMeta] = [
+            "rule34:900": .init(liked: true, updatedAt: 100),
+            "kemono:1": .init(liked: true, updatedAt: 300),
+            "coomer:7": .init(liked: true, updatedAt: 200)
+        ]
+        let ordered = AppStore.sortFavoritesNewestFirst(collection, metadata: dates)
+        XCTAssertEqual(ordered.map(\.stableID), ["kemono:1", "coomer:7", "rule34:900", "hhaven:old"])
+    }
+    func testCoreMLFastPathRequiresRealMemoryHeadroom() {
+        let gib = UInt64(1_024 * 1_024 * 1_024)
+        XCTAssertFalse(StudioCoreMLPerformance.useFastPath(physicalBytes: 4 * gib, availableBytes: 4 * gib))
+        XCTAssertFalse(StudioCoreMLPerformance.useFastPath(physicalBytes: 8 * gib, availableBytes: 2 * gib))
+        XCTAssertTrue(StudioCoreMLPerformance.useFastPath(physicalBytes: 16 * gib, availableBytes: 6 * gib))
+    }
     @MainActor func testDownloadsRestoreNewestFirstAcrossProviders() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -67,7 +67,23 @@ final class AppStore: ObservableObject {
     }
     private var postsByID: [String: Post] = [:]
     func postForID(_ id: String) -> Post? { postsByID[id] }
-    @Published var activeTab = 0 { didSet { if oldValue != activeTab { idleTask?.cancel(); fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
+    @Published var activeTab = 0 { didSet {
+        guard oldValue != activeTab else { return }
+        // Capture Home's last visible video before resetting the outgoing
+        // tab. SwiftUI can mount the returning feed before its geometry
+        // preferences arrive, so relying on Home.onAppear alone to restore
+        // playback leaves a paused player after rapid tab switches.
+        let returningHomeID = activeTab == 0 ? retainedHomePlaybackID : nil
+        idleTask?.cancel()
+        fullScreenPlaybackID = nil
+        protectedHomePostIDs = []
+        inlinePlaybackID = nil
+        pausedPlaybackID = nil
+        players.pauseAll()
+        if let returningHomeID, postsByID[returningHomeID]?.isImmersiveMedia == true {
+            inlinePlaybackID = returningHomeID
+        }
+    } }
     @Published var isForeground = true { didSet {
         guard oldValue != isForeground else { return }
         if !isForeground { idleTask?.cancel(); stopActiveLearning(); cancelManualVisualRefresh(); players.suspendActivePlayback() }
@@ -154,6 +170,20 @@ final class AppStore: ObservableObject {
                 guard !Task.isCancelled else { return }
                 await self.visual.reconcileFavorites(snapshot)
             }
+        }
+    }
+    /// Favorites represent the order the user liked them, not the provider's
+    /// post IDs or publish dates. Older imported profiles can lack metadata;
+    /// those entries are stable at the end until liked again.
+    var newestFavorites: [Post] {
+        Self.sortFavoritesNewestFirst(favorites, metadata: local.snapshot.favoriteMeta)
+    }
+    static func sortFavoritesNewestFirst(_ favorites: [String: Post],
+                                         metadata: [String: FavoriteMeta]) -> [Post] {
+        favorites.values.sorted { lhs, rhs in
+            let left = metadata[lhs.stableID]?.updatedAt ?? 0
+            let right = metadata[rhs.stableID]?.updatedAt ?? 0
+            return left == right ? lhs.stableID < rhs.stableID : left > right
         }
     }
     private var favoriteSyncTask: Task<Void, Never>?

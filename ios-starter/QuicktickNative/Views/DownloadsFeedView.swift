@@ -27,18 +27,22 @@ private struct DownloadContent: View {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Saved offline")
-                                .font(.system(size: 30, weight: .bold, design: .rounded))
-                                .tracking(-1)
+                                .font(.system(size: AppTheme.isDeSlopified ? 26 : 30,
+                                              weight: AppTheme.isDeSlopified ? .semibold : .bold,
+                                              design: AppTheme.isDeSlopified ? .default : .rounded))
+                                .tracking(AppTheme.isDeSlopified ? -0.4 : -1)
                             Text("\(manager.records.count) downloads, always with you")
                                 .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
                         }
                         Spacer()
+                        if !AppTheme.isDeSlopified {
                         Image(systemName: "arrow.down.to.line")
                             .font(.system(size: 23))
                             .accessibilityHidden(true)
                             .foregroundStyle(.white)
                             .frame(width: 48, height: 48)
                             .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16))
+                        }
                     }
                     .padding(.top, 2)
                     if selecting { selectionControls }
@@ -98,7 +102,13 @@ private struct DownloadContent: View {
                         .overlay { if selecting { selectionOverlay(for: record) } }
                         }
                     }
-                }.padding(16).frame(maxWidth: .infinity)
+                }
+                // Share the Home feed's centred 680pt content column on iPad.
+                // Title, actions, cards and export rows now use one left edge.
+                .frame(maxWidth: AppTheme.feedWidth)
+                .padding(.horizontal, AppTheme.contentMargin)
+                .padding(.vertical, AppTheme.contentMargin)
+                .frame(maxWidth: .infinity)
                 }
                 }
             }

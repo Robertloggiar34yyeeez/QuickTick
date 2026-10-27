@@ -76,7 +76,7 @@ struct RootView: View {
                         .padding(.top, modernUI ? 8 : 4)
                         .padding(.bottom, 0)
                         .background {
-                            if modernUI && !AppTheme.isCosmic {
+                            if modernUI && !AppTheme.prefersOpaqueChrome {
                                 Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(edges: .bottom)
                             } else {
                                 AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
@@ -104,10 +104,10 @@ struct RootView: View {
                             .updating($navigationDrag) { value, state, _ in state = value.translation }
                             .onEnded { swipeTabs($0.translation, vertical: true) })
                         .padding(6)
-                        .background(AppTheme.isCosmic ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
-                                    in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
-                        .shadow(color: .black.opacity(0.4), radius: 18, y: 4)
+                        .background(AppTheme.prefersOpaqueChrome ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
+                                    in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+                        .shadow(color: .black.opacity(AppTheme.isDeSlopified ? 0 : 0.4), radius: 18, y: 4)
                         .padding(.leading, 16)
                         .id(aiTabVisible ? "five-side-tabs" : "four-side-tabs")
                         .transition(.move(edge: .leading).combined(with: .opacity))
@@ -213,7 +213,7 @@ struct RootView: View {
                         .frame(width: vertical ? 46 : 54, height: vertical ? 46 : 52)
                         .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: modernUI ? 20 : 17, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 17).stroke(.white.opacity(0.25)))
-                        .shadow(color: AppTheme.accent.opacity(modernUI ? 0.36 : 0.28), radius: modernUI ? 18 : 13, y: 3)
+                        .shadow(color: AppTheme.accent.opacity(AppTheme.isDeSlopified ? 0 : (modernUI ? 0.36 : 0.28)), radius: modernUI ? 18 : 13, y: 3)
                         .frame(maxWidth: vertical ? nil : .infinity)
                 }
                 .buttonStyle(QuicktickPressStyle())

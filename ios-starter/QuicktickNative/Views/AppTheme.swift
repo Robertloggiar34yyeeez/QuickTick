@@ -7,7 +7,7 @@ enum AppTheme {
     enum AccentPalette: String, CaseIterable, Identifiable {
         case violet, ocean, sunset, mint, rose, cobalt, amber, cherry, teal, lime, indigo, coral, galaxy
         case darkCosmos, auroraNight, solarEclipse, oledBlack, graphite, midnightBlue, emeraldNoir, crimsonNoir
-        case nebulaDrift, obsidianGold, polarNight
+        case nebulaDrift, obsidianGold, polarNight, deSlopified
         var id: String { rawValue }
         var name: String {
             switch self {
@@ -22,6 +22,7 @@ enum AppTheme {
             case .nebulaDrift: "Nebula Drift"
             case .obsidianGold: "Obsidian Gold"
             case .polarNight: "Polar Night"
+            case .deSlopified: "De-slopified"
             default: rawValue.capitalized
             }
         }
@@ -51,6 +52,7 @@ enum AppTheme {
             case .nebulaDrift: Color(red: 0.81, green: 0.46, blue: 0.94)
             case .obsidianGold: Color(red: 0.94, green: 0.69, blue: 0.35)
             case .polarNight: Color(red: 0.37, green: 0.79, blue: 0.98)
+            case .deSlopified: Color(red: 0.29, green: 0.49, blue: 0.43)
             }
         }
         var secondary: Color {
@@ -79,6 +81,7 @@ enum AppTheme {
             case .nebulaDrift: Color(red: 0.29, green: 0.64, blue: 0.96)
             case .obsidianGold: Color(red: 0.78, green: 0.48, blue: 0.35)
             case .polarNight: Color(red: 0.62, green: 0.87, blue: 0.73)
+            case .deSlopified: primary
             }
         }
         var gradientColors: [Color] {
@@ -99,6 +102,9 @@ enum AppTheme {
             case .nebulaDrift: [Color(red: 0.28, green: 0.10, blue: 0.45), primary, secondary]
             case .obsidianGold: [Color(red: 0.18, green: 0.12, blue: 0.09), primary, secondary]
             case .polarNight: [Color(red: 0.05, green: 0.22, blue: 0.30), primary, secondary]
+            // Keep existing gradient-based call sites visually flat: the
+            // anti-slop appearance uses one accent, never a decorative blend.
+            case .deSlopified: [primary, primary]
             default: [primary, secondary]
             }
         }
@@ -108,6 +114,8 @@ enum AppTheme {
     }
     static var modernUI: Bool { (UserDefaults.standard.object(forKey: "quicktick-modern-ui-v1") as? Bool) ?? true }
     static var isGalaxy: Bool { palette == .galaxy }
+    static var isDeSlopified: Bool { palette == .deSlopified }
+    static var prefersOpaqueChrome: Bool { isCosmic || isDeSlopified }
     static var isCosmic: Bool {
         switch palette {
         case .galaxy, .darkCosmos, .auroraNight, .solarEclipse, .oledBlack, .graphite, .midnightBlue, .emeraldNoir, .crimsonNoir, .nebulaDrift, .obsidianGold, .polarNight: return true
@@ -130,6 +138,7 @@ enum AppTheme {
         case .nebulaDrift: return Color(red: 0.026, green: 0.015, blue: 0.055)
         case .obsidianGold: return Color(red: 0.026, green: 0.019, blue: 0.014)
         case .polarNight: return Color(red: 0.010, green: 0.033, blue: 0.049)
+        case .deSlopified: return Color(red: 0.067, green: 0.067, blue: 0.067)
         default: break
         }
         return modernUI ? Color(red: 0.035, green: 0.035, blue: 0.065) : .black
@@ -148,6 +157,7 @@ enum AppTheme {
         case .nebulaDrift: return Color(red: 0.086, green: 0.044, blue: 0.126)
         case .obsidianGold: return Color(red: 0.083, green: 0.060, blue: 0.043)
         case .polarNight: return Color(red: 0.034, green: 0.082, blue: 0.099)
+        case .deSlopified: return Color(red: 0.105, green: 0.105, blue: 0.105)
         default: break
         }
         return modernUI ? Color(red: 0.073, green: 0.073, blue: 0.11) : Color(white: 0.055)
@@ -166,6 +176,7 @@ enum AppTheme {
         case .nebulaDrift: return Color(red: 0.132, green: 0.069, blue: 0.184)
         case .obsidianGold: return Color(red: 0.142, green: 0.102, blue: 0.066)
         case .polarNight: return Color(red: 0.057, green: 0.125, blue: 0.143)
+        case .deSlopified: return Color(red: 0.15, green: 0.15, blue: 0.15)
         default: break
         }
         return modernUI ? Color(red: 0.10, green: 0.095, blue: 0.15) : Color(red: 0.09, green: 0.09, blue: 0.13)
@@ -184,13 +195,15 @@ enum AppTheme {
         case .nebulaDrift: Color(red: 0.058, green: 0.028, blue: 0.097)
         case .obsidianGold: Color(red: 0.054, green: 0.039, blue: 0.027)
         case .polarNight: Color(red: 0.018, green: 0.054, blue: 0.069)
+        case .deSlopified: Color(red: 0.075, green: 0.075, blue: 0.075)
         default: Color(red: 0.045, green: 0.04, blue: 0.075)
         }
     }
     static var border: Color {
-        palette == .oledBlack ? Color.white.opacity(0.13) : (isCosmic ? palette.primary.opacity(0.30) : Color.white.opacity(0.12))
+        if isDeSlopified { return Color.white.opacity(0.11) }
+        return palette == .oledBlack ? Color.white.opacity(0.13) : (isCosmic ? palette.primary.opacity(0.30) : Color.white.opacity(0.12))
     }
-    static var secondaryLabel: Color { Color.white.opacity(isCosmic ? 0.72 : 0.58) }
+    static var secondaryLabel: Color { Color.white.opacity(prefersOpaqueChrome ? 0.72 : 0.58) }
     static let spring = Animation.spring(response: 0.38, dampingFraction: 0.82)
     static var accent: Color { palette.primary }
     static var gradient: LinearGradient {
@@ -206,8 +219,9 @@ enum AppTheme {
     static let contentMargin: CGFloat = 16
     static let sectionGap: CGFloat = 24
     static let controlHeight: CGFloat = 44
-    static let controlRadius: CGFloat = 14
-    static let cardRadius: CGFloat = 22
+    static var controlRadius: CGFloat { isDeSlopified ? 10 : 14 }
+    static var cardRadius: CGFloat { isDeSlopified ? 14 : 22 }
+    static var panelRadius: CGFloat { isDeSlopified ? 14 : 22 }
     static let feedWidth: CGFloat = 680
 }
 

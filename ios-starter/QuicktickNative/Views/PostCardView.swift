@@ -41,7 +41,7 @@ struct PostCardView: View {
     private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
     private var fullBleed: Bool { playbackTab == 0 && !offline }
     private var isWebsitePost: Bool { post.providerKey == .hhaven && post.type.lowercased() == "web" }
-    private var cardRadius: CGFloat { fullBleed ? 0 : 22 }
+    private var cardRadius: CGFloat { fullBleed && !AppTheme.isDeSlopified ? 0 : AppTheme.cardRadius }
     private var mediaSize: CGSize {
         let aspect = (post.nativeSize.map {
             post.type.lowercased() == "image" && $0.height > $0.width * 4

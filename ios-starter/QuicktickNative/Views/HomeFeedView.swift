@@ -71,13 +71,16 @@ struct HomeFeedView: View {
     // type-check all of those inside one nested GeometryReader expression.
     private func feedScroll(viewport: GeometryProxy, proxy: ScrollViewProxy) -> some View {
         let revision = store.feedRevision
+        let cardInset = AppTheme.isDeSlopified ? AppTheme.contentMargin : 0
         let scrollContent = ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(store.feedSort == "recommended" ? "For you" : "Trending")
-                            .font(.system(size: 33, weight: .bold, design: .rounded))
-                            .tracking(-1.3)
+                            .font(.system(size: AppTheme.isDeSlopified ? 26 : 33,
+                                          weight: AppTheme.isDeSlopified ? .semibold : .bold,
+                                          design: AppTheme.isDeSlopified ? .default : .rounded))
+                            .tracking(AppTheme.isDeSlopified ? -0.4 : -1.3)
                         Text(store.feedSort == "recommended" ? "Selected for your interests" : "Popular from your sources")
                             .font(.subheadline)
                             .foregroundStyle(AppTheme.secondaryLabel)
@@ -98,6 +101,7 @@ struct HomeFeedView: View {
                     .disabled(pullRefreshInFlight)
                     .accessibilityLabel("Refresh feed")
                     .accessibilityIdentifier("home-refresh")
+                    if !AppTheme.isDeSlopified {
                     Image(systemName: store.feedSort == "recommended" ? "sparkles" : "flame.fill")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.white)
@@ -105,6 +109,7 @@ struct HomeFeedView: View {
                         .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 17))
                         .rotationEffect(.degrees(-9))
                         .accessibilityHidden(true)
+                    }
                 }
                 .id("home-top")
                 .background(GeometryReader { origin in
@@ -173,7 +178,8 @@ struct HomeFeedView: View {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))
                 }
                 ForEach(store.posts, id: \.stableID) { post in
-                    PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width), height: viewport.size.height))
+                    PostCardView(post: post, available: CGSize(width: max(1, min(AppTheme.feedWidth, viewport.size.width) - cardInset * 2), height: viewport.size.height))
+                        .padding(.horizontal, cardInset)
                         .frame(maxWidth: .infinity)
                         .id(post.stableID)
                         .onAppear {

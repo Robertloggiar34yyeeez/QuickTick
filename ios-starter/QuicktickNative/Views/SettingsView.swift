@@ -154,8 +154,10 @@ struct SettingsView: View {
                                     .foregroundStyle(activeSection == destination ? .white : .white.opacity(0.76))
                                     .padding(.horizontal, 14)
                                     .frame(height: 37)
-                                    .background(activeSection == destination ? AppTheme.gradient : LinearGradient(colors: [AppTheme.elevatedSurface, AppTheme.elevatedSurface], startPoint: .leading, endPoint: .trailing), in: Capsule())
-                                    .overlay(Capsule().stroke(.white.opacity(activeSection == destination ? 0.28 : 0.10)))
+                                    .background(activeSection == destination
+                                        ? (AppTheme.isDeSlopified ? AnyShapeStyle(AppTheme.surface) : AnyShapeStyle(AppTheme.gradient))
+                                        : AnyShapeStyle(AppTheme.elevatedSurface), in: Capsule())
+                                    .overlay(Capsule().stroke(activeSection == destination ? AppTheme.border.opacity(1) : AppTheme.border.opacity(0.55)))
                             }
                             .buttonStyle(QuicktickPressStyle())
                         }
@@ -190,7 +192,7 @@ struct SettingsView: View {
                 Label("Color theme", systemImage: "paintpalette.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
                 SettingsPaletteSelector(selected: $accentPalette)
-                Text("Choose OLED Black for true-black screens, or explore dark gradients. Every theme updates menus, cards and navigation.")
+                Text("De-slopified uses flat neutral surfaces, consistent spacing and restrained colour. Other themes retain their original appearance.")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                 HStack(spacing: 10) {
                     Image(systemName: "photo.artframe")
@@ -425,7 +427,7 @@ struct SettingsView: View {
             }
             .frame(maxWidth: 780)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 18)
+            .padding(.horizontal, AppTheme.contentMargin)
             .padding(.bottom, 44)
         }
         }
@@ -481,7 +483,25 @@ struct SettingsView: View {
             .onDisappear { store.cancelManualVisualRefresh() }
     }
 
-    private var settingsHero: some View {
+    @ViewBuilder private var settingsHero: some View {
+        if AppTheme.isDeSlopified {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Settings")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("Your appearance, preferences and playback.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.secondaryLabel)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 15)
+            .padding(.bottom, 7)
+        } else {
+            legacySettingsHero
+        }
+    }
+
+    private var legacySettingsHero: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("YOUR QUICKTICK")
@@ -557,24 +577,34 @@ private struct SettingsPaletteSelector: View {
         if showingAll { return AppTheme.AccentPalette.allCases }
         let current = AppTheme.AccentPalette(rawValue: selected) ?? .violet
         var featured: [AppTheme.AccentPalette] = []
-        for palette in [current, .oledBlack, .galaxy, .darkCosmos, .violet] where !featured.contains(palette) {
+        for palette in [current, .deSlopified, .oledBlack, .galaxy, .darkCosmos] where !featured.contains(palette) {
             featured.append(palette)
         }
         return Array(featured.prefix(3))
     }
     var body: some View {
-        VStack(spacing: 11) {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+        VStack(alignment: .leading, spacing: 11) {
+        // Adaptive columns maintain one 10pt gutter without squeezing theme
+        // names into 90pt cells on narrow iPhones.
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 128, maximum: 180), spacing: 10)], spacing: 10) {
             ForEach(visiblePalettes) { palette in
                 let chosen = selected == palette.rawValue
+                let swatchColors = palette == .deSlopified
+                    ? [Color(red: 0.067, green: 0.067, blue: 0.067), Color(red: 0.15, green: 0.15, blue: 0.15)]
+                    : palette.gradientColors
                 Button {
                     withAnimation(.smooth(duration: 0.26)) { selected = palette.rawValue }
                 } label: {
                     VStack(spacing: 7) {
                         RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .fill(LinearGradient(colors: palette.gradientColors,
+                            .fill(LinearGradient(colors: swatchColors,
                                                  startPoint: .topLeading, endPoint: .bottomTrailing))
                             .frame(height: 49)
+                            .overlay(alignment: .bottomLeading) {
+                                if palette == .deSlopified {
+                                    Capsule().fill(palette.primary).frame(width: 44, height: 4).padding(10)
+                                }
+                            }
                             .overlay {
                                 if [.galaxy, .darkCosmos, .auroraNight, .solarEclipse, .oledBlack, .graphite, .midnightBlue, .emeraldNoir, .crimsonNoir, .nebulaDrift, .obsidianGold, .polarNight].contains(palette) {
                                     HStack(alignment: .top) {
@@ -601,6 +631,7 @@ private struct SettingsPaletteSelector: View {
                             .foregroundStyle(chosen ? .white : AppTheme.secondaryLabel)
                             .lineLimit(1)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(5)
                     .background(chosen ? AppTheme.accent.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 16))
                 }
@@ -633,8 +664,8 @@ private struct SettingsTextFieldSurface: ViewModifier {
             .font(.subheadline)
             .padding(.horizontal, 14)
             .frame(minHeight: 44)
-            .background(AppTheme.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13).stroke(AppTheme.border))
+            .background(AppTheme.background.opacity(0.65), in: RoundedRectangle(cornerRadius: AppTheme.controlRadius))
+            .overlay(RoundedRectangle(cornerRadius: AppTheme.controlRadius).stroke(AppTheme.border))
     }
 }
 
@@ -752,9 +783,11 @@ private struct SettingsGroup<Content: View>: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(AppTheme.accent)
                     .frame(width: 36, height: 36)
-                    .background(AppTheme.accent.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
+                    .background(AppTheme.isDeSlopified ? Color.clear : AppTheme.accent.opacity(0.13),
+                                in: RoundedRectangle(cornerRadius: 12))
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .font(.system(size: 16, weight: .semibold,
+                                  design: AppTheme.isDeSlopified ? .default : .rounded))
                     .foregroundStyle(.white)
                 Spacer(minLength: 0)
             }
@@ -767,10 +800,10 @@ private struct SettingsGroup<Content: View>: View {
             .tint(AppTheme.accent)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(18)
+        .padding(AppTheme.isDeSlopified ? AppTheme.contentMargin : 18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
     }
 }
 
@@ -781,8 +814,8 @@ private struct SettingsControlRow: ViewModifier {
         content
             .padding(.horizontal, 12)
             .frame(minHeight: 50)
-            .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
+            .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous)
                 .stroke(AppTheme.border.opacity(0.65), lineWidth: 1))
     }
 }

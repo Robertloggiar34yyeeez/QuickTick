@@ -10,6 +10,13 @@ final class VisualTasteTests: XCTestCase {
         XCTAssertEqual(AppTheme.AccentPalette.violet.gradientColors.count, 2)
     }
 
+    func testDeSlopifiedPaletteHasFlatAccentAndStableSettingsName() {
+        XCTAssertTrue(AppTheme.AccentPalette.allCases.contains(.deSlopified))
+        XCTAssertEqual(AppTheme.AccentPalette(rawValue: "deSlopified"), .deSlopified)
+        XCTAssertEqual(AppTheme.AccentPalette.deSlopified.name, "De-slopified")
+        XCTAssertEqual(AppTheme.AccentPalette.deSlopified.gradientColors.count, 2)
+    }
+
     func testStudioFavoritePromptKeepsOneCharacterOneSceneAndOnePose() {
         let seed = StudioPromptSeed(
             characters: ["chun_li", "samus_aran"], artists: ["favorite_artist"],

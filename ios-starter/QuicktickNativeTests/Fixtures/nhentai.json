@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "provider": "nhentai",
+      "type": "manga",
+      "key": "nhentai:fixture",
+      "tags": ["example"],
+      "id": "fixture"
+    }
+  ],
+  "hasMore": true
+}

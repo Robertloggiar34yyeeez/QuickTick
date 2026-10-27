@@ -501,6 +501,9 @@ final class AppStore: ObservableObject {
         let feedStarted = Date()
         let requestedQuery = queryText
         let provider = selectedProvider
+        // A refresh starts with a new feed, but that does not mean the user
+        // wants the same character/artist cluster as the previous screen.
+        let recentProviderPosts = Array(previousVisible.filter { $0.providerKey == provider }.suffix(12))
         isLoading = true
         var releasedLoading = false
         defer { if generation == token && !releasedLoading { isLoading = false } }
@@ -572,7 +575,7 @@ final class AppStore: ObservableObject {
                     // loading, network requests or pixel decoding on first paint.
                     let cachedAppearance = await visual.scores(incoming)
                     filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
-                        recent: [], visualScores: cachedAppearance, strict: true)
+                        recent: recentProviderPosts, visualScores: cachedAppearance, strict: true)
                 } else { filtered = incoming }
                 let focusedMiss = filtered.isEmpty && acquisition?.focused == true
                 if focusedMiss, let acquisition {
@@ -590,7 +593,7 @@ final class AppStore: ObservableObject {
                 // Hard dislikes and exclusions remain enforced by rankFast.
                 let visualEvidence = await visual.scores(havenExploration)
                 immediate = Array((await recommendations.rankFast(havenExploration,
-                    taste: tasteChoice(for: provider), recent: [],
+                    taste: tasteChoice(for: provider), recent: recentProviderPosts,
                     visualScores: visualEvidence, strict: false)).prefix(12))
             }
             if immediate.isEmpty, personalized, provider == .hhaven, !havenSafeCatalog.isEmpty {
@@ -604,7 +607,7 @@ final class AppStore: ObservableObject {
                     favoriteIDs: favoriteExclusionIDs)
                 let visualEvidence = await visual.scores(eligible)
                 immediate = Array((await recommendations.rankFast(eligible,
-                    taste: tasteChoice(for: provider), recent: [],
+                    taste: tasteChoice(for: provider), recent: recentProviderPosts,
                     visualScores: visualEvidence, strict: false)).prefix(12))
             }
             if immediate.isEmpty, personalized, provider == .nhentai {
@@ -617,7 +620,7 @@ final class AppStore: ObservableObject {
                 if !eligible.isEmpty {
                     let visualEvidence = await visual.scores(eligible)
                     immediate = Array((await recommendations.rankFast(eligible,
-                        taste: tasteChoice(for: provider), recent: [],
+                        taste: tasteChoice(for: provider), recent: recentProviderPosts,
                         visualScores: visualEvidence, strict: false)).prefix(12))
                 }
             }

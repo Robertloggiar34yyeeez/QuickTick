@@ -536,6 +536,70 @@ enum NativeProviderAPI {
             (pages > 0 ? page < pages : !entries.isEmpty), query: query, immersive: immersive)
     }
 
+    /// The third-party Warden API can reject independent iOS clients. When it
+    /// does, show the titles on Hentai Haven's public website using their real
+    /// watch URLs. Web posts open in the in-app browser; never pretend an HTML
+    /// watch page is an AVPlayer-compatible stream or downloadable media file.
+    static func havenWebsiteCatalog(session: URLSession, query: ParsedQuery,
+                                    page: Int, sort: String, immersive: Bool) async throws -> PostPage {
+        guard page == 1, !immersive else { return PostPage(items: [], hasMore: false) }
+        let route = sort == "popular" ? "https://hentaihaven.xxx/browse/trending/" : "https://hentaihaven.xxx/"
+        let bytes = try await data(session: session, url: url(route), provider: .hhaven,
+                                   headers: ["Accept": "text/html,application/xhtml+xml"], maxBytes: 5 * 1024 * 1024)
+        guard !unavailableHTML(bytes) else {
+            throw APIError.server("Hentai Haven's website and Warden API are unavailable from this network.")
+        }
+        let posts = parseHavenWebsiteCatalog(String(decoding: bytes, as: UTF8.self))
+        guard !posts.isEmpty else {
+            throw APIError.server("Hentai Haven's website did not expose readable titles; its catalog API is also unavailable.")
+        }
+        // The public homepage is not a search endpoint. Filtering locally is
+        // essential: otherwise a failed search silently turns into unrelated
+        // homepage recommendations and teaches the taste model false positives.
+        let matched = posts.filter { post in
+            query.included.allSatisfy { containsKeyword($0, in: post) }
+        }
+        return self.page(matched, hasMore: false, query: query, immersive: false)
+    }
+
+    static func parseHavenWebsiteCatalog(_ html: String) -> [Post] {
+        let pattern = #"(?i)href\s*=\s*["'](?:https://hentaihaven\.xxx)?(/watch/([a-z0-9-]+)/?)["']"#
+        guard let linkPattern = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let content = html as NSString
+        let matches = linkPattern.matches(in: html, range: NSRange(location: 0, length: content.length))
+        let imagePattern = try? NSRegularExpression(pattern:
+            #"(?i)(?:data-src|src)\s*=\s*["'](https://img\.hentaihaven\.xxx/[^"']+)["']"#)
+        let titlePattern = try? NSRegularExpression(pattern: #"(?i)(?:alt|title)\s*=\s*["']([^"']{3,180})["']"#)
+        var unique = Set<String>()
+        var posts: [Post] = []
+        for match in matches.prefix(160) {
+            let slug = content.substring(with: match.range(at: 2)).lowercased()
+            guard unique.insert(slug).inserted else { continue }
+            let path = content.substring(with: match.range(at: 1))
+            let section = NSRange(location: match.range.location,
+                length: min(1300, content.length - match.range.location))
+            let snippet = content.substring(with: section)
+            let snippetRange = NSRange(location: 0, length: (snippet as NSString).length)
+            let title = titlePattern?.firstMatch(in: snippet, range: snippetRange).map {
+                (snippet as NSString).substring(with: $0.range(at: 1))
+            } ?? slug.replacingOccurrences(of: "-", with: " ").capitalized
+            let image = imagePattern?.firstMatch(in: snippet, range: snippetRange).map {
+                (snippet as NSString).substring(with: $0.range(at: 1))
+            } ?? ""
+            let caption = title.replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "&#39;", with: "'")
+            let tags = caption.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                .prefix(16).map(String.init)
+            let pageURL = "https://hentaihaven.xxx" + path
+            var post = Post(key: "hhaven:web:\(slug)", id: slug, provider: Provider.hhaven.rawValue,
+                            tags: tags, thumbUrl: image, pageUrl: pageURL, type: "web", embedUrl: pageURL)
+            post.caption = caption
+            posts.append(post)
+        }
+        return posts
+    }
+
     static func havenResolve(session: URLSession, token: String, post: Post) async throws -> ResolvedMedia {
         guard !post.id.isEmpty, post.id.allSatisfy(\.isNumber) else { throw APIError.invalidResponse }
         let details = try await havenRequest(session: session, token: token, path: "hentai/\(post.id)")
@@ -928,6 +992,8 @@ extension NativeProviderAPI {
         do {
             data = try await self.data(session: session, url: endpoint, provider: provider,
                                        headers: archiveAcceptHeaders)
+        } catch APIError.providerStatus(_, 403) {
+            throw APIError.server("\(provider.displayName) denied anonymous API access (HTTP 403). Its source currently requires site access; browse it in QuickTick to sign in if supported.")
         } catch APIError.providerStatus(_, 404) {
             usedFallback = true
             // Kemono's own global search UI can receive a 404 on `?q=...`.

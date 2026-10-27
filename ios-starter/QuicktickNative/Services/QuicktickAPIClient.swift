@@ -190,15 +190,33 @@ actor QuicktickAPIClient {
         let session = self.session
         let auth = havenAuth
         let request = Task<PostPage, Error> {
-            let token = try await auth.value(session: session)
             do {
-                return try await NativeProviderAPI.haven(session: session, token: token,
-                    query: query, page: page, sort: sort, immersive: immersive)
-            } catch APIError.providerStatus(.hhaven, 401) {
-                await auth.invalidate(expecting: token)
-                let replacement = try await auth.value(session: session)
-                return try await NativeProviderAPI.haven(session: session, token: replacement,
-                    query: query, page: page, sort: sort, immersive: immersive)
+                let token = try await auth.value(session: session)
+                do {
+                    return try await NativeProviderAPI.haven(session: session, token: token,
+                        query: query, page: page, sort: sort, immersive: immersive)
+                } catch APIError.providerStatus(.hhaven, 401) {
+                    await auth.invalidate(expecting: token)
+                    let replacement = try await auth.value(session: session)
+                    return try await NativeProviderAPI.haven(session: session, token: replacement,
+                        query: query, page: page, sort: sort, immersive: immersive)
+                }
+            } catch let apiFailure {
+                try Task.checkCancellation()
+                // Independent public catalog, not a forged token or a proxy.
+                // Retain the original API path when it works and only degrade
+                // to real website watch pages on an authenticated API failure.
+                do {
+                    let page = try await NativeProviderAPI.havenWebsiteCatalog(session: session,
+                        query: query, page: page, sort: sort, immersive: immersive)
+                    // Preserve the real upstream error when a website index
+                    // cannot satisfy an explicit query. This is an outage,
+                    // not an empty search result.
+                    if page.items.isEmpty { throw apiFailure }
+                    return page
+                } catch {
+                    throw apiFailure
+                }
             }
         }
         havenPageTasks[key] = request
@@ -232,13 +250,19 @@ actor QuicktickAPIClient {
         }
         archivePageTasks[key] = task
         defer { archivePageTasks.removeValue(forKey: key) }
-        let result = try await task.value
-        // Archive APIs and attachment normalization can be slow. Keep a short
-        // in-memory window for instant tab returns and for a broad query that
-        // finished after the focused query was already shown to the user.
-        archivePages[key] = (result, .now.addingTimeInterval(120))
-        if archivePages.count > 40 { archivePages = archivePages.filter { $0.value.expiry > .now } }
-        return result
+        do {
+            let result = try await task.value
+            // Archive APIs and attachment normalization can be slow. Keep a
+            // short window for instant tab returns and intermittent outages.
+            archivePages[key] = (result, .now.addingTimeInterval(120))
+            if archivePages.count > 40 { archivePages = archivePages.filter { $0.value.expiry > .now } }
+            return result
+        } catch {
+            if let saved = archivePages[key], saved.expiry > .now.addingTimeInterval(-20 * 60) {
+                return saved.page
+            }
+            throw error
+        }
     }
 
     private func creatorCacheURL(for provider: Provider) -> URL? {

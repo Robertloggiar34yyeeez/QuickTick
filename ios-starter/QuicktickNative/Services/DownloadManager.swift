@@ -2,6 +2,26 @@ import Foundation
 import AVFoundation
 import Combine
 
+/// URLSession delegate callbacks can arrive dozens of times per second.
+/// Coalesce on their background queue before scheduling MainActor work.
+private final class DownloadProgressGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last: [String: TimeInterval] = [:]
+
+    func shouldPublish(key: String, progress: Double) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let now = Date.timeIntervalSinceReferenceDate
+        if progress < 0.999, let prior = last[key], now - prior < 0.35 { return false }
+        last[key] = now
+        return true
+    }
+
+    func clear(key: String) {
+        lock.lock(); defer { lock.unlock() }
+        last.removeValue(forKey: key)
+    }
+}
+
 @MainActor
 final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDelegate, AVAssetDownloadDelegate {
     @Published private(set) var records: [DownloadRecord] = []
@@ -11,15 +31,25 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     nonisolated let root: URL
     private var tasks: [String: URLSessionTask] = [:]
     private var preparing = Set<String>()
+    nonisolated private let progressGate = DownloadProgressGate()
     private var metadataFailed = false
+    // Native URLSession transfers already survive app suspension. Delegate
+    // callbacks must not run on the UI thread for every downloaded chunk.
+    private lazy var transferDelegateQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "QuickTick background download callbacks"
+        queue.qualityOfService = .utility
+        queue.maxConcurrentOperationCount = 1
+        return queue
+    }()
     private lazy var directSession: URLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: "com.quicktick.downloads.files")
         config.sessionSendsLaunchEvents = true
-        return URLSession(configuration: config, delegate: self, delegateQueue: .main)
+        return URLSession(configuration: config, delegate: self, delegateQueue: transferDelegateQueue)
     }()
     private lazy var hlsSession: AVAssetDownloadURLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: "com.quicktick.downloads.hls")
-        return AVAssetDownloadURLSession(configuration: config, assetDownloadDelegate: self, delegateQueue: .main)
+        return AVAssetDownloadURLSession(configuration: config, assetDownloadDelegate: self, delegateQueue: transferDelegateQueue)
     }()
 
     init(resolver: MediaResolver, directory: URL? = nil) {
@@ -124,7 +154,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }
     func pause(_ record: DownloadRecord) { tasks[record.key]?.suspend(); update(record.key) { $0.state = .paused } }
     func resume(_ record: DownloadRecord) { tasks[record.key]?.resume(); update(record.key) { $0.state = .downloading } }
-    func cancel(_ record: DownloadRecord) { tasks.removeValue(forKey: record.key)?.cancel(); update(record.key) { $0.state = .cancelled } }
+    func cancel(_ record: DownloadRecord) {
+        tasks.removeValue(forKey: record.key)?.cancel()
+        progressGate.clear(key: record.key)
+        update(record.key) { $0.state = .cancelled }
+    }
     func retry(_ record: DownloadRecord) {
         cancel(record)
         // A previous signed CDN URL may have expired. Recover the provider
@@ -148,6 +182,15 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     private func update(_ key: String, _ mutation: (inout DownloadRecord) -> Void) {
         guard var record = records.first(where: { $0.key == key }) else { return }
         mutation(&record); upsert(record)
+    }
+    private func reportProgress(_ key: String, value: Double, expectedBytes: Int64? = nil) {
+        guard let index = records.firstIndex(where: { $0.key == key }),
+              records[index].state == .downloading else { return }
+        // Only live in-memory UI state changes here. Encoding and atomically
+        // rewriting downloads.json for every URLSession progress packet caused
+        // scrolling stalls until a transfer completed.
+        records[index].progress = min(1, max(0, value))
+        if let expectedBytes, expectedBytes > 0 { records[index].fileSize = expectedBytes }
     }
     private func upsert(_ record: DownloadRecord) {
         if let index = records.firstIndex(where: { $0.key == record.key }) { records[index] = record } else { records.insert(record, at: 0) }
@@ -173,6 +216,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     nonisolated private static func safeName(_ value: String) -> String { value.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression) }
     private func finished(_ key: String, location: URL) {
         guard let record = records.first(where: { $0.key == key }), record.state != .cancelled else { try? FileManager.default.removeItem(at: location); return }
+        progressGate.clear(key: key)
         update(key) { $0.localMediaPath = location.path; $0.progress = 1; $0.state = .complete; $0.errorMessage = nil }
         tasks.removeValue(forKey: key)
         onCompleted?(Post(key: record.key, id: record.postID, provider: record.provider, tags: record.tags))
@@ -220,7 +264,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         guard let key = downloadTask.taskDescription else { return }
-        Task { @MainActor in self.update(key) { $0.progress = totalBytesExpectedToWrite > 0 ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0; $0.fileSize = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil } }
+        let value = totalBytesExpectedToWrite > 0 ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0
+        guard progressGate.shouldPublish(key: key, progress: value) else { return }
+        Task { @MainActor in self.reportProgress(key,
+            value: value,
+            expectedBytes: totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil) }
     }
     nonisolated func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didFinishDownloadingTo location: URL) {
         guard let key = assetDownloadTask.taskDescription else { return }
@@ -230,7 +278,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         guard let key = assetDownloadTask.taskDescription else { return }
         let expected = timeRangeExpectedToLoad.duration.seconds
         let loaded = totalTimeRangesLoaded.reduce(0.0) { $0 + $1.timeRangeValue.duration.seconds }
-        Task { @MainActor in self.update(key) { $0.progress = expected.isFinite && expected > 0 ? min(1, loaded / expected) : 0 } }
+        let value = expected.isFinite && expected > 0 ? min(1, loaded / expected) : 0
+        guard progressGate.shouldPublish(key: key, progress: value) else { return }
+        Task { @MainActor in self.reportProgress(key,
+            value: value) }
     }
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let key = task.taskDescription, let error else { return }

@@ -64,9 +64,9 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertFalse(gate.finish(translation: CGSize(width: 0, height: 130)))
     }
 
-    func testImmersivePreparesOneUpcomingClipAndRetainsPrevious() {
-        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 2, count: 6), [1, 2, 3])
-        XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 2, count: 6), [3])
+    func testImmersivePreparesTwoUpcomingClipsAndRetainsPrevious() {
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 2, count: 6), [1, 2, 3, 4])
+        XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 2, count: 6), [3, 4])
         XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 5, count: 6), [])
     }
 

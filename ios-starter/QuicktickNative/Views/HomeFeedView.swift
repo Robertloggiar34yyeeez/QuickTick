@@ -29,6 +29,7 @@ struct HomeFeedView: View {
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage("quicktick-suggested-themes-v1") private var suggestedThemesEnabled = true
     @State private var showSearch = false
+    @State private var showProviderWebsite = false
     @State private var immersive = false
     @State private var immersivePostID: String?
     @State private var visibleFrames: [String: CGRect] = [:]
@@ -46,6 +47,7 @@ struct HomeFeedView: View {
     @State private var pullRefreshGate = HomePullRefreshGate()
     @State private var visualThemeTerms: [String] = []
     @State private var themeSuggestions: [HomeThemeSuggestion] = []
+    @State private var themeRefreshCycle = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var postSignature: String {
         "\(store.feedRevision)|\(store.posts.count)|\(store.posts.first?.stableID ?? "")|\(store.posts.last?.stableID ?? "")"
@@ -56,6 +58,9 @@ struct HomeFeedView: View {
             ScrollViewReader { proxy in
                 feedScroll(viewport: viewport, proxy: proxy)
             }
+        }
+        .sheet(isPresented: $showProviderWebsite) {
+            SourceWebsiteView(url: NativeProviderAPI.origin(store.selectedProvider)).ignoresSafeArea()
         }
     }
 
@@ -158,8 +163,8 @@ struct HomeFeedView: View {
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: {
                         Button("Try again") { Task { await store.refresh() } }
-                        if store.selectedProvider == .hhaven || store.selectedProvider == .nhentai {
-                            Link("Open provider website", destination: NativeProviderAPI.origin(store.selectedProvider))
+                        if [.hhaven, .nhentai, .kemono, .coomer].contains(store.selectedProvider) {
+                            Button("Browse inside QuickTick") { showProviderWebsite = true }
                         }
                     }
                 } else if store.posts.isEmpty && !store.isLoading {
@@ -370,6 +375,12 @@ struct HomeFeedView: View {
             playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
             refreshThemeSuggestions()
         }
+        .onChange(of: store.feedRevision) { _, _ in
+            // An explicit refresh starts a new feed generation even when the
+            // provider returns the same posts. Rotate the taste-backed chips.
+            themeRefreshCycle &+= 1
+            refreshThemeSuggestions()
+        }
         .onChange(of: store.favorites.count) { _, _ in refreshThemeSuggestions() }
         .onChange(of: store.learnedInterests) { _, _ in refreshThemeSuggestions() }
         .onChange(of: store.tasteChoice(for: store.selectedProvider)) { _, _ in refreshThemeSuggestions() }
@@ -389,7 +400,8 @@ struct HomeFeedView: View {
         let proposed = HomeThemeSuggestions.make(provider: provider,
             learned: store.learnedInterests, chosen: taste.into,
             visual: visualThemeTerms, favorites: Array(store.favorites.values),
-            posts: store.posts, excluded: store.exclusions + taste.notInto, limit: 5)
+            posts: store.posts, excluded: store.exclusions + taste.notInto,
+            limit: 5, rotation: themeRefreshCycle)
         if proposed != themeSuggestions { themeSuggestions = proposed }
     }
 
@@ -577,7 +589,7 @@ enum HomeThemeSuggestions {
 
     static func make(provider: Provider, learned: [String], chosen: [String],
                      visual: [String], favorites: [Post], posts: [Post],
-                     excluded: [String], limit: Int = 8) -> [HomeThemeSuggestion] {
+                     excluded: [String], limit: Int = 8, rotation: Int = 0) -> [HomeThemeSuggestion] {
         // Bound this to nearby evidence: Home's body is refreshed by scroll
         // state, so image-chip ranking must never scan a huge saved library.
         let liked = Array(favorites.lazy.filter { $0.providerKey == provider }.prefix(96))
@@ -605,19 +617,27 @@ enum HomeThemeSuggestions {
             scores[$0, default: 0] == scores[$1, default: 0]
                 ? $0 < $1 : scores[$0, default: 0] > scores[$1, default: 0]
         }
+        // Rotate only among high-confidence, taste-backed terms. Never invent
+        // categories just to make a refresh look different.
+        let leading = Array(ranked.prefix(max(limit, 12)))
+        let offset = leading.isEmpty ? 0 : (rotation % leading.count + leading.count) % leading.count
+        let rotated = Array(leading.dropFirst(offset)) + Array(leading.prefix(offset))
+        let ordered = rotated + Array(ranked.dropFirst(leading.count))
         var usedImages = Set<String>()
         var result: [HomeThemeSuggestion] = []
-        for term in ranked.prefix(32) {
+        for term in ordered.prefix(32) {
             let matches = evidence.filter { post in
                 let captionTokens = "_" + normalize(post.caption ?? "")
                     .map { $0.isLetter || $0.isNumber ? String($0) : "_" }.joined() + "_"
                 return post.tags.contains(where: { normalize($0) == term }) ||
                 captionTokens.contains("_" + term + "_")
             }
-            guard let sample = matches.first(where: {
+            let imageOffset = matches.isEmpty ? 0 : (rotation % matches.count + matches.count) % matches.count
+            let rotatedMatches = Array(matches.dropFirst(imageOffset)) + Array(matches.prefix(imageOffset))
+            guard let sample = rotatedMatches.first(where: {
                 !$0.cardPreviewURL.isEmpty && !usedImages.contains($0.cardPreviewURL)
                     && URL(string: $0.cardPreviewURL)?.scheme == "https"
-            }) ?? matches.first(where: {
+            }) ?? rotatedMatches.first(where: {
                 !$0.cardPreviewURL.isEmpty && URL(string: $0.cardPreviewURL)?.scheme == "https"
             }) else { continue }
             usedImages.insert(sample.cardPreviewURL)

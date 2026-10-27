@@ -328,7 +328,10 @@ final class IntelligentRecommendationTests: XCTestCase {
             XCTAssertEqual(VisualDomain.classify(post("b", ["3dcg", "anime"], provider: provider.rawValue)), .threeD)
             XCTAssertEqual(VisualDomain.classify(post("c", ["photo"], provider: provider.rawValue)), .realLife)
             XCTAssertEqual(VisualDomain.classify(post("d", ["photo", "3d"], provider: provider.rawValue)), .mixed)
-            XCTAssertEqual(VisualDomain.classify(post("e", ["animated", "realistic"], provider: provider.rawValue)), .uncertain)
+            // Catalog entries from these anime-only sources retain their known
+            // medium until explicit photograph/3D evidence overrides it.
+            let expected: VisualDomain = (provider == .hhaven || provider == .nhentai) ? .anime : .uncertain
+            XCTAssertEqual(VisualDomain.classify(post("e", ["animated", "realistic"], provider: provider.rawValue)), expected)
         }
     }
     func testSpecificArtistMediumAndPresentationOutweighBroadSimilarity() throws {

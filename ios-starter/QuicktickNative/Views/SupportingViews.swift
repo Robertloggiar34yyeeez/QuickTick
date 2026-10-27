@@ -1,4 +1,5 @@
 import SwiftUI
+import SafariServices
 
 struct CommentsView: View {
     @EnvironmentObject private var store: AppStore
@@ -6,6 +7,7 @@ struct CommentsView: View {
     let post: Post
     @State private var page: CommentPage?
     @State private var error: String?
+    @State private var writeInApp = false
 
     var body: some View {
         NavigationStack {
@@ -96,24 +98,25 @@ struct CommentsView: View {
                     .padding(.vertical, 13)
                 }
                 .scrollIndicators(.hidden)
-                // These sources expose comment reads but no documented
-                // authenticated comment-create API. Hand writing off to the
-                // verified post page instead of pretending to submit locally.
+                // Comment creation is provider-authenticated. Keep the post's
+                // real compose form inside QuickTick rather than opening the
+                // external browser or inventing an unsupported write API.
                 if let source = URL(string: post.pageUrl), source.scheme == "https",
                    let provider = post.providerKey, Provider.identifyPage(post.pageUrl) == provider {
-                    Link(destination: source) {
-                        Label("Write a comment on source", systemImage: "square.and.arrow.up")
+                    Button { writeInApp = true } label: {
+                        Label("Write comment in QuickTick", systemImage: "square.and.pencil")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity, minHeight: 48)
                     }
                     .buttonStyle(.borderedProminent)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 4)
-                    Text("Opens the original post. Sign in there to comment; QuickTick does not send comments to this provider's API.")
+                    Text("Opens this provider's posting form inside the app. Sign in there if required; QuickTick never impersonates your account.")
                         .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 20)
                         .padding(.bottom, 10)
+                    .sheet(isPresented: $writeInApp) { SourceWebsiteView(url: source).ignoresSafeArea() }
                 }
             }
             .background(AppTheme.canvas)
@@ -141,6 +144,23 @@ struct CommentsView: View {
         .frame(maxWidth: .infinity, minHeight: 150)
         .padding(22)
     }
+}
+
+/// The provider handles its own sign-in and comment submission. Safari's
+/// in-app controller supports the provider's real web forms and cookie flows;
+/// QuickTick does not store passwords or synthesize successful submissions.
+struct SourceWebsiteView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let settings = SFSafariViewController.Configuration()
+        settings.entersReaderIfAvailable = false
+        let browser = SFSafariViewController(url: url, configuration: settings)
+        browser.dismissButtonStyle = .close
+        return browser
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) { }
 }
 
 struct TasteOnboardingView: View {

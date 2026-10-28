@@ -11,10 +11,33 @@ enum CollectionSearch {
     }
 
     private static func matches(query: String, fields: [String]) -> Bool {
-        let words = normalized(query).split(whereSeparator: \.isWhitespace)
+        matches(words: normalized(query).split(whereSeparator: \.isWhitespace).map(String.init), fields: fields)
+    }
+
+    private static func matches(words: [String], fields: [String]) -> Bool {
         guard !words.isEmpty else { return true }
         let haystack = normalized(fields.joined(separator: " "))
         return words.allSatisfy { haystack.contains($0) }
+    }
+
+    // Batch searches tokenize once, off the UI thread. Individual matches()
+    // stays available for single-post actions and regression tests.
+    static func filter(_ posts: [Post], query: String) -> [Post] {
+        let words = normalized(query).split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !words.isEmpty else { return posts }
+        return posts.filter { post in
+            matches(words: words, fields: [post.caption ?? "", post.creator ?? "", post.category ?? "",
+                                         post.provider, post.id] + post.tags)
+        }
+    }
+
+    static func matchingDownloadKeys(_ records: [DownloadRecord], query: String) -> Set<String> {
+        let words = normalized(query).split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !words.isEmpty else { return Set(records.map(\.key)) }
+        return Set(records.lazy.filter { record in
+            matches(words: words, fields: [record.title, record.provider, record.postID,
+                                         record.mediaType ?? "", record.state.rawValue] + record.tags)
+        }.map(\.key))
     }
 
     static func matches(_ post: Post, query: String) -> Bool {
@@ -32,6 +55,7 @@ struct CollectionSearchField: View {
     @Binding var text: String
     let placeholder: String
     let identifier: String
+    var isSearching = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -42,6 +66,9 @@ struct CollectionSearchField: View {
                 .autocorrectionDisabled()
                 .submitLabel(.search)
                 .accessibilityIdentifier(identifier)
+            if isSearching {
+                ProgressView().controlSize(.small).accessibilityLabel("Searching saved media")
+            }
             if !text.isEmpty {
                 Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -102,6 +129,27 @@ enum DownloadExporter {
     }
 }
 
+/// Search terms and local paths change only when the catalog changes, not
+/// when the download manager publishes a new progress fraction.
+private struct DownloadSearchIdentity: Equatable {
+    let key: String
+    let title: String
+    let provider: String
+    let postID: String
+    let tags: [String]
+    let state: DownloadState
+    let mediaType: String?
+    let localMediaPath: String?
+    let thumbnailLocalPath: String?
+
+    init(_ record: DownloadRecord) {
+        key = record.key; title = record.title; provider = record.provider
+        postID = record.postID; tags = record.tags; state = record.state
+        mediaType = record.mediaType; localMediaPath = record.localMediaPath
+        thumbnailLocalPath = record.thumbnailLocalPath
+    }
+}
+
 struct DownloadsFeedView: View {
     @EnvironmentObject private var store: AppStore
     var onImmersiveChange: (Bool) -> Void = { _ in }
@@ -118,11 +166,71 @@ private struct DownloadContent: View {
     @State private var selectedKeys: Set<String> = []
     @State private var confirmDelete = false
     @State private var searchText = ""
+    @State private var matchingKeys: Set<String> = []
+    @State private var offlinePostCache: [String: Post] = [:]
+    @State private var offlineCacheReady = false
+    @State private var recordIdentity: [DownloadSearchIdentity] = []
+    @State private var recordRevision = 0
+    @State private var searchRevision = 0
+    @State private var searching = false
+    @State private var searchTask: Task<Void, Never>?
+    @State private var cacheTask: Task<Void, Never>?
     private var filteredRecords: [DownloadRecord] {
-        manager.records.filter { CollectionSearch.matches($0, query: searchText) }
+        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return manager.records }
+        // A Set lookup is cheap enough during progress publishes and scrolling;
+        // the expensive tag/title matching runs only when search inputs change.
+        return manager.records.filter { matchingKeys.contains($0.key) }
+    }
+    private var collectionSubtitle: String {
+        if searching { return "Searching your downloads…" }
+        if searchText.isEmpty { return "\(manager.records.count) downloads, always with you" }
+        return "\(filteredRecords.count) of \(manager.records.count) downloads"
     }
     private var exportURLs: [URL] {
         manager.records.filter { selectedKeys.contains($0.key) }.compactMap(\.exportURL)
+    }
+    private func refreshCatalog(_ records: [DownloadRecord]) {
+        let next = records.map(DownloadSearchIdentity.init)
+        guard next != recordIdentity else { return }
+        recordIdentity = next
+        offlineCacheReady = false
+        recordRevision &+= 1
+        let revision = recordRevision
+        cacheTask?.cancel()
+        cacheTask = Task { @MainActor in
+            let built = await Task.detached(priority: .utility) {
+                var posts: [String: Post] = [:]
+                for record in records where record.state == .complete {
+                    if let post = record.offlinePost { posts[record.key] = post }
+                }
+                return posts
+            }.value
+            guard !Task.isCancelled, revision == recordRevision else { return }
+            offlinePostCache = built
+            offlineCacheReady = true
+        }
+        scheduleSearch(records: records)
+    }
+    private func scheduleSearch(records: [DownloadRecord]) {
+        searchTask?.cancel()
+        searchRevision &+= 1
+        let revision = searchRevision
+        let query = searchText
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            searching = false
+            matchingKeys = []
+            return
+        }
+        searching = true
+        searchTask = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(90)) } catch { return }
+            let keys = await Task.detached(priority: .userInitiated) {
+                CollectionSearch.matchingDownloadKeys(records, query: query)
+            }.value
+            guard !Task.isCancelled, revision == searchRevision else { return }
+            matchingKeys = keys
+            searching = false
+        }
     }
     var body: some View {
         ZStack {
@@ -136,8 +244,7 @@ private struct DownloadContent: View {
                                               weight: AppTheme.isDeSlopified ? .semibold : .bold,
                                               design: AppTheme.isDeSlopified ? .default : .rounded))
                                 .tracking(AppTheme.isDeSlopified ? -0.4 : -1)
-                            Text(searchText.isEmpty ? "\(manager.records.count) downloads, always with you" :
-                                    "\(filteredRecords.count) of \(manager.records.count) downloads")
+                            Text(collectionSubtitle)
                                 .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
                         }
                         Spacer()
@@ -151,11 +258,12 @@ private struct DownloadContent: View {
                         }
                     }
                     .padding(.top, 2)
-                    CollectionSearchField(text: $searchText, placeholder: "Search downloads", identifier: "downloads-search")
+                    CollectionSearchField(text: $searchText, placeholder: "Search downloads",
+                                          identifier: "downloads-search", isSearching: searching)
                     if selecting { selectionControls }
                     if let error = manager.storageError { Text(error).foregroundStyle(.orange) }
                     if manager.records.isEmpty { ContentUnavailableView("No downloads yet", systemImage: "arrow.down.to.line", description: Text("Save posts to view them offline here.")) }
-                    else if filteredRecords.isEmpty {
+                    else if filteredRecords.isEmpty && !searching {
                         ContentUnavailableView("No matching downloads", systemImage: "magnifyingglass", description: Text("Try another title, tag, or provider."))
                     }
                     ForEach(filteredRecords) { record in
@@ -164,6 +272,8 @@ private struct DownloadContent: View {
                             // Equatable completed rows keep expensive media/card state
                             // mounted without rebuilding on unrelated progress packets.
                             DownloadCachedCardRow(record: record,
+                                                  offlinePost: offlinePostCache[record.key],
+                                                  cacheReady: offlineCacheReady,
                                                   available: CGSize(width: min(AppTheme.feedWidth, geometry.size.width - 32), height: geometry.size.height),
                                                   manager: manager, selecting: selecting,
                                                   selected: selectedKeys.contains(record.key)) {
@@ -243,10 +353,20 @@ private struct DownloadContent: View {
                     selecting = false
                 }
             } message: { Text("The saved files will be removed from this device. This cannot be undone.") }
-            .onAppear { onImmersiveChange(immersive) }
+            .onAppear {
+                refreshCatalog(manager.records)
+                onImmersiveChange(immersive)
+            }
+            .onReceive(manager.$records) { refreshCatalog($0) }
             .onChange(of: immersive) { _, value in onImmersiveChange(value) }
-            .onChange(of: searchText) { _, _ in selectedKeys.removeAll() }
-            .onDisappear { onImmersiveChange(false) }
+            .onChange(of: searchText) { _, _ in
+                selectedKeys.removeAll()
+                scheduleSearch(records: manager.records)
+            }
+            .onDisappear {
+                searchTask?.cancel(); cacheTask?.cancel()
+                onImmersiveChange(false)
+            }
     }
     private var selectionControls: some View {
         VStack(spacing: 10) {
@@ -301,7 +421,7 @@ private struct DownloadContent: View {
         .accessibilityIdentifier("select-download-\(record.key)")
     }
     private var localPosts: [Post] {
-        filteredRecords.compactMap(\.offlinePost)
+        filteredRecords.compactMap { offlinePostCache[$0.key] }
     }
     private func toggleSelection(_ key: String) {
         if !selectedKeys.insert(key).inserted { selectedKeys.remove(key) }
@@ -313,6 +433,8 @@ private struct DownloadContent: View {
 /// video surfaces, context menus, and SwiftUI playback observers in each card.
 private struct DownloadCachedCardRow: View, Equatable {
     let record: DownloadRecord
+    let offlinePost: Post?
+    let cacheReady: Bool
     let available: CGSize
     let manager: DownloadManager
     let selecting: Bool
@@ -320,13 +442,14 @@ private struct DownloadCachedCardRow: View, Equatable {
     let onSelect: () -> Void
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.record == rhs.record && lhs.available == rhs.available &&
+        lhs.record == rhs.record && lhs.offlinePost == rhs.offlinePost &&
+            lhs.cacheReady == rhs.cacheReady && lhs.available == rhs.available &&
             lhs.selecting == rhs.selecting && lhs.selected == rhs.selected
     }
 
     var body: some View {
         VStack(spacing: 8) {
-            if let post = record.offlinePost {
+            if let post = offlinePost {
                 PostCardView(post: post, available: available, playbackTab: 3, offline: true,
                              onDelete: { manager.delete(record) })
                     .frame(maxWidth: .infinity)
@@ -342,6 +465,9 @@ private struct DownloadCachedCardRow: View, Equatable {
                             .accessibilityIdentifier("export-download-\(record.key)")
                     }
                 }
+            } else if !cacheReady {
+                ProgressView("Preparing offline preview…")
+                    .frame(maxWidth: .infinity, minHeight: 150)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(record.title).font(.headline).lineLimit(2)

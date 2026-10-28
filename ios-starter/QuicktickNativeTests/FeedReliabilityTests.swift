@@ -79,6 +79,10 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertTrue(CollectionSearch.matches(download, query: "Eporner science fiction"))
         XCTAssertTrue(CollectionSearch.matches(download, query: "session"))
         XCTAssertFalse(CollectionSearch.matches(download, query: "cooking"))
+        XCTAssertEqual(CollectionSearch.filter([liked], query: "SPACE opera").map(\.stableID), [liked.stableID])
+        XCTAssertTrue(CollectionSearch.filter([liked], query: "football").isEmpty)
+        XCTAssertEqual(CollectionSearch.matchingDownloadKeys([download], query: "Eporner science fiction"), [download.key])
+        XCTAssertTrue(CollectionSearch.matchingDownloadKeys([download], query: "cooking").isEmpty)
     }
 
     func testDownloadResponseRejectsPornhubHTMLAndPreservesBinaryMedia() {

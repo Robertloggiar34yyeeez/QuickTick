@@ -1131,22 +1131,55 @@ struct FavoritesView: View {
     @State private var shuffleLikes = false
     @State private var randomizedIDs: [String] = []
     @State private var searchText = ""
+    @State private var orderedLikes: [Post] = []
+    @State private var saved: [Post] = []
+    @State private var matchingLikes: [Post] = []
+    @State private var searching = false
+    @State private var searchRevision = 0
+    @State private var searchTask: Task<Void, Never>?
     @State private var scrollSampling = CollectionScrollSampling()
-    private var orderedLikes: [Post] { store.newestFavorites }
-    private var saved: [Post] {
-        guard shuffleLikes else { return orderedLikes }
-        let byID = Dictionary(uniqueKeysWithValues: orderedLikes.map { ($0.stableID, $0) })
-        let shuffled = randomizedIDs.compactMap { byID[$0] }
-        let inserted = orderedLikes.filter { !randomizedIDs.contains($0.stableID) }
-        return shuffled + inserted
+    private var collectionSubtitle: String {
+        if searching { return "Searching your likes…" }
+        if searchText.isEmpty { return "\(saved.count) posts you love" }
+        return "\(matchingLikes.count) of \(saved.count) liked posts"
     }
-    private var matchingLikes: [Post] {
-        saved.filter { CollectionSearch.matches($0, query: searchText) }
+    private func refreshSavedLikes() {
+        orderedLikes = store.newestFavorites
+        if shuffleLikes {
+            let byID = Dictionary(uniqueKeysWithValues: orderedLikes.map { ($0.stableID, $0) })
+            let alreadyShuffled = Set(randomizedIDs)
+            saved = randomizedIDs.compactMap { byID[$0] }
+                + orderedLikes.filter { !alreadyShuffled.contains($0.stableID) }
+        } else { saved = orderedLikes }
+        scheduleSearch()
+    }
+    private func scheduleSearch() {
+        searchTask?.cancel()
+        searchRevision &+= 1
+        let revision = searchRevision
+        let query = searchText
+        let snapshot = saved
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            searching = false
+            matchingLikes = snapshot
+            return
+        }
+        searching = true
+        searchTask = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(90)) } catch { return }
+            let result = await Task.detached(priority: .userInitiated) {
+                CollectionSearch.filter(snapshot, query: query)
+            }.value
+            guard !Task.isCancelled, revision == searchRevision else { return }
+            matchingLikes = result
+            searching = false
+        }
     }
     private func shuffleFavorites() {
         randomizedIDs = orderedLikes.map(\.stableID).shuffled()
         shuffleLikes = true
         activeID = nil
+        refreshSavedLikes()
     }
     var body: some View {
         ZStack {
@@ -1158,8 +1191,7 @@ struct FavoritesView: View {
                                     Text("Your collection")
                                         .font(.system(size: 30, weight: .bold, design: .rounded))
                                         .tracking(-1)
-                                    Text(searchText.isEmpty ? "\(saved.count) posts you love" :
-                                            "\(matchingLikes.count) of \(saved.count) liked posts")
+                                    Text(collectionSubtitle)
                                         .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
                                 }
                                 Spacer()
@@ -1171,17 +1203,20 @@ struct FavoritesView: View {
                             }
                             .padding(.horizontal, 16)
                             .padding(.top, 14)
-                            CollectionSearchField(text: $searchText, placeholder: "Search likes", identifier: "favorites-search")
+                            CollectionSearchField(text: $searchText, placeholder: "Search likes",
+                                                  identifier: "favorites-search", isSearching: searching)
                                 .padding(.horizontal, 16)
                             if saved.isEmpty {
                                 ContentUnavailableView("Save what you love", systemImage: "heart", description:
                                     Text("Your liked posts will stay here and help personalize Recommended and Create."))
-                            } else if matchingLikes.isEmpty {
+                            } else if matchingLikes.isEmpty && !searching {
                                 ContentUnavailableView("No matching likes", systemImage: "magnifyingglass", description:
                                     Text("Try a different title, artist, tag, or provider."))
                             }
                             ForEach(matchingLikes, id: \.stableID) { post in
-                                PostCardView(post: post, available: CGSize(width: min(680, geometry.size.width), height: geometry.size.height), playbackTab: 2)
+                                FavoriteCachedCardRow(post: post,
+                                    available: CGSize(width: min(680, geometry.size.width), height: geometry.size.height))
+                                    .equatable()
                             }
                         }.frame(maxWidth: .infinity).padding(.bottom, 18)
                     }.coordinateSpace(name: "home-viewport")
@@ -1229,6 +1264,7 @@ struct FavoritesView: View {
                     Button("Original order", systemImage: "list.bullet") {
                         shuffleLikes = false
                         activeID = nil
+                        refreshSavedLikes()
                     }
                     .disabled(!shuffleLikes)
                 } label: {
@@ -1249,10 +1285,37 @@ struct FavoritesView: View {
         .fullScreenCover(isPresented: $rhythm) {
             RhythmSessionView(posts: matchingLikes.filter { $0.providerKey == .rule34 }, offline: false)
         }
-        .onAppear { onImmersiveChange(immersive) }
+        .onAppear {
+            refreshSavedLikes()
+            onImmersiveChange(immersive)
+        }
+        .onReceive(store.$favorites) { _ in
+            // @Published delivers its new value before didSet completes.
+            // Advance one main-actor turn so newestFavorites reads the new
+            // saved order and updated like timestamps.
+            Task { @MainActor in
+                await Task.yield()
+                refreshSavedLikes()
+            }
+        }
         .onChange(of: immersive) { _, value in onImmersiveChange(value) }
-        .onChange(of: searchText) { _, _ in activeID = nil }
-        .onDisappear { onImmersiveChange(false) }
+        .onChange(of: searchText) { _, _ in activeID = nil; scheduleSearch() }
+        .onDisappear { searchTask?.cancel(); onImmersiveChange(false) }
+    }
+}
+
+/// A keyboard search or a scroll-impression update must not recreate every
+/// unchanged favorite's decoded image and video surface.
+private struct FavoriteCachedCardRow: View, Equatable {
+    let post: Post
+    let available: CGSize
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.post == rhs.post && lhs.available == rhs.available
+    }
+
+    var body: some View {
+        PostCardView(post: post, available: available, playbackTab: 2)
     }
 }
 

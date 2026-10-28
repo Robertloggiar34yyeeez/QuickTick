@@ -301,7 +301,7 @@ struct RootView: View {
         let pinnedSideNavigation = ipadSidebarEnabled && size.width > 600
         let immersiveCanvas = store.activeTab == 1 || collectionImmersive
         let sideNavigation = size.width > 600 && (immersiveCanvas || pinnedSideNavigation)
-        let bottomLength = max(1, size.width - CGFloat((modernUI ? 8 : 4) * 2) - (immersiveCanvas ? 20 : 0))
+        let bottomLength = max(1, size.width - CGFloat((modernUI ? 8 : 4) * 2))
         // Keep the dock geometry as Int arithmetic until the final conversion.
         // A single mixed overloaded expression here exceeded Swift's type-check budget.
         let dockItemCount: Int = visibleTabIndices.count
@@ -332,7 +332,9 @@ struct RootView: View {
                 VStack(spacing: 3) {
                     BackgroundAudioMiniPlayer(audio: store.audio)
                         .padding(.horizontal, 12)
-                    bottomDock(axisLength: bottomLength, floating: immersiveCanvas)
+                    // iPhone keeps the regular edge-attached tab bar even in
+                    // immersive feeds. Only iPad uses floating side navigation.
+                    bottomDock(axisLength: bottomLength, floating: false)
                 }
             }
         }

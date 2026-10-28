@@ -314,6 +314,14 @@ final class NavigationTests: XCTestCase {
         XCTAssertLessThanOrEqual(dock.frame.maxY, screen.maxY + 1)
         XCTAssertGreaterThanOrEqual(dock.frame.maxY, screen.maxY - 50,
                                     "Dock should sit directly above the system home indicator")
+        if screen.width < 600 {
+            app.buttons["tab-Immersive"].tap()
+            XCTAssertTrue(dock.waitForExistence(timeout: 8))
+            XCTAssertGreaterThan(dock.frame.width, screen.width * 0.95,
+                                 "Immersive on iPhone must retain the edge-attached navigation bar")
+            XCTAssertGreaterThanOrEqual(dock.frame.maxY, screen.maxY - 50,
+                                        "Immersive navigation must not float above the home indicator")
+        }
     }
 
     @MainActor func testFullscreenVideoSwipeDownDismissesOnlyStandardViewer() {

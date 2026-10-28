@@ -3,6 +3,21 @@ import AVKit
 import ImageIO
 import UIKit
 
+private enum ImmersiveChromeLayout {
+    static func bottomClearance(viewportWidth: CGFloat, safeAreaBottom: CGFloat,
+                                backgroundAudioVisible: Bool) -> CGFloat {
+        // The media fills the physical display, but the timeline must sit
+        // *above* the root tab dock and home indicator. The fullscreen
+        // GeometryReader may report zero safe-area insets after
+        // ignoresSafeArea, so retain a conservative device inset.
+        let sideDock = viewportWidth > 600
+        let deviceInset = max(safeAreaBottom, sideDock ? 20 : 34)
+        let tabDockHeight: CGFloat = sideDock ? 0 : 62
+        let audioControlsHeight: CGFloat = backgroundAudioVisible ? 80 : 0
+        return deviceInset + tabDockHeight + audioControlsHeight + 10
+    }
+}
+
 struct ImmersiveFeedView: View {
     @EnvironmentObject private var store: AppStore
     let posts: [Post]
@@ -504,6 +519,10 @@ private struct ImmersiveItemView: View {
     var body: some View {
         GeometryReader { geo in
             let mediaSize = fittedSize(geo.size)
+            let controlsBottomClearance = ImmersiveChromeLayout.bottomClearance(
+                viewportWidth: geo.size.width,
+                safeAreaBottom: geo.safeAreaInsets.bottom,
+                backgroundAudioVisible: store.audio.currentPost != nil)
             ZStack(alignment: .center) {
                 AppTheme.canvas
                 if post.type.lowercased() != "image" && gifURL == nil {
@@ -610,7 +629,8 @@ private struct ImmersiveItemView: View {
                     actionRail
                         .scaleEffect(scale, anchor: .bottomTrailing)
                         .padding(.trailing, geo.size.width > 600 ? 30 : 12)
-                        .padding(.bottom, min(110, max(76, geo.size.height * 0.12)))
+                        .padding(.bottom, max(min(110, max(76, geo.size.height * 0.12)),
+                                              post.type.lowercased() == "video" ? controlsBottomClearance + 44 : 0))
                 }
             }
             .overlay(alignment: .bottom) {
@@ -624,6 +644,7 @@ private struct ImmersiveItemView: View {
                         ImmersiveTimeline(player: player, playing: playing, scrubbing: $scrubbing)
                     }
                 }
+                .padding(.bottom, controlsBottomClearance)
             }
             .overlay(alignment: .top) {
                 if let error {

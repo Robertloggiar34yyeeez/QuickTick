@@ -127,7 +127,11 @@ final class NavigationTests: XCTestCase {
             XCTAssertTrue(like.isHittable)
             XCTAssertGreaterThan(like.frame.midX, app.frame.width * 0.9)
             XCTAssertTrue(app.buttons["open-settings"].isHittable)
-            XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "immersive-progress").count, 1)
+            let progress = app.descendants(matching: .any).matching(identifier: "immersive-progress")
+            XCTAssertEqual(progress.count, 1)
+            XCTAssertTrue(progress.firstMatch.isHittable,
+                          "The timeline must stay tappable above the iPad home indicator")
+            XCTAssertLessThanOrEqual(progress.firstMatch.frame.maxY, window.maxY - 20)
             XCTAssertEqual(app.tabBars.count, 0)
             let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Immersive iPad full canvas \(orientation.rawValue)"; capture.lifetime = .keepAlways; add(capture)
         }
@@ -504,7 +508,8 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(progressElements.count, 1)
         let progress = progressElements.firstMatch
         XCTAssertTrue(progress.isHittable)
-        XCTAssertLessThanOrEqual(progress.frame.maxY, app.buttons["tab-Home"].frame.minY)
+        XCTAssertLessThanOrEqual(progress.frame.maxY + 8, app.buttons["tab-Home"].frame.minY,
+                                 "The timeline must clear the bottom tab dock with room to seek")
         XCTAssertGreaterThanOrEqual(progress.frame.height, 44)
         XCTAssertTrue(progress.exists)
         let before = like.frame

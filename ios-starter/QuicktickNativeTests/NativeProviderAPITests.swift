@@ -48,7 +48,16 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = comments ? #"<comments><comment id="7" creator="Fixture" body="A &amp; B" /></comments>"# : #"[{"id":1,"score":9,"tags":"engineering car","width":1920,"height":1080,"file_url":"https://media.rule34.xxx/clip.mp4","preview_url":"https://media.rule34.xxx/clip.jpg"}]"#
         } else if path.contains("/embed/") { payload = #"<html><script>var hash='00112233445566778899aabbccddeeff';</script></html>"# }
         else if path.contains("/xhr/video/") { payload = #"{"sources":{"mp4":{"360p":{"src":"https://cdn.eporner.com/small.mp4"},"1080p":{"src":"https://cdn.eporner.com/full.mp4"}}}}"# }
-        else if host == "www.eporner.com" { payload = #"{"total_pages":3,"videos":[{"id":"ep1","title":"Ground effect","keywords":"engineering,aerodynamics","views":10,"default_thumb":{"src":"https://cdn.eporner.com/thumb.jpg"}}]}"# }
+        else if host == "www.eporner.com" {
+            let parameters = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let page = Int(parameters.first(where: { $0.name == "page" })?.value ?? "1") ?? 1
+            let order = parameters.first(where: { $0.name == "order" })?.value
+            let quality = parameters.first(where: { $0.name == "lq" })?.value
+            let query = parameters.first(where: { $0.name == "query" })?.value
+            payload = page > 3 || (query == "all" && order == "latest" && quality == "0")
+                ? #"{"total_pages":3,"videos":[]}"#
+                : #"{"total_pages":3,"videos":[{"id":"ep1","title":"Ground effect","keywords":"engineering,aerodynamics","views":10,"default_thumb":{"src":"https://cdn.eporner.com/thumb.jpg"}}]}"#
+        }
         else if host == "api.hentaihaven.app", path == "/v1/warden" {
             payload = #"{"data":{"token":"fixture-warden-token"}}"#
         }
@@ -737,6 +746,35 @@ final class NativeProviderAPITests: XCTestCase {
             query: ParsedQuery(included: ["red hair"], excluded: ["blue hair"]),
             immersive: false)
         XCTAssertEqual(result.map(\.stableID), [matching.stableID])
+    }
+
+    func testEpornerEmptyHDOnlyCatalogRetriesWithInclusiveQuality() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let result = try await api.posts(provider: .eporner,
+            query: ParsedQuery(included: [], excluded: []), page: 1, sort: "recent")
+        XCTAssertEqual(result.items.map(\.stableID), ["eporner:ep1"])
+        let requests = NativeProviderProtocol.log.snapshot()
+            .filter { $0.url?.host == "www.eporner.com" && $0.url?.path == "/api/v2/video/search/" }
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests.compactMap { URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "lq" })?.value }, ["0", "1"])
+    }
+
+    @MainActor func testEpornerRecommendedRecoversWhenCatalogRepeatsOfferedPosts() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+        await store.bootstrap()
+        store.selectedProvider = .eporner
+        await store.recommendations.load(RecommendationState())
+        for _ in 0..<4 {
+            await store.refresh()
+            XCTAssertEqual(store.posts.map(\.stableID), ["eporner:ep1"],
+                "Repeated public pages must not permanently blank Home when the available video was offered but never watched")
+            XCTAssertNil(store.lastError)
+        }
     }
 
 

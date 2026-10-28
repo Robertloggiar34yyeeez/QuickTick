@@ -39,6 +39,24 @@ private final class CandidatePageProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 final class FeedReliabilityTests: XCTestCase {
+    func testSavedMediaSearchMatchesTitlesTagsAndProvidersWithoutNetwork() {
+        var liked = Post(key: "rule34:star", id: "star", provider: "Rule34",
+                         tags: ["space_opera", "blue_hair"], type: "image")
+        liked.caption = "Cosmic Adventure"
+        liked.creator = "Sample Artist"
+        XCTAssertTrue(CollectionSearch.matches(liked, query: "SPACE opera"))
+        XCTAssertTrue(CollectionSearch.matches(liked, query: "rule34 artist"))
+        XCTAssertFalse(CollectionSearch.matches(liked, query: "football"))
+        XCTAssertTrue(CollectionSearch.matches(liked, query: ""))
+
+        let download = DownloadRecord(key: "eporner:clip", provider: "Eporner", postID: "clip",
+            title: "Cosplay Session", tags: ["science_fiction", "blonde"],
+            thumbnailRemoteURL: "", kind: .file, state: .complete, progress: 1, createdAt: .now)
+        XCTAssertTrue(CollectionSearch.matches(download, query: "Eporner science fiction"))
+        XCTAssertTrue(CollectionSearch.matches(download, query: "session"))
+        XCTAssertFalse(CollectionSearch.matches(download, query: "cooking"))
+    }
+
     func testDownloadResponseRejectsPornhubHTMLAndPreservesBinaryMedia() {
         let url = URL(string: "https://cdn.pornhub.com/video.mp4")!
         let htmlResponse = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,

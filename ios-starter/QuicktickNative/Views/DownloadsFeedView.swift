@@ -1,6 +1,65 @@
 import SwiftUI
 import UIKit
 
+/// Local-only search for saved media. Every word must match somewhere in the
+/// title, provider, creator, tags or ID; underscores and case are normalized.
+enum CollectionSearch {
+    private static func normalized(_ value: String) -> String {
+        value.replacingOccurrences(of: "_", with: " ")
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+    }
+
+    private static func matches(query: String, fields: [String]) -> Bool {
+        let words = normalized(query).split(whereSeparator: \.isWhitespace)
+        guard !words.isEmpty else { return true }
+        let haystack = normalized(fields.joined(separator: " "))
+        return words.allSatisfy { haystack.contains($0) }
+    }
+
+    static func matches(_ post: Post, query: String) -> Bool {
+        matches(query: query, fields: [post.caption ?? "", post.creator ?? "", post.category ?? "",
+                                       post.provider, post.id] + post.tags)
+    }
+
+    static func matches(_ record: DownloadRecord, query: String) -> Bool {
+        matches(query: query, fields: [record.title, record.provider, record.postID,
+                                       record.mediaType ?? "", record.state.rawValue] + record.tags)
+    }
+}
+
+struct CollectionSearchField: View {
+    @Binding var text: String
+    let placeholder: String
+    let identifier: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(AppTheme.secondaryLabel)
+            TextField(placeholder, text: $text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .accessibilityIdentifier(identifier)
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(AppTheme.secondaryLabel)
+                        .frame(minWidth: 34, minHeight: 34)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+                .accessibilityIdentifier(identifier + "-clear")
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 50)
+        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).stroke(AppTheme.border))
+    }
+}
+
 /// Present exports from the active window rather than from a narrow SwiftUI
 /// ShareLink inside a lazy scroll row. A full-height activity sheet on iPhone
 /// and a generously sized form sheet on iPad keep the actions tappable.
@@ -58,6 +117,10 @@ private struct DownloadContent: View {
     @State private var selecting = false
     @State private var selectedKeys: Set<String> = []
     @State private var confirmDelete = false
+    @State private var searchText = ""
+    private var filteredRecords: [DownloadRecord] {
+        manager.records.filter { CollectionSearch.matches($0, query: searchText) }
+    }
     private var exportURLs: [URL] {
         manager.records.filter { selectedKeys.contains($0.key) }.compactMap(\.exportURL)
     }
@@ -73,7 +136,8 @@ private struct DownloadContent: View {
                                               weight: AppTheme.isDeSlopified ? .semibold : .bold,
                                               design: AppTheme.isDeSlopified ? .default : .rounded))
                                 .tracking(AppTheme.isDeSlopified ? -0.4 : -1)
-                            Text("\(manager.records.count) downloads, always with you")
+                            Text(searchText.isEmpty ? "\(manager.records.count) downloads, always with you" :
+                                    "\(filteredRecords.count) of \(manager.records.count) downloads")
                                 .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
                         }
                         Spacer()
@@ -87,10 +151,14 @@ private struct DownloadContent: View {
                         }
                     }
                     .padding(.top, 2)
+                    CollectionSearchField(text: $searchText, placeholder: "Search downloads", identifier: "downloads-search")
                     if selecting { selectionControls }
                     if let error = manager.storageError { Text(error).foregroundStyle(.orange) }
                     if manager.records.isEmpty { ContentUnavailableView("No downloads yet", systemImage: "arrow.down.to.line", description: Text("Save posts to view them offline here.")) }
-                    ForEach(manager.records) { record in
+                    else if filteredRecords.isEmpty {
+                        ContentUnavailableView("No matching downloads", systemImage: "magnifyingglass", description: Text("Try another title, tag, or provider."))
+                    }
+                    ForEach(filteredRecords) { record in
                         if record.state == .complete {
                             // Transfer progress changes the parent several times a second.
                             // Equatable completed rows keep expensive media/card state
@@ -160,7 +228,7 @@ private struct DownloadContent: View {
                         selecting.toggle()
                         if !selecting { selectedKeys.removeAll() }
                     }
-                    .disabled(manager.records.isEmpty)
+                    .disabled(filteredRecords.isEmpty)
                     .accessibilityIdentifier("downloads-select")
                 }
             }
@@ -175,6 +243,7 @@ private struct DownloadContent: View {
             } message: { Text("The saved files will be removed from this device. This cannot be undone.") }
             .onAppear { onImmersiveChange(immersive) }
             .onChange(of: immersive) { _, value in onImmersiveChange(value) }
+            .onChange(of: searchText) { _, _ in selectedKeys.removeAll() }
             .onDisappear { onImmersiveChange(false) }
     }
     private var selectionControls: some View {
@@ -183,9 +252,9 @@ private struct DownloadContent: View {
                 Text("\(selectedKeys.count) selected")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Button(selectedKeys.count == manager.records.count ? "Clear" : "Select all") {
-                    selectedKeys = selectedKeys.count == manager.records.count
-                        ? [] : Set(manager.records.map(\.key))
+                Button(selectedKeys.count == filteredRecords.count ? "Clear" : "Select all") {
+                    selectedKeys = selectedKeys.count == filteredRecords.count
+                        ? [] : Set(filteredRecords.map(\.key))
                 }
                 .font(.caption.weight(.semibold))
             }
@@ -230,7 +299,7 @@ private struct DownloadContent: View {
         .accessibilityIdentifier("select-download-\(record.key)")
     }
     private var localPosts: [Post] {
-        manager.records.compactMap(\.offlinePost)
+        filteredRecords.compactMap(\.offlinePost)
     }
     private func toggleSelection(_ key: String) {
         if !selectedKeys.insert(key).inserted { selectedKeys.remove(key) }

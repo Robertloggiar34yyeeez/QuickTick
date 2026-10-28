@@ -582,6 +582,7 @@ final class AppStore: ObservableObject {
             var havenExploration: [Post] = []
             var havenSafeCatalog: [Post] = []
             var nhentaiDiscovery: [Post] = []
+            var epornerDiscovery: [Post] = []
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
             var broaden = false
             // Keep an interactive refresh bounded; users can explicitly load
@@ -612,6 +613,12 @@ final class AppStore: ObservableObject {
                 }
                 if personalized, provider == .hhaven, havenSafeCatalog.count < 48 {
                     havenSafeCatalog.append(contentsOf: incoming.prefix(48 - havenSafeCatalog.count))
+                }
+                if personalized, provider == .eporner, epornerDiscovery.count < 120 {
+                    // The Eporner browse API can repeatedly return the same
+                    // top pages. Record safe candidates before novelty drops
+                    // previously offered (but never watched) videos.
+                    epornerDiscovery.append(contentsOf: incoming.prefix(120 - epornerDiscovery.count))
                 }
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
                 incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: tasteRanked, favoriteIDs: favoriteExclusionIDs)
@@ -680,6 +687,20 @@ final class AppStore: ObservableObject {
                         visualScores: visualEvidence, strict: false)).prefix(12))
                 }
             }
+            if immediate.isEmpty, personalized, provider == .eporner, !epornerDiscovery.isEmpty {
+                // Recover a useful Home page when the API repeats already
+                // offered catalog entries. Still exclude actual impressions,
+                // Favorites, hard dislikes and explicit interest mismatches.
+                let eligible = feedExclusions.filter(epornerDiscovery,
+                    favorites: Array(favorites.values), recommended: true,
+                    favoriteIDs: favoriteExclusionIDs)
+                if !eligible.isEmpty {
+                    let appearance = await visual.scores(eligible)
+                    immediate = Array((await recommendations.rankFast(eligible,
+                        taste: tasteChoice(for: provider), recent: recentProviderPosts,
+                        visualScores: appearance, strict: true)).prefix(24))
+                }
+            }
             if immediate.isEmpty, provider != .rule34,
                !parsed.included.isEmpty || !parsed.excluded.isEmpty {
                 // Some video providers search titles but omit searchable
@@ -712,6 +733,8 @@ final class AppStore: ObservableObject {
                         lastError = havenSafeCatalog.isEmpty
                             ? "Hentai Haven returned no catalog items. Try again when its catalog is available."
                             : "The available Hentai Haven posts were removed by saved favorites or explicit dislikes."
+                    } else if provider == .eporner, parsed.included.isEmpty, parsed.excluded.isEmpty {
+                        lastError = "Eporner has no available videos after your saved filters. Try Popular, adjust your interests, or refresh."
                     } else {
                         lastError = personalized
                             ? "No fresh matches yet. Try Load more, another source, or refine your interests."
@@ -955,6 +978,23 @@ final class AppStore: ObservableObject {
         let combined = PostPage(
             items: CandidatePoolMix.interleave(firstPage?.items ?? [], secondPage?.items ?? []),
             hasMore: (firstPage?.hasMore ?? false) || (secondPage?.hasMore ?? false))
+        if provider == .eporner, parsed.included.isEmpty, combined.items.isEmpty,
+           a.page > 1 || b.page > 1, generation == requestedGeneration {
+            // A persisted recommendation cursor can run past Eporner's
+            // changing total_pages. Recover from its first public browse page
+            // instead of leaving Home blank forever after repeated refreshes.
+            let broadKey = context + "|query:"
+            let broadQuery = ParsedQuery(included: [], excluded: RecommendationTagRules.queryExclusions(
+                exclusions + taste.notInto))
+            if let recovered = try? await client.posts(provider: .eporner,
+                    query: broadQuery, page: 1, sort: sort, immersive: mediaOnly),
+               !recovered.items.isEmpty, generation == requestedGeneration, !Task.isCancelled {
+                candidateCursors[broadKey] = 2
+                await recommendations.advanceCandidatePage(context: broadKey, nextPage: 2)
+                return (recovered, RecommendationEngine.CandidateRequest(
+                    context: broadKey, query: broadQuery, page: 1, focused: false))
+            }
+        }
         let used = firstPage != nil ? first : second
         let usedPage = firstPage != nil ? a.page : b.page
         return (combined, RecommendationEngine.CandidateRequest(

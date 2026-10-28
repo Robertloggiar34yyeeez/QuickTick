@@ -410,11 +410,29 @@ enum NativeProviderAPI {
 
     static func eporner(session: URLSession, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
         let order = sort == "recent" ? "latest" : sort == "popular" ? "top-weekly" : "top-monthly"
-        let bytes = try await data(session: session, url: url("https://www.eporner.com/api/v2/video/search/", [
-            .init(name: "query", value: query.included.isEmpty ? "all" : query.included.joined(separator: " ")),
-            .init(name: "page", value: String(page)), .init(name: "per_page", value: "40"), .init(name: "thumbsize", value: "big"),
-            .init(name: "order", value: order), .init(name: "gay", value: "1"), .init(name: "lq", value: "0"), .init(name: "format", value: "json")]), provider: .eporner)
-        let object = try Self.object(bytes), raw = rows(object["videos"])
+        func fetch(includeLowQuality: Bool) async throws -> [String: Any] {
+            let bytes = try await data(session: session, url: url("https://www.eporner.com/api/v2/video/search/", [
+                .init(name: "query", value: query.included.isEmpty ? "all" : query.included.joined(separator: " ")),
+                .init(name: "page", value: String(page)), .init(name: "per_page", value: "40"), .init(name: "thumbsize", value: "big"),
+                .init(name: "order", value: order), .init(name: "gay", value: "1"),
+                .init(name: "lq", value: includeLowQuality ? "1" : "0"), .init(name: "format", value: "json")]), provider: .eporner)
+            guard !unavailableHTML(bytes) else {
+                throw APIError.server("Eporner returned an unavailable page instead of its video catalog.")
+            }
+            let result = try Self.object(bytes)
+            guard result["videos"] is [Any] else {
+                throw APIError.server("Eporner returned an unrecognized video catalog. Please retry shortly.")
+            }
+            return result
+        }
+        var object = try await fetch(includeLowQuality: false)
+        // The default HD-only filter can produce an empty first page on some
+        // catalog orderings. A broad, unfiltered Home catalog should still
+        // be usable; an explicit keyword search must never be broadened.
+        if page == 1, query.included.isEmpty, rows(object["videos"]).isEmpty {
+            object = try await fetch(includeLowQuality: true)
+        }
+        let raw = rows(object["videos"])
         let posts = raw.map { row -> Post in
             let id = text(row["id"]), title = text(row["title"]), thumb = (row["default_thumb"] as? [String: Any]) ?? [:]
             var post = Post(key: "eporner:\(id)", id: id, provider: "Eporner", score: number(row["views"]), tags: strings(row["keywords"]),

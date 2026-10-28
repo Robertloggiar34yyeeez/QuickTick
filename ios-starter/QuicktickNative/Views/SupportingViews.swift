@@ -1121,6 +1121,7 @@ struct FavoritesView: View {
     @State private var activeID: String?
     @State private var shuffleLikes = false
     @State private var randomizedIDs: [String] = []
+    @State private var searchText = ""
     private var orderedLikes: [Post] { store.newestFavorites }
     private var saved: [Post] {
         guard shuffleLikes else { return orderedLikes }
@@ -1128,6 +1129,9 @@ struct FavoritesView: View {
         let shuffled = randomizedIDs.compactMap { byID[$0] }
         let inserted = orderedLikes.filter { !randomizedIDs.contains($0.stableID) }
         return shuffled + inserted
+    }
+    private var matchingLikes: [Post] {
+        saved.filter { CollectionSearch.matches($0, query: searchText) }
     }
     private func shuffleFavorites() {
         randomizedIDs = orderedLikes.map(\.stableID).shuffled()
@@ -1144,7 +1148,8 @@ struct FavoritesView: View {
                                     Text("Your collection")
                                         .font(.system(size: 30, weight: .bold, design: .rounded))
                                         .tracking(-1)
-                                    Text("\(saved.count) posts you love")
+                                    Text(searchText.isEmpty ? "\(saved.count) posts you love" :
+                                            "\(matchingLikes.count) of \(saved.count) liked posts")
                                         .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
                                 }
                                 Spacer()
@@ -1156,11 +1161,16 @@ struct FavoritesView: View {
                             }
                             .padding(.horizontal, 16)
                             .padding(.top, 14)
+                            CollectionSearchField(text: $searchText, placeholder: "Search likes", identifier: "favorites-search")
+                                .padding(.horizontal, 16)
                             if saved.isEmpty {
                                 ContentUnavailableView("Save what you love", systemImage: "heart", description:
                                     Text("Your liked posts will stay here and help personalize Recommended and Create."))
+                            } else if matchingLikes.isEmpty {
+                                ContentUnavailableView("No matching likes", systemImage: "magnifyingglass", description:
+                                    Text("Try a different title, artist, tag, or provider."))
                             }
-                            ForEach(saved, id: \.stableID) { post in
+                            ForEach(matchingLikes, id: \.stableID) { post in
                                 PostCardView(post: post, available: CGSize(width: min(680, geometry.size.width), height: geometry.size.height), playbackTab: 2)
                             }
                         }.frame(maxWidth: .infinity).padding(.bottom, 18)
@@ -1183,7 +1193,7 @@ struct FavoritesView: View {
                         }
                 }
             if immersive {
-                ImmersiveFeedView(posts: saved, offline: false, activePostID: $activeID,
+                ImmersiveFeedView(posts: matchingLikes, offline: false, activePostID: $activeID,
                                   onClose: { immersive = false }, collectionTab: 2)
                     .transition(.move(edge: .trailing))
             }
@@ -1194,7 +1204,7 @@ struct FavoritesView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { rhythm = true } label: { Label("Rhythm", systemImage: "waveform.path") }
-                    .disabled(!saved.contains(where: { $0.providerKey == .rule34 }))
+                    .disabled(!matchingLikes.contains(where: { $0.providerKey == .rule34 }))
                     .accessibilityIdentifier("favorites-rhythm")
                 Menu {
                     Button("Shuffle likes", systemImage: "shuffle") { shuffleFavorites() }
@@ -1214,15 +1224,16 @@ struct FavoritesView: View {
                     activeID = nil
                     immersive.toggle()
                 }
-                .disabled(saved.isEmpty)
+                .disabled(matchingLikes.isEmpty)
                 .accessibilityIdentifier("favorites-immersive")
             }
         }
         .fullScreenCover(isPresented: $rhythm) {
-            RhythmSessionView(posts: saved.filter { $0.providerKey == .rule34 }, offline: false)
+            RhythmSessionView(posts: matchingLikes.filter { $0.providerKey == .rule34 }, offline: false)
         }
         .onAppear { onImmersiveChange(immersive) }
         .onChange(of: immersive) { _, value in onImmersiveChange(value) }
+        .onChange(of: searchText) { _, _ in activeID = nil }
         .onDisappear { onImmersiveChange(false) }
     }
 }

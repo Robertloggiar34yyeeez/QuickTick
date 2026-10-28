@@ -316,7 +316,9 @@ struct RootView: View {
                 // The dock indicator follows the finger, but the current
                 // feed must stay still during a navigation-bar scrub.
                 .opacity(tabEntranceOpacity)
-                .padding(.leading, pinnedSideNavigation && store.activeTab != 1 ? 174 : 0)
+                // The sidebar floats above the canvas. Reserving 174 points
+                // on one side shifted every iPad post away from the physical
+                // screen center, including immersive Favorites and Downloads.
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     // Lists reserve space to scroll past the floating bar;

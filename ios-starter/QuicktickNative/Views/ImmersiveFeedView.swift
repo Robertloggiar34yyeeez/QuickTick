@@ -107,6 +107,10 @@ struct ImmersiveFeedView: View {
                 .contentShape(Rectangle())
                 .clipped()
         }
+        // Cover the bottom home-indicator inset as well. In an iPad
+        // Favorites/Downloads overlay, the underlying list otherwise showed
+        // through as a thin strip of the next post below the active video.
+        .ignoresSafeArea(edges: .bottom)
         .background(ThemeBackdrop())
         .navigationTitle(offline ? "Offline Immersive" : "Immersive")
         .navigationBarTitleDisplayMode(.inline)
@@ -555,8 +559,15 @@ private struct ImmersiveItemView: View {
                         .frame(width: geo.size.width, height: geo.size.height).allowsHitTesting(false)
                 }
                 if let player {
-                    NativePlayerSurface(player: player, fill: geo.size.width <= 600 && store.immersionFraming, ready: $ready, accessibilityID: "immersive-video-surface")
-                        .frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height)
+                    // Give AVPlayerLayer the entire viewport, not a second
+                    // assumed 16:9 box inside it. Aspect-fill is the native
+                    // immersive presentation on iPad, even for square clips;
+                    // users can still choose the full-frame mode on phones.
+                    NativePlayerSurface(player: player,
+                        fill: geo.size.width > 600 || store.immersionFraming,
+                        ready: $ready, accessibilityID: "immersive-video-surface")
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
                         .opacity(ready && introReady ? 1 : 0)
                         .animation(.easeOut(duration: 0.18), value: ready && introReady)
                         .allowsHitTesting(false)

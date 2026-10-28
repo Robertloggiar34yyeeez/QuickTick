@@ -755,7 +755,7 @@ final class NativeProviderAPITests: XCTestCase {
             query: ParsedQuery(included: [], excluded: []), page: 1, sort: "recent")
         XCTAssertEqual(result.items.map(\.stableID), ["eporner:ep1"])
         let requests = NativeProviderProtocol.log.snapshot()
-            .filter { $0.url?.host == "www.eporner.com" && $0.url?.path == "/api/v2/video/search/" }
+            .filter { $0.url?.host == "www.eporner.com" && $0.url?.path.hasPrefix("/api/v2/video/search") == true }
         XCTAssertEqual(requests.count, 2)
         XCTAssertEqual(requests.compactMap { URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
             .queryItems?.first(where: { $0.name == "lq" })?.value }, ["0", "1"])
@@ -857,8 +857,9 @@ final class NativeProviderAPITests: XCTestCase {
             query: QueryParser.parse("unavailable-route"), page: 1)
         XCTAssertEqual(fallback.items.map(\.stableID), ["pornhub:phpublic"])
         let paths = NativeProviderProtocol.log.snapshot().compactMap { $0.url?.path }
-        XCTAssertEqual(paths, ["/webmasters/search", "/webmasters/search", "/video/search"],
-            "Both public API routes may fail, in which case the verified same-site catalog is used")
+        XCTAssertEqual(paths, ["/webmasters/search", "/webmasters/search", "/webmasters/search", "/video/search"],
+            "All first-party webmaster routes may fail, in which case the same-site catalog is used")
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot()[2].url?.host, "api.pornhub.com")
     }
     func testPornhubUsesCanonicalPageAndSurvivesRemovedMP4Definition() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }

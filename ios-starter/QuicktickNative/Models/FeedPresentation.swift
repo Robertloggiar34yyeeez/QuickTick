@@ -55,7 +55,7 @@ enum MediaSizing {
         let ratio: CGFloat = aspect.isFinite && aspect > 0 ? aspect : CGFloat(4) / 3
         let fullWidth = max(1, min(available.width, 680))
         let heightCap = min(available.width > 600 ? CGFloat(620) : CGFloat(560),
-                            max(1, available.height * 0.72))
+                            max(1, available.height * (available.height < 500 ? 0.60 : 0.72)))
         // In a short landscape viewport an uncapped 16:9 card can be taller
         // than the entire scrollable area. Fit wide media to the viewport
         // without distorting it. In portrait we still use every phone point.
@@ -75,11 +75,11 @@ enum MediaSizing {
     static func size(native: CGSize?, aspect: CGFloat, available: CGSize) -> CGSize {
         let ratio = aspect.isFinite && aspect > 0 ? aspect : 4 / 3
         let wide = available.width > 600
-        let maxHeight = min(wide ? 620 : 560, max(1, available.height * 0.72))
-        // Preserve aspect ratio when height-limited. The previous calculation
-        // capped only height, stretching video frames and enlarging thumbnails.
-        let originalWidth = native.flatMap { $0.width > 0 && $0.width.isFinite ? $0.width : nil } ?? 680
-        let width = max(1, min(originalWidth, available.width, 680, maxHeight * ratio))
+        let maxHeight = min(wide ? 620 : 560,
+                            max(1, available.height * (available.height < 500 ? 0.60 : 0.72)))
+        // The source's native pixel count is not a point-size limit. An
+        // 240px video thumbnail on iPad must not produce a 240pt card.
+        let width = max(1, min(available.width, 680, maxHeight * ratio))
         return CGSize(width: width, height: width / ratio)
     }
 }

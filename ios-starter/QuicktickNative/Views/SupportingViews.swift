@@ -1192,6 +1192,8 @@ struct FavoritesView: View {
                             }
                         }
                 }
+                .opacity(immersive ? 0 : 1)
+                .allowsHitTesting(!immersive)
             if immersive {
                 ImmersiveFeedView(posts: matchingLikes, offline: false, activePostID: $activeID,
                                   onClose: { immersive = false }, collectionTab: 2)

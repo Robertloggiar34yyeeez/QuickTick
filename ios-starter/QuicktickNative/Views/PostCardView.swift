@@ -43,10 +43,12 @@ struct PostCardView: View {
     private var mediaSize: CGSize {
         // Reserve the final card bounds from stable post metadata. Delayed
         // thumbnail/GIF/video dimensions must not resize a visible feed row.
+        let kind = post.type.lowercased()
+        let defaultAspect: CGFloat = kind == "video" || kind == "web" ? 16 / 9 : (kind == "gif" ? 1 : 4 / 3)
         let aspect = (post.nativeSize.map {
-            post.type.lowercased() == "image" && $0.height > $0.width * 4
+            kind == "image" && $0.height > $0.width * 4
                 ? CGFloat(2) / 3 : $0.width / $0.height
-        }) ?? CGFloat(4) / 3
+        }) ?? defaultAspect
         return fullBleed || (offline && playbackTab == 3)
             ? MediaSizing.feedCard(aspect: aspect, available: available)
             : MediaSizing.size(native: post.nativeSize, aspect: aspect, available: available)
@@ -230,10 +232,13 @@ struct PostCardView: View {
             } else if let player, store.fullScreenPlaybackID != post.stableID {
                 ZStack {
                     PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
-                    NativePlayerSurface(player: player, fill: false, ready: $ready)
+                    // Match the full-bleed poster's crop. Aspect-fitting a
+                    // square/portrait stream inside a landscape fallback
+                    // made the live video appear as a tiny inset cutout.
+                    NativePlayerSurface(player: player, fill: true, ready: $ready)
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready && introReady ? 1 : 0)
-                }.aspectRatio(mediaSize.width / max(1,mediaSize.height), contentMode: .fit)
+                }.frame(width: mediaSize.width, height: mediaSize.height).clipped()
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true)
             } else if post.type.lowercased() == "image" {

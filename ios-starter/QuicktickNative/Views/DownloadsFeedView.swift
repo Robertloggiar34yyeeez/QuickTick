@@ -211,6 +211,8 @@ private struct DownloadContent: View {
                 .frame(maxWidth: .infinity)
                 }
                 }
+                .opacity(immersive ? 0 : 1)
+                .allowsHitTesting(!immersive)
             if immersive {
                 ImmersiveFeedView(posts: localPosts, offline: true, activePostID: $immersivePostID,
                                   onClose: { immersive = false })

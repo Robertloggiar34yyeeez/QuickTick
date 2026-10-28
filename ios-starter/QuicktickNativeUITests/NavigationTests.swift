@@ -110,7 +110,10 @@ final class NavigationTests: XCTestCase {
             expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: surface)
             waitForExpectations(timeout: 15)
             XCTAssertGreaterThan(surface.frame.width, app.frame.width * 0.85)
-            XCTAssertEqual(surface.frame.width / surface.frame.height, 16.0 / 9, accuracy: 0.05)
+            XCTAssertEqual(surface.frame.width, app.frame.width, accuracy: 2,
+                           "Immersive video layers must fill the iPad canvas horizontally")
+            XCTAssertGreaterThanOrEqual(surface.frame.height, app.frame.height * 0.85,
+                                        "A source aspect ratio must not shrink the immersive player to a cutout")
             let home = app.buttons["tab-Home"], immersive = app.buttons["tab-Immersive"]
             XCTAssertTrue(home.isHittable); XCTAssertTrue(immersive.isHittable)
             XCTAssertEqual(home.frame.midX, immersive.frame.midX, accuracy: 1)
@@ -128,6 +131,8 @@ final class NavigationTests: XCTestCase {
         let restoredMedia = app.otherElements["post-media-test:video"]
         XCTAssertTrue(restoredMedia.waitForExistence(timeout: 10))
         XCTAssertTrue(restoredMedia.isHittable)
+        XCTAssertEqual(restoredMedia.frame.midX, app.frame.midX, accuracy: 2,
+                       "The pinned iPad sidebar must overlay the feed, not shift posts off center")
         app.buttons["home-scroll-top"].tap()
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
     }

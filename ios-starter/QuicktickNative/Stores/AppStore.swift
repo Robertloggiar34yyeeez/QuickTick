@@ -55,7 +55,9 @@ final class AppStore: ObservableObject {
                 queryText = ""
                 return // queryText's didSet invalidates this feed once.
             }
-            if selectedProvider != .rule34 {
+            // An opaque Pornhub filter token must never become part of a
+            // Rule34 tag query or another provider's keyword search.
+            if selectedProvider != .rule34 || oldValue == .pornhub {
                 let plainQuery = SearchFilters.split(queryText).tags
                 if plainQuery != queryText { queryText = plainQuery; return }
             }

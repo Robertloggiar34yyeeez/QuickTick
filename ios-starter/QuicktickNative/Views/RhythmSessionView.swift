@@ -156,8 +156,7 @@ struct RhythmTempoPlanner {
         let shape = mode == .adaptive ? stage * 0.75 + cycle[randomIndex] * 0.25 : stage
         let range = mode == .custom ? 0 : (0.4 + amount * 0.9)
         let jitterAmount = mode == .chaos ? 0.19 : (mode == .adaptive ? 0.16 : 0.045)
-        let jitter = mode == .custom ? 0 : (max(0, min(1, randomUnit)) - 0.5)
-            * max(0, min(1, randomness)) * jitterAmount
+        let jitter = (mode == .custom ? 0 : (max(0, min(1, randomUnit)) - 0.5)) * max(0, min(1, randomness)) * jitterAmount
         // Keep Swift type inference bounded and arithmetic consistently Double.
         let boundedBase = Double(max(40, min(Int(Self.maximumBPM), baseBPM)))
         let deviation = (shape - 1.0) * range

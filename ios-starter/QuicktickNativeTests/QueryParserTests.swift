@@ -95,6 +95,32 @@ final class QueryParserTests: XCTestCase {
         XCTAssertEqual(filters.query(tags: "long_hair -jacket", provider: .redgifs), "long_hair -jacket")
         XCTAssertEqual(SearchFilters.split(query).filters, filters)
     }
+    func testPornhubFiltersRoundTripWithoutLeakingIntoOtherSearches() {
+        let filters = PornhubSearchFilters(order: .topRated, production: .homemade,
+                                           minimumMinutes: 5, maximumMinutes: 30,
+                                           includedCategory: "Cosplay", excludedCategories: ["Vintage", "Anal"])
+        let query = filters.encodedQuery("portrait -intro")
+        let parsed = QueryParser.parse(query)
+        XCTAssertEqual(parsed.included, ["portrait"])
+        XCTAssertEqual(parsed.excluded, ["intro"])
+        XCTAssertEqual(parsed.pornhub, filters)
+        XCTAssertEqual(PornhubSearchFilters.decode(query), filters)
+        XCTAssertEqual(SearchFilters.split(query).tags, "portrait -intro")
+        XCTAssertEqual(SearchFilters().query(tags: SearchFilters.split(query).tags, provider: .redgifs), "portrait -intro")
+        XCTAssertEqual(PornhubSearchFilters().encodedQuery("portrait"), "portrait")
+    }
+
+    func testPornhubFilterLimitsAndCorruptMetadata() {
+        let query = PornhubSearchFilters(minimumMinutes: -5, maximumMinutes: 100,
+                                         includedCategory: "Cosplay", excludedCategories:
+                                            Array(repeating: "Cosplay", count: 12) + (0..<12).map { "genre-\($0)" })
+        let decoded = PornhubSearchFilters.decode(query.encodedQuery("scene"))
+        XCTAssertEqual(decoded.minimumMinutes, 0)
+        XCTAssertEqual(decoded.maximumMinutes, 40)
+        XCTAssertEqual(decoded.excludedCategories.count, 10)
+        XCTAssertFalse(decoded.excludedCategories.contains("Cosplay"))
+        XCTAssertEqual(PornhubSearchFilters.decode("qtph:broken"), PornhubSearchFilters())
+    }
     func testWatchTimeExcludesLoadingPausesAndSeeks() {
         var exposure = PlaybackExposure()
         XCTAssertEqual(exposure.sample(media: 0, wall: 0, playing: false), 0)

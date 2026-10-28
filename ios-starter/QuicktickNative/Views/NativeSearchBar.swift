@@ -9,6 +9,7 @@ struct NativeSearchBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var form = SearchDraft()
     @State private var suggestions: [TagSuggestion] = []
+    @State private var pornhubCategories = PornhubSearchFilters.commonCategories
     @State private var suggestionsLoading = false
     @State private var suggestionsUnavailable = false
     @State private var loaded = false
@@ -26,6 +27,9 @@ struct NativeSearchBar: View {
                         autocompleteRow
                     }
                     filterRow
+                    if store.selectedProvider == .pornhub {
+                        PornhubFilterPanel(filters: $form.pornhub, categories: pornhubCategories)
+                    }
                     if store.selectedProvider == .rule34 {
                         HStack { Text("Selected tags").font(.headline); Spacer(); Button("Clear") { form.tags = []; form.text = ""; form.filters = SearchFilters() }.font(.caption) }
                         selectedTagGrid
@@ -59,13 +63,19 @@ struct NativeSearchBar: View {
                     let plainQuery = store.selectedProvider == .hhaven || store.selectedProvider == .pornhub
                         ? QueryParser.formatted(ParsedQuery(included: keywords, excluded: parsed.excluded))
                         : split.tags
+                    var pornhubFilters = PornhubSearchFilters.decode(store.queryText)
+                    if store.selectedProvider == .pornhub, pornhubFilters.includedCategory == nil,
+                       let selectedCategory = ProviderSearchCategories.split(parsed, provider: .pornhub).category {
+                        pornhubFilters.includedCategory = String(selectedCategory.dropFirst("category:".count))
+                    }
                     if let saved = store.searchDrafts[tab], saved.provider == store.selectedProvider {
                         form = saved
                     } else {
                         form = SearchDraft(
                             text: store.selectedProvider == .rule34 ? "" : plainQuery,
                             tags: store.selectedProvider == .rule34 ? SearchTag.parse(split.tags) : [],
-                            filters: split.filters, sort: store.feedSort,
+                            filters: split.filters, pornhub: pornhubFilters,
+                            sort: store.feedSort,
                             provider: store.selectedProvider)
                     }
                 }
@@ -78,6 +88,12 @@ struct NativeSearchBar: View {
                     if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
                     #endif
                     if isArchive { await store.api.prefetchArchiveCreators(for: store.selectedProvider) }
+                }
+                .task(id: "pornhub-categories-" + store.selectedProvider.rawValue) {
+                    guard store.selectedProvider == .pornhub else { return }
+                    if let categories = try? await store.api.pornhubCategories(), !categories.isEmpty {
+                        pornhubCategories = categories
+                    }
                 }
                 .task(id: store.selectedProvider.rawValue + ":" + form.text) {
                     suggestions = []
@@ -191,6 +207,7 @@ struct NativeSearchBar: View {
                     }
     }
     private var filterRow: some View {
+                    Group { if store.selectedProvider != .pornhub {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
                             Menu {
@@ -219,6 +236,7 @@ struct NativeSearchBar: View {
                             }
                         }
                     }
+                    } }
     }
     private var selectedTagGrid: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), spacing: 8)], spacing: 8) {
@@ -270,15 +288,18 @@ struct NativeSearchBar: View {
         if isTagProvider { addTypedTags() }
         focused = false
         form.provider = store.selectedProvider
-        store.searchDrafts[tab] = form
         let query: String
         if isTagProvider {
             let tags = form.tags.map { ($0.excluded ? "-" : "") + $0.name }.joined(separator: " ")
             query = form.filters.query(tags: tags, provider: store.selectedProvider)
+        } else if store.selectedProvider == .pornhub {
+            query = form.pornhub.encodedQuery(form.text)
+            form.sort = form.pornhub.order.feedSort
         } else {
             query = (isArchive ? form.archiveCreatorReference : nil)
                 ?? form.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        store.searchDrafts[tab] = form
         store.commitSearch(query: query, sort: form.sort)
         dismiss()
         Task { await store.refresh(immersive: immersive, trainSearch: true) }

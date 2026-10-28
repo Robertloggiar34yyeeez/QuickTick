@@ -35,6 +35,8 @@ package_specs=[
      {'kind':'exactVersion','version':'1.1.1'},'StableDiffusion'),
     ('ZIPFoundation','https://github.com/tuist/ZIPFoundation.git',
      {'kind':'exactVersion','version':'0.9.21'},'ZIPFoundation'),
+    ('DrawThings','https://github.com/drawthingsai/draw-things-community.git',
+     {'kind':'revision','revision':'0621d8198f3ed505bb7cefc71b84f8f0e1ce5936'},'_MediaGenerationKit'),
 ]
 package_references=[]; package_products=[]; package_build_files=[]
 for identity,url,requirement,product_name in package_specs:
@@ -44,6 +46,14 @@ for identity,url,requirement,product_name in package_specs:
     package_references.append(ref)
     package_products.append(dependency)
     package_build_files.append(build)
+# The generated project must link the same *local*, LoRA-enabled Mirage
+# runtime as project.yml. Otherwise Swift sees `import Mirage` with no module
+# despite CI having restored sdcpp.xcframework from the native build cache.
+mirage_ref=add('package:QuicktickMirageRuntime','XCLocalSwiftPackageReference',relativePath='MirageRuntime')
+mirage_dependency=add('package-product:QuicktickMirageRuntime','XCSwiftPackageProductDependency',package=mirage_ref,productName='Mirage')
+package_references.append(mirage_ref)
+package_products.append(mirage_dependency)
+package_build_files.append(add('package-build:QuicktickMirageRuntime','PBXBuildFile',productRef=mirage_dependency))
 for name,kind in [('QuicktickNative','application'),('QuicktickNativeTests','bundle.unit-test'),('QuicktickNativeUITests','bundle.ui-testing')]:
     if not (ROOT/name).exists(): continue
     app=kind=='application'

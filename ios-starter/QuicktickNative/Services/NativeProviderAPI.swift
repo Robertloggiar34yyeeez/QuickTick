@@ -846,24 +846,68 @@ enum NativeProviderAPI {
         return nil
     }
 
+    static func pornhubCategories(session: URLSession, credentials: ProviderCredentials) async throws -> [String] {
+        let bytes = try await data(session: session, url: url("https://www.pornhub.com/webmasters/categories"),
+                                   provider: .pornhub, headers: cookieHeaders(credentials))
+        let result = try object(bytes)
+        let values = rows(result["categories"]).map { text($0["category"] ?? $0["name"]) }
+        return Array(Set(values.filter { !$0.isEmpty })).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    static func pornhubSearchParameters(query: ParsedQuery, page: Int, sort: String) -> [URLQueryItem] {
+        let selection = ProviderSearchCategories.split(query, provider: .pornhub)
+        let filters = (query.pornhub ?? PornhubSearchFilters()).normalized
+        let ordering = query.pornhub == nil
+            ? (sort == "recent" ? "newest" : sort == "popular" ? "mostviewed" : "featured")
+            : filters.order.ordering
+        var params = [URLQueryItem(name: "page", value: String(max(1, page))),
+                      URLQueryItem(name: "ordering", value: ordering),
+                      URLQueryItem(name: "thumbsize", value: "large_hd")]
+        if !selection.keywords.isEmpty {
+            params.insert(.init(name: "search", value: selection.keywords.joined(separator: " ")), at: 0)
+        }
+        if let category = filters.includedCategory ?? selection.category.map({ String($0.dropFirst("category:".count)) }) {
+            params.append(.init(name: "category", value: category))
+        }
+        if ordering != "featured" { params.append(.init(name: "period", value: "monthly")) }
+        if filters.production != .all { params.append(.init(name: "production", value: filters.production.rawValue)) }
+        if filters.minimumMinutes > 0 { params.append(.init(name: "min_duration", value: String(filters.minimumMinutes))) }
+        if filters.maximumMinutes < 40 { params.append(.init(name: "max_duration", value: String(filters.maximumMinutes))) }
+        for category in filters.excludedCategories { params.append(.init(name: "exclude_category[]", value: category)) }
+        return params
+    }
+
+    static func pornhubDurationSeconds(_ raw: Any?) -> Int? {
+        if let value = raw as? NSNumber { return max(0, value.intValue) }
+        let parts = text(raw).split(separator: ":").compactMap { Int($0) }
+        guard (2...3).contains(parts.count) else { return nil }
+        return parts.reduce(0) { $0 * 60 + $1 }
+    }
+
+    static func pornhubMatches(_ row: [String: Any], filters: PornhubSearchFilters) -> Bool {
+        let options = filters.normalized
+        if options.minimumMinutes > 0 || options.maximumMinutes < 40 {
+            guard let seconds = pornhubDurationSeconds(row["duration"]) else { return false }
+            if seconds < options.minimumMinutes * 60 { return false }
+            if options.maximumMinutes < 40 && seconds > options.maximumMinutes * 60 { return false }
+        }
+        func key(_ value: String) -> String {
+            value.lowercased().replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
+        }
+        let available = Set(strings(row["categories"]).map(key))
+        if let category = options.includedCategory, !available.isEmpty, !available.contains(key(category)) { return false }
+        if options.excludedCategories.contains(where: { available.contains(key($0)) }) { return false }
+        let production = text(row["production"] ?? row["production_type"]).lowercased()
+        if options.production != .all, !production.isEmpty, production != options.production.rawValue { return false }
+        return true
+    }
+
     static func pornhub(session: URLSession, credentials: ProviderCredentials, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
         let selection = ProviderSearchCategories.split(query, provider: .pornhub)
         // The public webmaster API accepts browsing without a search term.
         // An explicit `search=` with an empty value is not equivalent on all
         // deployments and has returned the site's generic 404 page.
-        var parameters: [URLQueryItem] = [
-            .init(name: "page", value: String(max(1, page))),
-            .init(name: "ordering", value: sort == "recent" ? "newest" : sort == "popular" ? "mostviewed" : "featured"),
-            .init(name: "thumbsize", value: "large_hd")]
-        if !selection.keywords.isEmpty {
-            parameters.insert(.init(name: "search", value: selection.keywords.joined(separator: " ")), at: 0)
-        }
-        if let category = selection.category {
-            parameters.append(.init(name: "category", value: String(category.dropFirst("category:".count))))
-        }
-        if sort == "recent" || sort == "popular" {
-            parameters.append(.init(name: "period", value: "monthly"))
-        }
+        let parameters = pornhubSearchParameters(query: query, page: page, sort: sort)
         // The legacy webmaster path sometimes responds with HTTP 200 and an
         // Apache "requested URL was not found" HTML body. Recognize that as
         // a dead API route and try first-party alternatives before parsing.
@@ -877,7 +921,12 @@ enum NativeProviderAPI {
             return try await pornhubPublicCatalog(session: session, credentials: credentials,
                 query: query, page: page, sort: sort, immersive: immersive)
         }
-        let posts = raw.map { row -> Post in
+        let options = query.pornhub ?? PornhubSearchFilters()
+        var filtered = raw.filter { pornhubMatches($0, filters: options) }
+        if options.order == .longest {
+            filtered.sort { (pornhubDurationSeconds($0["duration"]) ?? 0) > (pornhubDurationSeconds($1["duration"]) ?? 0) }
+        }
+        let posts = filtered.map { row -> Post in
             let id = text(row["video_id"] ?? row["id"])
             let images = [text(row["default_thumb"]), text(row["thumb"]), text(row["hd_thumb"])]
                 + rows(row["thumbs"]).map { text($0["src"] ?? $0["url"]) }
@@ -923,17 +972,32 @@ enum NativeProviderAPI {
                                      query: ParsedQuery, page: Int, sort: String,
                                      immersive: Bool) async throws -> PostPage {
         let selection = ProviderSearchCategories.split(query, provider: .pornhub)
+        let filters = (query.pornhub ?? PornhubSearchFilters()).normalized
         let searching = !selection.keywords.isEmpty
-        let category = selection.category.map { String($0.dropFirst("category:".count)) }
+        let category = filters.includedCategory ?? selection.category.map { String($0.dropFirst("category:".count)) }
         let route = searching ? "https://www.pornhub.com/video/search" :
             category.map { "https://www.pornhub.com/categories/" + $0 } ?? "https://www.pornhub.com/video"
         var parameters: [URLQueryItem] = [.init(name: "page", value: String(max(1, page)))]
+        let selectedOrder = query.pornhub?.order ?? (sort == "recent" ? .newest : sort == "popular" ? .mostViewed : .relevance)
+        let browserOrder: String
+        switch selectedOrder {
+        case .relevance: browserOrder = "relevance"
+        case .newest: browserOrder = "mr"
+        case .mostViewed: browserOrder = "mv"
+        case .topRated: browserOrder = "tr"
+        case .longest: browserOrder = "lg"
+        }
         if searching {
             parameters.append(.init(name: "search", value: selection.keywords.joined(separator: " ")))
             if let category { parameters.append(.init(name: "category", value: category)) }
+            if selectedOrder != .relevance { parameters.append(.init(name: "o", value: browserOrder)) }
         } else {
-            parameters.append(.init(name: "o", value: sort == "recent" ? "mr" : "mv"))
+            parameters.append(.init(name: "o", value: browserOrder))
         }
+        if filters.production != .all { parameters.append(.init(name: "p", value: filters.production.rawValue)) }
+        if filters.minimumMinutes > 0 { parameters.append(.init(name: "min_duration", value: String(filters.minimumMinutes))) }
+        if filters.maximumMinutes < 40 { parameters.append(.init(name: "max_duration", value: String(filters.maximumMinutes))) }
+        for excluded in filters.excludedCategories { parameters.append(.init(name: "exclude_category[]", value: excluded)) }
         // A first-page URL with page=1 or a sort key can itself be rejected
         // even when the canonical browse route still works. Try clean URL
         // variants on the *same first-party site*, but never turn a search or
@@ -964,7 +1028,7 @@ enum NativeProviderAPI {
             // canonical first-party browse URL.
             guard !unavailableHTML(bytes) else { continue }
             let html = String(decoding: bytes.prefix(2 * 1024 * 1024), as: UTF8.self)
-            let posts = pornhubHTMLPosts(html)
+            let posts = pornhubHTMLPosts(html, filters: filters)
             if !posts.isEmpty {
                 return self.page(posts, hasMore: posts.count >= 20,
                                  query: query, immersive: immersive)
@@ -975,14 +1039,18 @@ enum NativeProviderAPI {
 
     /// Extract only public listing metadata, not player scripts, cookies, or
     /// embedded media URLs. An unrecognized markup version fails explicitly.
-    static func pornhubHTMLPosts(_ html: String) -> [Post] {
+    static func pornhubHTMLPosts(_ html: String, filters: PornhubSearchFilters = PornhubSearchFilters()) -> [Post] {
         let blocks = matches(html,
             #"<li\b[^>]*(?:videoblock|videoBox)[^>]*>.*?</li>"#, group: 0)
         let candidates = blocks.isEmpty
             ? matches(html, #"<a\b[^>]*href=["'][^"']*view_video\.php\?viewkey=[^"']*["'][^>]*>.*?</a>"#, group: 0)
             : blocks
         var seen = Set<String>()
+        let options = filters.normalized
         return candidates.prefix(100).compactMap { block -> Post? in
+            let durationLabel = matches(block, #"\bduration[^>]*>\s*([0-9:]+)"#).first
+                ?? matches(block, #"\bdata-duration\s*=\s*["']([0-9:]+)["']"#).first
+            if let durationLabel, !pornhubMatches(["duration": durationLabel], filters: options) { return nil }
             let key = matches(block, #"data-video-vkey\s*=\s*["']([a-zA-Z0-9_]+)["']"#).first
                 ?? matches(block, #"view_video\.php\?viewkey=([a-zA-Z0-9_]+)"#).first
             guard let key, seen.insert(key).inserted else { return nil }

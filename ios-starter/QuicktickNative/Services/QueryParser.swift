@@ -63,6 +63,7 @@ enum ProviderSearchCategories {
 struct ParsedQuery: Equatable, Sendable {
     var included: [String]
     var excluded: [String]
+    var pornhub: PornhubSearchFilters? = nil
 }
 
 enum SearchOrder: String, CaseIterable, Identifiable, Sendable {
@@ -87,7 +88,7 @@ struct SearchFilters: Equatable, Sendable {
             else if lower == "sort:random" { filters.order = .random }
             else if lower.hasPrefix("rating:"), ratings.contains(String(lower.dropFirst(7))) { filters.rating = String(lower.dropFirst(7)) }
             else if lower.hasPrefix("score:>="), let score = Int(lower.dropFirst(8)), score >= 0 { filters.minimumScore = score }
-            else { tags.append(token) }
+            else if !lower.hasPrefix(PornhubSearchFilters.tokenPrefix) { tags.append(token) }
         }
         return (tags.joined(separator: " "), filters)
     }
@@ -100,6 +101,93 @@ struct SearchFilters: Equatable, Sendable {
             if let minimumScore { tokens.append("score:>=\(max(0, minimumScore))") }
         }
         return tokens.joined(separator: " ")
+    }
+}
+
+enum PornhubSearchOrder: String, CaseIterable, Identifiable, Codable, Sendable {
+    case relevance, newest, mostViewed, topRated, longest
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .relevance: "Most relevant"
+        case .newest: "Newest"
+        case .mostViewed: "Most viewed"
+        case .topRated: "Top rated"
+        case .longest: "Longest"
+        }
+    }
+    var ordering: String {
+        switch self {
+        case .relevance: "featured"
+        case .newest: "newest"
+        case .mostViewed: "mostviewed"
+        case .topRated: "rating"
+        case .longest: "longest"
+        }
+    }
+    var feedSort: String {
+        switch self {
+        case .relevance: "recommended"
+        case .newest: "recent"
+        default: "popular"
+        }
+    }
+}
+
+enum PornhubProduction: String, CaseIterable, Identifiable, Codable, Sendable {
+    case all, professional, homemade
+    var id: String { rawValue }
+    var title: String { switch self { case .all: "All"; case .professional: "Professional"; case .homemade: "Amateur" } }
+}
+
+/// Only Pornhub search reads these options. The single opaque query token keeps
+/// Home/Immersive pagination and saved-tab searches in sync without adding
+/// provider-specific state to every other feed and recommendation API.
+struct PornhubSearchFilters: Codable, Equatable, Sendable {
+    static let tokenPrefix = "qtph:"
+    static let commonCategories = ["Amateur", "Anal", "Asian", "Babe", "Big Ass", "Big Tits", "Blonde",
+                                   "Brunette", "Cosplay", "Couples", "Ebony", "Fetish", "Hentai",
+                                   "Interracial", "Latina", "Lesbian", "Mature", "MILF", "POV",
+                                   "Romantic", "Solo", "VR", "Vintage"]
+    var order: PornhubSearchOrder = .relevance
+    var production: PornhubProduction = .all
+    var minimumMinutes = 0
+    var maximumMinutes = 40 // 40 means 40+ / no upper bound.
+    var includedCategory: String? = nil
+    var excludedCategories: [String] = []
+
+    var normalized: Self {
+        var value = self
+        value.minimumMinutes = min(40, max(0, minimumMinutes))
+        value.maximumMinutes = max(value.minimumMinutes, min(40, max(0, maximumMinutes)))
+        value.includedCategory = includedCategory?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.includedCategory?.isEmpty == true { value.includedCategory = nil }
+        let includedKey = value.includedCategory?.lowercased()
+        var seen = Set<String>()
+        value.excludedCategories = excludedCategories.filter {
+            let key = $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return !key.isEmpty && key != includedKey && seen.insert(key).inserted
+        }.prefix(10).map { $0 }
+        return value
+    }
+
+    static func decode(_ query: String) -> Self {
+        guard let token = query.split(whereSeparator: \.isWhitespace).first(where: { $0.lowercased().hasPrefix(tokenPrefix) }) else { return Self() }
+        let payload = String(token.dropFirst(tokenPrefix.count))
+        let base64 = payload.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        let padded = base64.padding(toLength: ((base64.count + 3) / 4) * 4, withPad: "=", startingAt: 0)
+        guard let data = Data(base64Encoded: padded), data.count < 4096,
+              let decoded = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
+        return decoded.normalized
+    }
+
+    func encodedQuery(_ keywords: String) -> String {
+        let text = keywords.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = normalized
+        guard value != Self(), let data = try? JSONEncoder().encode(value) else { return text }
+        let encoded = data.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        return [text, Self.tokenPrefix + encoded].filter { !$0.isEmpty }.joined(separator: " ")
     }
 }
 
@@ -121,11 +209,13 @@ enum QueryParser {
         for raw in tokens(text) {
             let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !t.isEmpty else { continue }
+            if t.lowercased().hasPrefix(PornhubSearchFilters.tokenPrefix) { continue }
             if t.hasPrefix("-") && t.count > 1 { excluded.append(String(t.dropFirst())) }
             else { included.append(t) }
         }
         let blocked = Set(excluded.map { $0.lowercased() })
-        return ParsedQuery(included: uniqued(included).filter { !blocked.contains($0.lowercased()) }, excluded: uniqued(excluded))
+        return ParsedQuery(included: uniqued(included).filter { !blocked.contains($0.lowercased()) }, excluded: uniqued(excluded),
+                           pornhub: text.contains(PornhubSearchFilters.tokenPrefix) ? PornhubSearchFilters.decode(text) : nil)
     }
 
     /// Keep quoted phrases intact for free-text providers, including `-"phrase"`
@@ -165,6 +255,7 @@ struct SearchDraft: Sendable {
     var archiveCreatorLabel: String? = nil
     var tags: [SearchTag] = []
     var filters = SearchFilters()
+    var pornhub = PornhubSearchFilters()
     var sort = "recommended"
     // Do not reuse a tag-based draft after switching to a keyword provider.
     var provider: Provider? = nil

@@ -128,6 +128,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         }
         else if host == "search.htv-services.com" { payload = #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fixture\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"}]}]"}"# }
         else if path == "/api/v8/video" { payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/full.m3u8"}]}]}}"# }
+        else if path == "/webmasters/categories" {
+            payload = #"{"categories":[{"category":"Cosplay"},{"category":"Vintage"},{"category":"Anal"}]}"#
+        }
         else if path == "/webmasters/search" || path == "/webmasters/search/" {
             let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                 .first(where: { $0.name == "search" })?.value
@@ -138,7 +141,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
             }
-            payload = search == "html-response"
+            payload = search == "filtered-terms"
+                ? #"{"videos":[{"video_id":"allowed","title":"First","duration":"15:00","production":"homemade","categories":[{"category":"Cosplay"}]},{"video_id":"blocked","title":"Second","duration":"04:00","production":"professional","categories":[{"category":"Vintage"}]}]}"#
+                : search == "html-response"
                 ? "<html><head><title>404 Not Found</title></head><body>The requested URL was not found on this server.</body></html>"
                 : #"{"videos":[{"video_id":"ph1","title":"Fixture","tags":[{"tag_name":"sample"}],"default_thumb":"https://cdn.pornhub.com/thumb.jpg","thumbs":[{"size":"small","src":"https://cdn.pornhub.com/thumb-small.jpg"}]}]}"#
         }
@@ -707,6 +712,35 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(params.first(where: { $0.name == "category" })?.value, "hentai")
         XCTAssertNil(params.first(where: { $0.name == "search" }),
             "A category-only chip must not be sent as an unrelated title search")
+    }
+
+    func testPornhubSearchOnlyAppliesSelectedProviderFilters() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        var filters = PornhubSearchFilters(order: .topRated, production: .homemade,
+                                           minimumMinutes: 10, maximumMinutes: 20,
+                                           includedCategory: "Cosplay", excludedCategories: ["Vintage"])
+        let query = QueryParser.parse(filters.encodedQuery("filtered-terms"))
+        let result = try await api.posts(provider: .pornhub, query: query, page: 2, sort: "popular")
+        XCTAssertEqual(result.items.map(\.stableID), ["pornhub:allowed"])
+        let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first { $0.url?.path == "/webmasters/search" })
+        let params = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func value(_ key: String) -> String? { params.first { $0.name == key }?.value }
+        XCTAssertEqual(value("ordering"), "rating")
+        XCTAssertEqual(value("production"), "homemade")
+        XCTAssertEqual(value("min_duration"), "10")
+        XCTAssertEqual(value("max_duration"), "20")
+        XCTAssertEqual(value("category"), "Cosplay")
+        XCTAssertEqual(value("exclude_category[]"), "Vintage")
+        XCTAssertEqual(value("search"), "filtered-terms")
+
+        let categories = try await api.pornhubCategories()
+        XCTAssertEqual(categories, ["Anal", "Cosplay", "Vintage"])
+        let unrestricted = NativeProviderAPI.pornhubSearchParameters(query: QueryParser.parse("filtered-terms"), page: 1, sort: "recent")
+        XCTAssertFalse(unrestricted.contains(where: { ["production", "min_duration", "max_duration", "category", "exclude_category[]"].contains($0.name) }))
+        XCTAssertEqual(unrestricted.first { $0.name == "ordering" }?.value, "newest")
+        XCTAssertEqual(NativeProviderAPI.pornhubDurationSeconds("1:05:30"), 3930)
+        XCTAssertNil(NativeProviderAPI.pornhubDurationSeconds("unknown"))
     }
 
     func testPornhubWebmaster404UsesSameSitePublicCatalog() async throws {

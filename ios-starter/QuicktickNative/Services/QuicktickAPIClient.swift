@@ -112,6 +112,10 @@ actor QuicktickAPIClient {
     func setCredentials(_ value: ProviderCredentials) { credentials = value }
     func setCloudSyncEnabled(_ value: Bool) { cloudSyncEnabled = value }
 
+    func pornhubCategories() async throws -> [String] {
+        try await NativeProviderAPI.pornhubCategories(session: session, credentials: credentials)
+    }
+
     func request(path: String, query: [URLQueryItem] = [], method: String = "GET", jsonBody: Data? = nil) async throws -> Data {
         guard path == "/api/sync", cloudSyncEnabled else { throw APIError.server("Website Sync is off. Enable it explicitly in Settings.") }
         guard let baseURL else { throw APIError.missingBaseURL }

@@ -331,8 +331,8 @@ final class IntelligentRecommendationTests: XCTestCase {
             XCTAssertEqual(VisualDomain.classify(post("d", ["photo", "3d"], provider: provider.rawValue)), .mixed)
             // Catalog entries from these anime-only sources retain their known
             // medium until explicit photograph/3D evidence overrides it.
-            let expected: VisualDomain = (provider == .hhaven || provider == .nhentai) ? .anime :
-                ([Provider.pornhub, .eporner, .redgifs].contains(provider) ? .realLife : .uncertain)
+            let expected: VisualDomain = ([Provider.hanime, .nhentai].contains(provider) ? .anime :
+                ([Provider.pornhub, .eporner, .redgifs, .erome].contains(provider) ? .realLife : .uncertain))
             XCTAssertEqual(VisualDomain.classify(post("e", ["animated", "realistic"], provider: provider.rawValue)), expected)
         }
     }

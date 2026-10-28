@@ -73,7 +73,9 @@ struct NativeSearchBar: View {
                 .font(.caption).foregroundStyle(.secondary)
         } else {
             Text(isArchive ? "Search post titles or select an artist suggestion to see that creator's posts." :
-                "Search titles and keywords. Use quotes for phrases (\"red hair\") and -\"phrase\" to exclude them.")
+                (store.selectedProvider == .hanime
+                 ? "Search by title keywords or tags (for example fantasy, ahegao, or \"dark skin\"). Use -\"tag\" to exclude a tag."
+                 : "Search titles and keywords. Use quotes for phrases (\"red hair\") and -\"phrase\" to exclude them."))
                 .font(.subheadline).foregroundStyle(.secondary)
             Button("Clear keywords") {
                 form.text = ""; form.archiveCreatorReference = nil; form.archiveCreatorLabel = nil

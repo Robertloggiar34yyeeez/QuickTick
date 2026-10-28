@@ -223,7 +223,7 @@ struct HomeFeedView: View {
                     .accessibilityIdentifier("home-active-filter")
                 }
                 if suggestedThemesEnabled && !themeSuggestions.isEmpty { suggestedThemeRow }
-                if store.selectedProvider == .hhaven || store.selectedProvider == .pornhub {
+                if store.selectedProvider == .pornhub {
                     homeCategoryRow
                 }
                 if store.posts.isEmpty && !store.bootstrapped {
@@ -235,7 +235,7 @@ struct HomeFeedView: View {
                 } else if let error = store.lastError, store.posts.isEmpty, store.bootstrapped, !store.isLoading {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: {
                         Button("Try again") { Task { await store.refresh() } }
-                        if [.nhentai, .kemono, .coomer, .hhaven, .pornhub].contains(store.selectedProvider) {
+                        if [.nhentai, .kemono, .coomer, .erome, .hanime, .pornhub].contains(store.selectedProvider) {
                             Button("Browse inside QuickTick") { showProviderWebsite = true }
                         }
                     }
@@ -593,9 +593,17 @@ struct HomeFeedView: View {
                                     Text(theme.label).font(.subheadline.weight(.semibold))
                                         .lineLimit(2).foregroundStyle(.white)
                                         .frame(height: 36, alignment: .topLeading)
-                                    CachedMediaImage(url: theme.imageURL, pixels: 320, fill: true)
-                                        .frame(width: 154, height: 184)
-                                        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                    if !theme.imageURL.isEmpty {
+                                        CachedMediaImage(url: theme.imageURL, pixels: 320, fill: true)
+                                            .frame(width: 154, height: 184)
+                                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                    } else {
+                                        RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                            .fill(AppTheme.gradient)
+                                            .overlay(Image(systemName: "tag.fill")
+                                                .font(.system(size: 40, weight: .light)).foregroundStyle(.white))
+                                            .frame(width: 154, height: 184)
+                                    }
                                 }
                                 .frame(width: 154, alignment: .leading)
                                 .padding(10)
@@ -812,6 +820,10 @@ enum HomeThemeSuggestions {
                      visual: [String], favorites: [Post], posts: [Post], popular: [Post] = [],
                      excluded: [String], limit: Int = 8, rotation: Int = 0,
                      mode: SuggestedThemeMode = .tags) -> [HomeThemeSuggestion] {
+        if provider == .hanime {
+            return hanimeTags(learned: learned, chosen: chosen, favorites: favorites,
+                              posts: posts, excluded: excluded, limit: limit, rotation: rotation)
+        }
         // Bound this to nearby evidence: Home's body is refreshed by scroll
         // state, so image-chip ranking must never scan a huge saved library.
         let liked = Array(favorites.lazy.filter { $0.providerKey == provider }.prefix(96))
@@ -901,6 +913,39 @@ enum HomeThemeSuggestions {
     private static func normalize(_ term: String) -> String {
         term.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: " ", with: "_")
+    }
+
+    /// Hanime discovery is keyword/tag-based, unlike the former Haven sections.
+    /// Cards may omit art until matching accessible posts have loaded.
+    private static func hanimeTags(learned: [String], chosen: [String], favorites: [Post],
+                                   posts: [Post], excluded: [String], limit: Int,
+                                   rotation: Int) -> [HomeThemeSuggestion] {
+        let fallback = ["dark skin", "fantasy", "ahegao", "monster girl", "elf",
+                        "cosplay", "romance", "magic", "demon", "adventure"]
+        let evidence = Array((favorites + posts).filter { $0.providerKey == .hanime }.prefix(120))
+        let discovered = evidence.flatMap(\.tags).filter { TasteTagSuggestions.isUseful(normalize($0)) }
+        let preferred = chosen + learned.filter { discovered.map(normalize).contains(normalize($0)) }
+        var terms: [String] = []
+        var seen = Set<String>()
+        let blocked = Set(excluded.map(normalize))
+        for raw in preferred + discovered + fallback {
+            let normalized = normalize(raw)
+            guard !normalized.isEmpty, !blocked.contains(normalized),
+                  !generic.contains(normalized), seen.insert(normalized).inserted else { continue }
+            terms.append(normalized)
+        }
+        let lead = Array(terms.prefix(max(limit, 10)))
+        let shift = lead.isEmpty ? 0 : (rotation % lead.count + lead.count) % lead.count
+        let ordered = Array(lead.dropFirst(shift)) + Array(lead.prefix(shift))
+        return Array(ordered.prefix(limit)).map { tag in
+            let sample = evidence.first { post in
+                post.tags.contains(where: { normalize($0) == tag }) &&
+                    URL(string: post.cardPreviewURL)?.scheme == "https"
+            }
+            return HomeThemeSuggestion(term: tag.replacingOccurrences(of: "_", with: " "),
+                                       label: tag.replacingOccurrences(of: "_", with: " ").capitalized,
+                                       imageURL: sample?.cardPreviewURL ?? "")
+        }
     }
 }
 

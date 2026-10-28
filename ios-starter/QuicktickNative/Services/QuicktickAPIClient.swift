@@ -151,10 +151,20 @@ actor QuicktickAPIClient {
         case .coomer, .kemono:
             return try await cachedArchivePosts(provider: provider, query: query, page: page, immersive: immersive)
         case .eporner: return try await NativeProviderAPI.eporner(session: session, query: query, page: page, sort: sort, immersive: immersive)
-        case .erome: return try await cachedEromePosts(query: query, page: page, sort: sort, immersive: immersive)
+        case .erome:
+            if let base = EromeGeneratedAPI.configuredURL {
+                return try await EromeGeneratedAPI.posts(session: session, base: base,
+                                                         query: query, page: page, sort: sort, immersive: immersive)
+            }
+            return try await cachedEromePosts(query: query, page: page, sort: sort, immersive: immersive)
         case .pornhub: return try await NativeProviderAPI.pornhub(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
         case .hanime:
-            throw APIError.server("Hanime has been retired from QuickTick. Switch to Hentai Haven.")
+            if let base = HanimeGeneratedAPI.configuredURL {
+                return try await HanimeGeneratedAPI.posts(session: session, base: base,
+                                                          query: query, page: page, sort: sort, immersive: immersive)
+            }
+            return try await NativeProviderAPI.hanime(session: session, query: query,
+                                                      page: page, sort: sort, immersive: immersive)
         case .hhaven:
             return try await cachedHavenPosts(query: query, page: page, sort: sort, immersive: immersive)
         case .redgifs:
@@ -366,6 +376,14 @@ actor QuicktickAPIClient {
     }
 
     func resolveMedia(_ post: Post) async throws -> ResolvedMedia {
+        if post.providerKey == .hanime, post.mediaUrl.isEmpty,
+           let base = HanimeGeneratedAPI.configuredURL {
+            return try await HanimeGeneratedAPI.resolve(session: session, base: base, post: post)
+        }
+        if post.providerKey == .erome, post.mediaUrl.isEmpty,
+           let base = EromeGeneratedAPI.configuredURL {
+            return try await EromeGeneratedAPI.resolve(session: session, base: base, post: post)
+        }
         // Public Haven catalog entries use stable watch-page slugs, not the
         // numeric IDs expected by Warden. Resolve the public player directly
         // inside QuickTick; never redirect the user to a website sheet.

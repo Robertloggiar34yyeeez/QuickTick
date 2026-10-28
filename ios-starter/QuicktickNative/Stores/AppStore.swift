@@ -30,9 +30,8 @@ enum CandidatePoolMix {
 final class AppStore: ObservableObject {
     @Published var selectedProvider: Provider = .rule34 {
         didSet {
-            // Old profiles may still restore Hanime; silently migrate the
-            // selection while retaining the legacy source for old downloads.
-            if selectedProvider == .hanime { selectedProvider = .hhaven }
+            // Keep saved Haven items but migrate the old picker selection to Hanime.
+            if selectedProvider == .hhaven { selectedProvider = .hanime }
             guard oldValue != selectedProvider else { return }
             savedFeeds.removeAll()
             // Home category chips are scoped to one provider. Never carry a

@@ -125,8 +125,16 @@ final class FastFeedVisualTests: XCTestCase {
             XCTAssertEqual(VisualDomain.classify(post("b", provider: provider, tags: ["anime"])), .anime)
         }
         XCTAssertEqual(VisualDomain.classify(post("c", tags: ["photo"])), .realLife)
-        XCTAssertEqual(VisualDomain.classify(post("d", provider: "hanime")), .uncertain)
+        XCTAssertEqual(VisualDomain.classify(post("d", provider: "hanime")), .anime)
         XCTAssertTrue(VisualFeatures.metadata(post("e", provider: "redgifs", tags: ["blonde_hair"]))!.subjects.isEmpty)
+    }
+    func testHanimeSuggestedTopicsAreSearchableTagsWithoutInventedImages() {
+        let chips = HomeThemeSuggestions.make(provider: .hanime, learned: [], chosen: [], visual: [],
+                                              favorites: [], posts: [], excluded: [], limit: 5)
+        XCTAssertEqual(chips.map(\.term), ["dark skin", "fantasy", "ahegao", "monster girl", "elf"])
+        XCTAssertTrue(chips.allSatisfy { $0.imageURL.isEmpty })
+        let selected = QueryParser.formatted(ParsedQuery(included: [chips[0].term], excluded: []))
+        XCTAssertEqual(QueryParser.parse(selected).included, ["dark skin"])
     }
     func testDislikedChunLiPresentationPreservesIdentityAndContext() {
         let liked = VisualFeatures.metadata(post("liked", tags: ["chun_li", "qipao", "watercolor"]))!

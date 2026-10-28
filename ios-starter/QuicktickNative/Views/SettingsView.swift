@@ -20,8 +20,9 @@ struct SettingsView: View {
     @State private var backgroundImporting = false
     @State private var backgroundError: String?
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
-    @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
+    @AppStorage(HanimeGeneratedAPI.settingKey) private var hanimeAPIURL = ""
+    @AppStorage(EromeGeneratedAPI.settingKey) private var eromeAPIURL = ""
     @State private var status = ""
     @State private var user = ""
     @State private var key = ""
@@ -272,7 +273,13 @@ struct SettingsView: View {
                     .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("pornhub-session-input").accessibilityLabel("Supported Pornhub session")
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
-                Text("Erome uses public albums for free. No API key, Apify account or paid scraping service is required. Only publicly accessible media can be loaded.")
+                TextField("Erome API URL (optional)", text: $eromeAPIURL)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL).modifier(SettingsTextFieldSurface())
+                TextField("Hanime API URL (optional)", text: $hanimeAPIURL)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL).modifier(SettingsTextFieldSurface())
+                Text("Both providers work directly where public access is allowed. If a website denies app requests, you can run the supplied API packages under your own reachable HTTPS address and enter it here. These packages are not hosted by QuickTick. Access restrictions still apply.")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             }.disabled(store.isSyncing).id(SettingsDestination.access.rawValue)
             SettingsGroup(title: "Suggested topics", icon: "square.grid.2x2.fill") {
@@ -456,10 +463,7 @@ struct SettingsView: View {
                 Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
                     .modifier(SettingsControlRow())
                     .accessibilityIdentifier("skip-video-intros-toggle")
-                Toggle("Skip Hentai Haven intros (10 seconds)", isOn: $skipHavenIntros)
-                    .modifier(SettingsControlRow())
-                    .accessibilityIdentifier("skip-hhaven-intros-toggle")
-                Text("For enabled providers with videos longer than 12 seconds, QuickTick waits for the 0:10 position to load before showing playback. Hentai Haven is enabled by default.")
+                Text("When enabled, the 10-second intro skip is used for Pornhub videos longer than 12 seconds. Old saved Haven posts retain their previous preference.")
                     .font(.footnote).foregroundStyle(.secondary)
             }.id(SettingsDestination.playback.rawValue)
             SettingsGroup(title: "Rhythm & floating player", icon: "waveform.path") {

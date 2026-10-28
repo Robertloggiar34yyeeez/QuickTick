@@ -25,7 +25,7 @@ enum VisualDomain: String, Codable, Sendable {
         // Hentai Haven's older saved posts can lack the synthetic `hentai`
         // tag. The provider is animated content even when its title supplies
         // no descriptive tags. Explicit photo/3D/mixed evidence above wins.
-        if !post.isAudio && (post.providerKey == .hhaven || post.providerKey == .nhentai) { return .anime }
+        if !post.isAudio && (post.providerKey == .hhaven || post.providerKey == .hanime || post.providerKey == .nhentai) { return .anime }
         return .uncertain
     }
 }
@@ -276,7 +276,8 @@ struct VisualProfile: Codable, Sendable, Equatable {
                 let noLegacyVectors = clusters.isEmpty && negativeClusters.isEmpty && exposureClusters.isEmpty && negativeContextClusters.isEmpty
                 embeddingSpace = noLegacyVectors ? incoming : "vision-featureprint"
             }
-            if incoming != "vision-featureprint", embeddingSpace != incoming {
+            if incoming != "vision-featureprint", embeddingSpace != incoming,
+               !(embeddingSpace == "mobileclip2-s0-image" && incoming == "mobileclip-s0-image") {
                 // Migrate only the visual clusters; preserve all explicit
                 // metadata, context evidence, and dislikes learned before.
                 clusters = []; negativeClusters = []; negativeContextClusters = [:]; exposureClusters = []

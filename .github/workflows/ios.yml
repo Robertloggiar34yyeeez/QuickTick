@@ -133,7 +133,18 @@ jobs:
           # series of UI cases. Run the sensitive end-to-end scenarios with
           # fresh simulator state; do not skip or relax their assertions.
           boot_clean_iphone
-          run_iphone_tests QuicktickOnboardingTests xcodebuild-onboarding-test -only-testing:QuicktickNativeUITests/NavigationTests/testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key || failures=1
+          if ! run_iphone_tests QuicktickOnboardingTests xcodebuild-onboarding-test -only-testing:QuicktickNativeUITests/NavigationTests/testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key; then
+            # CoreSimulator occasionally cannot acquire the runner's launch
+            # assertion before executing a single XCTest. Retry this one
+            # infrastructure-only failure on a freshly erased simulator.
+            if grep -q 'Timed out while acquiring background assertion' logs/xcodebuild-onboarding-test.txt; then
+              echo '::warning::Simulator launch assertion timed out; retrying the full onboarding test once'
+              boot_clean_iphone
+              run_iphone_tests QuicktickOnboardingRetryTests xcodebuild-onboarding-retry-test -only-testing:QuicktickNativeUITests/NavigationTests/testFirstRunWizardExplainsFeaturesAndCanSkipRule34Key || failures=1
+            else
+              failures=1
+            fi
+          fi
           boot_clean_iphone
           run_iphone_tests QuicktickPreferencesTests xcodebuild-preferences-test -only-testing:QuicktickNativeUITests/NavigationTests/testPersonalPreferencesAndTabRefresh || failures=1
           boot_clean_iphone

@@ -146,7 +146,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 record.kind = hls ? .hlsPackage : .file
                 let task: URLSessionTask
                 if hls {
-                    guard let transfer = hlsSession.makeAssetDownloadTask(asset: AVURLAsset(url: url), assetTitle: record.title, assetArtworkData: nil, options: nil) else { throw APIError.server("This HLS stream cannot be stored offline.") }
+                    let mediaHeaders = HanimeGeneratedAPI.mediaHeaders(for: url)
+                        .merging(EromeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
+                    let asset = mediaHeaders.isEmpty ? AVURLAsset(url: url)
+                        : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": mediaHeaders])
+                    guard let transfer = hlsSession.makeAssetDownloadTask(asset: asset, assetTitle: record.title, assetArtworkData: nil, options: nil) else { throw APIError.server("This HLS stream cannot be stored offline.") }
                     task = transfer
                 } else {
                     var request = URLRequest(url: url)

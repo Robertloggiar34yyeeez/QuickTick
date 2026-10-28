@@ -2,9 +2,9 @@ import Foundation
 
 enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
     case rule34, redgifs, pornhub, eporner, erome, hhaven, coomer, kemono, nhentai
-    // Keep recognizing historical downloads, but don't offer new Hanime feeds.
+    // Historical Haven downloads stay readable, but Hanime replaces Haven in menus.
     case hanime
-    static var allCases: [Provider] { [.rule34, .redgifs, .pornhub, .eporner, .erome, .hhaven, .coomer, .kemono, .nhentai] }
+    static var allCases: [Provider] { [.rule34, .redgifs, .pornhub, .eporner, .erome, .hanime, .coomer, .kemono, .nhentai] }
     var id: String { rawValue }
     /// Older imports and restored downloads may use website names instead of
     /// the canonical provider ID. Restrict aliases to known sources rather

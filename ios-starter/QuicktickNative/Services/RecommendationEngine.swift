@@ -832,7 +832,7 @@ actor RecommendationEngine {
         let artistCredits = ArtistAttribution.credited(in: post, taxonomy: taxonomy).map { "artist:" + $0 }
         let raw = (post.tags + artistCredits + [post.caption, post.category].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         if [Provider.rule34.rawValue, Provider.kemono.rawValue,
-            Provider.nhentai.rawValue, Provider.hhaven.rawValue].contains(source) {
+            Provider.nhentai.rawValue, Provider.hhaven.rawValue, Provider.hanime.rawValue].contains(source) {
             let values = raw.flatMap { value in
                 let tag = value.lowercased()
                 let canonical = RecommendationTagRules.canonical(tag)

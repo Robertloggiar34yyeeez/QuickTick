@@ -155,6 +155,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "BBD9BD22740DC128935B49CE";
 		};
+		"2FC70F306840753329AF7ED6" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/EromeGeneratedAPI.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"6DD8E4537661FFFAB5D7A992" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "2FC70F306840753329AF7ED6";
+		};
 		"0B9BD008F73448448F70A9B9" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -174,6 +184,16 @@
 		"45AF167E0506ABA6C6B73A77" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "9422E9487547741D402FB032";
+		};
+		"FA25DC91FB8C0F05E2B4E85B" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "QuicktickNative/Services/HanimeGeneratedAPI.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"1D8CD1B622F9682F19A5BFE8" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "FA25DC91FB8C0F05E2B4E85B";
 		};
 		"C0E3D60F110839C896E8C03D" = {
 			"isa" = "PBXFileReference";
@@ -1085,8 +1105,10 @@
 				"E512CA914291A1DB2BDF23AB",
 				"04FD5CB7FE8230973247D44E",
 				"E874CD9FD9CD6DEE83C2261B",
+				"6DD8E4537661FFFAB5D7A992",
 				"3C0C404FF57FB16B10091D2C",
 				"45AF167E0506ABA6C6B73A77",
+				"1D8CD1B622F9682F19A5BFE8",
 				"B1C16E90CB68B3443D59352F",
 				"A4CB4F1BDFB6D2C9C0E50552",
 				"6EB9A6F33974605AA286C87C",
@@ -1504,8 +1526,10 @@
 				"703DCBCC250B56CF6EFDF09E",
 				"DC1E49A478061D498896EA51",
 				"BBD9BD22740DC128935B49CE",
+				"2FC70F306840753329AF7ED6",
 				"0B9BD008F73448448F70A9B9",
 				"9422E9487547741D402FB032",
+				"FA25DC91FB8C0F05E2B4E85B",
 				"C0E3D60F110839C896E8C03D",
 				"54E33A269CEE13883C732856",
 				"132921ABC15BF3FC1484C297",

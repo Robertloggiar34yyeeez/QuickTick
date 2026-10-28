@@ -84,7 +84,11 @@ final class PlayerPool: ObservableObject {
         if let existing = players[key], urls[key] == url,
            existing.status != .failed, existing.currentItem?.status != .failed { touch(key); return existing }
         release(key)
-        let item = AVPlayerItem(url: url)
+        let mediaHeaders = HanimeGeneratedAPI.mediaHeaders(for: url)
+            .merging(EromeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
+        let asset = mediaHeaders.isEmpty ? AVURLAsset(url: url)
+            : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": mediaHeaders])
+        let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 3
         let player = AVPlayer(playerItem: item)
         player.volume = feedVolumeScale

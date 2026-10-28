@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import WebKit
 
 // Shared by provider APIs and download preparation. A new screen or Retry tap
@@ -484,32 +485,88 @@ enum NativeProviderAPI {
         return self.page(posts, hasMore: number(result["pages"]) > 0 ? page < Int(number(result["pages"])) : !raw.isEmpty, query: query, immersive: immersive)
     }
 
-    static func hanimeSearchBody(query: ParsedQuery, page: Int, sort: String) throws -> Data {
-        let body: [String: Any] = ["search_text": query.included.joined(separator: " "), "tags": [], "tags_mode": "AND", "brands": [], "blacklist": [],
-                                   "order_by": sort == "recent" ? "released_at_unix" : "views", "ordering": "desc", "page": max(0, page - 1)]
-        return try JSONSerialization.data(withJSONObject: body)
+    static func hanimeSignature(claim: String) -> String {
+        let signed = Data("9944822\(claim)8\(claim)113".utf8)
+        return SHA256.hash(data: signed).map { String(format: "%02x", $0) }.joined()
     }
-    static func hanime(session: URLSession, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
-        let result: [String: Any]
+
+    static func hanimeRows(_ payload: Any) throws -> [[String: Any]] {
+        var current: Any = payload
+        for _ in 0..<4 {
+            if let list = current as? [[String: Any]] { return list }
+            if let encoded = current as? String, let bytes = encoded.data(using: .utf8) {
+                current = try JSONSerialization.jsonObject(with: bytes); continue
+            }
+            guard let object = current as? [String: Any],
+                  let next = object["hits"] ?? object["hentai_videos"] ?? object["videos"] ?? object["data"] else {
+                throw APIError.invalidResponse
+            }
+            current = next
+        }
+        guard let list = current as? [[String: Any]] else { throw APIError.invalidResponse }
+        return list
+    }
+
+    static func hanime(session: URLSession, query: ParsedQuery, page: Int,
+                       sort: String, immersive: Bool) async throws -> PostPage {
+        guard (1...1000).contains(page) else { throw APIError.invalidResponse }
+        // The supplied API describes the current first-party v11 catalog.
+        // It may require legitimate browser verification; HTTP 403 is never bypassed.
+        let claim = String(Int(Date().timeIntervalSince1970))
+        let headers = ["Accept": "application/json", "Origin": "https://hanime.tv",
+                       "Referer": "https://hanime.tv/", "x-signature-version": "app2",
+                       "x-claim": claim, "x-signature": hanimeSignature(claim), "x-session-token": ""]
+        let bytes: Data
         do {
-            result = try object(await data(session: session, url: url("https://search.htv-services.com/"), provider: .hanime, method: "POST", body: hanimeSearchBody(query: query, page: page, sort: sort)))
-        } catch {
-            if (error as? APIError)?.retryAfter != nil { throw error }
-            guard query.included.isEmpty, !Task.isCancelled else { throw error }
-            result = try object(await data(session: session, url: url("https://members.hanime.tv/rapi/v7/hentai_videos", [.init(name: "source", value: "randomize"), .init(name: "r", value: String(page))]), provider: .hanime))
+            bytes = try await data(session: session,
+                url: url("https://auth.hanime.tv/api/v11/search_hvs"), provider: .hanime,
+                headers: headers, maxBytes: 12 * 1024 * 1024, timeout: 20)
+        } catch APIError.providerStatus(.hanime, 403) {
+            throw APIError.server("Hanime requires normal browser verification on this connection. Open the site in Safari or configure a reachable Hanime API in Settings.")
         }
-        var raw = rows(result["hits"] ?? result["hentai_videos"] ?? result["videos"] ?? result["data"])
-        if let text = result["hits"] as? String, let bytes = text.data(using: .utf8) { raw = rows(try JSONSerialization.jsonObject(with: bytes)) }
-        let posts = raw.map { row -> Post in
-            let id = text(row["slug"] ?? row["hentai_video_slug"] ?? row["id"])
-            var post = Post(key: "hanime:\(id)", id: id, provider: "Hanime", score: number(row["views"]),
-                            tags: strings(row["hentai_tags"] ?? row["tags"] ?? row["genres"]),
-                            thumbUrl: text(row["poster_url"] ?? row["cover_url"] ?? row["thumbnail"]),
-                            pageUrl: "https://hanime.tv/videos/hentai/\(id)", type: "video")
-            post.caption = text(row["name"] ?? row["title"]); post.creator = text(row["brand"])
-            post.createdAt = number(row["released_at_unix"]); return post
+        let raw = try hanimeRows(JSONSerialization.jsonObject(with: bytes))
+        guard raw.count <= 20_000 else { throw APIError.invalidResponse }
+        let posts: [Post] = raw.compactMap { row in
+            let id = text(row["slug"] ?? row["hentai_video_slug"])
+            guard !id.isEmpty, id.count <= 160,
+                  id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else { return nil }
+            let tagValues = (row["hentai_tags"] ?? row["tags"] ?? row["genres"])
+            let tags = (tagValues as? [Any] ?? []).compactMap { entry -> String? in
+                if let label = entry as? String { return label }
+                guard let object = entry as? [String: Any] else { return nil }
+                return object["name"] as? String ?? object["text"] as? String ?? object["slug"] as? String
+            }
+            let thumb = text(row["poster_url"] ?? row["cover_url"] ?? row["thumbnail"])
+            let cover = URL(string: thumb)
+            let safeThumb = cover?.scheme == "https" ? thumb : ""
+            var post = Post(key: "hanime:\(id)", id: id, provider: "Hanime",
+                            score: number(row["views"] ?? row["views_count"]), tags: tags,
+                            thumbUrl: safeThumb, pageUrl: "https://hanime.tv/videos/hentai/\(id)", type: "video")
+            post.caption = text(row["name"] ?? row["title"])
+            post.creator = text((row["brand"] as? [String: Any])?["name"] ?? row["brand"])
+            post.createdAt = number(row["released_at_unix"] ?? row["created_at_unix"])
+            return post
         }
-        return self.page(posts, hasMore: number(result["nbPages"]) > 0 ? page < Int(number(result["nbPages"])) : !raw.isEmpty, query: query, immersive: immersive)
+        let contains: (String, Post) -> Bool = { term, post in
+            let needle = term.lowercased().replacingOccurrences(of: "_", with: " ")
+            let haystack = ([post.caption ?? "", post.creator ?? ""] + post.tags)
+                .joined(separator: " ").lowercased().replacingOccurrences(of: "_", with: " ")
+            return haystack.contains(needle)
+        }
+        let matched = posts.filter { post in
+            query.included.allSatisfy { contains($0, post) } &&
+            !query.excluded.contains { contains($0, post) }
+        }
+        let ordered = matched.sorted {
+            let left = sort == "recent" ? ($0.createdAt ?? 0) : $0.score
+            let right = sort == "recent" ? ($1.createdAt ?? 0) : $1.score
+            return left == right ? $0.id < $1.id : left > right
+        }
+        let start = (page - 1) * 24
+        guard start < ordered.count else { return PostPage(items: [], hasMore: false) }
+        let portion = Array(ordered[start..<min(start + 24, ordered.count)])
+        return self.page(portion, hasMore: start + portion.count < ordered.count,
+                         query: query, immersive: immersive)
     }
 
     /// HHaven documents Hentai Haven's v1 routes. The Warden endpoint issues a
@@ -1265,6 +1322,13 @@ enum EromePublicCatalog {
             + [.init(name: "page", value: String(page))]
         let address = try NativeProviderAPI.url(origin.absoluteString + route, parameters)
         let html = try await pageHTML(session: session, url: address)
+        let summaries = albumSummaries(html)
+        if !summaries.isEmpty {
+            // Preserve the supplied adapter's listing-first behavior. Loading
+            // dozens of albums on every page is slow and may trigger rate limits.
+            return NativeProviderAPI.page(summaries, hasMore: hasNextPage(html) || summaries.count >= 24,
+                                          query: query, immersive: immersive)
+        }
         let albums = albumLinks(html)
         if albums.isEmpty {
             if page == 1, !html.lowercased().contains("id=\"albums\"") &&
@@ -1307,10 +1371,54 @@ enum EromePublicCatalog {
             throw APIError.invalidResponse
         }
         let media = try await albumPosts(session: session, url: album)
-        guard let current = media.first(where: { $0.id == post.id }) else {
+        guard let current = media.first(where: { $0.id == post.id })
+                ?? (post.id == albumID ? media.first(where: { $0.type == "video" }) ?? media.first : nil) else {
             throw APIError.server("This Erome media item is no longer available on its public album page.")
         }
         return ResolvedMedia(mediaUrl: current.mediaUrl, type: current.type)
+    }
+
+    static func hasNextPage(_ html: String) -> Bool {
+        html.contains("rel=\"next\"") || html.contains("rel='next'")
+    }
+
+    /// Read album metadata from listing cards without fetching album bodies.
+    /// Existing sparse/older listings still use albumLinks + albumMedia.
+    static func albumSummaries(_ html: String) -> [Post] {
+        let pattern = #"<div\b(?=[^>]*\bclass\s*=\s*["'][^"']*\balbum(?=\s|["']))[^>]*>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
+        let source = html as NSString
+        let starts = regex.matches(in: html, range: NSRange(location: 0, length: source.length))
+        var seen = Set<String>()
+        return starts.enumerated().compactMap { index, match -> Post? in
+            let end = index + 1 < starts.count ? starts[index + 1].range.location : source.length
+            guard end > match.range.location else { return nil }
+            let block = source.substring(with: NSRange(location: match.range.location,
+                                                       length: min(end - match.range.location, 12_000)))
+            let titleAnchor = NativeProviderAPI.matches(block,
+                #"<a\b(?=[^>]*\bclass\s*=\s*["'][^"']*\balbum-title\b)[^>]*>"#, group: 0).first
+            guard let link = titleAnchor.flatMap({ attribute($0, "href") }),
+                  let album = albumURL(link), let id = albumID(album), seen.insert(id).inserted else { return nil }
+            let imageTag = NativeProviderAPI.matches(block,
+                #"<img\b(?=[^>]*\bclass\s*=\s*["'][^"']*\balbum-thumbnail\b)[^>]*>"#, group: 0).first
+            guard let imageTag,
+                  let image = attribute(imageTag, "data-src") ?? attribute(imageTag, "src"),
+                  let thumbnail = mediaURL(image) else { return nil }
+            let name = NativeProviderAPI.matches(block,
+                #"<a\b(?=[^>]*\bclass\s*=\s*["'][^"']*\balbum-title\b)[^>]*>([\s\S]*?)</a>"#).first ?? ""
+            let videos = NativeProviderAPI.matches(block,
+                #"class\s*=\s*["'][^"']*\balbum-videos\b[^"']*["'][^>]*>\s*([0-9]+)"#).first
+            let creator = NativeProviderAPI.matches(block,
+                #"class\s*=\s*["'][^"']*\balbum-user\b[^"']*["'][^>]*>\s*([^<]+)"#).first
+            let numberOfVideos = Int(videos ?? "0") ?? 0
+            var post = Post(key: "erome:\(id)", id: id, provider: "Erome",
+                            thumbUrl: thumbnail.absoluteString, pageUrl: album.absoluteString,
+                            type: numberOfVideos > 0 ? "video" : "image")
+            post.caption = decode(name.replacingOccurrences(of: #"<[^>]+>"#,
+                                                             with: "", options: .regularExpression))
+            post.creator = creator.map(decode)
+            return post
+        }
     }
 
     static func albumLinks(_ html: String) -> [URL] {
@@ -1383,8 +1491,13 @@ enum EromePublicCatalog {
 
     private static func pageHTML(session: URLSession, url: URL) async throws -> String {
         guard url.host == origin.host else { throw APIError.invalidResponse }
-        let bytes = try await NativeProviderAPI.data(session: session, url: url,
-            provider: .erome, headers: headers, maxBytes: 4 * 1024 * 1024, timeout: 12)
+        let bytes: Data
+        do {
+            bytes = try await NativeProviderAPI.data(session: session, url: url,
+                provider: .erome, headers: headers, maxBytes: 4 * 1024 * 1024, timeout: 12)
+        } catch APIError.providerStatus(.erome, 403) {
+            throw APIError.server("Erome denied this connection (HTTP 403). Only public albums can be loaded; check access in Safari or configure your own authorized Erome API in Settings.")
+        }
         guard !NativeProviderAPI.unavailableHTML(bytes) else {
             throw APIError.server("Erome returned an unavailable page instead of a public album.")
         }

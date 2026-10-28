@@ -48,6 +48,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "www.erome.com", path == "/a/ABC123" {
             payload = #"<html><head><title>City portrait - Erome</title><meta property="og:image" content="https://s7.erome.com/123/ABC123/poster.jpg"></head><body><video data-setup='{&quot;poster&quot;:&quot;https://s7.erome.com/123/ABC123/poster.jpg&quot;}'><source src="https://v12.erome.com/123/ABC123/clip_720p.mp4" type="video/mp4"></video><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div><div class="img"><img data-src="https://evil.invalid/malicious.jpg"></div></body></html>"#
         }
+        else if host == "auth.hanime.tv", path == "/api/v11/search_hvs" {
+            payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
+        }
         else if host == "api.rule34.xxx", path == "/autocomplete.php" { payload = #"[{"value":"engineering","label":"engineering (12)","count":12}]"# }
         else if host == "api.rule34.xxx" {
             let comments = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "s" && $0.value == "comment" } == true
@@ -235,6 +238,49 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(EromePublicCatalog.albumMedia(injected, albumURL: album).isEmpty)
     }
 
+    func testEromeListingSummariesDoNotDownloadAllAlbums() throws {
+        let html = #"<div id="albums"><div class="album"><a class="album-title" href="/a/ABC123">City portrait</a><img class="album-thumbnail" src="https://s7.erome.com/123/ABC123/poster.jpg"><span class="album-user">Creator</span><span class="album-videos">1</span></div></div>"#
+        let summaries = EromePublicCatalog.albumSummaries(html)
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertEqual(summaries.first?.stableID, "erome:ABC123")
+        XCTAssertEqual(summaries.first?.type, "video")
+        XCTAssertEqual(summaries.first?.mediaUrl, "")
+        XCTAssertEqual(summaries.first?.caption, "City portrait")
+        XCTAssertEqual(summaries.first?.creator, "Creator")
+    }
+
+    func testHanimeV11CatalogSearchesTagsAndKeepsSiteHeaders() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .hanime,
+            query: ParsedQuery(included: ["dark skin"], excluded: []), page: 1)
+        XCTAssertEqual(page.items.map(\.stableID), ["hanime:sample"])
+        XCTAssertEqual(page.items.first?.tags, ["fantasy", "dark skin"])
+        let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first)
+        XCTAssertEqual(request.url?.host, "auth.hanime.tv")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature-version"), "app2")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature")?.count, 64)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "https://hanime.tv")
+        let filtered = try await api.posts(provider: .hanime,
+            query: ParsedQuery(included: ["fantasy"], excluded: ["dark skin"]), page: 1)
+        XCTAssertTrue(filtered.items.isEmpty)
+    }
+
+    func testGeneratedProviderAPIsValidateURLsAndQueryExclusions() throws {
+        XCTAssertNotNil(HanimeGeneratedAPI.validatedURL("https://api.example.com"))
+        XCTAssertNil(HanimeGeneratedAPI.validatedURL("http://api.example.com"))
+        XCTAssertNil(HanimeGeneratedAPI.validatedURL("https://name:secret@api.example.com"))
+        let base = URL(string: "https://api.example.com")!
+        let query = ParsedQuery(included: ["dark skin"], excluded: ["blocked_tag"])
+        let hanime = try HanimeGeneratedAPI.listingURL(base: base, query: query, page: 2, sort: "recent")
+        let erome = try EromeGeneratedAPI.listingURL(base: base, query: query, page: 3,
+                                                     sort: "recent", immersive: true)
+        XCTAssertEqual(URLComponents(url: hanime, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "q" })?.value, "dark skin")
+        XCTAssertEqual(URLComponents(url: erome, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "exclude" })?.value, "blocked_tag")
+    }
+
     func testArchiveDomainsNormalizeSafely() {
         XCTAssertEqual(Provider.identify("coomer.st"), .coomer)
         XCTAssertEqual(NativeProviderAPI.type("https://coomer.st/data/sound.mp3"), "audio")
@@ -344,8 +390,8 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(Post(key: "legacy:3", id: "3", provider: "Rule34.xxx").providerKey, .rule34)
         XCTAssertEqual(Post(key: "legacy:4", id: "4", provider: "Hanime.tv").providerKey, .hanime)
         XCTAssertEqual(Post(key: "hhaven:12", id: "12", provider: "Hentai Haven").providerKey, .hhaven)
-        XCTAssertFalse(Provider.allCases.contains(.hanime), "Old Hanime downloads remain identifiable but its feed is removed")
-        XCTAssertTrue(Provider.allCases.contains(.hhaven))
+        XCTAssertTrue(Provider.allCases.contains(.hanime))
+        XCTAssertFalse(Provider.allCases.contains(.hhaven), "Keep legacy Haven downloads without showing Haven in the picker")
         var fromPage = Post(key: "legacy:5", id: "5", provider: "Imported")
         fromPage.pageUrl = "https://www.eporner.com/video-abc"
         XCTAssertEqual(fromPage.providerKey, .eporner)
@@ -1145,7 +1191,8 @@ final class NativeProviderAPITests: XCTestCase {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         for provider in Provider.allCases {
             let page = try await api.posts(provider: provider, query: QueryParser.parse(""), page: 1)
-            XCTAssertEqual(page.items.count, provider == .kemono || provider == .coomer ? 3 : 1, provider.rawValue)
+            XCTAssertEqual(page.items.count,
+                           provider == .kemono || provider == .coomer ? 3 : (provider == .erome ? 2 : 1), provider.rawValue)
             XCTAssertEqual(page.items.first?.providerKey, provider)
         }
         let requests = NativeProviderProtocol.log.snapshot()

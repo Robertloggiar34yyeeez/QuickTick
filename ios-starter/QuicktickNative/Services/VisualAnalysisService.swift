@@ -38,7 +38,8 @@ enum AnimeVisualRecommendationPolicy {
     static func usesWDTagger(_ post: Post, domain: VisualDomain) -> Bool {
         guard !post.isAudio else { return false }
         return domain == .anime || (domain == .uncertain &&
-            (post.providerKey == .kemono || post.providerKey == .hhaven || post.providerKey == .nhentai))
+            (post.providerKey == .kemono || post.providerKey == .hhaven ||
+             post.providerKey == .hanime || post.providerKey == .nhentai))
     }
 
     static func fetchesIdlePreview(_ post: Post, domain: VisualDomain,
@@ -49,7 +50,8 @@ enum AnimeVisualRecommendationPolicy {
         // existing serial, Wi-Fi-only idle worker so visual ranking can learn
         // from more than just previously opened posts.
         return favorite || disliked ||
-            ((post.providerKey == .hhaven || post.providerKey == .nhentai) && usesWDTagger(post, domain: domain))
+            ((post.providerKey == .hhaven || post.providerKey == .hanime ||
+              post.providerKey == .nhentai) && usesWDTagger(post, domain: domain))
     }
 
     static func mergeWD(_ tagged: WDAnimeTagger.Result, into features: inout VisualFeatures) {

@@ -109,11 +109,15 @@ final class NavigationTests: XCTestCase {
             XCTAssertTrue(surface.waitForExistence(timeout: 15))
             expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: surface)
             waitForExpectations(timeout: 15)
-            XCTAssertGreaterThan(surface.frame.width, app.frame.width * 0.85)
-            XCTAssertEqual(surface.frame.width, app.frame.width, accuracy: 2,
-                           "Immersive video layers must fill the iPad canvas horizontally")
-            XCTAssertGreaterThanOrEqual(surface.frame.height, app.frame.height * 0.85,
-                                        "A source aspect ratio must not shrink the immersive player to a cutout")
+            let window = app.windows.firstMatch.frame
+            XCTAssertLessThanOrEqual(surface.frame.width, window.width + 2)
+            XCTAssertLessThanOrEqual(surface.frame.height, window.height + 2)
+            XCTAssertEqual(surface.frame.midX, window.midX, accuracy: 3,
+                           "Immersive media should be centered independently of the sidebar")
+            XCTAssertEqual(surface.frame.midY, window.midY, accuracy: 3,
+                           "Immersive media should be centered on the device, not below its safe area")
+            XCTAssertEqual(surface.frame.width / surface.frame.height, 320.0 / 180, accuracy: 0.10,
+                           "The original video aspect ratio should survive rotation without center-cropping")
             let home = app.buttons["tab-Home"], immersive = app.buttons["tab-Immersive"]
             XCTAssertTrue(home.isHittable); XCTAssertTrue(immersive.isHittable)
             XCTAssertEqual(home.frame.midX, immersive.frame.midX, accuracy: 1)

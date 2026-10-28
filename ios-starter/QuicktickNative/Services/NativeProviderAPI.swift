@@ -928,23 +928,43 @@ enum NativeProviderAPI {
         } else {
             parameters.append(.init(name: "o", value: sort == "recent" ? "mr" : "mv"))
         }
-        let bytes: Data
-        do {
-            bytes = try await data(session: session, url: url(route, parameters),
-                                   provider: .pornhub, headers: cookieHeaders(credentials))
-        } catch APIError.providerStatus(.pornhub, 404) {
-            throw APIError.server("Pornhub's public webmaster API and public listing are both unavailable (404). Try again later or open the provider directly.")
+        // A first-page URL with page=1 or a sort key can itself be rejected
+        // even when the canonical browse route still works. Try clean URL
+        // variants on the *same first-party site*, but never turn a search or
+        // category request into an unrelated generic feed.
+        var candidates = [try url(route, parameters)]
+        if page == 1 {
+            candidates.append(try url(route, parameters.filter { $0.name != "page" }))
+            candidates.append(try url(route, parameters.filter { $0.name != "page" && $0.name != "o" }))
+            if !searching && category == nil {
+                candidates.append(try url("https://www.pornhub.com/"))
+            }
         }
-        guard !unavailableHTML(bytes) else {
-            throw APIError.server("Pornhub is returning an unavailable page from this network. QuickTick cannot load its catalog until access is restored.")
+        var tried = Set<URL>()
+        let htmlHeaders = cookieHeaders(credentials).merging([
+            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"
+        ]) { _, explicit in explicit }
+        for candidate in candidates {
+            guard tried.insert(candidate).inserted else { continue }
+            let bytes: Data
+            do {
+                bytes = try await data(session: session, url: candidate,
+                                       provider: .pornhub, headers: htmlHeaders)
+            } catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 {
+                continue
+            }
+            // Some upstream missing routes produce HTTP 200 with an HTML 404.
+            // Never pass that page into the feed or stop before checking the
+            // canonical first-party browse URL.
+            guard !unavailableHTML(bytes) else { continue }
+            let html = String(decoding: bytes.prefix(2 * 1024 * 1024), as: UTF8.self)
+            let posts = pornhubHTMLPosts(html)
+            if !posts.isEmpty {
+                return self.page(posts, hasMore: posts.count >= 20,
+                                 query: query, immersive: immersive)
+            }
         }
-        // Bound regex work on pages with large inline player/state scripts.
-        let html = String(decoding: bytes.prefix(2 * 1024 * 1024), as: UTF8.self)
-        let posts = pornhubHTMLPosts(html)
-        guard !posts.isEmpty else {
-            throw APIError.server("Pornhub's public webmaster API is unavailable, and its public page returned no readable videos. The provider may be restricted in your region.")
-        }
-        return self.page(posts, hasMore: posts.count >= 20, query: query, immersive: immersive)
+        throw APIError.server("Pornhub returned missing or unreadable public catalog pages. Its first-party API may be temporarily unavailable on this network.")
     }
 
     /// Extract only public listing metadata, not player scripts, cookies, or

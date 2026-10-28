@@ -126,6 +126,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                 .first(where: { $0.name == "search" })?.value
             if search == "unavailable-route" || search == "public-html" ||
+               search == "browse-missing-first" || search == "browse-soft404" ||
                (search == "api-host" && host != "api.pornhub.com") ||
                (path == "/webmasters/search" && search == "route-fixture") {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
@@ -136,7 +137,15 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 : #"{"videos":[{"video_id":"ph1","title":"Fixture","tags":[{"tag_name":"sample"}],"default_thumb":"https://cdn.pornhub.com/thumb.jpg","thumbs":[{"size":"small","src":"https://cdn.pornhub.com/thumb-small.jpg"}]}]}"#
         }
         else if host == "www.pornhub.com", path == "/video/search" {
-            payload = #"<html><ul><li class="videoblock videoBox" data-video-vkey="phpublic"><a href="/view_video.php?viewkey=phpublic" title="Public &amp; indexed"><img data-thumb_url="https://cdn.pornhub.com/public.jpg" src="https://cdn.pornhub.com/public-small.jpg" alt="Public video"></a></li></ul></html>"#
+            let params = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let search = params.first(where: { $0.name == "search" })?.value
+            if search == "browse-missing-first", params.contains(where: { $0.name == "page" }) {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
+            payload = search == "browse-soft404" && params.contains(where: { $0.name == "page" })
+                ? "<html><head><title>404 Not Found</title></head><body>The requested URL was not found on this server.</body></html>"
+                : #"<html><ul><li class="videoblock videoBox" data-video-vkey="phpublic"><a href="/view_video.php?viewkey=phpublic" title="Public &amp; indexed"><img data-thumb_url="https://cdn.pornhub.com/public.jpg" src="https://cdn.pornhub.com/public-small.jpg" alt="Public video"></a></li></ul></html>"#
         }
         else if path == "/view_video.php" {
             let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
@@ -678,6 +687,21 @@ final class NativeProviderAPITests: XCTestCase {
         let unavailable = Data("<html><title>Site Unavailable</title></html>".utf8)
         XCTAssertTrue(NativeProviderAPI.unavailableHTML(unavailable))
         XCTAssertFalse(NativeProviderAPI.unavailableHTML(Data(#"{"videos":[]}"#.utf8)))
+    }
+
+    func testPornhubMissingBrowseRouteRetriesUnparameterizedFirstPartyURL() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        for query in ["browse-missing-first", "browse-soft404"] {
+            NativeProviderProtocol.log.reset()
+            let result = try await api.posts(provider: .pornhub,
+                query: QueryParser.parse(query), page: 1)
+            XCTAssertEqual(result.items.map(\.stableID), ["pornhub:phpublic"])
+            let listing = NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/video/search" }
+            XCTAssertEqual(listing.count, 2, "Only the bad first-page URL and clean canonical search may be tried")
+            XCTAssertTrue(listing[0].url?.query?.contains("page=1") == true)
+            XCTAssertFalse(listing[1].url?.query?.contains("page=") == true)
+            XCTAssertTrue(listing[1].value(forHTTPHeaderField: "Accept")?.contains("text/html") == true)
+        }
     }
 
     func testPornhubMissingWebmasterRouteTriesFirstPartyAPIHost() async throws {

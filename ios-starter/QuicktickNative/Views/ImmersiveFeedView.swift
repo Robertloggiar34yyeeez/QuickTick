@@ -55,7 +55,12 @@ struct ImmersiveFeedView: View {
     }
 
     var body: some View {
-        GeometryReader { geo in
+        // Keep the media canvas edge-to-edge on *both* vertical edges. Only
+        // extending into the bottom home-indicator inset moves the perceived
+        // center below the device center by half the top safe-area inset.
+        // Controls stay in the safe-area ZStack, above the notch/status bar.
+        ZStack(alignment: .top) {
+            GeometryReader { geo in
             ZStack {
                 if abs(verticalDrag) > 8, let adjacentPost {
                     dragPoster(adjacentPost, viewport: geo.size)
@@ -106,45 +111,16 @@ struct ImmersiveFeedView: View {
                 .frame(width: geo.size.width, height: geo.size.height)
                 .contentShape(Rectangle())
                 .clipped()
+            }
+            .ignoresSafeArea(edges: [.top, .bottom])
+            immersiveHeader
         }
-        // Cover the bottom home-indicator inset as well. In an iPad
-        // Favorites/Downloads overlay, the underlying list otherwise showed
-        // through as a thin strip of the next post below the active video.
-        .ignoresSafeArea(edges: .bottom)
         .background(ThemeBackdrop())
         .navigationTitle(offline ? "Offline Immersive" : "Immersive")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(AppTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar(.hidden, for: .navigationBar)
-        .overlay(alignment: .top) {
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    if let onClose { Button(action: onClose) { Image(systemName: "chevron.left").frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("Back") }
-                    Text(offline ? "Offline" : "Immersive").font(.subheadline.weight(.semibold)).shadow(color: .black, radius: 4)
-                    Spacer(minLength: 0)
-                    if !offline && onClose == nil {
-                        Menu { ForEach(Provider.allCases) { provider in
-                            Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
-                        }; Divider(); Button("Personalize recommendations") { preferencesVisible = true } } label: {
-                            ProviderLogoView(provider: store.selectedProvider)
-                                .frame(width: 52, height: 44)
-                                .background(.black.opacity(0.55), in: Capsule())
-                                .overlay(Capsule().stroke(.white.opacity(0.15)))
-                                .accessibilityLabel("Provider: \(store.selectedProvider.displayName)")
-                        }
-                    }
-                    if !offline && collectionTab == nil {
-                        Button { searchVisible.toggle() } label: {
-                            Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)
-                                .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
-                        }.buttonStyle(.plain).accessibilityLabel("Search")
-                        SettingsLauncher(isPresented: $showSettings)
-                    }
-                }.padding(.horizontal, 16).frame(height: 52)
-
-            }
-        }
         .task(id: presentationActive) {
             guard presentationActive else { return }
             if activeID == nil { activeID = mediaPosts.first?.stableID }
@@ -190,6 +166,35 @@ struct ImmersiveFeedView: View {
             else { Task { await store.selectFeedTab(0) } }
         }
         .offset(x: horizontalCloseDrag)
+    }
+
+    private var immersiveHeader: some View {
+        VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    if let onClose { Button(action: onClose) { Image(systemName: "chevron.left").frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("Back") }
+                    Text(offline ? "Offline" : "Immersive").font(.subheadline.weight(.semibold)).shadow(color: .black, radius: 4)
+                    Spacer(minLength: 0)
+                    if !offline && onClose == nil {
+                        Menu { ForEach(Provider.allCases) { provider in
+                            Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
+                        }; Divider(); Button("Personalize recommendations") { preferencesVisible = true } } label: {
+                            ProviderLogoView(provider: store.selectedProvider)
+                                .frame(width: 52, height: 44)
+                                .background(.black.opacity(0.55), in: Capsule())
+                                .overlay(Capsule().stroke(.white.opacity(0.15)))
+                                .accessibilityLabel("Provider: \(store.selectedProvider.displayName)")
+                        }
+                    }
+                    if !offline && collectionTab == nil {
+                        Button { searchVisible.toggle() } label: {
+                            Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)
+                                .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+                        }.buttonStyle(.plain).accessibilityLabel("Search")
+                        SettingsLauncher(isPresented: $showSettings)
+                    }
+                }.padding(.horizontal, 16).frame(height: 52)
+
+        }
     }
 
     private func dragPoster(_ post: Post, viewport: CGSize) -> some View {

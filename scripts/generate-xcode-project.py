@@ -33,8 +33,9 @@ products=[]; targets=[]
 package_specs=[
     ('ml-stable-diffusion','https://github.com/apple-aiml-research/ml-stable-diffusion.git',
      {'kind':'exactVersion','version':'1.1.1'},'StableDiffusion'),
-    ('ZIPFoundation','https://github.com/tuist/ZIPFoundation.git',
-     {'kind':'exactVersion','version':'0.9.21'},'ZIPFoundation'),
+    # DrawThings already bundles a ZIPFoundation target in its package graph.
+    # Adding tuist/ZIPFoundation separately creates duplicate target names and
+    # makes Xcode's package resolution fail before any app code is compiled.
     ('DrawThings','https://github.com/drawthingsai/draw-things-community.git',
      {'kind':'revision','revision':'0621d8198f3ed505bb7cefc71b84f8f0e1ce5936'},'_MediaGenerationKit'),
 ]

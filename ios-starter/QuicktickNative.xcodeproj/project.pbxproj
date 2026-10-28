@@ -1032,23 +1032,6 @@
 			"isa" = "PBXBuildFile";
 			"productRef" = "1A7BAB5C15074F037327D8A9";
 		};
-		"3D0B4FA3133856BEF7BC643D" = {
-			"isa" = "XCRemoteSwiftPackageReference";
-			"repositoryURL" = "https://github.com/tuist/ZIPFoundation.git";
-			"requirement" = {
-				"kind" = "exactVersion";
-				"version" = "0.9.21";
-			};
-		};
-		"708891216C35C07388834892" = {
-			"isa" = "XCSwiftPackageProductDependency";
-			"package" = "3D0B4FA3133856BEF7BC643D";
-			"productName" = "ZIPFoundation";
-		};
-		"D6598A053ECFAE956A47F6DB" = {
-			"isa" = "PBXBuildFile";
-			"productRef" = "708891216C35C07388834892";
-		};
 		"2C1BF48AF9AF1A9C62500E5B" = {
 			"isa" = "XCRemoteSwiftPackageReference";
 			"repositoryURL" = "https://github.com/drawthingsai/draw-things-community.git";
@@ -1172,7 +1155,6 @@
 			"buildActionMask" = "2147483647";
 			"files" = (
 				"769149686493D8B92E1C01CB",
-				"D6598A053ECFAE956A47F6DB",
 				"5D50E9CA949900488AEC6405",
 				"1531F5FDCFA0B9ED96F92B3D",
 			);
@@ -1259,7 +1241,6 @@
 			"productType" = "com.apple.product-type.application";
 			"packageProductDependencies" = (
 				"1A7BAB5C15074F037327D8A9",
-				"708891216C35C07388834892",
 				"0D08CD3867CBF9AA963E3F74",
 				"F9DBF60525D84FB3F3A815F2",
 			);
@@ -1676,7 +1657,6 @@
 			);
 			"packageReferences" = (
 				"F0CB4FABB68BCAEDF94EFBB3",
-				"3D0B4FA3133856BEF7BC643D",
 				"2C1BF48AF9AF1A9C62500E5B",
 				"7D6ACDFA93020196DBF1D8FB",
 			);

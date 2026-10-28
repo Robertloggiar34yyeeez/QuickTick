@@ -33,5 +33,6 @@ for path in (root/'ios-starter').rglob('*'):
         assert path.name == 'NativeProviderAPI.swift', path
     assert not re.search(r'(?:GORSE_API_KEY|GORSE_ENDPOINT)\s*=\s*[^\s]',text)
 products={obj.get('productName') for obj in objects.values() if obj['isa']=='XCSwiftPackageProductDependency'}
-assert {'StableDiffusion','ZIPFoundation','Mirage','_MediaGenerationKit'} <= products, products
+assert {'StableDiffusion','Mirage','_MediaGenerationKit'} <= products, products
+assert 'ZIPFoundation' not in products, 'The DrawThings package already includes ZIPFoundation'
 print(f'PASS: independently parsed Xcode project; all {len(sources)} Swift files referenced; app/unit/UI targets and shared scheme resolve; first-party WebKit scoped to provider API; no live secret literals found.')

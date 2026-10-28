@@ -39,6 +39,16 @@ private final class HomeVisibleFrameCache {
     var visibleTopSince = Date.distantPast
     var remountGraceUntil = Date.distantPast
     var scrollRestTask: Task<Void, Never>?
+    var upwardDragActive = false
+    var upwardDragSequence = 0
+    var paginatedDragSequence = 0
+}
+
+enum HomePaginationPolicy {
+    static func shouldLoad(upwardDragSequence: Int, consumedSequence: Int,
+                           loading: Bool, hasMore: Bool) -> Bool {
+        upwardDragSequence > consumedSequence && !loading && hasMore
+    }
 }
 
 struct HomeFeedView: View {
@@ -237,11 +247,7 @@ struct HomeFeedView: View {
                         .padding(.horizontal, cardInset)
                         .frame(maxWidth: .infinity)
                         .id(post.stableID)
-                        .onAppear {
-                        if store.activeTab == 0, store.posts.suffix(12).contains(where: { $0.stableID == post.stableID }) {
-                            Task { await store.loadMore() }
-                        }
-                    }
+                        .onAppear { maybeLoadMoreAfterUserScroll(visibleID: post.stableID) }
                 }
                 if store.isLoading {
                     RoundedRectangle(cornerRadius: 22).fill(AppTheme.surface).frame(height: 220)
@@ -257,7 +263,6 @@ struct HomeFeedView: View {
                     Button("Load more") { Task { await store.loadMore() } }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .padding(.horizontal, 16)
-                        .onAppear { if store.activeTab == 0 && !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
                 }
             }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.bottom, 18)
         }
@@ -315,11 +320,18 @@ struct HomeFeedView: View {
         // gesture recognizer so native refresh cannot independently fire.
         .simultaneousGesture(DragGesture(minimumDistance: 18)
             .onChanged { drag in
+                if drag.translation.height < -18,
+                   abs(drag.translation.height) > abs(drag.translation.width) * 1.2,
+                   !visibleFrameCache.upwardDragActive {
+                    visibleFrameCache.upwardDragActive = true
+                    visibleFrameCache.upwardDragSequence &+= 1
+                }
                 // Reconstruct the header position at gesture START, not after
                 // a long swipe has already carried it into the visible area.
                 visibleFrameCache.pullRefreshGate.observe(startOffset: visibleFrameCache.topOffset.map { $0 - drag.translation.height })
             }
             .onEnded { drag in
+            visibleFrameCache.upwardDragActive = false
             guard visibleFrameCache.pullRefreshGate.finish(translation: drag.translation) else { return }
             Task { await refreshFromGesture() }
         })
@@ -494,17 +506,18 @@ struct HomeFeedView: View {
                     query: ParsedQuery(included: [], excluded: []), page: 1,
                     sort: "popular")
                 guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
-                publicPopularFranchisePosts = page.items
-                refreshThemeSuggestions()
+                var discovered = page.items
                 // A second public top-scored page expands the choice of
                 // franchises without gating Home's first visible results.
                 if let next = try? await store.api.posts(provider: .rule34,
                     query: ParsedQuery(included: [], excluded: []), page: 2,
                     sort: "popular"), !Task.isCancelled, store.selectedProvider == .rule34 {
                     let seen = Set(page.items.map(\.stableID))
-                    publicPopularFranchisePosts = page.items + next.items.filter { !seen.contains($0.stableID) }
-                    refreshThemeSuggestions()
+                    discovered += next.items.filter { !seen.contains($0.stableID) }
                 }
+                guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
+                publicPopularFranchisePosts = discovered
+                refreshThemeSuggestions()
             } catch {
                 // A slow or unavailable popularity endpoint must never stall
                 // the main Home feed or replace its valid suggestions.
@@ -519,16 +532,13 @@ struct HomeFeedView: View {
         }
         .onChange(of: postSignature) { _, _ in
             playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
-            refreshThemeSuggestions()
-        }
-        .onChange(of: store.feedRevision) { _, _ in
-            // An explicit refresh starts a new feed generation even when the
-            // provider returns the same posts. Rotate the taste-backed chips.
-            themeRefreshCycle &+= 1
-            refreshThemeSuggestions()
+            // Growing a feed or receiving delayed metadata must not replace
+            // topic cards while the user is reading or scrolling.
+            if themeSuggestions.isEmpty { refreshThemeSuggestions() }
         }
         .onChange(of: store.favorites.count) { _, _ in refreshThemeSuggestions() }
-        .onChange(of: store.learnedInterests) { _, _ in refreshThemeSuggestions() }
+        // Idle taste updates are not navigation events. Keep the visible topic
+        // cards stable until the next explicit refresh or preference change.
         .onChange(of: store.tasteChoice(for: store.selectedProvider)) { _, _ in refreshThemeSuggestions() }
         .onChange(of: store.exclusions) { _, _ in refreshThemeSuggestions() }
         .onChange(of: suggestedThemesEnabled) { _, _ in refreshThemeSuggestions() }
@@ -646,6 +656,21 @@ struct HomeFeedView: View {
         pullRefreshInFlight = true
         defer { pullRefreshInFlight = false }
         await store.refresh()
+        themeRefreshCycle &+= 1
+        refreshThemeSuggestions()
+    }
+
+    private func maybeLoadMoreAfterUserScroll(visibleID: String) {
+        guard store.activeTab == 0, store.lastError == nil,
+              store.posts.suffix(8).contains(where: { $0.stableID == visibleID }),
+              HomePaginationPolicy.shouldLoad(
+                  upwardDragSequence: visibleFrameCache.upwardDragSequence,
+                  consumedSequence: visibleFrameCache.paginatedDragSequence,
+                  loading: store.isLoading, hasMore: store.hasMore) else { return }
+        // One page at most per deliberate upward gesture. A preview resize or
+        // a SwiftUI remount cannot silently chain dozens of page requests.
+        visibleFrameCache.paginatedDragSequence = visibleFrameCache.upwardDragSequence
+        Task { await store.loadMore() }
     }
 
     private func likeVisiblePost(in viewport: CGSize) {
@@ -702,6 +727,13 @@ struct HomeFeedView: View {
             viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID,
             eligible: playableIDs)
         if let selected { return selected }
+        if let current = store.inlinePlaybackID, playableIDs.contains(current),
+           let frame = visibleFrameCache.frames[current], frame.height > 0,
+           frame.intersection(CGRect(origin: .zero, size: viewport)).height >= min(frame.height, viewport.height) * 0.20 {
+            // Between two cards the next media may not yet meet the selection
+            // threshold. Keep the old player alive through that short gap.
+            return current
+        }
         // Partial layout preferences can describe only the header or an
         // offscreen cell during a tab remount. Don't clear a known playable
         // card in that brief window; a final selection runs once layout has
@@ -715,7 +747,7 @@ struct HomeFeedView: View {
     }
     private func warmNext(after key: String?) async {
         guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented, !Task.isCancelled else { return }
-        guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }
+        guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { return }
         // Home previews are the cheap look-ahead path. Creating/prerolling an
         // offscreen AVPlayer downloaded multiple videos while the user swiped,
         // fighting the visible player and the UI compositor for bandwidth.

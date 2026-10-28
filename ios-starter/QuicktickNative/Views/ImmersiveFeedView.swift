@@ -282,16 +282,19 @@ struct ImmersiveFeedView: View {
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") { print("QUICKTICK_PAGING_SELECTED next=\(key)") }
         #endif
         withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.91)) { activeID = key }
+        if direction > 0, !offline, collectionTab == nil,
+           next >= mediaPosts.count - 8, !store.isLoading, store.hasMore {
+            // Only a real forward page swipe may request another catalog
+            // page. Prefetch/task remounts must never silently drain feeds.
+            Task(priority: .utility) { await store.loadMore(immersive: true) }
+        }
     }
     private func prewarm() async {
         guard presentationActive, store.isForeground, !store.isManualVisualScanRunning, !Task.isCancelled else { return }
         // Home can open this viewer with feedMediaOnly == false. That must not
         // disable its upcoming-clip preload once Immersive is on screen.
         let clips = mediaPosts
-        guard let activeID, let index = clips.firstIndex(where: { $0.stableID == activeID }) else {
-            if clips.isEmpty && !offline && collectionTab == nil && !store.isLoading && store.hasMore { await store.loadMore(immersive: true) }
-            return
-        }
+        guard let activeID, let index = clips.firstIndex(where: { $0.stableID == activeID }) else { return }
         // Keep lightweight posters two swipes ahead, but open only the next
         // video's stream. This avoids a blank page on rapid iPad swipes.
         let warmIndices = ImmersivePreloadPlan.retainedIndices(current: index, count: clips.count)
@@ -305,11 +308,6 @@ struct ImmersiveFeedView: View {
         let resolver = store.resolver
         let pool = store.players
         let previewCache = previews
-        if !offline, collectionTab == nil, index >= clips.count - 16 {
-            // Pagination must not wait for future CDN video prewarming. A
-            // stalled preload previously delayed the next batch of posts.
-            Task(priority: .utility) { await feedStore.loadMore(immersive: true) }
-        }
         await withTaskGroup(of: Void.self) { group in
             // Fetch the visible poster first; decoding future posters must
             // not compete at the same priority with the current media startup.
@@ -487,6 +485,7 @@ private struct ImmersiveItemView: View {
     @State private var showComments = false
     @State private var showTags = false
     @State private var gifURL: URL?
+    @State private var measuredGIFSize: CGSize?
     @State private var exposureStarted: Date?
     @State private var exposure = PlaybackExposure()
     @State private var gifDecoded = false
@@ -499,6 +498,7 @@ private struct ImmersiveItemView: View {
 
     var body: some View {
         GeometryReader { geo in
+            let mediaSize = fittedSize(geo.size)
             ZStack(alignment: .center) {
                 AppTheme.canvas
                 if post.type.lowercased() != "image" && gifURL == nil {
@@ -515,7 +515,7 @@ private struct ImmersiveItemView: View {
                         .ignoresSafeArea()
                     Group {
                         if let image = previews.images[post.stableID] {
-                            Image(uiImage: image).resizable().scaledToFill()
+                            Image(uiImage: image).resizable().scaledToFit()
                         } else if active {
                             VStack(spacing: 12) {
                                 Image(systemName: "play.rectangle.on.rectangle")
@@ -529,8 +529,7 @@ private struct ImmersiveItemView: View {
                             .padding(25)
                         }
                     }
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .clipped()
+                    .frame(width: mediaSize.width, height: mediaSize.height)
                     // Fade the poster out *with* the first video frame, not
                     // one frame earlier when AVPlayer reports ready-to-play.
                     .opacity(ready && introReady ? 0 : 1)
@@ -544,11 +543,10 @@ private struct ImmersiveItemView: View {
                         if let thumbnail = previews.images[post.stableID] {
                             Image(uiImage: thumbnail)
                                 .resizable()
-                                .scaledToFill()
+                                .scaledToFit()
                         }
                     }
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .clipped()
+                    .frame(width: mediaSize.width, height: mediaSize.height)
                     .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "image" {
@@ -556,7 +554,7 @@ private struct ImmersiveItemView: View {
                         alternatives: post.previewImageURLs.filter { $0 != post.cardPreviewURL },
                         pixels: 1440, comic: false,
                         placeholderTitle: post.caption ?? "", placeholderProvider: post.provider)
-                        .frame(width: geo.size.width, height: geo.size.height).allowsHitTesting(false)
+                        .frame(width: mediaSize.width, height: mediaSize.height).allowsHitTesting(false)
                 }
                 if let player {
                     // The player owns the entire viewport, but its *content*
@@ -565,14 +563,20 @@ private struct ImmersiveItemView: View {
                     NativePlayerSurface(player: player,
                         fill: false,
                         ready: $ready, accessibilityID: "immersive-video-surface")
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .clipped()
+                        .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready && introReady ? 1 : 0)
                         .animation(.easeOut(duration: 0.18), value: ready && introReady)
                         .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "gif", active, let gifURL {
-                    AnimatedGIFSurface(url: gifURL, playing: playing, onSize: { _ in gifDecoded = true; lastGIFSample = .now }).frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height).allowsHitTesting(false)
+                    AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true,
+                                       onSize: { native in
+                        measuredGIFSize = native
+                        gifDecoded = true
+                        lastGIFSample = .now
+                    })
+                        .frame(width: mediaSize.width, height: mediaSize.height)
+                        .allowsHitTesting(false)
                 }
                 ImmersiveTouchSurface(id: post.stableID, onSingleTap: {
                     if post.isImmersiveMedia { playing.toggle(); playing ? player?.play() : player?.pause() }
@@ -811,9 +815,14 @@ private struct ImmersiveItemView: View {
         } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
     private func fittedSize(_ available: CGSize) -> CGSize {
-        if available.width <= 600 { return available }
-        return MediaSizing.immersive(aspect: post.nativeSize.map { $0.width / max(1, $0.height) } ?? 16 / 9,
-                                     available: available)
+        // Every device letterboxes/pillarboxes to the source's own shape.
+        // Filling a phone viewport cropped square and landscape media.
+        let videoSize = player?.currentItem?.presentationSize
+        let original = [videoSize, measuredGIFSize, post.nativeSize,
+                        previews.images[post.stableID]?.size].compactMap { $0 }
+            .first { $0.width > 0 && $0.height > 0 }
+        let aspect = original.map { $0.width / $0.height } ?? 16 / 9
+        return MediaSizing.immersive(aspect: aspect, available: available)
     }
     private func sampleExposure() {
         let now = Date()

@@ -156,8 +156,13 @@ final class PlayerPool: ObservableObject {
                     guard self.players[key] === player, self.activeKey == key,
                           self.introAttempts[key] == attempt else { return }
                     guard seeked else {
-                        // A canceled seek must not reveal the wrong timestamp.
+                        // A provider rejecting a timed intro seek must not
+                        // leave autoplay permanently paused. Resume from its
+                        // playable beginning and let the normal video layer
+                        // report readiness.
                         self.introAttempts.removeValue(forKey: key)
+                        if autoplay { player.play() }
+                        onIntroReady?()
                         return
                     }
                     self.introSkipped.insert(key)
@@ -188,8 +193,9 @@ final class PlayerPool: ObservableObject {
                 // Waiting for .readyToPlay or seek completion alone can still
                 // expose the old 0:00 frame. Only reveal once playback advances
                 // from the target time; the loop exits when the post deactivates.
+                let revealDeadline = Date().addingTimeInterval(8)
                 while self.players[key] === player, self.activeKey == key,
-                      self.introAttempts[key] == attempt {
+                      self.introAttempts[key] == attempt, Date() < revealDeadline {
                     let seconds = player.currentTime().seconds
                     if seconds.isFinite, seconds >= start - 0.2,
                        player.timeControlStatus == .playing {
@@ -199,6 +205,14 @@ final class PlayerPool: ObservableObject {
                     }
                     do { try await Task.sleep(for: .milliseconds(120)) }
                     catch { return }
+                }
+                if self.players[key] === player, self.activeKey == key,
+                   self.introAttempts[key] == attempt {
+                    // Some CDNs never update loadedTimeRanges reliably. The
+                    // player may still buffer; don't keep the UI's intro
+                    // gate closed indefinitely after starting playback.
+                    self.introAttempts.removeValue(forKey: key)
+                    onIntroReady?()
                 }
             }
         }

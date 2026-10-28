@@ -15,6 +15,7 @@ struct PostCardView: View {
     var offline = false
     var onDelete: (() -> Void)?
     @State private var comments = false
+    @State private var resumeAfterComments = false
     @State private var tags = false
     @State private var havenBrowser = false
     @State private var creditedArtists: [String] = []
@@ -190,7 +191,22 @@ struct PostCardView: View {
             .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Empty<AVPlayerItem.Status, Never>(completeImmediately: false).eraseToAnyPublisher()) { status in
                 if status == .failed { playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."; playing = false; store.players.release(post.stableID) }
             }
-            .onChange(of: comments) { _, shown in if shown { store.pausedPlaybackID = post.stableID; store.players.pause(post.stableID) } }
+            .onChange(of: comments) { _, shown in
+                if shown {
+                    resumeAfterComments = store.pausedPlaybackID != post.stableID &&
+                        (autoplayVideos || manualPlaybackRequested)
+                    store.pausedPlaybackID = post.stableID
+                    store.players.pause(post.stableID)
+                } else {
+                    if resumeAfterComments, store.pausedPlaybackID == post.stableID,
+                       store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab,
+                       store.isForeground {
+                        store.pausedPlaybackID = nil
+                        player?.play()
+                    }
+                    resumeAfterComments = false
+                }
+            }
             .onChange(of: fullImage) { _, shown in if shown { store.players.pauseAll() } }
             .onChange(of: player != nil && introReady) { _, isPlayable in
                 guard isPlayable, pendingVideoFullscreen, store.activeTab == playbackTab else { return }

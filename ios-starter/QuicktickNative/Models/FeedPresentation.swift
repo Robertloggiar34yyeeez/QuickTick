@@ -33,7 +33,7 @@ struct VisiblePostSelector {
         // Retention prevents jitter, but must not pin a peripheral card after
         // rotation or scrolling exposes a substantially more centered card.
         if let current, eligible?.contains(current) != false, let frame = frames[current], frame.height > 0,
-           frame.intersection(viewport).height / min(frame.height, viewport.height) >= 0.65,
+           frame.intersection(viewport).height / min(frame.height, viewport.height) >= 0.52,
            abs(frame.midY - viewport.midY) <= (candidates.first?.1 ?? .infinity) + viewport.height * 0.25 { return current }
         return candidates.first?.0
     }

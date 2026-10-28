@@ -226,6 +226,32 @@ final class FeedReliabilityTests: XCTestCase {
         let pages = ["first": CGRect(x: 0, y: -700, width: 390, height: 700), "next": CGRect(x: 0, y: 0, width: 390, height: 700)]
         XCTAssertEqual(VisiblePostSelector.select(frames: pages, viewport: viewport, current: "first"), "next", "A stale scroll restoration target must not keep the outgoing page active")
     }
+    func testAutomaticPaginationNeedsANewUpwardUserGesture() {
+        XCTAssertFalse(HomePaginationPolicy.shouldLoad(upwardDragSequence: 0, consumedSequence: 0,
+                                                        loading: false, hasMore: true))
+        XCTAssertTrue(HomePaginationPolicy.shouldLoad(upwardDragSequence: 1, consumedSequence: 0,
+                                                       loading: false, hasMore: true))
+        XCTAssertFalse(HomePaginationPolicy.shouldLoad(upwardDragSequence: 1, consumedSequence: 1,
+                                                        loading: false, hasMore: true),
+                       "A preview re-layout must not request a second page")
+        XCTAssertFalse(HomePaginationPolicy.shouldLoad(upwardDragSequence: 2, consumedSequence: 1,
+                                                        loading: true, hasMore: true))
+        XCTAssertFalse(HomePaginationPolicy.shouldLoad(upwardDragSequence: 2, consumedSequence: 1,
+                                                        loading: false, hasMore: false))
+    }
+    func testImmersiveFitsOriginalAspectOnPhoneWithoutZooming() {
+        let viewport = CGSize(width: 390, height: 820)
+        let landscape = MediaSizing.immersive(aspect: 16 / 9, available: viewport)
+        XCTAssertEqual(landscape.width, 390, accuracy: 0.001)
+        XCTAssertEqual(landscape.height, 390 * 9 / 16, accuracy: 0.001)
+        let square = MediaSizing.immersive(aspect: 1, available: viewport)
+        XCTAssertEqual(square.width, square.height, accuracy: 0.001)
+        XCTAssertEqual(square.width, 390, accuracy: 0.001)
+        let portrait = MediaSizing.immersive(aspect: 9 / 16, available: viewport)
+        XCTAssertEqual(portrait.width / portrait.height, 9.0 / 16, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(portrait.width, viewport.width)
+        XCTAssertLessThanOrEqual(portrait.height, viewport.height)
+    }
     func testPlaybackUsesMediaBoundsWhenMetadataIsBelowLandscapeViewport() {
         let viewport = CGRect(x: 0, y: 0, width: 874, height: 254)
         let visibleMedia = CGRect(x: 277, y: 164, width: 320, height: 80)

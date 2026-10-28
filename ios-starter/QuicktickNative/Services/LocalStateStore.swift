@@ -70,7 +70,10 @@ actor FeedPreviewPersistence {
     }
 
     func save(_ posts: [Post], provider: Provider, query: String, sort: String, mediaOnly: Bool) {
-        guard !posts.isEmpty else { return }
+        // Only the normal Recommended Home feed is restored at launch. A
+        // temporary search, Popular tab or immersive clip page must not evict
+        // the last usable startup snapshot.
+        guard !posts.isEmpty, query.isEmpty, sort == "recommended", !mediaOnly else { return }
         let snapshot = FeedPreviewSnapshot(provider: provider, query: query, sort: sort,
                                            mediaOnly: mediaOnly, savedAt: .now,
                                            posts: Array(posts.prefix(48)))

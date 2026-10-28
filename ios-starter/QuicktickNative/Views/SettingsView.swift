@@ -254,6 +254,12 @@ struct SettingsView: View {
                 }
                 if let backgroundError { Text(backgroundError).font(.caption).foregroundStyle(.orange) }
             }.id(SettingsDestination.appearance.rawValue)
+            SettingsGroup(title: "Your name & birthday", icon: "gift") {
+                BirthdayProfileEditor()
+                Text("A private birthday animation appears once a year. Your profile is optional and stays on this device.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.secondaryLabel)
+            }
             SettingsGroup(title: "Provider access", icon: "lock.shield") {
                 TextField("Rule34 user ID", text: $user).textInputAutocapitalization(.never)
                     .modifier(SettingsTextFieldSurface())
@@ -306,7 +312,7 @@ struct SettingsView: View {
                             .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 14))
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Your Taste Wrapped").font(.subheadline.weight(.semibold))
-                            Text("Characters, artists, powers and actions from your likes")
+                            Text("Your favorite sources, creators, characters and styles across all providers")
                                 .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                         }
                         Spacer(minLength: 4)

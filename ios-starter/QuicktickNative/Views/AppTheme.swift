@@ -433,6 +433,12 @@ private struct SeasonalBackdropMotif: View {
                 Image(systemName: symbol)
                     .font(.system(size: 86, weight: .ultraLight))
                     .position(x: geometry.size.width * 0.12, y: geometry.size.height * 0.75)
+                if AppTheme.palette == .christmas {
+                    Text("🎅")
+                        .font(.system(size: 104))
+                        .position(x: geometry.size.width * 0.77, y: geometry.size.height * 0.33)
+                        .opacity(0.22)
+                }
             }
             .foregroundStyle(AppTheme.accent.opacity(0.09))
         }

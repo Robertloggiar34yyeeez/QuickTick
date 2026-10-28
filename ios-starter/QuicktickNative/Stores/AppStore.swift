@@ -471,11 +471,21 @@ final class AppStore: ObservableObject {
     }
     private var savedFeeds: [Int: SavedFeed] = [:]
     private var committingSearch = false
+    private(set) var selectedTopicTerm: String?
     var searchDrafts: [Int: SearchDraft] = [:]
     func commitSearch(query: String, sort: String) {
+        if query != queryText { selectedTopicTerm = nil }
         committingSearch = true
         queryText = query; feedSort = sort
         committingSearch = false
+    }
+    /// The topic chip is a curated recommendation filter, distinct from the
+    /// user's free-form Search. Popular always keeps the provider's native
+    /// ordering; Recommended additionally checks learned affinities.
+    func commitSuggestedTopic(_ term: String?, excluded: [String]) {
+        let parsed = ParsedQuery(included: term.map { [$0] } ?? [], excluded: excluded)
+        commitSearch(query: QueryParser.formatted(parsed), sort: feedSort)
+        selectedTopicTerm = term
     }
     func selectFeedTab(_ tab: Int) async {
         if beginFeedTabSelection(tab) { await refresh(immersive: tab == 1) }
@@ -553,6 +563,9 @@ final class AppStore: ObservableObject {
                 Task(priority: .utility) { await recordSearch(provider: provider, query: search) }
             }
             let personalized = requestedSort == "recommended" && parsed.included.isEmpty
+            let topicPersonalized = requestedSort == "recommended" &&
+                selectedTopicTerm.map { parsed.included.contains($0) } == true
+            let tasteRanked = personalized || topicPersonalized
             // Hentai Haven has a small finite catalog; NHentai's public v2 API
             // permits only 15 anonymous catalog calls/minute. Fetch one real
             // page and rank locally rather than racing focused+broad requests.
@@ -599,7 +612,7 @@ final class AppStore: ObservableObject {
                     havenSafeCatalog.append(contentsOf: incoming.prefix(48 - havenSafeCatalog.count))
                 }
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
-                incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
+                incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: tasteRanked, favoriteIDs: favoriteExclusionIDs)
                 if personalized, provider == .nhentai {
                     nhentaiDiscovery.append(contentsOf: incoming.prefix(max(0, 40 - nhentaiDiscovery.count)))
                 }
@@ -609,12 +622,14 @@ final class AppStore: ObservableObject {
                     // bounded, already-exclusion-checked discovery pool.
                     havenExploration.append(contentsOf: incoming.prefix(32 - havenExploration.count))
                 }
-                if personalized {
+                if tasteRanked {
                     // Metadata and cached appearance vectors only: no model
                     // loading, network requests or pixel decoding on first paint.
                     let cachedAppearance = await visual.scores(incoming)
                     filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
-                        recent: recentProviderPosts, visualScores: cachedAppearance, strict: true)
+                        recent: recentProviderPosts, visualScores: cachedAppearance,
+                        strict: !topicPersonalized || (favorites.count >= 5 &&
+                            provider != .hhaven && provider != .nhentai))
                 } else { filtered = incoming }
                 let focusedMiss = filtered.isEmpty && acquisition?.focused == true
                 if focusedMiss, let acquisition {
@@ -677,7 +692,7 @@ final class AppStore: ObservableObject {
             }
             guard generation == token, !Task.isCancelled else { return }
             posts = immediate
-            if personalized {
+            if tasteRanked {
                 await recommendations.recordOffered(immediate)
                 scheduleRecommendationPersistence()
             }
@@ -728,7 +743,9 @@ final class AppStore: ObservableObject {
             let parsed = QueryParser.parse(queryText)
             lastError = nil
             let directCatalog = (provider == .hhaven || provider == .nhentai) && feedSort == "recommended" && parsed.included.isEmpty
-            let personalizedPage = candidateContext != nil || directCatalog
+            let topicPersonalized = feedSort == "recommended" &&
+                selectedTopicTerm.map { parsed.included.contains($0) } == true
+            let personalizedPage = candidateContext != nil || directCatalog || topicPersonalized
             // Skip sparse, duplicate and fully filtered pages without waiting for
             // a last-card onAppear that will never fire again.
             var broaden = false
@@ -757,7 +774,9 @@ final class AppStore: ObservableObject {
             if personalizedPage {
                 let cachedAppearance = await visual.scores(candidates)
                 let strict = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
-                    recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: true)
+                    recent: Array(posts.suffix(10)), visualScores: cachedAppearance,
+                    strict: !topicPersonalized || (favorites.count >= 5 &&
+                        provider != .hhaven && provider != .nhentai))
                 if strict.isEmpty && directCatalog {
                     ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                         recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: false)

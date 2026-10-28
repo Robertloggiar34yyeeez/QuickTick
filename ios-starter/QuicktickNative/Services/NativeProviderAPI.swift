@@ -32,7 +32,11 @@ actor ProviderRequestGate {
 enum HavenBrowserCatalog {
     static func html(query: ParsedQuery, sort: String, page: Int = 1) async throws -> String {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
+        // Reuse only WebKit's own in-app site state. Users who have already
+        // accessed the provider inside QuickTick should not lose their public
+        // catalog cookies every time the feed refreshes. Never copy Safari
+        // cookies or manufacture an authenticated identity.
+        config.websiteDataStore = .default()
         let browser = WKWebView(frame: .zero, configuration: config)
         guard let url = NativeProviderAPI.havenWebsiteURL(sort: sort, query: query, page: page) else {
             throw APIError.server("This Hentai Haven category is only available through its catalog API.")

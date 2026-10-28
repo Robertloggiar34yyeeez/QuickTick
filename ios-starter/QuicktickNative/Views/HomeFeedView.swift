@@ -22,6 +22,13 @@ struct HomePullRefreshGate {
     mutating func cancel() { beganAtTop = nil }
 }
 
+/// Geometric preferences arrive for nearly every scroll pixel. The last
+/// observed rectangles are transient playback state, not UI state: publishing
+/// them through @State invalidated the entire media feed on every frame.
+private final class HomeVisibleFrameCache {
+    var frames: [String: CGRect] = [:]
+}
+
 struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
@@ -33,7 +40,7 @@ struct HomeFeedView: View {
     @State private var showProviderWebsite = false
     @State private var immersive = false
     @State private var immersivePostID: String?
-    @State private var visibleFrames: [String: CGRect] = [:]
+    @State private var visibleFrameCache = HomeVisibleFrameCache()
     @State private var homeRemountGraceUntil = Date.distantPast
     // Video eligibility changes only when the feed changes, not on every
     // scroll/layout pass. Avoid rebuilding a Set from the whole feed per frame.
@@ -269,16 +276,16 @@ struct HomeFeedView: View {
         let trackedScroll = gesturedScroll
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
             guard store.feedRevision == revision else { return }
-            guard frames != visibleFrames else { return }
+            guard frames != visibleFrameCache.frames else { return }
             // Geometry changes reveal actual scrolling without attaching a
             // gesture that competes with normal vertical paging. Hide the
             // shortcut during motion; restore it after a quiet interval.
             let moved = frames.contains { id, rect in
-                guard let previous = visibleFrames[id] else { return false }
+                guard let previous = visibleFrameCache.frames[id] else { return false }
                 return abs(previous.minY - rect.minY) > 2
             }
             if moved { noteScrollMotion() }
-            visibleFrames = frames
+            visibleFrameCache.frames = frames
             let bounds = CGRect(origin: .zero, size: viewport.size)
             let top = frames.filter { $0.value.intersects(bounds) }.min { $0.value.minY < $1.value.minY }?.key
             if let top, scrollAnchor != top { scrollAnchor = top }
@@ -327,7 +334,7 @@ struct HomeFeedView: View {
         .onDisappear {
             scrollRestTask?.cancel(); pullRefreshGate.cancel()
             // Geometry from the outgoing tab is invalid on the next mount.
-            visibleFrames = [:]
+            visibleFrameCache.frames = [:]
         }
         let preparedScroll = mountedScroll
         .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
@@ -359,7 +366,7 @@ struct HomeFeedView: View {
         let debugScroll = preparedScroll
         .overlay(alignment: .bottomTrailing) {
             if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
-                Text("active=\(store.inlinePlaybackID ?? "nil") candidate=\(visibleCandidate(viewport: viewport.size) ?? "nil") paused=\(store.pausedPlaybackID ?? "nil") foreground=\(store.isForeground) frames=\(visibleFrames.count) player=\(store.players.activeKey ?? "nil") owner=\(store.players.activeOwner ?? "nil")")
+                Text("active=\(store.inlinePlaybackID ?? "nil") candidate=\(visibleCandidate(viewport: viewport.size) ?? "nil") paused=\(store.pausedPlaybackID ?? "nil") foreground=\(store.isForeground) frames=\(visibleFrameCache.frames.count) player=\(store.players.activeKey ?? "nil") owner=\(store.players.activeOwner ?? "nil")")
                     .font(.system(size: 1)).opacity(0.01).allowsHitTesting(false)
                     .accessibilityIdentifier("home-playback-debug")
             }
@@ -463,23 +470,24 @@ struct HomeFeedView: View {
                             let selected = QueryParser.parse(store.queryText).included.contains(theme.term)
                             Button {
                                 let current = QueryParser.parse(store.queryText)
-                                let updated = ParsedQuery(included: selected ? [] : [theme.term],
-                                                          excluded: current.excluded)
-                                store.commitSearch(query: QueryParser.formatted(updated), sort: store.feedSort)
+                                store.commitSuggestedTopic(selected ? nil : theme.term,
+                                                           excluded: current.excluded)
                                 Task { await store.refresh() }
                             } label: {
-                                HStack(spacing: 11) {
-                                    CachedMediaImage(url: theme.imageURL, pixels: 192, fill: true)
-                                        .frame(width: 66, height: 66)
-                                        .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+                                VStack(alignment: .leading, spacing: 8) {
                                     Text(theme.label).font(.subheadline.weight(.semibold))
-                                        .lineLimit(1).foregroundStyle(.white)
-                                        .padding(.trailing, 12)
+                                        .lineLimit(2).foregroundStyle(.white)
+                                        .frame(height: 36, alignment: .topLeading)
+                                    CachedMediaImage(url: theme.imageURL, pixels: 320, fill: true)
+                                        .frame(width: 154, height: 184)
+                                        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
                                 }
-                                .padding(6)
-                                .frame(minHeight: 78)
-                                .background(selected ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface), in: Capsule())
-                                .overlay(Capsule().stroke(selected ? AppTheme.accent : AppTheme.border, lineWidth: 1))
+                                .frame(width: 154, alignment: .leading)
+                                .padding(10)
+                                .background(selected ? AnyShapeStyle(AppTheme.accent.opacity(0.25)) : AnyShapeStyle(AppTheme.elevatedSurface),
+                                            in: RoundedRectangle(cornerRadius: 21, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 21, style: .continuous)
+                                    .stroke(selected ? AppTheme.accent : AppTheme.border, lineWidth: 1.5))
                             }
                             .buttonStyle(QuicktickPressStyle())
                             .accessibilityLabel("Suggested theme: \(theme.label)")
@@ -537,7 +545,7 @@ struct HomeFeedView: View {
 
     private func likeVisiblePost(in viewport: CGSize) {
         let bounds = CGRect(origin: .zero, size: viewport)
-        guard let chosen = visibleFrames
+        guard let chosen = visibleFrameCache.frames
             .filter({ $0.value.intersects(bounds) })
             .max(by: { $0.value.intersection(bounds).height < $1.value.intersection(bounds).height }),
               let post = store.posts.first(where: { $0.stableID == chosen.key }),
@@ -577,11 +585,11 @@ struct HomeFeedView: View {
         // A remounted Home has an empty frame-preference dictionary until the
         // first layout. Returning nil here cleared the just-restored player
         // and sometimes left it paused permanently.
-        if visibleFrames.isEmpty, let retained = store.retainedHomePlaybackID,
+        if visibleFrameCache.frames.isEmpty, let retained = store.retainedHomePlaybackID,
            playableIDs.contains(retained), store.posts.contains(where: { $0.stableID == retained }) {
             return retained
         }
-        let selected = VisiblePostSelector.select(frames: visibleFrames,
+        let selected = VisiblePostSelector.select(frames: visibleFrameCache.frames,
             viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID,
             eligible: playableIDs)
         if let selected { return selected }

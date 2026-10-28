@@ -87,6 +87,12 @@ struct RootView: View {
     @State private var showSettings = false
     @State private var showStudio = false
     @State private var showWeeklyWrapped = false
+    @State private var showBirthdaySetup = false
+    @State private var showBirthdayGreeting = false
+    @AppStorage(BirthdayProfile.nameKey) private var birthdayName = ""
+    @AppStorage(BirthdayProfile.birthdateKey) private var birthdayDate = 0.0
+    @AppStorage(BirthdayProfile.promptedKey) private var birthdayPrompted = false
+    @AppStorage(BirthdayProfile.greetedYearKey) private var birthdayGreetedYear = 0
     @State private var tabTransitionDirection: CGFloat = 1
     @AppStorage("quicktick-wrapped-last-week-v1") private var wrappedLastShownWeek = ""
     @State private var homeAnchor: String?
@@ -114,13 +120,13 @@ struct RootView: View {
                 withAnimation(.easeOut(duration: 0.14)) { brieflyNamedTab = nil }
             }
         }
-        .onChange(of: store.bootstrapped) { _, _ in presentWrappedIfNeeded() }
-        .onChange(of: firstRunCompleted) { _, _ in presentWrappedIfNeeded() }
+        .onChange(of: store.bootstrapped) { _, _ in presentOccasionsIfNeeded() }
+        .onChange(of: firstRunCompleted) { _, _ in presentOccasionsIfNeeded() }
         .onChange(of: store.favorites.count) { _, _ in presentWrappedIfNeeded() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 AppTheme.refreshSeasonalPalette()
-                presentWrappedIfNeeded()
+                presentOccasionsIfNeeded()
             }
         }
         .onChange(of: automaticSeasonalThemes) { _, _ in AppTheme.refreshSeasonalPalette() }
@@ -129,7 +135,7 @@ struct RootView: View {
         }
         .onAppear {
             AppTheme.refreshSeasonalPalette()
-            presentWrappedIfNeeded()
+            presentOccasionsIfNeeded()
         }
         .onChange(of: showAITab) { _, _ in
             // AppStorage can update while Settings is still being dismissed.
@@ -174,6 +180,37 @@ struct RootView: View {
             }
             .tint(AppTheme.accent)
         }
+        .sheet(isPresented: $showBirthdaySetup, onDismiss: {
+            // SwiftUI's sheet dismissal must finish before a fullscreen greeting.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(550))
+                presentOccasionsIfNeeded()
+            }
+        }) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Label("Make QuickTick yours", systemImage: "gift.fill")
+                            .font(.title2.bold())
+                        Text("What's your name and birthday? Both are optional. We'll celebrate with an animation on your day.")
+                            .foregroundStyle(AppTheme.secondaryLabel)
+                        BirthdayProfileEditor()
+                    }
+                    .padding(22)
+                }
+                .background(ThemeBackdrop())
+                .navigationTitle("A little celebration")
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") {
+                            birthdayPrompted = true
+                            showBirthdaySetup = false
+                        }
+                    }
+                }
+            }
+            .tint(AppTheme.accent)
+        }
         .fullScreenCover(isPresented: $showStudio, onDismiss: { store.isStudioPresented = false }) {
             NavigationStack {
                 ImageStudioView()
@@ -191,12 +228,36 @@ struct RootView: View {
                 .environmentObject(store)
                 .tint(AppTheme.accent)
         }
+        .fullScreenCover(isPresented: $showBirthdayGreeting) {
+            BirthdayCelebrationView(name: birthdayName,
+                                    onClose: { showBirthdayGreeting = false })
+                .tint(AppTheme.accent)
+        }
         .overlay(alignment: .topTrailing) { FloatingPiPView().environmentObject(store) }
+    }
+
+    private func presentOccasionsIfNeeded() {
+        guard store.bootstrapped, firstRunCompleted, scenePhase == .active,
+              !showSettings, !showStudio, !showWeeklyWrapped, !showBirthdayGreeting,
+              !ProcessInfo.processInfo.arguments.contains("--ui-testing") else { return }
+        if !birthdayPrompted {
+            showBirthdaySetup = true
+            return
+        }
+        guard !showBirthdaySetup else { return }
+        let year = Calendar.current.component(.year, from: .now)
+        if BirthdayProfile.isBirthday(birthdayDate), birthdayGreetedYear != year {
+            birthdayGreetedYear = year
+            showBirthdayGreeting = true
+            return
+        }
+        presentWrappedIfNeeded()
     }
 
     private func presentWrappedIfNeeded() {
         guard store.bootstrapped, firstRunCompleted, store.favorites.count >= 3,
               scenePhase == .active, !showSettings, !showStudio, !showWeeklyWrapped,
+              !showBirthdaySetup, !showBirthdayGreeting, birthdayPrompted,
               store.activeTab == 0,
               !ProcessInfo.processInfo.arguments.contains("--ui-testing") else { return }
         let components = Calendar(identifier: .iso8601)
@@ -254,7 +315,7 @@ struct RootView: View {
                     removal: .opacity))
                 .offset(x: sideNavigation ? 0 : navigationDrag.width * 0.20,
                         y: sideNavigation ? navigationDrag.height * 0.14 : 0)
-                .padding(.leading, pinnedSideNavigation && store.activeTab != 1 ? 94 : 0)
+                .padding(.leading, pinnedSideNavigation && store.activeTab != 1 ? 174 : 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if !sideNavigation {
                 BackgroundAudioMiniPlayer(audio: store.audio)
@@ -304,7 +365,7 @@ struct RootView: View {
             axisLength: axisLength, visibleIndices: visibleTabIndices)
         return RoundedRectangle(cornerRadius: 18, style: .continuous)
             .fill(AppTheme.gradient)
-            .frame(width: 62, height: 62)
+            .frame(width: 138, height: 62)
             .offset(y: center - 31)
             .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86),
                        value: store.activeTab)
@@ -312,13 +373,13 @@ struct RootView: View {
     }
 
     @ViewBuilder private func dockDestinationHint(vertical: Bool, axisLength: CGFloat) -> some View {
-        if let destination = swipePreview(vertical: vertical, axisLength: axisLength) {
+        if !vertical, let destination = swipePreview(vertical: vertical, axisLength: axisLength) {
             Text(feedName(destination))
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, vertical ? 12 : 14).padding(.vertical, 7)
                 .background(AppTheme.elevatedSurface, in: Capsule())
                 .overlay(Capsule().stroke(AppTheme.border))
-                .offset(x: vertical ? 119 : 0, y: vertical ? 0 : -40)
+                .offset(y: -40)
                 .allowsHitTesting(false)
         }
     }
@@ -367,7 +428,6 @@ struct RootView: View {
             .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous)
                 .stroke(AppTheme.border, lineWidth: 1))
             .shadow(color: .black.opacity(AppTheme.isDeSlopified ? 0 : 0.4), radius: 18, y: 4)
-            .overlay(alignment: .trailing) { dockDestinationHint(vertical: true, axisLength: axisLength) }
             .sensoryFeedback(.selection,
                 trigger: swipePreview(vertical: true, axisLength: axisLength) ?? store.activeTab)
             .padding(.leading, 12)
@@ -419,10 +479,22 @@ struct RootView: View {
                     store.players.releaseAll()
                     showStudio = true
                 } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 24, weight: .bold))
+                    Group {
+                        if vertical {
+                            HStack(spacing: 12) {
+                                Image(systemName: "plus").frame(width: 28)
+                                Text("Create").lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .padding(.horizontal, 13)
+                        } else {
+                            Image(systemName: "plus")
+                                .font(.system(size: 24, weight: .bold))
+                        }
+                    }
                         .foregroundStyle(.white)
-                        .frame(width: vertical ? 62 : 54, height: vertical ? 68 : 52)
+                        .frame(width: vertical ? 138 : 54, height: vertical ? 68 : 52)
                         .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: modernUI ? 20 : 17, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 17).stroke(.white.opacity(0.25)))
                         .shadow(color: AppTheme.accent.opacity(AppTheme.isDeSlopified ? 0 : (modernUI ? 0.36 : 0.28)), radius: modernUI ? 18 : 13, y: 3)
@@ -467,7 +539,18 @@ struct RootView: View {
                     }
                 } label: {
                     Group {
-                        if refreshingTab == tabID {
+                        if vertical {
+                            HStack(spacing: 12) {
+                                Image(systemName: tabs[index].1)
+                                    .font(.system(size: 21, weight: .semibold))
+                                    .frame(width: 28)
+                                Text(tabs[index].0)
+                                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                    .lineLimit(1).minimumScaleFactor(0.85)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(.horizontal, 13)
+                        } else if refreshingTab == tabID {
                             ZStack {
                                 Circle().stroke(.white.opacity(0.16), lineWidth: 2.5)
                                 Circle()
@@ -492,7 +575,7 @@ struct RootView: View {
                         }
                     }
                     .foregroundStyle(highlightedTab == tabID ? .white : .white.opacity(0.62))
-                    .frame(width: vertical ? 62 : nil, height: vertical ? 62 : 54)
+                    .frame(width: vertical ? 138 : nil, height: vertical ? 62 : 54)
                     .frame(maxWidth: vertical ? nil : .infinity)
                     .contentShape(Rectangle())
                 }

@@ -1243,22 +1243,34 @@ enum TasteWrappedSummary {
     static func make(from favorites: [Post]) -> [TasteWrappedCategory] {
         let posts = Array(favorites.prefix(1_000))
         let sections: [(id: String, title: String, symbol: String)] = [
+            ("source", "Your favorite providers", "square.stack.3d.up"),
+            ("creator", "Favorite creators", "person.crop.circle"),
             ("character", "Favorite characters", "person.crop.square"),
             ("franchise", "Favorite worlds", "globe.europe.africa"),
             ("artist", "Favorite artists", "paintbrush.pointed"),
+            ("performer", "Tagged performers", "person.crop.rectangle"),
+            ("theme", "Favorite scenes & styles", "photo.on.rectangle"),
             ("power", "Favorite dynamics", "bolt.heart"),
             ("action", "Favorite actions & poses", "figure.dance")
         ]
         var count: [String: Int] = [:]
         var sample: [String: Post] = [:]
         for post in posts {
-            guard let features = VisualFeatures.metadata(post) else { continue }
+            let features = VisualFeatures.metadata(post)
             let facets = ActionSemantics.facets(post)
-            let attributes = features.attributes.keys
+            let attributes = features?.attributes.keys.map { $0 } ?? []
+            let creditedCreator = post.creator?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let recognized: [String: [String]] = [
-                "character": features.subjects.filter { !$0.hasPrefix("performer:") },
-                "franchise": features.franchises ?? [],
-                "artist": features.artists ?? [],
+                "source": [post.providerKey?.rawValue ?? post.provider],
+                "creator": creditedCreator.isEmpty || creditedCreator.count > 80 ? [] : [creditedCreator],
+                "character": (features?.subjects ?? []).filter { !$0.hasPrefix("performer:") },
+                "franchise": features?.franchises ?? [],
+                "artist": features?.artists ?? [],
+                "performer": (features?.subjects ?? []).filter { $0.hasPrefix("performer:") },
+                "theme": Array(Set(attributes.filter {
+                    term in ["scene:", "camera:", "style:", "setting:", "interest:", "clothing:"]
+                        .contains { term.hasPrefix($0) }
+                } + (post.category.map { ["category:" + $0] } ?? []))),
                 "power": facets.filter { $0.hasPrefix("power:") || $0.hasPrefix("role:") },
                 "action": Array(Set(attributes.filter {
                     $0.hasPrefix("pose:") || $0.hasPrefix("act:") || $0.hasPrefix("scene:")
@@ -1270,22 +1282,32 @@ enum TasteWrappedSummary {
                     guard !term.isEmpty, term.count < 65 else { continue }
                     let key = section + "|" + term
                     count[key, default: 0] += 1
-                    if sample[key] == nil, !post.previewImageURLs.isEmpty { sample[key] = post }
+                    if sample[key] == nil ||
+                        (sample[key]?.previewImageURLs.isEmpty == true && !post.previewImageURLs.isEmpty) {
+                        sample[key] = post
+                    }
                 }
             }
         }
-        return sections.map { section in
+        return sections.compactMap { section -> TasteWrappedCategory? in
             let moments = count.compactMap { key, appearances -> TasteWrappedMoment? in
                 let prefix = section.id + "|"
                 guard key.hasPrefix(prefix), let post = sample[key] else { return nil }
                 let raw = String(key.dropFirst(prefix.count))
-                let display = raw.split(separator: ":").last.map(String.init) ?? raw
+                let display: String
+                if section.id == "source", let provider = Provider.identify(raw) {
+                    display = provider.displayName
+                } else {
+                    display = (raw.split(separator: ":").last.map(String.init) ?? raw)
+                        .replacingOccurrences(of: "_", with: " ").capitalized
+                }
                 return TasteWrappedMoment(id: key,
-                                          label: display.replacingOccurrences(of: "_", with: " ").capitalized,
+                                          label: display,
                                           appearances: appearances, sample: post)
             }.sorted {
                 $0.appearances == $1.appearances ? $0.label < $1.label : $0.appearances > $1.appearances
             }
+            guard !moments.isEmpty else { return nil }
             return TasteWrappedCategory(id: section.id, heading: section.title,
                                         symbol: section.symbol, moments: Array(moments.prefix(3)))
         }
@@ -1442,5 +1464,133 @@ struct TasteWrappedView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 30)
+    }
+}
+
+enum BirthdayProfile {
+    static let nameKey = "quicktick-birthday-display-name-v1"
+    static let birthdateKey = "quicktick-birthday-date-v1"
+    static let promptedKey = "quicktick-birthday-prompted-v1"
+    static let greetedYearKey = "quicktick-birthday-greeted-year-v1"
+
+    static func isBirthday(_ timestamp: Double, on date: Date = .now,
+                           calendar: Calendar = .current) -> Bool {
+        guard timestamp > 0, timestamp.isFinite else { return false }
+        let birthday = Date(timeIntervalSince1970: timestamp)
+        let birth = calendar.dateComponents([.month, .day], from: birthday)
+        let today = calendar.dateComponents([.month, .day], from: date)
+        return birth.month == today.month && birth.day == today.day
+    }
+}
+
+/// Optional and device-local: no name or date is sent to a provider, synced
+/// with favorites, included in exported profiles, or used for ad targeting.
+struct BirthdayProfileEditor: View {
+    @AppStorage(BirthdayProfile.nameKey) private var name = ""
+    @AppStorage(BirthdayProfile.birthdateKey) private var birthdate = 0.0
+    @State private var dateEnabled = false
+
+    private var birthdaySelection: Binding<Date> {
+        Binding(get: {
+            birthdate > 0 ? Date(timeIntervalSince1970: birthdate) :
+                Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1)) ?? .now
+        }, set: { birthdate = $0.timeIntervalSince1970 })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextField("How should QuickTick address you?", text: $name)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled()
+                .padding(12)
+                .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                .accessibilityIdentifier("birthday-name")
+                .onChange(of: name) { _, value in
+                    if value.count > 40 { name = String(value.prefix(40)) }
+                }
+            Toggle("Wish me a happy birthday", isOn: $dateEnabled)
+                .padding(12)
+                .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                .onChange(of: dateEnabled) { _, enabled in
+                    if !enabled { birthdate = 0 }
+                }
+            if dateEnabled {
+                DatePicker("Birthdate", selection: birthdaySelection,
+                           in: ...Date(), displayedComponents: .date)
+                    .datePickerStyle(.compact)
+                    .padding(12)
+                    .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityIdentifier("birthday-date")
+                if birthdate <= 0 {
+                    Text("Choose your actual birthdate to enable the greeting.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.secondaryLabel)
+                }
+            }
+            Text("Optional. Your name and birthday stay on this device. You can change or remove them here anytime.")
+                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+        }
+        .onAppear { dateEnabled = birthdate > 0 }
+    }
+}
+
+struct BirthdayCelebrationView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let name: String
+    let onClose: () -> Void
+    @State private var animated = false
+
+    var body: some View {
+        ZStack {
+            ThemeBackdrop()
+            LinearGradient(colors: [AppTheme.accent.opacity(0.37), .clear,
+                                    AppTheme.palette.secondary.opacity(0.25)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+            if !reduceMotion {
+                GeometryReader { geometry in
+                    ForEach(0..<26, id: \.self) { index in
+                        let horizontal = CGFloat((index * 37 + 13) % 100) / 100
+                        Image(systemName: index.isMultiple(of: 3) ? "sparkle" : "circle.fill")
+                            .font(.system(size: CGFloat(9 + index % 9), weight: .semibold))
+                            .foregroundStyle(index.isMultiple(of: 2)
+                                ? AppTheme.accent : AppTheme.palette.secondary)
+                            .position(x: geometry.size.width * horizontal,
+                                      y: animated ? geometry.size.height + 30 : -30)
+                            .animation(.linear(duration: Double(2.5 + Double(index % 8) * 0.3))
+                                .repeatForever(autoreverses: false)
+                                .delay(Double(index % 11) * 0.19), value: animated)
+                    }
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+            VStack(spacing: 23) {
+                Text("🎂").font(.system(size: 94))
+                    .scaleEffect(animated && !reduceMotion ? 1.08 : 1)
+                    .animation(.spring(response: 0.55, dampingFraction: 0.55)
+                        .repeatCount(3, autoreverses: true), value: animated)
+                Text("Happy Birthday\(name.isEmpty ? "!" : ",\n\(name)!")")
+                    .font(.system(size: 43, weight: .bold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.7)
+                Text("Here's to another year of finding what you love.")
+                    .font(.title3).foregroundStyle(.white.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                Button(action: onClose) {
+                    Text("Let's celebrate")
+                        .font(.headline.weight(.semibold))
+                        .frame(maxWidth: 300, minHeight: 53)
+                        .background(AppTheme.gradient, in: Capsule())
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .padding(.top, 10)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 28)
+        }
+        .onAppear { animated = true }
+        .preferredColorScheme(.dark)
+        .accessibilityIdentifier("birthday-celebration")
     }
 }

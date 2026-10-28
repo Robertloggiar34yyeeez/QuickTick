@@ -33,15 +33,32 @@ struct ProviderLogoView: View {
         return URL(string: "https://" + domain + "/favicon.ico")
     }
     var body: some View {
-        AsyncImage(url: favicon) { phase in
-            if let image = phase.image { image.resizable().scaledToFit() }
-            else {
-                Image(systemName: symbol)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(AppTheme.accent)
+        Group {
+            if provider == .rule34 {
+                // Its public favicon endpoint is unreliable on iOS. Keep a
+                // local, recognizable mark instead of an empty broken image.
+                Text("R34")
+                    .font(.system(size: 10, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(width: 29, height: 29)
+                    .background(AppTheme.gradient,
+                                in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            } else {
+                AsyncImage(url: favicon) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                    } else {
+                        Image(systemName: symbol)
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(AppTheme.accent)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(AppTheme.elevatedSurface)
+                    }
+                }
+                .frame(width: 29, height: 29)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
         }
-        .frame(width: 26, height: 26)
         .accessibilityHidden(true)
     }
 }

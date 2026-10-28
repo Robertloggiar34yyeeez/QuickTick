@@ -176,6 +176,37 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertNotNil(find("character", "Chun Li")?.sample.cardPreviewURL)
     }
 
+    func testTasteWrappedIncludesIRLAndArchiveProvidersWithoutInferringIdentities() {
+        var video = Post(key: "pornhub:sample", id: "sample", provider: "Pornhub",
+                         tags: ["webcam", "dancing"], previewUrl: "https://example.invalid/irl.jpg",
+                         type: "video")
+        video.creator = "Sample Creator"
+        video.category = "Studio"
+        let archive = Post(key: "coomer:sample", id: "sample", provider: "Coomer",
+                           tags: ["photography"], previewUrl: "https://example.invalid/archive.jpg",
+                           type: "image")
+        let sections = TasteWrappedSummary.make(from: [video, archive])
+        let sources = sections.first(where: { $0.id == "source" })?.moments.map(\.label) ?? []
+        XCTAssertTrue(sources.contains("Pornhub"))
+        XCTAssertTrue(sources.contains("Coomer"))
+        XCTAssertEqual(sections.first(where: { $0.id == "creator" })?.moments.first?.label,
+                       "Sample Creator")
+        XCTAssertNotNil(sections.first(where: { $0.id == "theme" }))
+        XCTAssertNil(sections.first(where: { $0.id == "character" }),
+                     "A real-life person must not be guessed to be an anime character")
+    }
+
+    func testOptionalBirthdayOnlyMatchesTheCalendarDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let birth = calendar.date(from: DateComponents(year: 2001, month: 12, day: 24))!
+        let matching = calendar.date(from: DateComponents(year: 2026, month: 12, day: 24))!
+        let ordinary = calendar.date(from: DateComponents(year: 2026, month: 10, day: 28))!
+        XCTAssertTrue(BirthdayProfile.isBirthday(birth.timeIntervalSince1970, on: matching, calendar: calendar))
+        XCTAssertFalse(BirthdayProfile.isBirthday(birth.timeIntervalSince1970, on: ordinary, calendar: calendar))
+        XCTAssertFalse(BirthdayProfile.isBirthday(0, on: matching, calendar: calendar))
+    }
+
     func testCrimsonAndFiveSeasonalAccentsAreSelectable() {
         for palette in [
             AppTheme.AccentPalette.crimson, .easter, .summer, .halloween, .christmas, .snow
@@ -201,5 +232,20 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertNil(theme(2026, 5, 20))
         XCTAssertNil(theme(2026, 9, 20))
         XCTAssertNil(theme(2026, 11, 20))
+    }
+
+    @MainActor func testTopicChoiceSurvivesPopularSortButManualSearchClearsIt() {
+        let store = AppStore()
+        store.commitSuggestedTopic("chun_li", excluded: [])
+        XCTAssertEqual(store.selectedTopicTerm, "chun_li")
+        XCTAssertTrue(QueryParser.parse(store.queryText).included.contains("chun_li"))
+        store.commitSearch(query: store.queryText, sort: "popular")
+        XCTAssertEqual(store.selectedTopicTerm, "chun_li",
+                       "Popular keeps the selected topic while using unpersonalized source order")
+        store.commitSearch(query: store.queryText, sort: "recommended")
+        XCTAssertEqual(store.selectedTopicTerm, "chun_li",
+                       "Returning to Recommended restores taste ranking within the topic")
+        store.commitSearch(query: "different_topic", sort: "recommended")
+        XCTAssertNil(store.selectedTopicTerm)
     }
 }

@@ -63,6 +63,16 @@ final class FastFeedVisualTests: XCTestCase {
         store.startManualVisualRefresh(); store.handleMemoryPressure()
         XCTAssertFalse(store.isManualVisualScanRunning)
     }
+    @MainActor func testCombinedRecommendationRefreshRejectsDuplicateTapsAndCanBeStopped() {
+        let store = AppStore()
+        store.refreshRecommendationsAndProfile()
+        XCTAssertTrue(store.isUnifiedRecommendationRefreshRunning)
+        store.refreshRecommendationsAndProfile()
+        XCTAssertTrue(store.isUnifiedRecommendationRefreshRunning)
+        store.cancelManualVisualRefresh()
+        XCTAssertFalse(store.isUnifiedRecommendationRefreshRunning)
+        XCTAssertFalse(store.isManualVisualScanRunning)
+    }
     @MainActor func testManualVisualRefreshProgressReusesLikeLedgerAndCanBeCancelled() async {
         let store = AppStore(), suffix = UUID().uuidString
         let a = post("manual-a-" + suffix, tags: ["long_hair"])

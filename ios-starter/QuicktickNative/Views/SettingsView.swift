@@ -361,13 +361,7 @@ struct SettingsView: View {
                         }
                     }
                 }
-                Button {
-                    Task { await store.rebuildRecommended() }
-                } label: {
-                    Label("Rescan Recommended", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .accessibilityIdentifier("rescan-recommended")
-                Text("Ranking upgrades automatically rebuild the discovery queue. Rescan now to start fresh without losing favorites, dislikes, blocked tags or viewing history.")
+                Text("Use “Refresh latest posts & profile” in Visual recommendations below to rebuild discovery and rescan your saved taste together. Favorites, dislikes, blocks and history are preserved.")
                     .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
                 if let status = store.recommendationRescanStatus { Text(status).font(.caption).foregroundStyle(AppTheme.accent) }
                 Button("Reset learned history", role: .destructive) { Task { await store.resetRecommendations() } }
@@ -981,16 +975,25 @@ private struct ManualVisualRefreshPanel: View {
     @State private var carouselSlide = 0.0
     var body: some View {
         Group {
-            Button { store.startManualVisualRefresh() } label: {
-                Label("Update visual taste now", systemImage: "sparkles")
-            }.disabled(store.isManualVisualScanRunning).accessibilityIdentifier("force-visual-refresh")
-            Text("Checks every favorite, reuses valid scans and updates recommendations. Playback pauses during this manual update. Unavailable previews can be retried later.")
+            Button { store.refreshRecommendationsAndProfile() } label: {
+                Label("Refresh latest posts & profile", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(store.isUnifiedRecommendationRefreshRunning || store.isManualVisualScanRunning)
+            .accessibilityIdentifier("force-visual-refresh")
+            Text("Fetches fresh recommendations, scans up to 12 new posts plus your saved favorites, then updates visual taste. Existing likes and scans are preserved; playback pauses during analysis.")
                 .font(.caption).foregroundStyle(.secondary)
+            if let status = store.recommendationRescanStatus {
+                Text(status).font(.caption).foregroundStyle(AppTheme.accent)
+            }
+            if store.isUnifiedRecommendationRefreshRunning {
+                ProgressView("Refreshing latest posts…")
+                    .accessibilityIdentifier("unified-refresh-loading")
+            }
             if let progress = store.manualVisualProgress {
                 ProgressView(value: progress.fraction) {
                     Text(progress.status).accessibilityIdentifier("manual-visual-status")
                 }.accessibilityIdentifier("manual-visual-progress")
-                    .accessibilityValue("\(progress.completed) of \(progress.total) new posts analyzed")
+                    .accessibilityValue("\(progress.completed) of \(progress.total) posts checked")
                 if !carouselURLs.isEmpty {
                     GeometryReader { area in
                         ZStack {

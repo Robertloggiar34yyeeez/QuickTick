@@ -165,7 +165,10 @@ struct PostCardView: View {
                 }
             }
             .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(manualPlaybackRequested)") {
-                guard !Task.isCancelled, !post.isAudio else { return }
+                // Images, comics and audio cards have no inline
+                // video player to reconcile on each global playback change.
+                guard !Task.isCancelled else { return }
+                guard post.isImmersiveMedia else { stopPlayback(); return }
                 guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
                 guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
                 // Autoplay is optional during a fast Home swipe. Wait for a
@@ -257,7 +260,11 @@ struct PostCardView: View {
             } else if let gifURL {
                 AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true)
             } else if post.type.lowercased() == "image" {
-                CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl, pixels: Int(mediaSize.width * 3), comic: true, fill: true) { decoded in
+                // The source image remains available for full-screen viewing.
+                // A 3x card decode produced ~16 MB textures on iPad and
+                // evicted adjacent previews from the shared 32 MB cache.
+                CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl,
+                                 pixels: min(1280, Int(mediaSize.width * 2)), comic: true, fill: true) { decoded in
                     store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
                 }
             } else { PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
@@ -431,6 +438,8 @@ struct PostCardView: View {
         watchSeconds = 0
     }
     private func stopPlayback() {
+        guard player != nil || gifURL != nil || ready || !introReady || playing || manualPlaybackRequested
+                || store.players.activeKey == post.stableID else { return }
         store.players.pause(post.stableID, owner: playbackOwner)
         player = nil; gifURL = nil; ready = false; introReady = true; playing = false
         manualPlaybackRequested = false

@@ -357,7 +357,7 @@ private struct DownloadContent: View {
                 refreshCatalog(manager.records)
                 onImmersiveChange(immersive)
             }
-            .onReceive(manager.$records) { refreshCatalog($0) }
+            .onReceive(manager.catalogDidChange) { refreshCatalog(manager.records) }
             .onChange(of: immersive) { _, value in onImmersiveChange(value) }
             .onChange(of: searchText) { _, _ in
                 selectedKeys.removeAll()

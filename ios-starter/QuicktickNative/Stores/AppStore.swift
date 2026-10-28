@@ -211,6 +211,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var cloudSyncEnabled = false
     @Published private(set) var recommendationMode = "On-device recommendations"
     @Published private(set) var recommendationRescanStatus: String?
+    @Published private(set) var isUnifiedRecommendationRefreshRunning = false
+    private var unifiedRecommendationRefreshTask: Task<Void, Never>?
+    private var unifiedRecommendationRefreshID = UUID()
     @Published private(set) var isLoading = false
     @Published private(set) var hasMore = true
     @Published var learnedInterests: [String] = []
@@ -1506,7 +1509,7 @@ final class AppStore: ObservableObject {
 
     /// Explicit user action, independent of the automatic idle-learning toggle.
     /// Existing scans are reused; like ledgers are never reset or counted twice.
-    func startManualVisualRefresh() {
+    func startManualVisualRefresh(includeRecentPosts: Bool = false) {
         guard !isManualVisualScanRunning else { return }
         idleTask?.cancel(); stopActiveLearning()
         let id = UUID(); manualVisualID = id
@@ -1523,9 +1526,17 @@ final class AppStore: ObservableObject {
             // Drain a cancelled text prediction before starting a visual pass.
             await recommendations.releaseSemanticModel()
             await visual.waitForWorker()
-            let history = await visual.historicalQueue(Array(favorites.values))
+            let favoritesSnapshot = Array(favorites.values)
+            let favoriteIDs = Set(favoritesSnapshot.map(\.stableID))
+            // A full refresh also inspects a bounded set of freshly fetched
+            // posts. Unliked posts are analyzed for relevance, never recorded
+            // as likes or used to train the user's favorite profile.
+            let recent = includeRecentPosts ? Array(posts.prefix(12).filter { !favoriteIDs.contains($0.stableID) }) : []
+            let candidates = favoritesSnapshot + recent
+            let history = await visual.historicalQueue(candidates)
             guard !Task.isCancelled, manualVisualID == id else { return }
-            manualVisualProgress = VisualRefreshProgress(completed: 0, total: history.count, status: "Scanning new posts…", running: true)
+            manualVisualProgress = VisualRefreshProgress(completed: 0, total: history.count,
+                status: includeRecentPosts ? "Scanning new posts and favorites…" : "Scanning favorites…", running: true)
             var checked = 0
             var lastProgress = Date.distantPast
             for post in history {
@@ -1547,12 +1558,23 @@ final class AppStore: ObservableObject {
                 // A feed request finishing in the background does not consume
                 // visual inference resources, and must not deadlock this user
                 // initiated operation. The player was paused above.
-                await visual.analyzeFavorite(post, useVision: true, resolver: resolver)
+                if favoriteIDs.contains(post.stableID) {
+                    await visual.analyzeFavorite(post, useVision: true, resolver: resolver)
+                } else {
+                    // Only an explicit, user-initiated full refresh fetches
+                    // these small previews. The passive feed stays network-
+                    // and model-free while the user scrolls.
+                    for imageURL in post.previewImageURLs.prefix(2) {
+                        guard !Task.isCancelled else { return }
+                        if (try? await MediaImagePipeline.shared.image(raw: imageURL, pixels: 512)) != nil { break }
+                    }
+                    await visual.analyzeCachedPost(post, useVision: true)
+                }
                 guard !Task.isCancelled, manualVisualID == id else { return }
                 checked += 1
                 if Date().timeIntervalSince(lastProgress) >= 0.2 || checked == history.count {
                     manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
-                        status: "Checking favorites · \(checked)/\(history.count)", running: true)
+                        status: "Scanning posts & favorites · \(checked)/\(history.count)", running: true)
                     lastProgress = .now
                 }
                 await Task.yield()
@@ -1564,17 +1586,21 @@ final class AppStore: ObservableObject {
             feedExclusions.setFingerprints(fingerprints); visualScores = scores
             await adaptRecommendationTail(token: feedRevision)
             guard !Task.isCancelled, manualVisualID == id else { return }
-            let remaining = await visual.historicalQueue(Array(favorites.values))
+            let remaining = await visual.historicalQueue(candidates)
             manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
-                status: history.isEmpty ? "All favorite previews already analyzed" :
+                status: history.isEmpty ? "All selected previews already analyzed" :
                     (remaining.isEmpty ? "Visual taste updated: \(checked) posts checked" :
-                    "Checked \(checked) favorites; \(remaining.count) previews unavailable or pending retry"),
+                    "Checked \(checked) posts; \(remaining.count) previews unavailable or pending retry"),
                 running: false)
             visualScanStatus = nil
             scheduleIdleIntelligence()
         }
     }
     func cancelManualVisualRefresh() {
+        unifiedRecommendationRefreshID = UUID()
+        unifiedRecommendationRefreshTask?.cancel()
+        unifiedRecommendationRefreshTask = nil
+        isUnifiedRecommendationRefreshRunning = false
         guard isManualVisualScanRunning else { return }
         manualVisualID = UUID(); manualVisualTask?.cancel(); manualVisualTask = nil
         if var progress = manualVisualProgress {
@@ -1645,15 +1671,41 @@ final class AppStore: ObservableObject {
         persistLocal(); queueSync()
     }
 
+    /// One user action refreshes the newest discovery candidates and then
+    /// reconciles/scans the saved visual profile. Do not launch overlapping
+    /// feed requests or Core ML scans after repeated button taps.
+    func refreshRecommendationsAndProfile() {
+        guard !isUnifiedRecommendationRefreshRunning, !isManualVisualScanRunning else { return }
+        let id = UUID(); unifiedRecommendationRefreshID = id
+        isUnifiedRecommendationRefreshRunning = true
+        unifiedRecommendationRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if unifiedRecommendationRefreshID == id {
+                    isUnifiedRecommendationRefreshRunning = false
+                    unifiedRecommendationRefreshTask = nil
+                }
+            }
+            await rebuildRecommended()
+            guard !Task.isCancelled, unifiedRecommendationRefreshID == id else { return }
+            recommendationRescanStatus = "Latest posts refreshed. Updating visual profile…"
+            startManualVisualRefresh(includeRecentPosts: true)
+        }
+    }
+
     func rebuildRecommended() async {
         recommendationRescanStatus = "Refreshing candidate pool…"
         await recommendations.rebuildCandidateAcquisition()
+        guard !Task.isCancelled else { return }
         candidateCursors = [:]
         plannedAcquisition = nil
         savedFeeds.removeAll()
         await visual.reconcileFavorites(Array(favorites.values))
+        guard !Task.isCancelled else { return }
         await persistRecommendations()
+        guard !Task.isCancelled else { return }
         await refresh(immersive: activeTab == 1)
+        guard !Task.isCancelled else { return }
         if visualAnalysisEnabled { scheduleIdleIntelligence() }
         recommendationRescanStatus = lastError == nil
             ? "Rebuilt using your saved likes, dislikes and exclusions."

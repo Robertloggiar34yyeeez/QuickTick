@@ -12,7 +12,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(nativeShare.isHittable)
         let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Native recommendation profile sharing"; capture.lifetime = .keepAlways; add(capture)
     }
-    @MainActor func testManualVisualRefreshShowsProgressWithoutCompetingGIF() {
+    @MainActor func testCombinedRecommendationRefreshShowsProgressWithoutCompetingGIF() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-testing-download-images", "--ui-testing-download-gif"]
         app.launch()
@@ -25,7 +25,8 @@ final class NavigationTests: XCTestCase {
         for _ in 0..<12 { if refresh.isHittable { break }; app.swipeUp() }
         XCTAssertTrue(refresh.isHittable); refresh.tap()
         let progress = app.descendants(matching: .any).matching(identifier: "manual-visual-progress").firstMatch
-        XCTAssertTrue(progress.waitForExistence(timeout: 10))
+        XCTAssertTrue(progress.waitForExistence(timeout: 45),
+                      "One refresh action must fetch new posts and then begin the visual profile scan")
         let carousel = app.descendants(matching: .any).matching(identifier: "visual-refresh-carousel").firstMatch
         XCTAssertTrue(carousel.waitForExistence(timeout: 10))
         XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "visual-refresh-gif").firstMatch.exists)

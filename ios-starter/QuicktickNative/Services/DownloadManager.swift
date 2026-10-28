@@ -28,6 +28,9 @@ private final class DownloadProgressGate: @unchecked Sendable {
 final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDelegate, AVAssetDownloadDelegate {
     @Published private(set) var records: [DownloadRecord] = []
     @Published private(set) var storageError: String?
+    // Search indexes/offline-post snapshots depend on catalog changes, not
+    // the progress samples published while a transfer is active.
+    let catalogDidChange = PassthroughSubject<Void, Never>()
     var onCompleted: ((Post) -> Void)?
     private let resolver: MediaResolver
     nonisolated let root: URL
@@ -79,7 +82,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         } catch { metadataFailed = true; storageError = "Download metadata could not be read. The original file is preserved." }
         Task { [weak self] in
             guard let self else { return }
-            for record in records where record.state == .complete {
+            for record in records where record.state == .complete && record.fileSize == nil {
                 if let path = record.localMediaPath { await measureSize(record.key, at: URL(fileURLWithPath: path)) }
             }
         }
@@ -101,6 +104,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber { record.fileSize = size.int64Value }
             return record
         })
+        catalogDidChange.send()
     }
     #endif
     func download(_ post: Post, refreshSource: Bool = false) {
@@ -192,6 +196,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             let dir = root.appendingPathComponent(Self.safeName(record.key))
             if FileManager.default.fileExists(atPath: dir.path) { try FileManager.default.removeItem(at: dir) }
             records.removeAll { $0.key == record.key }; save()
+            catalogDidChange.send()
         } catch { update(record.key) { $0.errorMessage = error.localizedDescription } }
     }
     /// Remove a selected batch off the main actor so deleting large HLS
@@ -230,6 +235,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 }
             }
             save()
+            catalogDidChange.send()
         }
     }
     private func update(_ key: String, _ mutation: (inout DownloadRecord) -> Void) {
@@ -242,13 +248,16 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         // Only live in-memory UI state changes here. Encoding and atomically
         // rewriting downloads.json for every URLSession progress packet caused
         // scrolling stalls until a transfer completed.
-        records[index].progress = min(1, max(0, value))
-        if let expectedBytes, expectedBytes > 0 { records[index].fileSize = expectedBytes }
+        var record = records[index]
+        record.progress = min(1, max(0, value))
+        if let expectedBytes, expectedBytes > 0 { record.fileSize = expectedBytes }
+        records[index] = record
     }
     private func upsert(_ record: DownloadRecord) {
         if let index = records.firstIndex(where: { $0.key == record.key }) { records[index] = record } else { records.insert(record, at: 0) }
         records = Self.newestFirst(records)
         save()
+        catalogDidChange.send()
     }
     /// Persist and display one chronological list across every provider.
     /// Progress callbacks must not reorder older transfers ahead of new ones.
@@ -277,7 +286,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }
     private func measureSize(_ key: String, at url: URL) async {
         guard let size = await DownloadSizeReader.shared.bytes(at: url),
-              records.contains(where: { $0.key == key && $0.state == .complete && $0.localMediaPath == url.path }) else { return }
+              let record = records.first(where: { $0.key == key && $0.state == .complete && $0.localMediaPath == url.path }),
+              record.fileSize != size else { return }
         update(key) { $0.fileSize = size }
     }
     private func cacheThumbnail(_ record: DownloadRecord) async {

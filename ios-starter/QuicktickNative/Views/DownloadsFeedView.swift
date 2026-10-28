@@ -60,9 +60,7 @@ private struct DownloadContent: View {
         manager.records.filter { selectedKeys.contains($0.key) }.compactMap(\.exportURL)
     }
     var body: some View {
-        Group {
-            if immersive { ImmersiveFeedView(posts: localPosts, offline: true, activePostID: $immersivePostID, onClose: { immersive = false }) }
-            else {
+        ZStack {
                 GeometryReader { geometry in
                 ScrollView {
                 LazyVStack(spacing: 18) {
@@ -143,6 +141,10 @@ private struct DownloadContent: View {
                 .frame(maxWidth: .infinity)
                 }
                 }
+            if immersive {
+                ImmersiveFeedView(posts: localPosts, offline: true, activePostID: $immersivePostID,
+                                  onClose: { immersive = false })
+                    .transition(.move(edge: .trailing))
             }
         }.scrollContentBackground(.hidden).background(ThemeBackdrop()).navigationTitle("Downloads")
             .toolbar {

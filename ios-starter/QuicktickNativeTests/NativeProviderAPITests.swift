@@ -459,7 +459,10 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(stream.mediaUrl, "https://media.hentaihaven.xxx/episode.m3u8")
         XCTAssertEqual(stream.type, "hls")
         let urls = NativeProviderProtocol.log.snapshot().compactMap(\.url)
-        XCTAssertTrue(urls.contains { $0.host == "hentaihaven.xxx" && $0.path == "/watch/fallback-web/" })
+        // URL.path can normalize a final slash; compare the transport URL,
+        // which is what the fixture and real website use.
+        XCTAssertTrue(urls.contains { $0.host == "hentaihaven.xxx" &&
+            $0.absoluteString.hasPrefix("https://hentaihaven.xxx/watch/fallback-web") })
         XCTAssertFalse(urls.contains { $0.path == "/v1/hentai/fallback-web" })
         let missing = Post(key: "hhaven:web:no-public-stream", id: "no-public-stream", provider: "hhaven",
             pageUrl: "https://hentaihaven.xxx/watch/no-public-stream/", type: "video")

@@ -154,4 +154,34 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertFalse(RecommendationQualityModel.rejects(visual: -0.4))
         XCTAssertFalse(RecommendationQualityModel.rejects(visual: nil))
     }
+
+    func testTasteWrappedCountsExplicitCharacterArtistDynamicsAndPoseWithExamples() {
+        let tags = ["anime", "chun_li", "street_fighter", "artist:example_artist",
+                    "femdom", "sitting"]
+        let favorites = (1...3).map { index in
+            Post(key: "rule34:wrapped:\(index)", id: "wrapped-\(index)", provider: "Rule34",
+                 tags: tags, previewUrl: "https://example.invalid/preview-\(index).jpg", type: "image")
+        }
+        let sections = TasteWrappedSummary.make(from: favorites)
+        func find(_ section: String, _ label: String) -> TasteWrappedMoment? {
+            sections.first(where: { $0.id == section })?.moments
+                .first(where: { $0.label == label })
+        }
+        XCTAssertEqual(find("character", "Chun Li")?.appearances, 3)
+        XCTAssertEqual(find("franchise", "Street Fighter")?.appearances, 3)
+        XCTAssertEqual(find("artist", "Example Artist")?.appearances, 3)
+        XCTAssertEqual(find("power", "Female Dominant")?.appearances, 3)
+        XCTAssertEqual(find("action", "Sitting")?.appearances, 3)
+        XCTAssertNotNil(find("character", "Chun Li")?.sample.cardPreviewURL)
+    }
+
+    func testCrimsonAndFiveSeasonalAccentsAreSelectable() {
+        for palette in [
+            AppTheme.AccentPalette.crimson, .easter, .summer, .halloween, .christmas, .snow
+        ] {
+            XCTAssertTrue(AppTheme.AccentPalette.allCases.contains(palette))
+            XCTAssertFalse(palette.name.isEmpty)
+            XCTAssertGreaterThanOrEqual(palette.gradientColors.count, 2)
+        }
+    }
 }

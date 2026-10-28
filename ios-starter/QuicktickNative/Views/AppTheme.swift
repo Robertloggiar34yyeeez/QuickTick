@@ -8,6 +8,7 @@ enum AppTheme {
         case violet, ocean, sunset, mint, rose, cobalt, amber, cherry, teal, lime, indigo, coral, galaxy
         case darkCosmos, auroraNight, solarEclipse, oledBlack, graphite, midnightBlue, emeraldNoir, crimsonNoir
         case nebulaDrift, obsidianGold, polarNight, deSlopified
+        case crimson, easter, summer, halloween, christmas, snow
         var id: String { rawValue }
         var name: String {
             switch self {
@@ -23,6 +24,12 @@ enum AppTheme {
             case .obsidianGold: "Obsidian Gold"
             case .polarNight: "Polar Night"
             case .deSlopified: "De-slopified"
+            case .crimson: "Crimson"
+            case .easter: "Easter"
+            case .summer: "Summer"
+            case .halloween: "Halloween"
+            case .christmas: "Christmas"
+            case .snow: "Snow"
             default: rawValue.capitalized
             }
         }
@@ -53,6 +60,12 @@ enum AppTheme {
             case .obsidianGold: Color(red: 0.94, green: 0.69, blue: 0.35)
             case .polarNight: Color(red: 0.37, green: 0.79, blue: 0.98)
             case .deSlopified: Color(red: 0.29, green: 0.49, blue: 0.43)
+            case .crimson: Color(red: 0.94, green: 0.14, blue: 0.29)
+            case .easter: Color(red: 0.90, green: 0.60, blue: 0.87)
+            case .summer: Color(red: 1.00, green: 0.68, blue: 0.22)
+            case .halloween: Color(red: 1.00, green: 0.43, blue: 0.11)
+            case .christmas: Color(red: 0.82, green: 0.20, blue: 0.30)
+            case .snow: Color(red: 0.64, green: 0.85, blue: 1.00)
             }
         }
         var secondary: Color {
@@ -82,6 +95,12 @@ enum AppTheme {
             case .obsidianGold: Color(red: 0.78, green: 0.48, blue: 0.35)
             case .polarNight: Color(red: 0.62, green: 0.87, blue: 0.73)
             case .deSlopified: primary
+            case .crimson: Color(red: 0.65, green: 0.08, blue: 0.32)
+            case .easter: Color(red: 0.65, green: 0.87, blue: 0.74)
+            case .summer: Color(red: 0.17, green: 0.74, blue: 0.83)
+            case .halloween: Color(red: 0.63, green: 0.30, blue: 0.91)
+            case .christmas: Color(red: 0.20, green: 0.72, blue: 0.49)
+            case .snow: Color(red: 0.58, green: 0.63, blue: 0.95)
             }
         }
         var gradientColors: [Color] {
@@ -105,6 +124,12 @@ enum AppTheme {
             // Keep existing gradient-based call sites visually flat: the
             // anti-slop appearance uses one accent, never a decorative blend.
             case .deSlopified: [primary, primary]
+            case .crimson: [primary, secondary]
+            case .easter: [primary, secondary, Color(red: 0.86, green: 0.84, blue: 0.54)]
+            case .summer: [primary, Color(red: 1, green: 0.48, blue: 0.33), secondary]
+            case .halloween: [primary, secondary]
+            case .christmas: [primary, secondary]
+            case .snow: [primary, secondary]
             default: [primary, secondary]
             }
         }
@@ -115,7 +140,13 @@ enum AppTheme {
     static var modernUI: Bool { (UserDefaults.standard.object(forKey: "quicktick-modern-ui-v1") as? Bool) ?? true }
     static var isGalaxy: Bool { palette == .galaxy }
     static var isDeSlopified: Bool { palette == .deSlopified }
-    static var prefersOpaqueChrome: Bool { isCosmic || isDeSlopified }
+    static var prefersOpaqueChrome: Bool { isCosmic || isSeasonal || isDeSlopified }
+    static var isSeasonal: Bool {
+        switch palette {
+        case .easter, .summer, .halloween, .christmas, .snow: true
+        default: false
+        }
+    }
     static var isCosmic: Bool {
         switch palette {
         case .galaxy, .darkCosmos, .auroraNight, .solarEclipse, .oledBlack, .graphite, .midnightBlue, .emeraldNoir, .crimsonNoir, .nebulaDrift, .obsidianGold, .polarNight: return true
@@ -139,6 +170,12 @@ enum AppTheme {
         case .obsidianGold: return Color(red: 0.026, green: 0.019, blue: 0.014)
         case .polarNight: return Color(red: 0.010, green: 0.033, blue: 0.049)
         case .deSlopified: return Color(red: 0.067, green: 0.067, blue: 0.067)
+        case .crimson: return Color(red: 0.060, green: 0.010, blue: 0.023)
+        case .easter: return Color(red: 0.072, green: 0.048, blue: 0.102)
+        case .summer: return Color(red: 0.072, green: 0.035, blue: 0.032)
+        case .halloween: return Color(red: 0.040, green: 0.020, blue: 0.058)
+        case .christmas: return Color(red: 0.036, green: 0.054, blue: 0.041)
+        case .snow: return Color(red: 0.037, green: 0.063, blue: 0.096)
         default: break
         }
         return modernUI ? Color(red: 0.035, green: 0.035, blue: 0.065) : .black
@@ -158,6 +195,12 @@ enum AppTheme {
         case .obsidianGold: return Color(red: 0.083, green: 0.060, blue: 0.043)
         case .polarNight: return Color(red: 0.034, green: 0.082, blue: 0.099)
         case .deSlopified: return Color(red: 0.105, green: 0.105, blue: 0.105)
+        case .crimson: return Color(red: 0.126, green: 0.028, blue: 0.054)
+        case .easter: return Color(red: 0.137, green: 0.088, blue: 0.165)
+        case .summer: return Color(red: 0.147, green: 0.074, blue: 0.059)
+        case .halloween: return Color(red: 0.096, green: 0.052, blue: 0.118)
+        case .christmas: return Color(red: 0.068, green: 0.105, blue: 0.081)
+        case .snow: return Color(red: 0.073, green: 0.117, blue: 0.153)
         default: break
         }
         return modernUI ? Color(red: 0.073, green: 0.073, blue: 0.11) : Color(white: 0.055)
@@ -177,6 +220,12 @@ enum AppTheme {
         case .obsidianGold: return Color(red: 0.142, green: 0.102, blue: 0.066)
         case .polarNight: return Color(red: 0.057, green: 0.125, blue: 0.143)
         case .deSlopified: return Color(red: 0.15, green: 0.15, blue: 0.15)
+        case .crimson: return Color(red: 0.186, green: 0.053, blue: 0.081)
+        case .easter: return Color(red: 0.198, green: 0.125, blue: 0.222)
+        case .summer: return Color(red: 0.213, green: 0.104, blue: 0.074)
+        case .halloween: return Color(red: 0.155, green: 0.072, blue: 0.160)
+        case .christmas: return Color(red: 0.103, green: 0.152, blue: 0.110)
+        case .snow: return Color(red: 0.115, green: 0.169, blue: 0.205)
         default: break
         }
         return modernUI ? Color(red: 0.10, green: 0.095, blue: 0.15) : Color(red: 0.09, green: 0.09, blue: 0.13)
@@ -196,6 +245,12 @@ enum AppTheme {
         case .obsidianGold: Color(red: 0.054, green: 0.039, blue: 0.027)
         case .polarNight: Color(red: 0.018, green: 0.054, blue: 0.069)
         case .deSlopified: Color(red: 0.075, green: 0.075, blue: 0.075)
+        case .crimson: Color(red: 0.081, green: 0.018, blue: 0.037)
+        case .easter: Color(red: 0.108, green: 0.071, blue: 0.134)
+        case .summer: Color(red: 0.105, green: 0.057, blue: 0.045)
+        case .halloween: Color(red: 0.074, green: 0.040, blue: 0.094)
+        case .christmas: Color(red: 0.047, green: 0.074, blue: 0.058)
+        case .snow: Color(red: 0.046, green: 0.083, blue: 0.116)
         default: Color(red: 0.045, green: 0.04, blue: 0.075)
         }
     }
@@ -275,6 +330,9 @@ struct ThemeBackdrop: View {
         GeometryReader { geometry in
             ZStack {
                 AppTheme.background
+                if !enabled && AppTheme.isSeasonal {
+                    SeasonalBackdropMotif()
+                }
                 if enabled, let artwork {
                     Image(uiImage: artwork)
                         .resizable().scaledToFill()
@@ -294,6 +352,39 @@ struct ThemeBackdrop: View {
             artwork = saved.flatMap(UIImage.init(data:))
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// Seasonal accents are static and inexpensive: no particle loops or live
+/// blur, so they do not cost animation frames during feed scrolling.
+private struct SeasonalBackdropMotif: View {
+    private var symbol: String {
+        switch AppTheme.palette {
+        case .easter: "sparkles"
+        case .summer: "sun.max.fill"
+        case .halloween: "moon.stars.fill"
+        case .christmas: "gift.fill"
+        case .snow: "snowflake"
+        default: "sparkles"
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                RadialGradient(colors: [AppTheme.accent.opacity(0.12), .clear],
+                               center: .topTrailing, startRadius: 20,
+                               endRadius: max(300, geometry.size.width * 0.9))
+                Image(systemName: symbol)
+                    .font(.system(size: 140, weight: .ultraLight))
+                    .position(x: geometry.size.width * 0.89, y: geometry.size.height * 0.19)
+                Image(systemName: symbol)
+                    .font(.system(size: 86, weight: .ultraLight))
+                    .position(x: geometry.size.width * 0.12, y: geometry.size.height * 0.75)
+            }
+            .foregroundStyle(AppTheme.accent.opacity(0.09))
+        }
+        .allowsHitTesting(false)
     }
 }
 

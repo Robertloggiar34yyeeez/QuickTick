@@ -24,6 +24,9 @@ struct ImmersiveFeedView: View {
     @State private var pageDirection = 1
     @State private var activeIndex = 0
     @State private var activeSince = Date.distantPast
+    @State private var verticalDrag: CGFloat = 0
+    @State private var horizontalCloseDrag: CGFloat = 0
+    @State private var dragAxis: ImmersiveDragAxis?
     @State private var searchVisible = false
     @State private var preferencesVisible = false
     @StateObject private var previews = ImmersivePreviewCache()
@@ -43,22 +46,36 @@ struct ImmersiveFeedView: View {
                 ?? (offline ? store.activeTab == 3 : (onClose != nil ? store.activeTab == 0 : store.activeTab == 1)))
     }
     private var playbackOwner: String { offline ? "offline-immersive" : (collectionTab == 2 ? "favorites-immersive" : (onClose != nil ? "home-immersive" : "immersive")) }
+    private var interactiveCloseAllowed: Bool { onClose != nil && (offline || collectionTab == 2) }
+
+    private var adjacentPost: Post? {
+        let next = activeIndex + (verticalDrag < 0 ? 1 : -1)
+        return mediaPosts.indices.contains(next) ? mediaPosts[next] : nil
+    }
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
+                if abs(verticalDrag) > 8, let adjacentPost {
+                    dragPoster(adjacentPost, viewport: geo.size)
+                        .offset(y: (verticalDrag < 0 ? geo.size.height : -geo.size.height) + verticalDrag)
+                }
                 if let post = visiblePost {
                     ImmersiveItemView(post: post, offline: offline, active: true,
                                       presentationActive: presentationActive, playbackOwner: playbackOwner,
                                       collection: collectionTab != nil, previews: previews,
-                                      onPageSwipe: { translation, velocity in
-                                          pageSwipe(from: post.stableID, translation: translation,
-                                                    velocity: velocity,
-                                                    viewportHeight: geo.size.height)
+                                      onPageSwipe: { translation, velocity, ended in
+                                          if ended {
+                                              endPan(from: post.stableID, translation: translation,
+                                                     velocity: velocity, viewport: geo.size)
+                                          } else {
+                                              updatePan(translation, viewport: geo.size)
+                                          }
                                       })
                     .frame(width: geo.size.width, height: geo.size.height)
                     .contentShape(Rectangle())
                     .id(post.stableID)
+                    .offset(y: verticalDrag)
                     .transition(.asymmetric(
                         insertion: .offset(y: geo.size.height * CGFloat(pageDirection)).combined(with: .opacity),
                         removal: .offset(y: -geo.size.height * CGFloat(pageDirection)).combined(with: .opacity)))
@@ -167,6 +184,67 @@ struct ImmersiveFeedView: View {
             if let onClose { onClose() }
             else { Task { await store.selectFeedTab(0) } }
         }
+        .offset(x: horizontalCloseDrag)
+    }
+
+    private func dragPoster(_ post: Post, viewport: CGSize) -> some View {
+        ZStack {
+            AppTheme.background
+            if let poster = previews.images[post.stableID] {
+                Image(uiImage: poster).resizable().scaledToFit()
+            } else {
+                Image(systemName: "photo.fill")
+                    .font(.system(size: 44)).foregroundStyle(AppTheme.accent.opacity(0.4))
+            }
+        }
+        .frame(width: viewport.width, height: viewport.height)
+        .clipped()
+        .accessibilityHidden(true)
+    }
+
+    private func updatePan(_ translation: CGSize, viewport: CGSize) {
+        if dragAxis == nil {
+            if interactiveCloseAllowed && translation.width > 12 &&
+                translation.width > abs(translation.height) * 1.2 {
+                dragAxis = .horizontal
+            } else if abs(translation.height) > 10 &&
+                abs(translation.height) > abs(translation.width) * 1.08 {
+                dragAxis = .vertical
+            }
+        }
+        switch dragAxis {
+        case .horizontal:
+            horizontalCloseDrag = min(viewport.width, max(0, translation.width))
+        case .vertical:
+            let next = activeIndex + (translation.height < 0 ? 1 : -1)
+            let travel = mediaPosts.indices.contains(next) ? translation.height : translation.height * 0.25
+            verticalDrag = min(viewport.height, max(-viewport.height, travel))
+        case nil: break
+        }
+    }
+
+    private func endPan(from origin: String, translation: CGSize,
+                        velocity: CGSize, viewport: CGSize) {
+        defer { dragAxis = nil }
+        if dragAxis == .horizontal {
+            let complete = horizontalCloseDrag >= viewport.width * 0.28 ||
+                (horizontalCloseDrag >= 50 && velocity.width >= 650)
+            if complete, let onClose {
+                withAnimation(.interactiveSpring(response: 0.26, dampingFraction: 0.91)) {
+                    onClose()
+                }
+            } else {
+                withAnimation(.interactiveSpring(response: 0.25, dampingFraction: 0.88)) {
+                    horizontalCloseDrag = 0
+                }
+            }
+            return
+        }
+        pageSwipe(from: origin, translation: translation, velocity: velocity,
+                  viewportHeight: viewport.height)
+        withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.88)) {
+            verticalDrag = 0
+        }
     }
     private func pageSwipe(from origin: String, translation: CGSize,
                            velocity: CGSize, viewportHeight: CGFloat) {
@@ -186,7 +264,7 @@ struct ImmersiveFeedView: View {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") { print("QUICKTICK_PAGING_SELECTED next=\(key)") }
         #endif
-        withAnimation(.easeOut(duration: 0.22)) { activeID = key }
+        withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.91)) { activeID = key }
     }
     private func prewarm() async {
         guard presentationActive, store.isForeground, !store.isManualVisualScanRunning, !Task.isCancelled else { return }
@@ -254,6 +332,8 @@ struct ImmersiveFeedView: View {
 
 }
 
+private enum ImmersiveDragAxis { case vertical, horizontal }
+
 enum ImmersivePreloadPlan {
     static func retainedIndices(current: Int, count: Int) -> [Int] {
         guard count > 0, (0..<count).contains(current) else { return [] }
@@ -296,7 +376,7 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
     let id: String
     let onSingleTap: () -> Void
     let onDoubleTap: () -> Void
-    let onPan: (CGSize, CGSize) -> Void
+    let onPan: (CGSize, CGSize, Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(single: onSingleTap, double: onDoubleTap, pan: onPan)
@@ -334,10 +414,10 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
     final class Coordinator: NSObject {
         var single: () -> Void
         var double: () -> Void
-        var pan: (CGSize, CGSize) -> Void
+        var pan: (CGSize, CGSize, Bool) -> Void
 
         init(single: @escaping () -> Void, double: @escaping () -> Void,
-             pan: @escaping (CGSize, CGSize) -> Void) {
+             pan: @escaping (CGSize, CGSize, Bool) -> Void) {
             self.single = single
             self.double = double
             self.pan = pan
@@ -352,11 +432,12 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
         }
 
         @objc func panned(_ recognizer: UIPanGestureRecognizer) {
-            guard recognizer.state == .ended, let surface = recognizer.view else { return }
+            guard recognizer.state == .changed || recognizer.state == .ended || recognizer.state == .cancelled,
+                  let surface = recognizer.view else { return }
             let translation = recognizer.translation(in: surface)
             let velocity = recognizer.velocity(in: surface)
             pan(CGSize(width: translation.x, height: translation.y),
-                CGSize(width: velocity.x, height: velocity.y))
+                CGSize(width: velocity.x, height: velocity.y), recognizer.state != .changed)
         }
     }
 }
@@ -372,7 +453,7 @@ private struct ImmersiveItemView: View {
     let playbackOwner: String
     let collection: Bool
     @ObservedObject var previews: ImmersivePreviewCache
-    let onPageSwipe: (CGSize, CGSize) -> Void
+    let onPageSwipe: (CGSize, CGSize, Bool) -> Void
     @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
     @State private var ready = false

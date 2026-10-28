@@ -12,6 +12,12 @@ enum VisualDomain: String, Codable, Sendable {
         if normalized.contains("mixed_media") || [flat, rendered, photographic].filter({ $0 }).count > 1 { return .mixed }
         if rendered { return .threeD }
         if photographic { return .realLife }
+        // A provider's usual medium is a fallback, never stronger evidence
+        // than a post explicitly tagged as anime/illustration. A real-life
+        // catalog can occasionally host 2D clips and animated uploads.
+        if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"]) {
+            return .anime
+        }
         // Public IRL video APIs rarely send a reliable `photo` tag at all;
         // treating them as "uncertain" suppressed every learned scene/camera
         // match. Explicit 2D/3D tags above always take precedence.
@@ -19,8 +25,7 @@ enum VisualDomain: String, Codable, Sendable {
         // Hentai Haven's older saved posts can lack the synthetic `hentai`
         // tag. The provider is animated content even when its title supplies
         // no descriptive tags. Explicit photo/3D/mixed evidence above wins.
-        if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"])
-            || (!post.isAudio && (post.providerKey == .hhaven || post.providerKey == .nhentai)) { return .anime }
+        if !post.isAudio && (post.providerKey == .hhaven || post.providerKey == .nhentai) { return .anime }
         return .uncertain
     }
 }

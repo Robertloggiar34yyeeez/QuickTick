@@ -67,6 +67,7 @@ enum TabSwipePolicy {
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @State private var brieflyNamedTab: Int?
     @State private var tabNameTask: Task<Void, Never>?
     @State private var refreshingTab: Int?
@@ -81,6 +82,9 @@ struct RootView: View {
     @AppStorage(BackgroundArtworkStore.enabledKey) private var showsCustomBackground = false
     @State private var showSettings = false
     @State private var showStudio = false
+    @State private var showWeeklyWrapped = false
+    @State private var tabTransitionDirection: CGFloat = 1
+    @AppStorage("quicktick-wrapped-last-week-v1") private var wrappedLastShownWeek = ""
     @State private var homeAnchor: String?
     @State private var immersiveAnchor: String?
     // Keep the existing store tab identifiers stable for playback, tests and
@@ -106,6 +110,13 @@ struct RootView: View {
                 withAnimation(.easeOut(duration: 0.14)) { brieflyNamedTab = nil }
             }
         }
+        .onChange(of: store.bootstrapped) { _, _ in presentWrappedIfNeeded() }
+        .onChange(of: firstRunCompleted) { _, _ in presentWrappedIfNeeded() }
+        .onChange(of: store.favorites.count) { _, _ in presentWrappedIfNeeded() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { presentWrappedIfNeeded() }
+        }
+        .onAppear { presentWrappedIfNeeded() }
         .onChange(of: showAITab) { _, _ in
             // AppStorage can update while Settings is still being dismissed.
             // Keep the dock transaction in sync across both layouts.
@@ -160,7 +171,28 @@ struct RootView: View {
             .environmentObject(store)
             .tint(AppTheme.accent)
         }
+        .fullScreenCover(isPresented: $showWeeklyWrapped) {
+            TasteWrappedView(weekly: true, onClose: { showWeeklyWrapped = false })
+                .environmentObject(store)
+                .tint(AppTheme.accent)
+        }
         .overlay(alignment: .topTrailing) { FloatingPiPView().environmentObject(store) }
+    }
+
+    private func presentWrappedIfNeeded() {
+        guard store.bootstrapped, firstRunCompleted, store.favorites.count >= 3,
+              scenePhase == .active, !showSettings, !showStudio, !showWeeklyWrapped,
+              store.activeTab == 0,
+              !ProcessInfo.processInfo.arguments.contains("--ui-testing") else { return }
+        let components = Calendar(identifier: .iso8601)
+            .dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date())
+        guard let year = components.yearForWeekOfYear, let week = components.weekOfYear else { return }
+        let key = "\(year)-\(week)"
+        guard wrappedLastShownWeek != key else { return }
+        // Only mark displayed after conditions are met. Re-opening Settings
+        // on the same day should not trigger the weekly cover a second time.
+        wrappedLastShownWeek = key
+        showWeeklyWrapped = true
     }
 
     @ViewBuilder private var activeFeed: some View {
@@ -198,7 +230,15 @@ struct RootView: View {
         let createGapHeight: Int = aiTabVisible ? 6 : 0
         let sideLength: CGFloat = CGFloat(dockItemHeight + dockGapHeight + createGapHeight)
         return VStack(spacing: 0) {
-            activeFeed.frame(maxWidth: .infinity, maxHeight: .infinity)
+            activeFeed
+                .id(store.activeTab)
+                .transition(.asymmetric(
+                    insertion: .offset(x: tabTransitionDirection * min(110, size.width * 0.18))
+                        .combined(with: .opacity),
+                    removal: .opacity))
+                .offset(x: sideNavigation ? 0 : navigationDrag.width * 0.20,
+                        y: sideNavigation ? navigationDrag.height * 0.14 : 0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             if !sideNavigation {
                 BackgroundAudioMiniPlayer(audio: store.audio)
                     .padding(.horizontal, 12).padding(.bottom, 3)
@@ -217,6 +257,8 @@ struct RootView: View {
         }
         .animation(reduceMotion ? nil : .spring(response: 0.48, dampingFraction: 0.84),
                    value: sideNavigation)
+        .animation(reduceMotion ? nil : .interactiveSpring(response: 0.29, dampingFraction: 0.91),
+                   value: store.activeTab)
     }
 
     private func dockDrag(vertical: Bool, axisLength: CGFloat) -> some Gesture {
@@ -322,7 +364,11 @@ struct RootView: View {
                                                          axisLength: axisLength, visibleIndices: visibleTabIndices)
         else { return }
         tabSelectionTask?.cancel()
-        let refresh = store.beginFeedTabSelection(tab)
+        tabTransitionDirection = CGFloat(tab < store.activeTab ? -1 : 1)
+        var refresh = false
+        withAnimation(reduceMotion ? nil : .interactiveSpring(response: 0.29, dampingFraction: 0.91)) {
+            refresh = store.beginFeedTabSelection(tab)
+        }
         tabSelectionTask = Task { @MainActor in
             guard !Task.isCancelled else { return }
             if refresh { await store.refresh(immersive: tab == 1) }
@@ -375,7 +421,11 @@ struct RootView: View {
                     // running. With an async-only switch, the next rapid tap
                     // could be lost while SwiftUI remounted the dock.
                     tabSelectionTask?.cancel()
-                    let requiresRefresh = store.beginFeedTabSelection(tabID)
+                    tabTransitionDirection = CGFloat(tabID < store.activeTab ? -1 : 1)
+                    var requiresRefresh = false
+                    withAnimation(reduceMotion ? nil : .interactiveSpring(response: 0.29, dampingFraction: 0.91)) {
+                        requiresRefresh = store.beginFeedTabSelection(tabID)
+                    }
                     if isRefresh {
                         refreshSpinDegrees = 0
                         withAnimation(.smooth(duration: 0.18)) { refreshingTab = tabID }

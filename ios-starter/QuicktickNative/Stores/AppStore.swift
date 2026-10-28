@@ -178,6 +178,15 @@ final class AppStore: ObservableObject {
     var newestFavorites: [Post] {
         Self.sortFavoritesNewestFirst(favorites, metadata: local.snapshot.favoriteMeta)
     }
+    /// The weekly recap uses the time the user liked a post, not the date
+    /// an artist uploaded it. Imported favorites with no timestamp remain in
+    /// the all-time profile instead of being presented as this week's likes.
+    var wrappedWeeklyFavorites: [Post] {
+        guard let weekStart = Calendar(identifier: .iso8601)
+            .dateInterval(of: .weekOfYear, for: .now)?.start else { return [] }
+        let millis = Int64(weekStart.timeIntervalSince1970 * 1_000)
+        return newestFavorites.filter { (local.snapshot.favoriteMeta[$0.stableID]?.updatedAt ?? 0) >= millis }
+    }
     static func sortFavoritesNewestFirst(_ favorites: [String: Post],
                                          metadata: [String: FavoriteMeta]) -> [Post] {
         favorites.values.sorted { lhs, rhs in
@@ -851,7 +860,10 @@ final class AppStore: ObservableObject {
                                                    page: primaryPageNumber, sort: sort, immersive: mediaOnly)
             emitter.yield(.first(response))
         }
-        let secondaryFlight = Task(priority: .utility) {
+        // Immersive's second lane supplies the next distinct clip. Scheduling
+        // it as background utility work often loses the grace race while
+        // 100 duplicate fixture/source rows parse on the primary lane.
+        let secondaryFlight = Task(priority: mediaOnly ? .userInitiated : .utility) {
             let response = try? await client.posts(provider: provider, query: secondaryQuery,
                                                    page: secondaryPageNumber, sort: sort, immersive: mediaOnly)
             emitter.yield(.second(response))
@@ -870,12 +882,17 @@ final class AppStore: ObservableObject {
                 if completed == 2 { break }
                 if case .graceExpired = result { break }
                 let available = (primary?.items.count ?? 0) + (secondary?.items.count ?? 0)
+                let unique = Set((primary?.items ?? []).map(\.stableID)
+                               + (secondary?.items ?? []).map(\.stableID)).count
                 // The old unconditional 120 ms deadline discarded the broad
                 // lane on almost every focused response. Give it a bounded
                 // chance to contribute, especially for sparse pages, without
                 // blocking first paint on an indefinitely slow provider.
                 if available > 0 && deadline == nil {
-                    let grace = available < 10 ? 420 : 260
+                    // Huge archive/booru pages can consist of repeated IDs.
+                    // Their raw row count is not a useful measure of whether
+                    // the first response contains enough to scroll through.
+                    let grace = unique < 3 ? 720 : (unique < 10 ? 420 : 260)
                     deadline = Task {
                         do { try await Task.sleep(for: .milliseconds(grace)) } catch { return }
                         emitter.yield(.graceExpired)

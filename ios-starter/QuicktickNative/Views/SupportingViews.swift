@@ -1134,11 +1134,7 @@ struct FavoritesView: View {
         activeID = nil
     }
     var body: some View {
-        Group {
-            if immersive {
-                ImmersiveFeedView(posts: saved, offline: false, activePostID: $activeID,
-                                  onClose: { immersive = false }, collectionTab: 2)
-            } else {
+        ZStack {
                 GeometryReader { geometry in
                     ScrollView {
                         LazyVStack(spacing: 18) {
@@ -1185,6 +1181,10 @@ struct FavoritesView: View {
                             }
                         }
                 }
+            if immersive {
+                ImmersiveFeedView(posts: saved, offline: false, activePostID: $activeID,
+                                  onClose: { immersive = false }, collectionTab: 2)
+                    .transition(.move(edge: .trailing))
             }
         }
         .scrollContentBackground(.hidden)
@@ -1220,5 +1220,227 @@ struct FavoritesView: View {
         .fullScreenCover(isPresented: $rhythm) {
             RhythmSessionView(posts: saved.filter { $0.providerKey == .rule34 }, offline: false)
         }
+    }
+}
+
+/// A local, reproducible snapshot of explicit favorite metadata. Never infer
+/// a person's identity, a fictional character or a power dynamic from pixels.
+struct TasteWrappedMoment: Identifiable {
+    let id: String
+    let label: String
+    let appearances: Int
+    let sample: Post
+}
+
+struct TasteWrappedCategory: Identifiable {
+    let id: String
+    let heading: String
+    let symbol: String
+    let moments: [TasteWrappedMoment]
+}
+
+enum TasteWrappedSummary {
+    static func make(from favorites: [Post]) -> [TasteWrappedCategory] {
+        let posts = Array(favorites.prefix(1_000))
+        let sections: [(id: String, title: String, symbol: String)] = [
+            ("character", "Favorite characters", "person.crop.square"),
+            ("franchise", "Favorite worlds", "globe.europe.africa"),
+            ("artist", "Favorite artists", "paintbrush.pointed"),
+            ("power", "Favorite dynamics", "bolt.heart"),
+            ("action", "Favorite actions & poses", "figure.dance")
+        ]
+        var count: [String: Int] = [:]
+        var sample: [String: Post] = [:]
+        for post in posts {
+            guard let features = VisualFeatures.metadata(post) else { continue }
+            let facets = ActionSemantics.facets(post)
+            let attributes = features.attributes.keys
+            let recognized: [String: [String]] = [
+                "character": features.subjects.filter { !$0.hasPrefix("performer:") },
+                "franchise": features.franchises ?? [],
+                "artist": features.artists ?? [],
+                "power": facets.filter { $0.hasPrefix("power:") || $0.hasPrefix("role:") },
+                "action": Array(Set(attributes.filter {
+                    $0.hasPrefix("pose:") || $0.hasPrefix("act:") || $0.hasPrefix("scene:")
+                }))
+            ]
+            for (section, terms) in recognized {
+                for raw in Set(terms) {
+                    let term = TasteConcepts.canonical(raw)
+                    guard !term.isEmpty, term.count < 65 else { continue }
+                    let key = section + "|" + term
+                    count[key, default: 0] += 1
+                    if sample[key] == nil, !post.previewImageURLs.isEmpty { sample[key] = post }
+                }
+            }
+        }
+        return sections.map { section in
+            let moments = count.compactMap { key, appearances -> TasteWrappedMoment? in
+                let prefix = section.id + "|"
+                guard key.hasPrefix(prefix), let post = sample[key] else { return nil }
+                let raw = String(key.dropFirst(prefix.count))
+                let display = raw.split(separator: ":").last.map(String.init) ?? raw
+                return TasteWrappedMoment(id: key,
+                                          label: display.replacingOccurrences(of: "_", with: " ").capitalized,
+                                          appearances: appearances, sample: post)
+            }.sorted {
+                $0.appearances == $1.appearances ? $0.label < $1.label : $0.appearances > $1.appearances
+            }
+            return TasteWrappedCategory(id: section.id, heading: section.title,
+                                        symbol: section.symbol, moments: Array(moments.prefix(3)))
+        }
+    }
+}
+
+/// Daily access is available in Settings; RootView celebrates the evolving
+/// taste profile once per ISO calendar week when the app opens.
+struct TasteWrappedView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var weekly = false
+    let onClose: () -> Void
+    @State private var page = 0
+    @State private var sections: [TasteWrappedCategory] = []
+    @State private var likedCount = 0
+    @State private var showingWeeklyLikes = false
+
+    var body: some View {
+        ZStack {
+            ThemeBackdrop()
+            LinearGradient(colors: [AppTheme.accent.opacity(0.28), .clear, AppTheme.palette.secondary.opacity(0.12)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                .ignoresSafeArea()
+            TabView(selection: $page) {
+                introduction.tag(0)
+                ForEach(sections.indices, id: \.self) { index in
+                    wrappedPage(sections[index]).tag(index + 1)
+                }
+                conclusion.tag(sections.count + 1)
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            VStack {
+                HStack {
+                    Text("QUICKTICK / WRAPPED")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .tracking(2)
+                        .foregroundStyle(.white.opacity(0.86))
+                    Spacer()
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .frame(width: 42, height: 42)
+                            .background(.black.opacity(0.48), in: Circle())
+                    }
+                    .accessibilityLabel("Close Wrapped")
+                }
+                Spacer()
+                HStack(spacing: 5) {
+                    ForEach(0..<(sections.count + 2), id: \.self) { index in
+                        Capsule()
+                            .fill(index == page ? .white : .white.opacity(0.28))
+                            .frame(height: 3)
+                    }
+                }
+                HStack {
+                    Text("\(page + 1) / \(sections.count + 2)")
+                        .font(.caption2.monospacedDigit())
+                    Spacer()
+                    Button(page == sections.count + 1 ? "Finish" : "Next") {
+                        if page == sections.count + 1 { onClose() }
+                        else {
+                            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { page += 1 }
+                        }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                }
+                .padding(.top, 12)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 24)
+            .padding(.top, 12)
+            .padding(.bottom, 18)
+        }
+        .preferredColorScheme(.dark)
+        .onAppear {
+            let recent = weekly ? store.wrappedWeeklyFavorites : []
+            showingWeeklyLikes = weekly && !recent.isEmpty
+            let favorites = showingWeeklyLikes ? recent : store.newestFavorites
+            likedCount = favorites.count
+            sections = TasteWrappedSummary.make(from: favorites)
+        }
+        .accessibilityIdentifier("taste-wrapped")
+    }
+
+    private var introduction: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Image(systemName: "sparkles.rectangle.stack.fill")
+                .font(.system(size: 65, weight: .light))
+                .foregroundStyle(AppTheme.accent)
+            Text("Your taste.\nYour story.")
+                .font(.system(size: 44, weight: .bold, design: .rounded))
+                .tracking(-2)
+            Text(showingWeeklyLikes
+                 ? "Your new likes from this week, with the characters, creators and details that stood out."
+                 : "Your all-time taste profile, with the characters, creators and details you gravitate toward.")
+                .font(.title3).foregroundStyle(.white.opacity(0.8))
+            Text("\(likedCount) liked posts" + (showingWeeklyLikes ? " this week" : ""))
+                .font(.headline.monospacedDigit())
+                .padding(.horizontal, 17).padding(.vertical, 10)
+                .background(AppTheme.elevatedSurface, in: Capsule())
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .padding(.horizontal, 30)
+    }
+
+    private func wrappedPage(_ section: TasteWrappedCategory) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Image(systemName: section.symbol)
+                .font(.system(size: 39, weight: .light))
+                .foregroundStyle(AppTheme.accent)
+            Text(section.heading)
+                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .tracking(-1.4)
+            if section.moments.isEmpty {
+                Text("Keep exploring. This category will fill in as you like posts with recognized tags.")
+                    .font(.title3).foregroundStyle(.white.opacity(0.72))
+            } else {
+                ForEach(section.moments.indices, id: \.self) { index in
+                    let moment = section.moments[index]
+                    HStack(spacing: 14) {
+                        CachedMediaImage(url: moment.sample.cardPreviewURL,
+                                         alternatives: moment.sample.previewImageURLs,
+                                         pixels: 240, fill: true, placeholderTitle: moment.label)
+                            .frame(width: 84, height: 108)
+                            .clipShape(RoundedRectangle(cornerRadius: 15))
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("#\(index + 1)").font(.caption.weight(.bold)).foregroundStyle(AppTheme.accent)
+                            Text(moment.label).font(.system(size: 20, weight: .bold, design: .rounded))
+                                .lineLimit(2)
+                            Text("\(moment.appearances) liked posts")
+                                .font(.caption).foregroundStyle(.white.opacity(0.64))
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 20))
+                }
+            }
+        }
+        .frame(maxWidth: 500, maxHeight: .infinity, alignment: .leading)
+        .padding(.horizontal, 26)
+    }
+
+    private var conclusion: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Image(systemName: "heart.circle.fill")
+                .font(.system(size: 66)).foregroundStyle(AppTheme.accent)
+            Text("More to discover.")
+                .font(.system(size: 42, weight: .bold, design: .rounded))
+            Text("Come back any day in Settings to see your updated tastes. A new full-screen Wrapped greets you once a week.")
+                .font(.title3).foregroundStyle(.white.opacity(0.75))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .padding(.horizontal, 30)
     }
 }

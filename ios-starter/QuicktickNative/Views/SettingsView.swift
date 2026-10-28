@@ -45,6 +45,7 @@ struct SettingsView: View {
     @State private var mobileCLIPInstalled = MobileCLIPRealLifeEncoder.isInstalled()
     @State private var mobileCLIPInstalling = false
     @State private var mobileCLIPError: String?
+    @State private var showingTasteWrapped = false
 
     var body: some View {
         settingsPage
@@ -145,6 +146,13 @@ struct SettingsView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 9) {
                         ForEach(SettingsDestination.allCases) { destination in
+                            if destination.startsGroup {
+                                Text(destination.groupTitle)
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                                    .foregroundStyle(AppTheme.secondaryLabel)
+                                    .padding(.leading, destination == .navigation ? 0 : 9)
+                                    .accessibilityHidden(true)
+                            }
                             Button {
                                 activeSection = destination
                                 withAnimation(.smooth(duration: 0.36)) { scroll.scrollTo(destination.rawValue, anchor: .top) }
@@ -244,11 +252,11 @@ struct SettingsView: View {
                     .accessibilityIdentifier("pornhub-session-input").accessibilityLabel("Supported Pornhub session")
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
             }.disabled(store.isSyncing).id(SettingsDestination.access.rawValue)
-            SettingsGroup(title: "Suggested themes", icon: "square.grid.2x2.fill") {
-                Toggle("Suggested themes on Home", isOn: $suggestedThemesEnabled)
+            SettingsGroup(title: "Suggested topics", icon: "square.grid.2x2.fill") {
+                Toggle("Suggested topics on Home", isOn: $suggestedThemesEnabled)
                     .modifier(SettingsControlRow())
                     .accessibilityIdentifier("suggested-themes-toggle")
-                Text("Use image-backed themes from your likes and learned interests. The row changes on every Home refresh.")
+                Text("Image-backed topics follow your likes and learned interests. The row changes on every Home refresh.")
                     .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
                 Text("Rule34 discovery style")
                     .font(.subheadline.weight(.semibold))
@@ -272,6 +280,25 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             }.id(SettingsDestination.suggestions.rawValue)
             SettingsGroup(title: "Learned interests · \(store.selectedProvider.displayName)", icon: "sparkles") {
+                Button { showingTasteWrapped = true } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "chart.bar.xaxis")
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 14))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Your Taste Wrapped").font(.subheadline.weight(.semibold))
+                            Text("Characters, artists, powers and actions from your likes")
+                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        }
+                        Spacer(minLength: 4)
+                        Image(systemName: "arrow.up.right").foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                    .padding(10)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 15))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityIdentifier("taste-wrapped-button")
                 swipeableProviderProfiles
                 Button { onboarding = true } label: {
                     HStack(spacing: 12) {
@@ -454,6 +481,10 @@ struct SettingsView: View {
         .toolbarBackground(.visible, for: .navigationBar)
         .preferredColorScheme(.dark)
         .tint(AppTheme.accent)
+            .fullScreenCover(isPresented: $showingTasteWrapped) {
+                TasteWrappedView(onClose: { showingTasteWrapped = false })
+                    .environmentObject(store)
+            }
             .sheet(isPresented: $onboarding) { TasteOnboardingView() }
             .sheet(item: $sharedProfile) { profile in
                 NavigationStack {
@@ -545,16 +576,30 @@ struct SettingsView: View {
 }
 
 private enum SettingsDestination: String, CaseIterable, Identifiable {
-    case appearance, suggestions, navigation, recommendations, playback, access
+    case navigation, appearance, access, suggestions, recommendations, playback
     var id: String { rawValue }
     var title: String {
         switch self {
         case .appearance: "Appearance"
-        case .suggestions: "Themes"
+        case .suggestions: "Topics"
         case .navigation: "Navigation"
         case .recommendations: "For you"
         case .playback: "Playback"
         case .access: "Access"
+        }
+    }
+    var startsGroup: Bool {
+        switch self {
+        case .navigation, .access, .suggestions, .playback: true
+        default: false
+        }
+    }
+    var groupTitle: String {
+        switch self {
+        case .navigation, .appearance: "LOOK & FEEL"
+        case .access: "PROVIDERS"
+        case .suggestions, .recommendations: "DISCOVERY"
+        case .playback: "MEDIA"
         }
     }
     var symbol: String {

@@ -20,115 +20,148 @@ struct NativeSearchBar: View {
     private var isArchive: Bool { store.selectedProvider == .kemono || store.selectedProvider == .coomer }
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    inputRow
-                    if store.selectedProvider == .rule34 || isArchive {
-                        autocompleteRow
-                    }
-                    filterRow
-                    if store.selectedProvider == .pornhub {
-                        PornhubFilterPanel(filters: $form.pornhub, categories: pornhubCategories)
-                    }
-                    if store.selectedProvider == .rule34 {
-                        HStack { Text("Selected tags").font(.headline); Spacer(); Button("Clear") { form.tags = []; form.text = ""; form.filters = SearchFilters() }.font(.caption) }
-                        selectedTagGrid
-                        Text("Tap a tag name to remove it. Tap its block icon to include or exclude it.").font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text(isArchive ? "Search post titles or select an artist suggestion to see that creator's posts." : "Search titles and keywords. Use quotes for phrases (\"red hair\") and -\"phrase\" to exclude them.")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                        Button("Clear keywords") { form.text = ""; form.archiveCreatorReference = nil; form.archiveCreatorLabel = nil }
-                            .font(.caption).disabled(form.text.isEmpty)
-                    }
-                    Button(action: submit) {
-                        Label("Search", systemImage: "magnifyingglass")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity, minHeight: 52)
-                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-                    .buttonStyle(QuicktickPressStyle())
-                    .accessibilityIdentifier("apply-search-filters")
-                }.padding(20)
-            }.scrollDismissesKeyboard(.interactively).background(AppTheme.canvas.ignoresSafeArea())
-                .toolbarBackground(AppTheme.canvas, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
-                .toolbarColorScheme(.dark, for: .navigationBar)
-                .navigationTitle("Search").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.accessibilityIdentifier("close-search") } }
-                .onAppear {
-                    guard !loaded else { return }; loaded = true; focused = true
-                    let split = SearchFilters.split(store.queryText)
-                    let parsed = QueryParser.parse(split.tags)
-                    let keywords = ProviderSearchCategories.split(parsed, provider: store.selectedProvider).keywords
-                    let plainQuery = store.selectedProvider == .hhaven || store.selectedProvider == .pornhub
-                        ? QueryParser.formatted(ParsedQuery(included: keywords, excluded: parsed.excluded))
-                        : split.tags
-                    var pornhubFilters = PornhubSearchFilters.decode(store.queryText)
-                    if store.selectedProvider == .pornhub, pornhubFilters.includedCategory == nil,
-                       let selectedCategory = ProviderSearchCategories.split(parsed, provider: .pornhub).category {
-                        pornhubFilters.includedCategory = String(selectedCategory.dropFirst("category:".count))
-                    }
-                    if let saved = store.searchDrafts[tab], saved.provider == store.selectedProvider {
-                        form = saved
-                    } else {
-                        form = SearchDraft(
-                            text: store.selectedProvider == .rule34 ? "" : plainQuery,
-                            tags: store.selectedProvider == .rule34 ? SearchTag.parse(split.tags) : [],
-                            filters: split.filters, pornhub: pornhubFilters,
-                            sort: store.feedSort,
-                            provider: store.selectedProvider)
-                    }
-                }
-                .onDisappear {
-                    form.provider = store.selectedProvider
-                    store.searchDrafts[tab] = form
-                }
-                .task(id: "artist-index-" + store.selectedProvider.rawValue) {
-                    #if DEBUG
-                    if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
-                    #endif
-                    if isArchive { await store.api.prefetchArchiveCreators(for: store.selectedProvider) }
-                }
-                .task(id: "pornhub-categories-" + store.selectedProvider.rawValue) {
-                    guard store.selectedProvider == .pornhub else { return }
-                    if let categories = try? await store.api.pornhubCategories(), !categories.isEmpty {
-                        pornhubCategories = categories
-                    }
-                }
-                .task(id: store.selectedProvider.rawValue + ":" + form.text) {
-                    suggestions = []
-                    suggestionsLoading = false
-                    suggestionsUnavailable = false
-                    #if DEBUG
-                    if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
-                    #endif
-                    let provider = store.selectedProvider
-                    guard provider == .rule34 || provider == .kemono || provider == .coomer,
-                          form.archiveCreatorReference == nil else { return }
-                    let query: String
-                    if provider == .rule34 {
-                        guard let token = form.text.split(whereSeparator: \.isWhitespace).last else { return }
-                        query = token.hasPrefix("-") ? String(token.dropFirst()) : String(token)
-                    } else { query = form.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    guard query.count >= 2 else { return }
-                    do {
-                        try await Task.sleep(for: .milliseconds(180))
-                        guard !Task.isCancelled else { return }
-                        suggestionsLoading = true
-                        let values = try await store.api.suggestions(provider: provider, query: query)
-                        guard !Task.isCancelled else { return }
-                        suggestions = values; suggestionsLoading = false
-                    } catch {
-                        if !Task.isCancelled {
-                            suggestions = []; suggestionsLoading = false
-                            suggestionsUnavailable = isArchive
-                        }
-                    }
-                }
+            searchScrollView
         }.background(AppTheme.canvas.ignoresSafeArea())
             .presentationBackground(AppTheme.canvas)
             .presentationDragIndicator(.hidden)
             .preferredColorScheme(.dark)
+    }
+
+    private var searchScrollView: some View {
+        ScrollView { searchForm }
+            .scrollDismissesKeyboard(.interactively)
+            .background(AppTheme.canvas.ignoresSafeArea())
+            .toolbarBackground(AppTheme.canvas, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .navigationTitle("Search")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }.accessibilityIdentifier("close-search")
+                }
+            }
+            .onAppear(perform: restoreSearchDraft)
+            .onDisappear(perform: persistSearchDraft)
+            .task(id: "artist-index-" + store.selectedProvider.rawValue) { await prefetchArtists() }
+            .task(id: "pornhub-categories-" + store.selectedProvider.rawValue) { await loadPornhubCategories() }
+            .task(id: store.selectedProvider.rawValue + ":" + form.text) { await updateSuggestions() }
+    }
+
+    private var searchForm: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            inputRow
+            if store.selectedProvider == .rule34 || isArchive { autocompleteRow }
+            filterRow
+            if store.selectedProvider == .pornhub {
+                PornhubFilterPanel(filters: $form.pornhub, categories: pornhubCategories)
+            }
+            queryEditingControls
+            submitButton
+        }.padding(20)
+    }
+
+    @ViewBuilder private var queryEditingControls: some View {
+        if store.selectedProvider == .rule34 {
+            HStack {
+                Text("Selected tags").font(.headline)
+                Spacer()
+                Button("Clear") { form.tags = []; form.text = ""; form.filters = SearchFilters() }.font(.caption)
+            }
+            selectedTagGrid
+            Text("Tap a tag name to remove it. Tap its block icon to include or exclude it.")
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            Text(isArchive ? "Search post titles or select an artist suggestion to see that creator's posts." :
+                "Search titles and keywords. Use quotes for phrases (\"red hair\") and -\"phrase\" to exclude them.")
+                .font(.subheadline).foregroundStyle(.secondary)
+            Button("Clear keywords") {
+                form.text = ""; form.archiveCreatorReference = nil; form.archiveCreatorLabel = nil
+            }.font(.caption).disabled(form.text.isEmpty)
+        }
+    }
+
+    private var submitButton: some View {
+        Button(action: submit) {
+            Label("Search", systemImage: "magnifyingglass")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(QuicktickPressStyle())
+        .accessibilityIdentifier("apply-search-filters")
+    }
+
+    private func restoreSearchDraft() {
+        guard !loaded else { return }
+        loaded = true; focused = true
+        let split = SearchFilters.split(store.queryText)
+        let parsed = QueryParser.parse(split.tags)
+        let keywords = ProviderSearchCategories.split(parsed, provider: store.selectedProvider).keywords
+        let plainQuery = store.selectedProvider == .hhaven || store.selectedProvider == .pornhub
+            ? QueryParser.formatted(ParsedQuery(included: keywords, excluded: parsed.excluded))
+            : split.tags
+        var pornhubFilters = PornhubSearchFilters.decode(store.queryText)
+        if store.selectedProvider == .pornhub, pornhubFilters.includedCategory == nil,
+           let selectedCategory = ProviderSearchCategories.split(parsed, provider: .pornhub).category {
+            pornhubFilters.includedCategory = String(selectedCategory.dropFirst("category:".count))
+        }
+        if let saved = store.searchDrafts[tab], saved.provider == store.selectedProvider {
+            form = saved
+        } else {
+            form = SearchDraft(text: store.selectedProvider == .rule34 ? "" : plainQuery,
+                               tags: store.selectedProvider == .rule34 ? SearchTag.parse(split.tags) : [],
+                               filters: split.filters, pornhub: pornhubFilters, sort: store.feedSort,
+                               provider: store.selectedProvider)
+        }
+    }
+
+    private func persistSearchDraft() {
+        form.provider = store.selectedProvider
+        store.searchDrafts[tab] = form
+    }
+
+    private func prefetchArtists() async {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
+        #endif
+        if isArchive { await store.api.prefetchArchiveCreators(for: store.selectedProvider) }
+    }
+
+    private func loadPornhubCategories() async {
+        guard store.selectedProvider == .pornhub else { return }
+        if let categories = try? await store.api.pornhubCategories(), !categories.isEmpty {
+            pornhubCategories = categories
+        }
+    }
+
+    private func updateSuggestions() async {
+        suggestions = []; suggestionsLoading = false; suggestionsUnavailable = false
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
+        #endif
+        let provider = store.selectedProvider
+        guard provider == .rule34 || provider == .kemono || provider == .coomer,
+              form.archiveCreatorReference == nil else { return }
+        let query: String
+        if provider == .rule34 {
+            guard let token = form.text.split(whereSeparator: \.isWhitespace).last else { return }
+            query = token.hasPrefix("-") ? String(token.dropFirst()) : String(token)
+        } else { query = form.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard query.count >= 2 else { return }
+        do {
+            try await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            suggestionsLoading = true
+            let values = try await store.api.suggestions(provider: provider, query: query)
+            guard !Task.isCancelled else { return }
+            suggestions = values; suggestionsLoading = false
+        } catch {
+            if !Task.isCancelled {
+                suggestions = []; suggestionsLoading = false
+                suggestionsUnavailable = isArchive
+            }
+        }
     }
     private var inputRow: some View {
         HStack(spacing: 10) {

@@ -272,6 +272,8 @@ struct SettingsView: View {
                     .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("pornhub-session-input").accessibilityLabel("Supported Pornhub session")
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
+                Text("Erome uses public albums for free. No API key, Apify account or paid scraping service is required. Only publicly accessible media can be loaded.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             }.disabled(store.isSyncing).id(SettingsDestination.access.rawValue)
             SettingsGroup(title: "Suggested topics", icon: "square.grid.2x2.fill") {
                 Toggle("Suggested topics on Home", isOn: $suggestedThemesEnabled)

@@ -95,6 +95,7 @@ enum NativeProviderAPI {
         case .rule34: URL(string: "https://rule34.xxx")!
         case .redgifs: URL(string: "https://www.redgifs.com")!
         case .eporner: URL(string: "https://www.eporner.com")!
+        case .erome: URL(string: "https://www.erome.com")!
         case .pornhub: URL(string: "https://www.pornhub.com")!
         case .hanime: URL(string: "https://hanime.tv")!
         case .hhaven: URL(string: "https://hentaihaven.xxx")!
@@ -444,6 +445,11 @@ enum NativeProviderAPI {
             return post
         }
         return self.page(posts, hasMore: page < Int(number(object["total_pages"])), query: query, immersive: immersive)
+    }
+
+    static func erome(session: URLSession, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
+        try await EromePublicCatalog.posts(session: session, query: query, page: page,
+                                           sort: sort, immersive: immersive)
     }
 
     static func redgifs(session: URLSession, token: String, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
@@ -1096,6 +1102,8 @@ extension NativeProviderAPI {
             // Posts retain a validated absolute archive attachment URL when
             // available. A missing/removed file is not silently replaced by HTML.
             throw APIError.server("This archive attachment is unavailable. Open the original post to check whether its file is still hosted.")
+        case .erome:
+            return try await EromePublicCatalog.resolve(session: session, post: post)
         case .redgifs:
             guard let redgifsToken else { throw APIError.invalidResponse }
             let value = try object(await data(session: session, url: url("https://api.redgifs.com/v2/gifs/\(post.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? "")"), provider: provider, headers: ["Authorization": "Bearer " + redgifsToken]))
@@ -1167,6 +1175,194 @@ extension NativeProviderAPI {
             .init(name: "post_id", value: post.id), .init(name: "user_id", value: credentials.rule34User), .init(name: "api_key", value: credentials.rule34Key)]), provider: .rule34)
         let rows = try ProviderXML.parse(bytes).posts
         return CommentPage(items: rows.map { PostComment(id: $0["id"] ?? "", author: $0["creator"] ?? "Rule34 user", body: $0["body"] ?? "", score: 0, createdAt: $0["created_at"] ?? "") }.filter { !$0.body.isEmpty }, available: true, message: nil)
+    }
+}
+
+/// Free, read-only public catalog extraction, based on the documented page
+/// structure in Kiny-Kiny/EromeAPI (BSD-2-Clause). No Apify actor, credentials,
+/// paid proxy, sign-in bypass or server-side QuickTick service is involved.
+enum EromePublicCatalog {
+    private static let origin = URL(string: "https://www.erome.com")!
+    private static let headers = [
+        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.7",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
+    ]
+
+    static func posts(session: URLSession, query: ParsedQuery, page: Int,
+                      sort: String, immersive: Bool) async throws -> PostPage {
+        guard page > 0, page <= 100 else { throw APIError.invalidResponse }
+        let terms = query.included.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        let route = terms.isEmpty ? (sort == "recent" ? "/explore/new" : "/explore") : "/search"
+        let parameters: [URLQueryItem] = (terms.isEmpty ? [] : [.init(name: "q", value: terms)])
+            + [.init(name: "page", value: String(page))]
+        let address = try NativeProviderAPI.url(origin.absoluteString + route, parameters)
+        let html = try await pageHTML(session: session, url: address)
+        let albums = albumLinks(html)
+        if albums.isEmpty {
+            if page == 1, !html.lowercased().contains("id=\"albums\"") &&
+                !html.lowercased().contains("id='albums'") {
+                throw APIError.server("Erome did not return a public album catalog. The site may be unavailable in your region.")
+            }
+            return PostPage(items: [], hasMore: false)
+        }
+
+        // Never request every album at once; the page's media links are read
+        // off the main thread in small groups with the shared host rate gate.
+        let selected = Array(albums.prefix(24))
+        var items: [Post] = []
+        for start in stride(from: 0, to: selected.count, by: 4) {
+            try Task.checkCancellation()
+            let batch = Array(selected[start..<min(start + 4, selected.count)])
+            let fetched = await withTaskGroup(of: (Int, [Post]).self) { group in
+                for (index, album) in batch.enumerated() {
+                    group.addTask {
+                        let media = (try? await albumPosts(session: session, url: album)) ?? []
+                        return (index, media)
+                    }
+                }
+                var results: [(Int, [Post])] = []
+                for await result in group { results.append(result) }
+                return results.sorted { $0.0 < $1.0 }.flatMap { $0.1 }
+            }
+            items.append(contentsOf: fetched)
+        }
+        try Task.checkCancellation()
+        guard !items.isEmpty else {
+            throw APIError.server("Erome's public albums did not expose playable media. Try again later or check access in Safari.")
+        }
+        return NativeProviderAPI.page(items, hasMore: page < 100, query: query, immersive: immersive)
+    }
+
+    static func resolve(session: URLSession, post: Post) async throws -> ResolvedMedia {
+        let albumID = String(post.id.split(separator: ":", maxSplits: 1).first ?? "")
+        guard validAlbumID(albumID), let album = albumURL("/a/" + albumID) else {
+            throw APIError.invalidResponse
+        }
+        let media = try await albumPosts(session: session, url: album)
+        guard let current = media.first(where: { $0.id == post.id }) else {
+            throw APIError.server("This Erome media item is no longer available on its public album page.")
+        }
+        return ResolvedMedia(mediaUrl: current.mediaUrl, type: current.type)
+    }
+
+    static func albumLinks(_ html: String) -> [URL] {
+        let known = NativeProviderAPI.matches(html,
+            #"<a\b(?=[^>]*\bclass\s*=\s*["'][^"']*\balbum-link\b)[^>]*>"#, group: 0)
+        let anchors = known.isEmpty ? NativeProviderAPI.matches(html, #"<a\b[^>]*>"#, group: 0) : known
+        var seen = Set<String>()
+        return anchors.compactMap { anchor in
+            guard let raw = attribute(anchor, "href"), let url = albumURL(raw),
+                  seen.insert(url.absoluteString).inserted else { return nil }
+            return url
+        }
+    }
+
+    static func albumMedia(_ html: String, albumURL: URL) -> [Post] {
+        guard let albumID = albumID(albumURL) else { return [] }
+        let title = decode(NativeProviderAPI.matches(html,
+            #"<title\b[^>]*>(.*?)</title>"#).first ?? albumID)
+            .replacingOccurrences(of: #"\s*[-|]\s*Erome.*$"#, with: "", options: [.regularExpression, .caseInsensitive])
+        let ogImage = NativeProviderAPI.matches(html,
+            #"<meta\b(?=[^>]*\bproperty\s*=\s*["']og:image["'])[^>]*>"#, group: 0).first
+        let thumbnail = ogImage.flatMap { attribute($0, "content") }.flatMap(mediaURL)?.absoluteString ?? ""
+        let authorTag = NativeProviderAPI.matches(html,
+            #"<meta\b(?=[^>]*\bname\s*=\s*["']author["'])[^>]*>"#, group: 0).first
+        let creator = authorTag.flatMap { attribute($0, "content") }.map(decode)
+        var seen = Set<String>()
+        func makePost(_ media: URL, kind: String, preview: String = "") -> Post? {
+            let id = albumID + ":" + media.lastPathComponent
+            guard seen.insert(id).inserted else { return nil }
+            let sourceImage = kind == "image" || kind == "gif" ? media.absoluteString : ""
+            var post = Post(key: "erome:" + id, id: id, provider: Provider.erome.rawValue,
+                            mediaUrl: media.absoluteString,
+                            previewUrl: preview.isEmpty ? (sourceImage.isEmpty ? thumbnail : sourceImage) : preview,
+                            thumbUrl: preview.isEmpty ? thumbnail : preview,
+                            pageUrl: albumURL.absoluteString, type: kind)
+            post.caption = title
+            post.creator = creator
+            return post
+        }
+
+        var result: [Post] = []
+        let videos = NativeProviderAPI.matches(html, #"<video\b[^>]*>[\s\S]*?</video>"#, group: 0)
+        for video in videos {
+            let source = NativeProviderAPI.matches(video, #"<source\b[^>]*>"#, group: 0).first
+            let raw = source.flatMap { attribute($0, "src") } ?? attribute(video, "src")
+            guard let raw, let media = mediaURL(raw), media.host?.hasPrefix("v") == true,
+                  ["mp4", "m4v", "mov"].contains(media.pathExtension.lowercased()) else { continue }
+            let poster = attribute(video, "poster") ??
+                NativeProviderAPI.matches(decode(video), #"["']poster["']\s*:\s*["']([^"']+)["']"#).first
+            let preview = poster.flatMap(mediaURL)?.absoluteString ?? thumbnail
+            if let post = makePost(media, kind: "video", preview: preview) { result.append(post) }
+        }
+        let imageBlocks = NativeProviderAPI.matches(html,
+            #"<div\b(?=[^>]*\bclass\s*=\s*["'][^"']*\bimg\b)[^>]*>[\s\S]*?<img\b[^>]*>"#, group: 0)
+        for block in imageBlocks {
+            guard let tag = NativeProviderAPI.matches(block, #"<img\b[^>]*>"#, group: 0).first,
+                  let src = attribute(tag, "data-src") ?? attribute(tag, "src"),
+                  let media = mediaURL(src), media.host?.hasPrefix("s") == true,
+                  ["jpg", "jpeg", "png", "webp", "gif"].contains(media.pathExtension.lowercased()) else { continue }
+            if let post = makePost(media, kind: media.pathExtension.lowercased() == "gif" ? "gif" : "image") {
+                result.append(post)
+            }
+        }
+        return result
+    }
+
+    private static func albumPosts(session: URLSession, url: URL) async throws -> [Post] {
+        albumMedia(try await pageHTML(session: session, url: url), albumURL: url)
+    }
+
+    private static func pageHTML(session: URLSession, url: URL) async throws -> String {
+        guard url.host == origin.host else { throw APIError.invalidResponse }
+        let bytes = try await NativeProviderAPI.data(session: session, url: url,
+            provider: .erome, headers: headers, maxBytes: 4 * 1024 * 1024, timeout: 12)
+        guard !NativeProviderAPI.unavailableHTML(bytes) else {
+            throw APIError.server("Erome returned an unavailable page instead of a public album.")
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    private static func albumURL(_ raw: String) -> URL? {
+        guard let url = URL(string: decode(raw), relativeTo: origin)?.absoluteURL,
+              url.scheme == "https", url.host == origin.host, albumID(url) != nil else { return nil }
+        return url
+    }
+
+    private static func albumID(_ url: URL) -> String? {
+        let components = url.pathComponents
+        guard components.count == 3, components[1] == "a", validAlbumID(components[2]) else { return nil }
+        return components[2]
+    }
+
+    private static func validAlbumID(_ id: String) -> Bool {
+        !id.isEmpty && id.count <= 60 && id.utf8.allSatisfy {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95
+        }
+    }
+
+    private static func mediaURL(_ raw: String) -> URL? {
+        guard let url = NativeProviderAPI.mediaURL(decode(raw), provider: .erome), let host = url.host else { return nil }
+        let parts = host.split(separator: ".")
+        guard parts.count == 3, parts[1] == "erome", parts[2] == "com",
+              let first = parts.first, first.count > 1, first.first == "s" || first.first == "v",
+              first.dropFirst().allSatisfy(\.isNumber) else { return nil }
+        return url
+    }
+
+    private static func attribute(_ tag: String, _ name: String) -> String? {
+        NativeProviderAPI.matches(tag, #"\b"# + NSRegularExpression.escapedPattern(for: name)
+            + #"\s*=\s*["']([^"']+)["']"#).first.map(decode)
+    }
+
+    private static func decode(_ html: String) -> String {
+        html.replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "\\/", with: "/")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

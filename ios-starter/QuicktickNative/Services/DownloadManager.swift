@@ -150,11 +150,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     task = transfer
                 } else {
                     var request = URLRequest(url: url)
-                    if post.providerKey == .pornhub {
-                        // Pornhub's CDN checks the source page on some media
-                        // URLs. No account cookies are sent to CDN hosts.
+                    if post.providerKey == .pornhub || post.providerKey == .erome {
+                        // Some media CDNs check the public source-page origin.
+                        // No account cookies or third-party proxy are used.
                         request.setValue(NativeProviderAPI.userAgent, forHTTPHeaderField: "User-Agent")
-                        request.setValue("https://www.pornhub.com/", forHTTPHeaderField: "Referer")
+                        request.setValue(post.providerKey == .erome ? "https://www.erome.com/" : "https://www.pornhub.com/", forHTTPHeaderField: "Referer")
                         request.setValue("video/*, application/octet-stream;q=0.9, */*;q=0.7", forHTTPHeaderField: "Accept")
                     }
                     task = directSession.downloadTask(with: request)

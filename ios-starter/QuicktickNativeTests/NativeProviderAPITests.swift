@@ -42,6 +42,12 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"[{"id":"1","author":"Visitor","content":"Amazing post","created_at":"2026-09-01"}]"#
         }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
+        else if host == "www.erome.com", ["/explore", "/explore/new", "/search"].contains(path) {
+            payload = #"<html><div id="albums"><a class="album-link" href="/a/ABC123">Album</a><a href="https://evil.invalid/a/FAKE" class="album-link">Do not read</a><a class="album-link" href="/a/ABC123">Duplicate</a></div></html>"#
+        }
+        else if host == "www.erome.com", path == "/a/ABC123" {
+            payload = #"<html><head><title>City portrait - Erome</title><meta property="og:image" content="https://s7.erome.com/123/ABC123/poster.jpg"></head><body><video data-setup='{&quot;poster&quot;:&quot;https://s7.erome.com/123/ABC123/poster.jpg&quot;}'><source src="https://v12.erome.com/123/ABC123/clip_720p.mp4" type="video/mp4"></video><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div><div class="img"><img data-src="https://evil.invalid/malicious.jpg"></div></body></html>"#
+        }
         else if host == "api.rule34.xxx", path == "/autocomplete.php" { payload = #"[{"value":"engineering","label":"engineering (12)","count":12}]"# }
         else if host == "api.rule34.xxx" {
             let comments = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "s" && $0.value == "comment" } == true
@@ -182,6 +188,48 @@ private final class RateLimitProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class NativeProviderAPITests: XCTestCase {
+    func testFreeEromeCatalogSearchMediaAndRetry() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        XCTAssertEqual(Provider.identify("www.erome.com"), .erome)
+        XCTAssertEqual(Provider.identifyPage("https://www.erome.com/a/ABC123"), .erome)
+        XCTAssertNil(Provider.identifyPage("https://www.erome.com.evil.invalid/a/ABC123"))
+        let page = try await api.posts(provider: .erome,
+            query: ParsedQuery(included: [], excluded: []), page: 1, sort: "recent")
+        XCTAssertEqual(page.items.count, 2)
+        XCTAssertEqual(Set(page.items.map(\.type)), ["video", "image"])
+        XCTAssertEqual(page.items[0].stableID, "erome:ABC123:clip_720p.mp4")
+        XCTAssertEqual(page.items[0].cardPreviewURL, "https://s7.erome.com/123/ABC123/poster.jpg")
+        XCTAssertEqual(page.items[0].caption, "City portrait")
+        XCTAssertEqual(page.items[1].mediaUrl, "https://s7.erome.com/123/ABC123/photo.jpg")
+        XCTAssertEqual(VisualDomain.classify(page.items[0]), .realLife)
+        XCTAssertEqual(page.items[0].providerKey, .erome)
+        let resolved = try await api.resolveMedia(Post(key: page.items[0].key,
+            id: page.items[0].id, provider: "erome"))
+        XCTAssertEqual(resolved.mediaUrl, page.items[0].mediaUrl)
+        let routes = NativeProviderProtocol.log.snapshot().compactMap(\.url)
+        XCTAssertTrue(routes.contains { $0.path == "/explore/new" })
+        XCTAssertTrue(routes.allSatisfy { $0.host == "www.erome.com" },
+                      "Public Erome integration never calls paid Apify or untrusted album hosts")
+
+        NativeProviderProtocol.log.reset()
+        let searched = try await api.posts(provider: .erome,
+            query: ParsedQuery(included: ["city"], excluded: []), page: 2)
+        XCTAssertEqual(searched.items.count, 2)
+        let query = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first?.url)
+        XCTAssertEqual(query.path, "/search")
+        XCTAssertEqual(URLComponents(url: query, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "q" })?.value, "city")
+    }
+
+    func testEromeParserRejectsExternalHostsAndMalformedAlbumIDs() throws {
+        let malicious = #"<div id="albums"><a class="album-link" href="//evil.invalid/a/SNEAK">bad</a><a class="album-link" href="/a/GOOD_22">valid</a><a class="album-link" href="/a/../evil">traversal</a></div>"#
+        XCTAssertEqual(EromePublicCatalog.albumLinks(malicious).map(\.path), ["/a/GOOD_22"])
+        let album = try XCTUnwrap(URL(string: "https://www.erome.com/a/GOOD_22"))
+        let injected = #"<video><source src="https://video.evil.invalid/clip.mp4"></video><div class="img"><img data-src="https://s7.erome.com.evil.invalid/fake.jpg"></div>"#
+        XCTAssertTrue(EromePublicCatalog.albumMedia(injected, albumURL: album).isEmpty)
+    }
+
     func testArchiveDomainsNormalizeSafely() {
         XCTAssertEqual(Provider.identify("coomer.st"), .coomer)
         XCTAssertEqual(NativeProviderAPI.type("https://coomer.st/data/sound.mp3"), "audio")

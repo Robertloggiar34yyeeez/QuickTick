@@ -21,7 +21,7 @@ enum VisualDomain: String, Codable, Sendable {
         // Public IRL video APIs rarely send a reliable `photo` tag at all;
         // treating them as "uncertain" suppressed every learned scene/camera
         // match. Explicit 2D/3D tags above always take precedence.
-        if post.providerKey.map({ [Provider.pornhub, .eporner, .redgifs].contains($0) }) == true { return .realLife }
+        if post.providerKey.map({ [Provider.pornhub, .eporner, .redgifs, .erome].contains($0) }) == true { return .realLife }
         // Hentai Haven's older saved posts can lack the synthetic `hentai`
         // tag. The provider is animated content even when its title supplies
         // no descriptive tags. Explicit photo/3D/mixed evidence above wins.

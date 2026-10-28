@@ -146,7 +146,7 @@ enum TasteConcepts {
 /// retain its useful *presentation* details without treating every word in a
 /// promotional caption as a reliable subject or an action classifier.
 enum RealLifePresentation {
-    private static let videoSources: Set<String> = ["pornhub", "eporner", "redgifs"]
+    private static let videoSources: Set<String> = ["pornhub", "eporner", "redgifs", "erome"]
     private static let phrases: [String: String] = [
         "pov": "camera:pov", "point of view": "camera:pov",
         "first person": "camera:pov", "first person view": "camera:pov",

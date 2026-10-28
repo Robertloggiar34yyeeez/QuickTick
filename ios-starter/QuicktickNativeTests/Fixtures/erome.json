@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "provider": "erome",
+      "type": "video",
+      "key": "erome:fixture",
+      "tags": ["example"],
+      "id": "fixture"
+    }
+  ],
+  "hasMore": true
+}

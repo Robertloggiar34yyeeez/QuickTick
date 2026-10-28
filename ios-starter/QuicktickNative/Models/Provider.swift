@@ -1,10 +1,10 @@
 import Foundation
 
 enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
-    case rule34, redgifs, pornhub, eporner, hhaven, coomer, kemono, nhentai
+    case rule34, redgifs, pornhub, eporner, erome, hhaven, coomer, kemono, nhentai
     // Keep recognizing historical downloads, but don't offer new Hanime feeds.
     case hanime
-    static var allCases: [Provider] { [.rule34, .redgifs, .pornhub, .eporner, .hhaven, .coomer, .kemono, .nhentai] }
+    static var allCases: [Provider] { [.rule34, .redgifs, .pornhub, .eporner, .erome, .hhaven, .coomer, .kemono, .nhentai] }
     var id: String { rawValue }
     /// Older imports and restored downloads may use website names instead of
     /// the canonical provider ID. Restrict aliases to known sources rather
@@ -18,6 +18,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         case "redgifs", "redgifscom": return .redgifs
         case "pornhub", "pornhubcom": return .pornhub
         case "eporner", "epornercom": return .eporner
+        case "erome", "eromecom", "wwweromecom": return .erome
         case "hanime", "hanimetv": return .hanime
         case "hhaven", "hentaihaven", "hentaihavenapp", "hentaihavenxxx": return .hhaven
         case "coomer", "coomerst": return .coomer
@@ -32,6 +33,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
               let host = url.host?.lowercased() else { return nil }
         for (domain, source) in [("rule34.xxx", Provider.rule34), ("redgifs.com", .redgifs),
                                   ("pornhub.com", .pornhub), ("eporner.com", .eporner),
+                                  ("erome.com", .erome),
                                   ("hanime.tv", .hanime), ("hentaihaven.xxx", .hhaven),
                                   ("hentaihaven.app", .hhaven), ("coomer.st", .coomer),
                                   ("kemono.cr", .kemono), ("nhentai.net", .nhentai)] {
@@ -45,6 +47,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .redgifs: "RG"
         case .pornhub: "PH"
         case .eporner: "EP"
+        case .erome: "ER"
         case .hanime: "HA"
         case .hhaven: "HH"
         case .coomer: "CO"
@@ -58,6 +61,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .redgifs: "RedGIFs"
         case .pornhub: "Pornhub"
         case .eporner: "Eporner"
+        case .erome: "Erome"
         case .hanime: "Hanime"
         case .hhaven: "Hentai Haven"
         case .coomer: "Coomer"

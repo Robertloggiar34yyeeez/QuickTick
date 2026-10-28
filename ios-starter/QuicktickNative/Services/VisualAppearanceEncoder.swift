@@ -10,7 +10,7 @@ enum VisualAppearanceEncoder {
     // visual similarity from their preview frames in the idle worker.
     static func prefersMobileCLIP(domain: VisualDomain, provider: String) -> Bool {
         if domain == .realLife { return true }
-        return domain == .uncertain && ["pornhub", "eporner", "redgifs", "coomer"].contains(provider.lowercased())
+        return domain == .uncertain && ["pornhub", "eporner", "redgifs", "erome", "coomer"].contains(provider.lowercased())
     }
     private final class Cancellation: @unchecked Sendable {
         let request: VNRequest

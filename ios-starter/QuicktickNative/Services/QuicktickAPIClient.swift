@@ -81,6 +81,8 @@ actor QuicktickAPIClient {
     private var havenPageTasks: [String: Task<PostPage, Error>] = [:]
     private var nhentaiPages: [String: (page: PostPage, expiry: Date)] = [:]
     private var nhentaiPageTasks: [String: Task<PostPage, Error>] = [:]
+    private var eromePages: [String: (page: PostPage, expiry: Date)] = [:]
+    private var eromePageTasks: [String: Task<PostPage, Error>] = [:]
     private var archivePages: [String: (page: PostPage, expiry: Date)] = [:]
     private var archivePageTasks: [String: Task<PostPage, Error>] = [:]
     private var archiveCreators: [Provider: [ArchiveCreator]] = [:]
@@ -145,6 +147,7 @@ actor QuicktickAPIClient {
         case .coomer, .kemono:
             return try await cachedArchivePosts(provider: provider, query: query, page: page, immersive: immersive)
         case .eporner: return try await NativeProviderAPI.eporner(session: session, query: query, page: page, sort: sort, immersive: immersive)
+        case .erome: return try await cachedEromePosts(query: query, page: page, sort: sort, immersive: immersive)
         case .pornhub: return try await NativeProviderAPI.pornhub(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
         case .hanime:
             throw APIError.server("Hanime has been retired from QuickTick. Switch to Hentai Haven.")
@@ -163,6 +166,24 @@ actor QuicktickAPIClient {
 
     func mangaPages(bookID: String) async throws -> [URL] {
         try await NativeProviderAPI.nhentaiPages(session: session, bookID: bookID)
+    }
+
+    private func cachedEromePosts(query: ParsedQuery, page: Int, sort: String,
+                                  immersive: Bool) async throws -> PostPage {
+        let key = "\(page)|\(sort)|\(immersive)|\(QueryParser.formatted(query))"
+        if let cached = eromePages[key], cached.expiry > .now { return cached.page }
+        if let pending = eromePageTasks[key] { return try await pending.value }
+        let clientSession = session
+        let request = Task<PostPage, Error> {
+            try await NativeProviderAPI.erome(session: clientSession, query: query,
+                                              page: page, sort: sort, immersive: immersive)
+        }
+        eromePageTasks[key] = request
+        defer { eromePageTasks[key] = nil }
+        let result = try await request.value
+        eromePages[key] = (result, .now.addingTimeInterval(90))
+        if eromePages.count > 20 { eromePages = eromePages.filter { $0.value.expiry > .now } }
+        return result
     }
 
     private func cachedNHentaiPosts(query: ParsedQuery, page: Int, sort: String,

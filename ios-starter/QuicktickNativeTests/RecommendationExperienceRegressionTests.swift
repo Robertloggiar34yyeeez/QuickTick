@@ -53,8 +53,9 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
                 axisLength: 260, visibleIndices: allTabs)
         }
         XCTAssertNil(side(1, 28))
-        XCTAssertEqual(side(1, 65), 2)
-        XCTAssertEqual(side(1, 145), 3)
+        XCTAssertNil(side(1, 65)) // Widened iPad rail takes deliberate travel.
+        XCTAssertEqual(side(1, 95), 2)
+        XCTAssertEqual(side(1, 220), 3)
         XCTAssertEqual(side(1, -55), 0)
         XCTAssertNil(side(3, 90))
 
@@ -183,5 +184,22 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
             XCTAssertFalse(palette.name.isEmpty)
             XCTAssertGreaterThanOrEqual(palette.gradientColors.count, 2)
         }
+    }
+
+    func testSeasonalThemesFollowDatesAndLeaveOtherMonthsForManualPalette() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func theme(_ year: Int, _ month: Int, _ day: Int) -> AppTheme.AccentPalette? {
+            let date = calendar.date(from: DateComponents(year: year, month: month, day: day))!
+            return SeasonalThemeSchedule.palette(for: date, calendar: calendar)
+        }
+        XCTAssertEqual(theme(2026, 4, 5), .easter)
+        XCTAssertEqual(theme(2026, 7, 14), .summer)
+        XCTAssertEqual(theme(2026, 10, 28), .halloween)
+        XCTAssertEqual(theme(2026, 12, 13), .christmas)
+        XCTAssertEqual(theme(2027, 1, 12), .snow)
+        XCTAssertNil(theme(2026, 5, 20))
+        XCTAssertNil(theme(2026, 9, 20))
+        XCTAssertNil(theme(2026, 11, 20))
     }
 }

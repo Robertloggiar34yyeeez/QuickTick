@@ -12,6 +12,8 @@ struct SettingsView: View {
     @AppStorage("quicktick-suggested-themes-v1") private var suggestedThemesEnabled = true
     @AppStorage(SuggestedThemeMode.storageKey) private var suggestedThemesMode = SuggestedThemeMode.balanced.rawValue
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
+    @AppStorage(AppTheme.automaticSeasonalKey) private var automaticSeasonalThemes = true
+    @AppStorage("quicktick-ipad-side-navigation-v1") private var ipadSidebarEnabled = false
     @AppStorage(BackgroundArtworkStore.enabledKey) private var customBackgroundEnabled = false
     @AppStorage(BackgroundArtworkStore.revisionKey) private var customBackgroundRevision = 0
     @State private var selectedBackgroundPhoto: PhotosPickerItem?
@@ -190,6 +192,11 @@ struct SettingsView: View {
                 .modifier(SettingsControlRow())
                 Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
                     .font(.footnote).foregroundStyle(.secondary)
+                Toggle("Use a wider iPad sidebar", isOn: $ipadSidebarEnabled)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("ipad-sidebar-toggle")
+                Text("Moves the Home bar to a larger vertical rail on the left across every iPad feed. On iPhone the bottom bar stays unchanged.")
+                    .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
             }.id(SettingsDestination.navigation.rawValue)
             SettingsGroup(title: "Appearance", icon: "paintbrush.pointed") {
                 Toggle("Modern interface", isOn: $modernUI)
@@ -200,6 +207,17 @@ struct SettingsView: View {
                 Label("Color theme", systemImage: "paintpalette.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
                 SettingsPaletteSelector(selected: $accentPalette)
+                Toggle("Automatic seasonal themes", isOn: $automaticSeasonalThemes)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("automatic-seasonal-theme-toggle")
+                if automaticSeasonalThemes,
+                   let seasonal = SeasonalThemeSchedule.palette(for: .now) {
+                    Label("\(seasonal.name) is active for this season", systemImage: "calendar.badge.clock")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.accent)
+                }
+                Text("Seasonal appearances activate on their calendar dates (Easter, summer, Halloween, Christmas and snow). Your chosen color is preserved and returns between seasons or when you turn this off.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                 Text("De-slopified uses flat neutral surfaces, consistent spacing and restrained colour. Other themes retain their original appearance.")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                 HStack(spacing: 10) {

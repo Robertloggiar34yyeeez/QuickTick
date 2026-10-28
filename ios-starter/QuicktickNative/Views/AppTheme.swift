@@ -4,12 +4,20 @@ import ImageIO
 import UIKit
 
 enum AppTheme {
+    static let automaticSeasonalKey = "quicktick-seasonal-themes-auto-v1"
+    static let activeSeasonalKey = "quicktick-active-seasonal-palette-v1"
     enum AccentPalette: String, CaseIterable, Identifiable {
         case violet, ocean, sunset, mint, rose, cobalt, amber, cherry, teal, lime, indigo, coral, galaxy
         case darkCosmos, auroraNight, solarEclipse, oledBlack, graphite, midnightBlue, emeraldNoir, crimsonNoir
         case nebulaDrift, obsidianGold, polarNight, deSlopified
         case crimson, easter, summer, halloween, christmas, snow
         var id: String { rawValue }
+        var isSeasonalPalette: Bool {
+            switch self {
+            case .easter, .summer, .halloween, .christmas, .snow: true
+            default: false
+            }
+        }
         var name: String {
             switch self {
             case .darkCosmos: "Dark Cosmos"
@@ -135,17 +143,25 @@ enum AppTheme {
         }
     }
     static var palette: AccentPalette {
-        AccentPalette(rawValue: UserDefaults.standard.string(forKey: "quicktick-accent-palette-v1") ?? "violet") ?? .violet
+        let selected = AccentPalette(rawValue: UserDefaults.standard.string(forKey: "quicktick-accent-palette-v1") ?? "violet") ?? .violet
+        let automatic = (UserDefaults.standard.object(forKey: automaticSeasonalKey) as? Bool) ?? true
+        guard automatic,
+              let active = UserDefaults.standard.string(forKey: activeSeasonalKey),
+              let seasonal = AccentPalette(rawValue: active), seasonal.isSeasonalPalette else { return selected }
+        return seasonal
+    }
+    static func refreshSeasonalPalette(now: Date = .now) {
+        let value = SeasonalThemeSchedule.palette(for: now)?.rawValue ?? ""
+        if UserDefaults.standard.string(forKey: activeSeasonalKey) != value {
+            UserDefaults.standard.set(value, forKey: activeSeasonalKey)
+        }
     }
     static var modernUI: Bool { (UserDefaults.standard.object(forKey: "quicktick-modern-ui-v1") as? Bool) ?? true }
     static var isGalaxy: Bool { palette == .galaxy }
     static var isDeSlopified: Bool { palette == .deSlopified }
     static var prefersOpaqueChrome: Bool { isCosmic || isSeasonal || isDeSlopified }
     static var isSeasonal: Bool {
-        switch palette {
-        case .easter, .summer, .halloween, .christmas, .snow: true
-        default: false
-        }
+        palette.isSeasonalPalette
     }
     static var isCosmic: Bool {
         switch palette {
@@ -278,6 +294,42 @@ enum AppTheme {
     static var cardRadius: CGFloat { isDeSlopified ? 14 : 22 }
     static var panelRadius: CGFloat { isDeSlopified ? 14 : 22 }
     static let feedWidth: CGFloat = 680
+}
+
+/// Automatic appearances have deterministic date windows and never overwrite
+/// the user's manually selected palette. Settings can disable the overlay.
+enum SeasonalThemeSchedule {
+    static func palette(for date: Date, calendar: Calendar = Calendar(identifier: .gregorian)) -> AppTheme.AccentPalette? {
+        let components = calendar.dateComponents([.day, .month, .year], from: date)
+        guard let day = components.day, let month = components.month,
+              let year = components.year else { return nil }
+        if month == 1 || month == 2 || (month == 12 && day >= 27) { return .snow }
+        if month == 6 || month == 7 || month == 8 { return .summer }
+        if month == 10 && day >= 15 { return .halloween }
+        if month == 12 && day <= 26 { return .christmas }
+        if month == 3 || month == 4 {
+            let easter = easterSunday(year: year, calendar: calendar)
+            if let easter,
+               let start = calendar.date(byAdding: .day, value: -7, to: easter),
+               let end = calendar.date(byAdding: .day, value: 8, to: easter),
+               date >= start, date < end { return .easter }
+        }
+        return nil
+    }
+
+    private static func easterSunday(year: Int, calendar: Calendar) -> Date? {
+        // Gregorian computus: Easter is movable, so fixed March/April days
+        // would turn the seasonal appearance on at the wrong time each year.
+        let a = year % 19, b = year / 100, c = year % 100
+        let d = b / 4, e = b % 4, f = (b + 8) / 25, g = (b - f + 1) / 3
+        let h = (19 * a + b - d - g + 15) % 30
+        let i = c / 4, k = c % 4
+        let l = (32 + 2 * e + 2 * i - h - k) % 7
+        let m = (a + 11 * h + 22 * l) / 451
+        let dayIndex = h + l - 7 * m + 114
+        return calendar.date(from: DateComponents(year: year, month: dayIndex / 31,
+                                                 day: dayIndex % 31 + 1))
+    }
 }
 
 enum BackgroundArtworkStore {

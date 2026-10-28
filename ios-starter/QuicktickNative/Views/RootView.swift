@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Directional swipes belong to the navigation controls only. Media and the
 /// rest of the screen keep their own horizontal/vertical gestures.
@@ -48,15 +49,15 @@ enum TabSwipePolicy {
                                visibleIndices: [Int], vertical: Bool) -> Layout? {
         guard (0...3).contains(current), axisLength > 0,
               !visibleIndices.isEmpty else { return nil }
-        let step = vertical ? CGFloat(52) : axisLength / CGFloat(visibleIndices.count)
+        let step = vertical ? CGFloat(72) : axisLength / CGFloat(visibleIndices.count)
         var cursor: CGFloat = 0
         var feeds: [(id: Int, center: CGFloat)] = []
         for visualID in visibleIndices {
-            let length = vertical ? CGFloat(visualID == 2 ? 52 : 46) : step
+            let length = vertical ? CGFloat(visualID == 2 ? 68 : 62) : step
             if visualID != 2 {
                 feeds.append((visualID < 2 ? visualID : visualID - 1, cursor + length / 2))
             }
-            cursor += length + (vertical ? 6 : 0)
+            cursor += length + (vertical ? 10 : 0)
         }
         guard let start = feeds.first(where: { $0.id == current })?.center,
               let first = feeds.first?.center, let last = feeds.last?.center else { return nil }
@@ -79,6 +80,9 @@ struct RootView: View {
     @State private var aiTabSessionOverride: Bool?
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
+    @AppStorage(AppTheme.automaticSeasonalKey) private var automaticSeasonalThemes = true
+    @AppStorage(AppTheme.activeSeasonalKey) private var activeSeasonalPalette = ""
+    @AppStorage("quicktick-ipad-side-navigation-v1") private var ipadSidebarEnabled = false
     @AppStorage(BackgroundArtworkStore.enabledKey) private var showsCustomBackground = false
     @State private var showSettings = false
     @State private var showStudio = false
@@ -114,9 +118,19 @@ struct RootView: View {
         .onChange(of: firstRunCompleted) { _, _ in presentWrappedIfNeeded() }
         .onChange(of: store.favorites.count) { _, _ in presentWrappedIfNeeded() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { presentWrappedIfNeeded() }
+            if phase == .active {
+                AppTheme.refreshSeasonalPalette()
+                presentWrappedIfNeeded()
+            }
         }
-        .onAppear { presentWrappedIfNeeded() }
+        .onChange(of: automaticSeasonalThemes) { _, _ in AppTheme.refreshSeasonalPalette() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+            AppTheme.refreshSeasonalPalette()
+        }
+        .onAppear {
+            AppTheme.refreshSeasonalPalette()
+            presentWrappedIfNeeded()
+        }
         .onChange(of: showAITab) { _, _ in
             // AppStorage can update while Settings is still being dismissed.
             // Keep the dock transaction in sync across both layouts.
@@ -124,6 +138,7 @@ struct RootView: View {
         }
         .onDisappear { tabNameTask?.cancel(); tabSelectionTask?.cancel() }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: accentPalette)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: activeSeasonalPalette)
         // A single environment tint reaches NavigationStacks, toolbars,
         // menus and all presented settings/model-library sheets.
         .tint(AppTheme.accent)
@@ -220,13 +235,14 @@ struct RootView: View {
     }
 
     private func navigationLayout(size: CGSize) -> some View {
-        let sideNavigation = store.activeTab == 1 && size.width > 600
+        let pinnedSideNavigation = ipadSidebarEnabled && size.width > 600
+        let sideNavigation = size.width > 600 && (store.activeTab == 1 || pinnedSideNavigation)
         let bottomLength = max(1, size.width - CGFloat((modernUI ? 8 : 4) * 2))
         // Keep the dock geometry as Int arithmetic until the final conversion.
         // A single mixed overloaded expression here exceeded Swift's type-check budget.
         let dockItemCount: Int = visibleTabIndices.count
-        let dockItemHeight: Int = dockItemCount * 46
-        let dockGapHeight: Int = Swift.max(0, dockItemCount - 1) * 6
+        let dockItemHeight: Int = dockItemCount * 62
+        let dockGapHeight: Int = Swift.max(0, dockItemCount - 1) * 10
         let createGapHeight: Int = aiTabVisible ? 6 : 0
         let sideLength: CGFloat = CGFloat(dockItemHeight + dockGapHeight + createGapHeight)
         return VStack(spacing: 0) {
@@ -238,6 +254,7 @@ struct RootView: View {
                     removal: .opacity))
                 .offset(x: sideNavigation ? 0 : navigationDrag.width * 0.20,
                         y: sideNavigation ? navigationDrag.height * 0.14 : 0)
+                .padding(.leading, pinnedSideNavigation && store.activeTab != 1 ? 94 : 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if !sideNavigation {
                 BackgroundAudioMiniPlayer(audio: store.audio)
@@ -287,8 +304,8 @@ struct RootView: View {
             axisLength: axisLength, visibleIndices: visibleTabIndices)
         return RoundedRectangle(cornerRadius: 18, style: .continuous)
             .fill(AppTheme.gradient)
-            .frame(width: 46, height: 46)
-            .offset(y: center - 23)
+            .frame(width: 62, height: 62)
+            .offset(y: center - 31)
             .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86),
                        value: store.activeTab)
             .allowsHitTesting(false)
@@ -301,7 +318,7 @@ struct RootView: View {
                 .padding(.horizontal, vertical ? 12 : 14).padding(.vertical, 7)
                 .background(AppTheme.elevatedSurface, in: Capsule())
                 .overlay(Capsule().stroke(AppTheme.border))
-                .offset(x: vertical ? 100 : 0, y: vertical ? 0 : -40)
+                .offset(x: vertical ? 119 : 0, y: vertical ? 0 : -40)
                 .allowsHitTesting(false)
         }
     }
@@ -338,21 +355,22 @@ struct RootView: View {
     }
 
     private func sideDock(axisLength: CGFloat) -> some View {
-        VStack(spacing: 6) { tabButtons(vertical: true, axisLength: axisLength) }
+        VStack(spacing: 10) { tabButtons(vertical: true, axisLength: axisLength) }
             .contentShape(Rectangle())
             .background(alignment: .top) { sideSelectionIndicator(axisLength: axisLength) }
             .highPriorityGesture(dockDrag(vertical: true, axisLength: axisLength))
-            .padding(6)
-            .background(AppTheme.prefersOpaqueChrome
-                ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial),
-                in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
+            .padding(9)
+            // A solid, readable rail like the supplied reference: no glass
+            // blur, and it remains legible over bright immersive media.
+            .background(AppTheme.navigationSurface,
+                         in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous)
                 .stroke(AppTheme.border, lineWidth: 1))
             .shadow(color: .black.opacity(AppTheme.isDeSlopified ? 0 : 0.4), radius: 18, y: 4)
             .overlay(alignment: .trailing) { dockDestinationHint(vertical: true, axisLength: axisLength) }
             .sensoryFeedback(.selection,
                 trigger: swipePreview(vertical: true, axisLength: axisLength) ?? store.activeTab)
-            .padding(.leading, 16)
+            .padding(.leading, 12)
             .id(aiTabVisible ? "five-side-tabs" : "four-side-tabs")
             .transition(.move(edge: .leading).combined(with: .opacity))
     }
@@ -404,7 +422,7 @@ struct RootView: View {
                     Image(systemName: "plus")
                         .font(.system(size: 24, weight: .bold))
                         .foregroundStyle(.white)
-                        .frame(width: vertical ? 46 : 54, height: vertical ? 46 : 52)
+                        .frame(width: vertical ? 62 : 54, height: vertical ? 68 : 52)
                         .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: modernUI ? 20 : 17, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 17).stroke(.white.opacity(0.25)))
                         .shadow(color: AppTheme.accent.opacity(AppTheme.isDeSlopified ? 0 : (modernUI ? 0.36 : 0.28)), radius: modernUI ? 18 : 13, y: 3)
@@ -474,7 +492,7 @@ struct RootView: View {
                         }
                     }
                     .foregroundStyle(highlightedTab == tabID ? .white : .white.opacity(0.62))
-                    .frame(width: vertical ? 46 : nil, height: vertical ? 46 : 54)
+                    .frame(width: vertical ? 62 : nil, height: vertical ? 62 : 54)
                     .frame(maxWidth: vertical ? nil : .infinity)
                     .contentShape(Rectangle())
                 }

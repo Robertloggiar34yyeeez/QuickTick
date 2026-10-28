@@ -448,17 +448,17 @@ struct HomeFeedView: View {
     /// thumbnails from posts matching this provider's learned interests.
     @ViewBuilder private var suggestedThemeRow: some View {
         if !themeSuggestions.isEmpty {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
                     Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
-                    Text("Suggested themes").font(.caption.weight(.semibold))
+                    Text("Suggested topics").font(.subheadline.weight(.bold))
                     Text(store.selectedProvider == .rule34 && suggestedThemesMode == SuggestedThemeMode.franchises.rawValue
                          ? "Franchise discovery" : "Based on your taste")
                         .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
                 }.padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 9) {
+                    HStack(spacing: 12) {
                         ForEach(themeSuggestions) { theme in
                             let selected = QueryParser.parse(store.queryText).included.contains(theme.term)
                             Button {
@@ -468,15 +468,16 @@ struct HomeFeedView: View {
                                 store.commitSearch(query: QueryParser.formatted(updated), sort: store.feedSort)
                                 Task { await store.refresh() }
                             } label: {
-                                HStack(spacing: 8) {
-                                    CachedMediaImage(url: theme.imageURL, pixels: 128, fill: true)
-                                        .frame(width: 48, height: 48)
-                                        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-                                    Text(theme.label).font(.caption.weight(.semibold))
+                                HStack(spacing: 11) {
+                                    CachedMediaImage(url: theme.imageURL, pixels: 192, fill: true)
+                                        .frame(width: 66, height: 66)
+                                        .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+                                    Text(theme.label).font(.subheadline.weight(.semibold))
                                         .lineLimit(1).foregroundStyle(.white)
-                                        .padding(.trailing, 8)
+                                        .padding(.trailing, 12)
                                 }
-                                .padding(5)
+                                .padding(6)
+                                .frame(minHeight: 78)
                                 .background(selected ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface), in: Capsule())
                                 .overlay(Capsule().stroke(selected ? AppTheme.accent : AppTheme.border, lineWidth: 1))
                             }

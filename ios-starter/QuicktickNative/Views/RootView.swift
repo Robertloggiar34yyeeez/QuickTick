@@ -190,8 +190,13 @@ struct RootView: View {
     private func navigationLayout(size: CGSize) -> some View {
         let sideNavigation = store.activeTab == 1 && size.width > 600
         let bottomLength = max(1, size.width - CGFloat((modernUI ? 8 : 4) * 2))
-        let sideLength = CGFloat(visibleTabIndices.count * 46
-            + max(0, visibleTabIndices.count - 1) * 6 + (aiTabVisible ? 6 : 0))
+        // Keep the dock geometry as Int arithmetic until the final conversion.
+        // A single mixed overloaded expression here exceeded Swift's type-check budget.
+        let dockItemCount: Int = visibleTabIndices.count
+        let dockItemHeight: Int = dockItemCount * 46
+        let dockGapHeight: Int = Swift.max(0, dockItemCount - 1) * 6
+        let createGapHeight: Int = aiTabVisible ? 6 : 0
+        let sideLength: CGFloat = CGFloat(dockItemHeight + dockGapHeight + createGapHeight)
         return VStack(spacing: 0) {
             activeFeed.frame(maxWidth: .infinity, maxHeight: .infinity)
             if !sideNavigation {

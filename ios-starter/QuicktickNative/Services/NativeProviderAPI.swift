@@ -815,22 +815,11 @@ enum NativeProviderAPI {
         if sort == "recent" || sort == "popular" {
             parameters.append(.init(name: "period", value: "monthly"))
         }
-        let bytes: Data
-        do { bytes = try await data(session: session, url: url("https://www.pornhub.com/webmasters/search", parameters), provider: .pornhub, headers: cookieHeaders(credentials)) }
-        catch APIError.providerStatus(.pornhub, 404) {
-            // Same public API and host; some deployments require the canonical
-            // trailing slash. If both public webmaster paths have gone away,
-            // use Pornhub's own public listing HTML. No proxy or bypass.
-            do {
-                bytes = try await data(session: session, url: url("https://www.pornhub.com/webmasters/search/", parameters), provider: .pornhub, headers: cookieHeaders(credentials))
-            } catch APIError.providerStatus(.pornhub, 404) {
-                return try await pornhubPublicCatalog(session: session, credentials: credentials,
-                    query: query, page: page, sort: sort, immersive: immersive)
-            }
-        }
-        // A removed webmaster route can return a 200 HTML error. If so, try
-        // the site's documented public browsing pages before giving up.
-        guard let result = try? object(bytes), result["videos"] != nil else {
+        // The legacy webmaster path sometimes responds with HTTP 200 and an
+        // Apache "requested URL was not found" HTML body. Recognize that as
+        // a dead API route and try first-party alternatives before parsing.
+        guard let result = try await pornhubWebmasterJSON(session: session,
+                credentials: credentials, parameters: parameters) else {
             return try await pornhubPublicCatalog(session: session, credentials: credentials,
                 query: query, page: page, sort: sort, immersive: immersive)
         }
@@ -854,6 +843,28 @@ enum NativeProviderAPI {
             post.caption = text(row["title"]); post.creator = text(row["username"]); return post
         }
         return self.page(posts, hasMore: raw.count >= 20, query: query, immersive: immersive)
+    }
+
+    /// No third-party scraping service or proxy is used. Only fall back for
+    /// missing/malformed webmaster routes; a 403/451 access restriction must
+    /// still be surfaced to the user rather than routed around.
+    static func pornhubWebmasterJSON(session: URLSession, credentials: ProviderCredentials,
+                                     parameters: [URLQueryItem]) async throws -> [String: Any]? {
+        for endpoint in ["https://www.pornhub.com/webmasters/search",
+                         "https://www.pornhub.com/webmasters/search/",
+                         "https://api.pornhub.com/webmasters/search"] {
+            let bytes: Data
+            do {
+                bytes = try await data(session: session, url: url(endpoint, parameters),
+                                       provider: .pornhub, headers: cookieHeaders(credentials))
+            } catch APIError.providerStatus(.pornhub, 404) {
+                continue
+            }
+            guard !unavailableHTML(bytes),
+                  let result = try? object(bytes), result["videos"] is [Any] else { continue }
+            return result
+        }
+        return nil
     }
 
     /// Best-effort catalog fallback for deployments where the public webmaster

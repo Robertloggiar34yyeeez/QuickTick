@@ -968,6 +968,7 @@ struct CachedMediaImage: View {
     @State private var previewDecoded: DecodedMediaImage?
     @State private var imageRequestKey = ""
     @State private var failed = false
+    @State private var offscreenClearTask: Task<Void, Never>?
     var body: some View {
         Group {
             if imageRequestKey == "\(url):\(pixels):\(comic)", let image = decoded ?? previewDecoded {
@@ -1021,10 +1022,21 @@ struct CachedMediaImage: View {
                 }
             }
         }
+        .onAppear {
+            offscreenClearTask?.cancel()
+            offscreenClearTask = nil
+        }
         .onDisappear {
-            // Lazy stacks can retain row state after it leaves the viewport.
-            // Let the bounded shared cache own offscreen decoded image memory.
-            decoded = nil; previewDecoded = nil
+            // A lazy row can briefly disappear during a fast rebound or tab
+            // animation. Retain its poster for that return path, then give
+            // memory back to MediaImagePipeline's bounded shared cache.
+            offscreenClearTask?.cancel()
+            offscreenClearTask = Task { @MainActor in
+                do { try await Task.sleep(for: .milliseconds(1_200)) } catch { return }
+                guard !Task.isCancelled else { return }
+                decoded = nil; previewDecoded = nil
+                offscreenClearTask = nil
+            }
         }
     }
 }

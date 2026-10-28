@@ -117,6 +117,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                 .first(where: { $0.name == "search" })?.value
             if search == "unavailable-route" || search == "public-html" ||
+               (search == "api-host" && host != "api.pornhub.com") ||
                (path == "/webmasters/search" && search == "route-fixture") {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
@@ -633,6 +634,18 @@ final class NativeProviderAPITests: XCTestCase {
         let unavailable = Data("<html><title>Site Unavailable</title></html>".utf8)
         XCTAssertTrue(NativeProviderAPI.unavailableHTML(unavailable))
         XCTAssertFalse(NativeProviderAPI.unavailableHTML(Data(#"{"videos":[]}"#.utf8)))
+    }
+
+    func testPornhubMissingWebmasterRouteTriesFirstPartyAPIHost() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let result = try await api.posts(provider: .pornhub,
+            query: QueryParser.parse("api-host"), page: 1)
+        XCTAssertEqual(result.items.map(\.stableID), ["pornhub:ph1"])
+        let requests = NativeProviderProtocol.log.snapshot()
+        XCTAssertTrue(requests.contains { $0.url?.host == "api.pornhub.com" && $0.url?.path == "/webmasters/search" })
+        XCTAssertFalse(requests.contains { $0.url?.path == "/video/search" },
+            "A valid response from the provider's first-party API host should avoid scraping its browse HTML")
     }
 
     @MainActor func testHavenRecommendedKeepsSafeCatalogDiscoveryWhileWDTasteWarms() async throws {

@@ -27,6 +27,17 @@ struct HomePullRefreshGate {
 /// them through @State invalidated the entire media feed on every frame.
 private final class HomeVisibleFrameCache {
     var frames: [String: CGRect] = [:]
+    // Drag/geometry samples are deliberately not @State. Updating @State for
+    // every pixel of a UIScrollView drag invalidates the entire LazyVStack.
+    var topOffset: CGFloat?
+    var pullRefreshGate = HomePullRefreshGate()
+    var lastMotionSample = Date.distantPast
+    var lastIntelligencePause = Date.distantPast
+    var lastAnchorPublished = Date.distantPast
+    var lastVisibleTop: String?
+    var visibleTopSince = Date.distantPast
+    var remountGraceUntil = Date.distantPast
+    var scrollRestTask: Task<Void, Never>?
 }
 
 struct HomeFeedView: View {
@@ -41,19 +52,11 @@ struct HomeFeedView: View {
     @State private var immersive = false
     @State private var immersivePostID: String?
     @State private var visibleFrameCache = HomeVisibleFrameCache()
-    @State private var homeRemountGraceUntil = Date.distantPast
     // Video eligibility changes only when the feed changes, not on every
     // scroll/layout pass. Avoid rebuilding a Set from the whole feed per frame.
     @State private var playableIDs: Set<String> = []
-    @State private var lastVisibleTop: String?
-    @State private var visibleTopSince = Date.distantPast
     @State private var isScrollMoving = false
-    @State private var scrollRestTask: Task<Void, Never>?
-    @State private var lastMotionSample = Date.distantPast
-    @State private var lastIntelligencePause = Date.distantPast
-    @State private var topOffset: CGFloat?
     @State private var pullRefreshInFlight = false
-    @State private var pullRefreshGate = HomePullRefreshGate()
     @State private var visualThemeTerms: [String] = []
     @State private var themeSuggestions: [HomeThemeSuggestion] = []
     @State private var themeRefreshCycle = 0
@@ -214,7 +217,7 @@ struct HomeFeedView: View {
                 if let error = store.lastError {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: {
                         Button("Try again") { Task { await store.refresh() } }
-                        if [.nhentai, .kemono, .coomer, .hhaven].contains(store.selectedProvider) {
+                        if [.nhentai, .kemono, .coomer, .hhaven, .pornhub].contains(store.selectedProvider) {
                             Button("Browse inside QuickTick") { showProviderWebsite = true }
                         }
                     }
@@ -227,7 +230,9 @@ struct HomeFeedView: View {
                         .frame(maxWidth: .infinity)
                         .id(post.stableID)
                         .onAppear {
-                        if store.activeTab == 0, let index = store.posts.firstIndex(where: { $0.stableID == post.stableID }), index >= store.posts.count - 12 { Task { await store.loadMore() } }
+                        if store.activeTab == 0, store.posts.suffix(12).contains(where: { $0.stableID == post.stableID }) {
+                            Task { await store.loadMore() }
+                        }
                     }
                 }
                 if store.isLoading {
@@ -258,8 +263,8 @@ struct HomeFeedView: View {
             }
         }
         .onChange(of: store.feedRevision) { _, _ in
-            lastVisibleTop = nil
-            visibleTopSince = .distantPast
+            visibleFrameCache.lastVisibleTop = nil
+            visibleFrameCache.visibleTopSince = .distantPast
             proxy.scrollTo("home-top", anchor: .top)
         }
         let scrollControls = restoredScroll
@@ -289,7 +294,7 @@ struct HomeFeedView: View {
             }
         }
         .coordinateSpace(name: "home-viewport")
-        .onPreferenceChange(HomeTopOffsetPreference.self) { topOffset = $0 }
+        .onPreferenceChange(HomeTopOffsetPreference.self) { visibleFrameCache.topOffset = $0 }
         let gesturedScroll = scrollControls
         .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { touch in
             let gutter = (viewport.size.width - AppTheme.feedWidth) / 2
@@ -304,10 +309,10 @@ struct HomeFeedView: View {
             .onChanged { drag in
                 // Reconstruct the header position at gesture START, not after
                 // a long swipe has already carried it into the visible area.
-                pullRefreshGate.observe(startOffset: topOffset.map { $0 - drag.translation.height })
+                visibleFrameCache.pullRefreshGate.observe(startOffset: visibleFrameCache.topOffset.map { $0 - drag.translation.height })
             }
             .onEnded { drag in
-            guard pullRefreshGate.finish(translation: drag.translation) else { return }
+            guard visibleFrameCache.pullRefreshGate.finish(translation: drag.translation) else { return }
             Task { await refreshFromGesture() }
         })
         let trackedScroll = gesturedScroll
@@ -324,31 +329,43 @@ struct HomeFeedView: View {
             if moved { noteScrollMotion() }
             visibleFrameCache.frames = frames
             let bounds = CGRect(origin: .zero, size: viewport.size)
-            let top = frames.filter { $0.value.intersects(bounds) }.min { $0.value.minY < $1.value.minY }?.key
-            if let top, scrollAnchor != top { scrollAnchor = top }
-            if let top, top != lastVisibleTop {
+            var visible = Set<String>()
+            var top: String?
+            var topY = CGFloat.infinity
+            for (id, rect) in frames where rect.intersects(bounds) {
+                visible.insert(id)
+                if rect.minY < topY { top = id; topY = rect.minY }
+            }
+            // Scroll restoration does not need a 60 Hz update. In particular,
+            // the RootView binding should not be dirtied on every new row of
+            // a fast fling; it is only a coarse return-to-position bookmark.
+            if let top, scrollAnchor != top, Date().timeIntervalSince(visibleFrameCache.lastAnchorPublished) >= 0.18 {
+                visibleFrameCache.lastAnchorPublished = .now
+                scrollAnchor = top
+            }
+            if let top, top != visibleFrameCache.lastVisibleTop {
                 let now = Date()
                 if !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented,
                    store.feedSort == "recommended", !store.isLoading,
-                   let previousID = lastVisibleTop,
+                   let previousID = visibleFrameCache.lastVisibleTop,
                    let previousIndex = store.posts.firstIndex(where: { $0.stableID == previousID }),
                    let nextIndex = store.posts.firstIndex(where: { $0.stableID == top }) {
-                    let dwell = now.timeIntervalSince(visibleTopSince)
+                    let dwell = now.timeIntervalSince(visibleFrameCache.visibleTopSince)
                     if QuickSkipDecision.dislikes(elapsed: dwell, from: previousIndex, to: nextIndex) {
                         store.recordQuickSkip(store.posts[previousIndex])
                     }
                     store.neutralizeQuickSkip(store.posts[nextIndex])
                 }
-                lastVisibleTop = top
-                visibleTopSince = now
+                visibleFrameCache.lastVisibleTop = top
+                visibleFrameCache.visibleTopSince = now
             }
-            store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
+            store.protectVisibleHomePosts(visible)
             selectVisiblePlayback(viewport: viewport.size)
         }
         let mountedScroll = trackedScroll
         .onAppear {
             playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
-            homeRemountGraceUntil = Date().addingTimeInterval(0.85)
+            visibleFrameCache.remountGraceUntil = Date().addingTimeInterval(0.85)
             // Tab transitions clear the active player, but the Home feed's
             // previously visible post is still known before SwiftUI delivers
             // fresh geometry preferences. Restore it immediately so cards can
@@ -369,7 +386,9 @@ struct HomeFeedView: View {
             }
         }
         .onDisappear {
-            scrollRestTask?.cancel(); pullRefreshGate.cancel()
+            visibleFrameCache.scrollRestTask?.cancel()
+            visibleFrameCache.scrollRestTask = nil
+            visibleFrameCache.pullRefreshGate.cancel()
             // Geometry from the outgoing tab is invalid on the next mount.
             visibleFrameCache.frames = [:]
         }
@@ -593,21 +612,25 @@ struct HomeFeedView: View {
     private func noteScrollMotion() {
         let now = Date()
         // Scroll geometry can publish at display refresh frequency. Updating
-        // tasks and object graphs sixty times per second caused visible hitching.
-        if now.timeIntervalSince(lastIntelligencePause) >= 0.3 {
-            lastIntelligencePause = now
+        // SwiftUI state for timing samples caused visible hitching.
+        if now.timeIntervalSince(visibleFrameCache.lastIntelligencePause) >= 0.3 {
+            visibleFrameCache.lastIntelligencePause = now
             store.noteFeedMotion()
         }
-        guard now.timeIntervalSince(lastMotionSample) >= 0.12 else { return }
-        lastMotionSample = now
-        scrollRestTask?.cancel()
+        visibleFrameCache.lastMotionSample = now
         if !isScrollMoving {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { isScrollMoving = true }
         }
-        scrollRestTask = Task { @MainActor in
-            do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
-            guard !Task.isCancelled else { return }
-            withAnimation(reduceMotion ? nil : .easeIn(duration: 0.18)) { isScrollMoving = false }
+        guard visibleFrameCache.scrollRestTask == nil else { return }
+        visibleFrameCache.scrollRestTask = Task { @MainActor in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(180)) } catch { break }
+                if Date().timeIntervalSince(visibleFrameCache.lastMotionSample) >= 0.6 {
+                    withAnimation(reduceMotion ? nil : .easeIn(duration: 0.18)) { isScrollMoving = false }
+                    break
+                }
+            }
+            visibleFrameCache.scrollRestTask = nil
         }
     }
 
@@ -634,7 +657,7 @@ struct HomeFeedView: View {
         // offscreen cell during a tab remount. Don't clear a known playable
         // card in that brief window; a final selection runs once layout has
         // stabilized. Ordinary scrolling never uses this fallback.
-        if Date() < homeRemountGraceUntil,
+        if Date() < visibleFrameCache.remountGraceUntil,
            let retained = store.retainedHomePlaybackID, playableIDs.contains(retained),
            store.posts.contains(where: { $0.stableID == retained }) {
             return retained

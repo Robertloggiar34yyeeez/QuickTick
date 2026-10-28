@@ -98,20 +98,21 @@ struct CommentsView: View {
                     .padding(.vertical, 13)
                 }
                 .scrollIndicators(.hidden)
-                // Comment creation is provider-authenticated. Keep the post's
-                // real compose form inside QuickTick rather than opening the
-                // external browser or inventing an unsupported write API.
-                if let source = URL(string: post.pageUrl), source.scheme == "https",
-                   let provider = post.providerKey, Provider.identifyPage(post.pageUrl) == provider {
+                // Only Rule34 comments are intended as public source-site
+                // replies. Its documented DAPI offers read-only comments;
+                // publishing still requires Rule34's authenticated form.
+                if post.providerKey == .rule34,
+                   let source = URL(string: post.pageUrl), source.scheme == "https",
+                   Provider.identifyPage(post.pageUrl) == .rule34 {
                     Button { writeInApp = true } label: {
-                        Label("Write comment in QuickTick", systemImage: "square.and.pencil")
+                        Label("Write a public Rule34 comment", systemImage: "square.and.pencil")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity, minHeight: 48)
                     }
                     .buttonStyle(.borderedProminent)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 4)
-                    Text("Opens this provider's posting form inside the app. Sign in there if required; QuickTick never impersonates your account.")
+                    Text("Uses Rule34's own sign-in and posting form inside QuickTick. The public comments API does not support submitting replies.")
                         .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 20)
@@ -1113,6 +1114,14 @@ struct FirstRunSetupView: View {
     }
 }
 
+/// Coalesce collection geometry notifications without invalidating the list
+/// at display refresh frequency. The cached timestamps are deliberately not
+/// observable SwiftUI state.
+private final class CollectionScrollSampling {
+    var lastAnalysis = Date.distantPast
+    var lastMotion = Date.distantPast
+}
+
 struct FavoritesView: View {
     @EnvironmentObject private var store: AppStore
     var onImmersiveChange: (Bool) -> Void = { _ in }
@@ -1122,6 +1131,7 @@ struct FavoritesView: View {
     @State private var shuffleLikes = false
     @State private var randomizedIDs: [String] = []
     @State private var searchText = ""
+    @State private var scrollSampling = CollectionScrollSampling()
     private var orderedLikes: [Post] { store.newestFavorites }
     private var saved: [Post] {
         guard shuffleLikes else { return orderedLikes }
@@ -1177,7 +1187,13 @@ struct FavoritesView: View {
                     }.coordinateSpace(name: "home-viewport")
                         .onPreferenceChange(HomeVisibleFrames.self) { frames in
                             guard store.activeTab == 2, store.isForeground, !immersive else { return }
-                            store.noteFeedMotion()
+                            let now = Date()
+                            guard now.timeIntervalSince(scrollSampling.lastAnalysis) >= 0.10 else { return }
+                            scrollSampling.lastAnalysis = now
+                            if now.timeIntervalSince(scrollSampling.lastMotion) >= 0.3 {
+                                scrollSampling.lastMotion = now
+                                store.noteFeedMotion()
+                            }
                             let bounds = CGRect(origin: .zero, size: geometry.size)
                             for (id, frame) in frames {
                                 if let post = store.favorites[id], frame.height > 0,

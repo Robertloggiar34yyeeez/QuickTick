@@ -232,10 +232,9 @@ struct PostCardView: View {
             } else if let player, store.fullScreenPlaybackID != post.stableID {
                 ZStack {
                     PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
-                    // Match the full-bleed poster's crop. Aspect-fitting a
-                    // square/portrait stream inside a landscape fallback
-                    // made the live video appear as a tiny inset cutout.
-                    NativePlayerSurface(player: player, fill: true, ready: $ready)
+                    // Size the player to the card, then let AVPlayerLayer fit
+                    // the stream *inside* it without cropping the video.
+                    NativePlayerSurface(player: player, fill: false, ready: $ready)
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready && introReady ? 1 : 0)
                 }.frame(width: mediaSize.width, height: mediaSize.height).clipped()

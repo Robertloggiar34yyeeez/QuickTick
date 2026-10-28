@@ -755,11 +755,36 @@ enum NativeProviderAPI {
         let result = try await havenRequest(session: session, token: token,
                                              path: "hentai/\(post.id)/episode/\(episodeID)")
         let info = result["data"] as? [String: Any] ?? [:]
-        guard let media = mediaURL(text(info["chapter_content"] ?? info["content"]), provider: .hhaven) else {
+        guard let media = havenEpisodeMedia(info) else {
             throw APIError.server("Hentai Haven did not return a playable episode stream.")
         }
-        return ResolvedMedia(mediaUrl: media.absoluteString,
-                             type: media.pathExtension.lowercased() == "m3u8" ? "hls" : "video")
+        return media
+    }
+
+    /// Warden responses vary between a direct URL, embedded <video> markup,
+    /// and JSON-encoded player sources. All three describe the same episode.
+    /// Never hand AVPlayer an HTML document or an unsupported embed URL.
+    static func havenEpisodeMedia(_ info: [String: Any]) -> ResolvedMedia? {
+        let base = URL(string: "https://hentaihaven.xxx/")!
+        for key in ["chapter_content", "content", "stream_url", "video_url", "file", "hls"] {
+            let value = text(info[key])
+            if let asset = mediaURL(value, provider: .hhaven),
+               ["mp4", "m4v", "mov", "m3u8"].contains(asset.pathExtension.lowercased()) {
+                return ResolvedMedia(mediaUrl: asset.absoluteString,
+                                     type: asset.pathExtension.lowercased() == "m3u8" ? "hls" : "video")
+            }
+            if let result = havenWatchMedia(value, page: base) { return result }
+        }
+        for key in ["sources", "streams", "videos"] {
+            for source in rows(info[key]) {
+                if let result = havenEpisodeMedia(source) { return result }
+                for value in source.values {
+                    if let raw = value as? String,
+                       let result = havenWatchMedia("file: '\(raw)'", page: base) { return result }
+                }
+            }
+        }
+        return nil
     }
 
     /// Read a public watch page only for a canonical Haven catalog entry.
@@ -799,7 +824,7 @@ enum NativeProviderAPI {
             #"(?is)<source\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#,
             #"(?is)<video\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#,
             #"(?i)["'](?:file|hls|video_url|stream_url|contentUrl)["']\s*:\s*["']([^"']+)["']"#,
-            #"(?i)(?:file|src)\s*:\s*["']([^"']+)["']"#
+            #"(?i)(?:file|src|url|playlist)\s*:\s*["']([^"']+)["']"#
         ]
         for pattern in patterns {
             for raw in matches(html, pattern).prefix(12) {

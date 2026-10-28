@@ -338,7 +338,7 @@ struct RootView: View {
         }
         .frame(width: size.width, height: size.height)
         .overlay(alignment: .leading) {
-            if sideNavigation { sideDock(axisLength: sideLength) }
+            if sideNavigation { sideDock(axisLength: sideLength, immersive: immersiveCanvas) }
         }
         .overlay(alignment: .bottom) {
             if sideNavigation {
@@ -435,19 +435,20 @@ struct RootView: View {
             .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
-    private func sideDock(axisLength: CGFloat) -> some View {
+    private func sideDock(axisLength: CGFloat, immersive: Bool) -> some View {
         VStack(spacing: 10) { tabButtons(vertical: true, axisLength: axisLength) }
             .contentShape(Rectangle())
             .background(alignment: .top) { sideSelectionIndicator(axisLength: axisLength) }
             .highPriorityGesture(dockDrag(vertical: true, axisLength: axisLength))
             .padding(9)
-            // A solid, readable rail like the supplied reference: no glass
-            // blur, and it remains legible over bright immersive media.
-            .background(AppTheme.navigationSurface,
+            // Immersive playback needs transparent chrome so the video
+            // canvas remains visible underneath the floating navigation.
+            // A simple translucent fill avoids an expensive live blur.
+            .background(immersive ? Color.black.opacity(0.24) : AppTheme.navigationSurface,
                          in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous)
-                .stroke(AppTheme.border, lineWidth: 1))
-            .shadow(color: .black.opacity(AppTheme.isDeSlopified ? 0 : 0.4), radius: 18, y: 4)
+                .stroke(immersive ? .white.opacity(0.16) : AppTheme.border, lineWidth: 1))
+            .shadow(color: .black.opacity(immersive || AppTheme.isDeSlopified ? 0 : 0.4), radius: 18, y: 4)
             .sensoryFeedback(.selection,
                 trigger: swipePreview(vertical: true, axisLength: axisLength) ?? store.activeTab)
             .padding(.leading, 12)
@@ -521,9 +522,17 @@ struct RootView: View {
                     Group {
                         if vertical {
                             HStack(spacing: 12) {
-                                Image(systemName: tabs[index].1)
-                                    .font(.system(size: 21, weight: .semibold))
-                                    .frame(width: 28)
+                                if refreshingTab == tabID {
+                                    refreshSpinner
+                                        .frame(width: 28)
+                                        .accessibilityLabel("Refreshing feed")
+                                        .transition(.opacity)
+                                } else {
+                                    Image(systemName: tabs[index].1)
+                                        .font(.system(size: 21, weight: .semibold))
+                                        .frame(width: 28)
+                                        .transition(.opacity)
+                                }
                                 if brieflyNamedTab == tabID {
                                     Text(tabs[index].0)
                                         .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -534,16 +543,7 @@ struct RootView: View {
                             }
                             .padding(.horizontal, 13)
                         } else if refreshingTab == tabID {
-                            ZStack {
-                                Circle().stroke(.white.opacity(0.16), lineWidth: 2.5)
-                                Circle()
-                                    .trim(from: 0.04, to: 0.73)
-                                    .stroke(AngularGradient(colors: [.white.opacity(0.07), .white.opacity(0.45), .white], center: .center),
-                                            style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
-                                    .rotationEffect(.degrees(refreshSpinDegrees))
-                                Circle().fill(.white).frame(width: 3.5, height: 3.5)
-                            }
-                            .frame(width: 23, height: 23)
+                            refreshSpinner
                             .accessibilityLabel("Refreshing feed")
                             .transition(.opacity.combined(with: .scale(scale: 0.65)))
                         } else if highlightedTab == tabID && brieflyNamedTab == tabID {
@@ -571,6 +571,19 @@ struct RootView: View {
                 .accessibilityAddTraits(store.activeTab == tabID ? .isSelected : [])
             }
         }
+    }
+
+    private var refreshSpinner: some View {
+        ZStack {
+            Circle().stroke(.white.opacity(0.16), lineWidth: 2.5)
+            Circle()
+                .trim(from: 0.04, to: 0.73)
+                .stroke(AngularGradient(colors: [.white.opacity(0.07), .white.opacity(0.45), .white], center: .center),
+                        style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
+                .rotationEffect(.degrees(refreshSpinDegrees))
+            Circle().fill(.white).frame(width: 3.5, height: 3.5)
+        }
+        .frame(width: 23, height: 23)
     }
 
     private func selectTab(_ tabID: Int) {

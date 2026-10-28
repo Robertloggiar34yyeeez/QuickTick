@@ -484,6 +484,17 @@ final class NativeProviderAPITests: XCTestCase {
         }
     }
 
+    func testHavenEpisodeAcceptsMarkupAndNestedSourceWithoutTreatingHTMLAsAVAsset() {
+        let markup = ["chapter_content": #"<video controls><source src="https://media.hentaihaven.xxx/episode.m3u8?token=valid" type="application/x-mpegURL"></video>"#]
+        XCTAssertEqual(NativeProviderAPI.havenEpisodeMedia(markup)?.mediaUrl,
+                       "https://media.hentaihaven.xxx/episode.m3u8?token=valid")
+        XCTAssertEqual(NativeProviderAPI.havenEpisodeMedia(markup)?.type, "hls")
+        let nested: [String: Any] = ["sources": [["url": "https://media.hentaihaven.xxx/episode.mp4"]]]
+        XCTAssertEqual(NativeProviderAPI.havenEpisodeMedia(nested)?.mediaUrl,
+                       "https://media.hentaihaven.xxx/episode.mp4")
+        XCTAssertNil(NativeProviderAPI.havenEpisodeMedia(["chapter_content": "<html>Access denied</html>"]))
+    }
+
     func testNHentaiGalleryBrowseSearchAndCompletePageManifest() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()

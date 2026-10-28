@@ -34,6 +34,7 @@ private final class HomeVisibleFrameCache {
     var lastMotionSample = Date.distantPast
     var lastIntelligencePause = Date.distantPast
     var lastAnchorPublished = Date.distantPast
+    var lastVisibilityAnalysis = Date.distantPast
     var lastVisibleTop: String?
     var visibleTopSince = Date.distantPast
     var remountGraceUntil = Date.distantPast
@@ -328,6 +329,13 @@ struct HomeFeedView: View {
             }
             if moved { noteScrollMotion() }
             visibleFrameCache.frames = frames
+            // Preference updates are emitted almost once per display frame.
+            // Playback selection, impression protection, and recommendation
+            // bookkeeping are much more expensive than storing the geometry;
+            // sample them at ~10 Hz while scrolling to keep rendering fluid.
+            let sampleTime = Date()
+            if moved && sampleTime.timeIntervalSince(visibleFrameCache.lastVisibilityAnalysis) < 0.10 { return }
+            visibleFrameCache.lastVisibilityAnalysis = sampleTime
             let bounds = CGRect(origin: .zero, size: viewport.size)
             var visible = Set<String>()
             var top: String?

@@ -559,12 +559,11 @@ private struct ImmersiveItemView: View {
                         .frame(width: geo.size.width, height: geo.size.height).allowsHitTesting(false)
                 }
                 if let player {
-                    // Give AVPlayerLayer the entire viewport, not a second
-                    // assumed 16:9 box inside it. Aspect-fill is the native
-                    // immersive presentation on iPad, even for square clips;
-                    // users can still choose the full-frame mode on phones.
+                    // The player owns the entire viewport, but its *content*
+                    // must retain the stream's real aspect ratio. Filling a
+                    // fixed 16:9 canvas cropped portrait and square videos.
                     NativePlayerSurface(player: player,
-                        fill: geo.size.width > 600 || store.immersionFraming,
+                        fill: false,
                         ready: $ready, accessibilityID: "immersive-video-surface")
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()

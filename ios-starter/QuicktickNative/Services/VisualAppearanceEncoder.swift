@@ -19,6 +19,10 @@ enum VisualAppearanceEncoder {
     @concurrent static func embedding(_ image: DecodedMediaImage, domain: VisualDomain? = nil,
                                       provider: String = "") async throws -> (vector: [Float], version: String) {
         try Task.checkCancellation()
+        if let domain, prefersMobileCLIP(domain: domain, provider: provider), MobileCLIP2RealLifeEncoder.isInstalled() {
+            let vector = try await MobileCLIP2RealLifeEncoder.shared.embedding(image)
+            return (vector, MobileCLIP2RealLifeEncoder.version)
+        }
         if let domain, prefersMobileCLIP(domain: domain, provider: provider), MobileCLIPRealLifeEncoder.isInstalled() {
             // Explicit download enables this encoder; anime, 3D, and other
             // unclassified providers retain their existing Vision path.

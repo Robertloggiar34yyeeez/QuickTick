@@ -216,7 +216,9 @@ struct VisualProfile: Codable, Sendable, Equatable {
     }
 
     static func space(for features: VisualFeatures) -> String {
-        features.version.hasPrefix("mobileclip-s0-image-") ? "mobileclip-s0-image" : "vision-featureprint"
+        if features.version.hasPrefix("mobileclip2-s0-image-") { return "mobileclip2-s0-image" }
+        if features.version.hasPrefix("mobileclip-s0-image-") { return "mobileclip-s0-image" }
+        return "vision-featureprint"
     }
     mutating func record(_ event: RecommendationEvent, features: VisualFeatures, identityEvidence: Bool = true) {
         let positive: Double, negative: Double, exposure: Double
@@ -274,7 +276,7 @@ struct VisualProfile: Codable, Sendable, Equatable {
                 let noLegacyVectors = clusters.isEmpty && negativeClusters.isEmpty && exposureClusters.isEmpty && negativeContextClusters.isEmpty
                 embeddingSpace = noLegacyVectors ? incoming : "vision-featureprint"
             }
-            if incoming == "mobileclip-s0-image", embeddingSpace != incoming {
+            if incoming != "vision-featureprint", embeddingSpace != incoming {
                 // Migrate only the visual clusters; preserve all explicit
                 // metadata, context evidence, and dislikes learned before.
                 clusters = []; negativeClusters = []; negativeContextClusters = [:]; exposureClusters = []

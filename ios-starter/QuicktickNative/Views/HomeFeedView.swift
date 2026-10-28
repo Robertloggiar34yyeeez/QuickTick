@@ -60,6 +60,7 @@ struct HomeFeedView: View {
     @State private var pullRefreshInFlight = false
     @State private var visualThemeTerms: [String] = []
     @State private var themeSuggestions: [HomeThemeSuggestion] = []
+    @State private var publicPopularFranchisePosts: [Post] = []
     @State private var themeRefreshCycle = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var postSignature: String {
@@ -215,14 +216,20 @@ struct HomeFeedView: View {
                 if store.selectedProvider == .hhaven || store.selectedProvider == .pornhub {
                     homeCategoryRow
                 }
-                if let error = store.lastError {
+                if store.posts.isEmpty && !store.bootstrapped {
+                    RoundedRectangle(cornerRadius: 22)
+                        .fill(AppTheme.surface)
+                        .frame(height: 220)
+                        .overlay { ProgressView().tint(AppTheme.accent) }
+                        .accessibilityIdentifier("feed-restoring")
+                } else if let error = store.lastError, store.posts.isEmpty, store.bootstrapped, !store.isLoading {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: {
                         Button("Try again") { Task { await store.refresh() } }
                         if [.nhentai, .kemono, .coomer, .hhaven, .pornhub].contains(store.selectedProvider) {
                             Button("Browse inside QuickTick") { showProviderWebsite = true }
                         }
                     }
-                } else if store.posts.isEmpty && !store.isLoading {
+                } else if store.posts.isEmpty && !store.isLoading && store.bootstrapped {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))
                 }
                 ForEach(store.posts, id: \.stableID) { post in
@@ -471,6 +478,38 @@ struct HomeFeedView: View {
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
         let suggestionsScroll = navigableScroll
+        .task(id: "franchise-discovery:\(store.selectedProvider.rawValue):\(suggestedThemesMode):\(suggestedThemesEnabled):\(store.bootstrapped)") {
+            guard store.bootstrapped, store.selectedProvider == .rule34,
+                  suggestedThemesEnabled, suggestedThemesMode != SuggestedThemeMode.tags.rawValue else {
+                publicPopularFranchisePosts = []
+                return
+            }
+            // Public franchise discovery is its own, broad popularity lane.
+            // It must never inherit the user's liked tags or focused query.
+            // Defer it until after Home's initial feed request starts.
+            do { try await Task.sleep(for: .milliseconds(1_400)) } catch { return }
+            guard !Task.isCancelled else { return }
+            do {
+                let page = try await store.api.posts(provider: .rule34,
+                    query: ParsedQuery(included: [], excluded: []), page: 1,
+                    sort: "popular")
+                guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
+                publicPopularFranchisePosts = page.items
+                refreshThemeSuggestions()
+                // A second public top-scored page expands the choice of
+                // franchises without gating Home's first visible results.
+                if let next = try? await store.api.posts(provider: .rule34,
+                    query: ParsedQuery(included: [], excluded: []), page: 2,
+                    sort: "popular"), !Task.isCancelled, store.selectedProvider == .rule34 {
+                    let seen = Set(page.items.map(\.stableID))
+                    publicPopularFranchisePosts = page.items + next.items.filter { !seen.contains($0.stableID) }
+                    refreshThemeSuggestions()
+                }
+            } catch {
+                // A slow or unavailable popularity endpoint must never stall
+                // the main Home feed or replace its valid suggestions.
+            }
+        }
         .task(id: store.selectedProvider) {
             let provider = store.selectedProvider
             let discovered = await store.visual.discoveryTerms(provider: provider)
@@ -496,6 +535,7 @@ struct HomeFeedView: View {
         .onChange(of: suggestedThemesMode) { _, _ in refreshThemeSuggestions() }
         .onChange(of: store.selectedProvider) { _, _ in
             visualThemeTerms = []
+            publicPopularFranchisePosts = []
             themeSuggestions = []
             refreshThemeSuggestions()
         }
@@ -509,7 +549,8 @@ struct HomeFeedView: View {
         let proposed = HomeThemeSuggestions.make(provider: provider,
             learned: store.learnedInterests, chosen: taste.into,
             visual: visualThemeTerms, favorites: Array(store.favorites.values),
-            posts: store.posts, excluded: store.exclusions + taste.notInto,
+            posts: store.posts, popular: publicPopularFranchisePosts,
+            excluded: store.exclusions + taste.notInto,
             limit: 5, rotation: themeRefreshCycle,
             mode: SuggestedThemeMode(rawValue: suggestedThemesMode) ?? .balanced)
         if proposed != themeSuggestions { themeSuggestions = proposed }
@@ -736,7 +777,7 @@ enum HomeThemeSuggestions {
         "uncensored", "video", "image", "animated", "manga", "full_color", "high_quality"]
 
     static func make(provider: Provider, learned: [String], chosen: [String],
-                     visual: [String], favorites: [Post], posts: [Post],
+                     visual: [String], favorites: [Post], posts: [Post], popular: [Post] = [],
                      excluded: [String], limit: Int = 8, rotation: Int = 0,
                      mode: SuggestedThemeMode = .tags) -> [HomeThemeSuggestion] {
         // Bound this to nearby evidence: Home's body is refreshed by scroll
@@ -803,7 +844,7 @@ enum HomeThemeSuggestions {
         let franchises = FranchiseThemeSuggestions.make(evidence: validFranchiseEvidence,
             favorites: Set(liked.map(\.stableID)), learned: learned,
             chosen: chosen, visual: visual, excluded: excluded,
-            limit: limit, rotation: rotation)
+            limit: limit, rotation: rotation, popular: popular)
         if mode == .franchises { return franchises }
         // Discovery mixes popular, actually observed franchises with familiar
         // tags. Alternate categories to prevent a single liked character or
@@ -874,21 +915,40 @@ enum FranchiseThemeSuggestions {
     }
     static func make(evidence: [Post], favorites: Set<String>,
                      learned: [String], chosen: [String], visual: [String],
-                     excluded: [String], limit: Int, rotation: Int) -> [HomeThemeSuggestion] {
+                     excluded: [String], limit: Int, rotation: Int,
+                     popular: [Post] = []) -> [HomeThemeSuggestion] {
         let banned = Set(excluded.map(canonical))
         let affinity = Set((learned + chosen + visual).map(canonical))
+        let likedFranchises = Set(evidence.lazy.filter { favorites.contains($0.stableID) }
+            .flatMap { identified(in: $0) })
+        // Popular's own sort:score catalog is the primary source of franchise
+        // topics, independently of likes. Known franchises are allowed but
+        // strongly downweighted so discovery does not loop the same series.
+        let freshPopular = Array(popular.lazy.filter {
+            $0.providerKey == .rule34 && !RecommendationTagRules.rejects($0, exclusions: excluded)
+        }.prefix(240))
+        let catalog = freshPopular.isEmpty ? evidence : freshPopular
         var scores: [String: Double] = [:]
         var examples: [String: [Post]] = [:]
-        for post in evidence {
+        for post in catalog {
             let popularity = log2(max(0, post.score) + 2)
             for franchise in identified(in: post) where !banned.contains(franchise) {
-                scores[franchise, default: 0] += (favorites.contains(post.stableID) ? 10 : 3)
-                    + min(10, popularity) * 0.65 + (affinity.contains(franchise) ? 14 : 0)
+                let discovery = !freshPopular.isEmpty
+                let familiar = likedFranchises.contains(franchise)
+                scores[franchise, default: 0] += discovery
+                    ? (familiar ? 0.2 : 1) * (4 + min(10, popularity) * 0.65)
+                    : (favorites.contains(post.stableID) ? 10 : 3)
+                        + min(10, popularity) * 0.65 + (affinity.contains(franchise) ? 14 : 0)
                 examples[franchise, default: []].append(post)
             }
         }
         let ranked = scores.keys.sorted {
-            scores[$0, default: 0] == scores[$1, default: 0]
+            // Put new, public-catalog franchises ahead of previously liked
+            // ones even when one familiar franchise dominates top-scored posts.
+            if !freshPopular.isEmpty, likedFranchises.contains($0) != likedFranchises.contains($1) {
+                return !likedFranchises.contains($0)
+            }
+            return scores[$0, default: 0] == scores[$1, default: 0]
                 ? $0 < $1 : scores[$0, default: 0] > scores[$1, default: 0]
         }
         let pool = Array(ranked.prefix(max(limit, 14)))

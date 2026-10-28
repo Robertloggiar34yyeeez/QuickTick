@@ -40,6 +40,9 @@ struct SettingsView: View {
     @State private var activeSection: SettingsDestination = .appearance
     @State private var mobileCLIPInstalled = MobileCLIPRealLifeEncoder.isInstalled()
     @State private var mobileCLIPInstalling = false
+    @State private var mobileCLIP2Installed = MobileCLIP2RealLifeEncoder.isInstalled()
+    @State private var mobileCLIP2Installing = false
+    @State private var importingMobileCLIP2 = false
     @State private var mobileCLIPError: String?
     @State private var showingTasteWrapped = false
 
@@ -422,8 +425,24 @@ struct SettingsView: View {
                 .accessibilityIdentifier("install-mobileclip-button")
                 Text("Optional Apple on-device model for real-life visual similarity. Keeps anime and photo tastes separate; existing tags still determine specific themes. Runs during idle visual analysis, never during video playback.")
                     .font(.footnote).foregroundStyle(.secondary)
+                Button {
+                    importingMobileCLIP2 = true
+                } label: {
+                    HStack(spacing: 10) {
+                        if mobileCLIP2Installing { InfinityLoader(size: 22) }
+                        else { Image(systemName: mobileCLIP2Installed ? "checkmark.circle.fill" : "square.and.arrow.down") }
+                        Text(mobileCLIP2Installed ? "MobileCLIP2-S0 ready" : (mobileCLIP2Installing ? "Importing MobileCLIP2…" : "Import MobileCLIP2-S0 Core ML"))
+                        Spacer()
+                    }
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .disabled(mobileCLIP2Installing || mobileCLIP2Installed)
+                .accessibilityIdentifier("import-mobileclip2-button")
+                Text("Newer real-life taste encoder. Apple's MobileCLIP2-S0 release is a PyTorch checkpoint: select a separately converted 256×256 Core ML image model (.mlpackage or .mlmodelc). QuickTick validates it, then prefers it during idle analysis; otherwise it safely keeps MobileCLIP-S0 or Vision.")
+                    .font(.footnote).foregroundStyle(.secondary)
                 if let mobileCLIPError {
-                    Text("MobileCLIP installation failed: \(mobileCLIPError)")
+                    Text("Visual model installation failed: \(mobileCLIPError)")
                         .font(.footnote).foregroundStyle(.orange)
                 }
                 ManualVisualRefreshPanel(manager: store.downloads)
@@ -501,6 +520,25 @@ struct SettingsView: View {
                 switch result {
                 case .success(let url): Task { await store.previewRecommendationImport(url) }
                 case .failure(let error): store.profileTransferError = error.localizedDescription
+                }
+            }
+            .fileImporter(isPresented: $importingMobileCLIP2, allowedContentTypes: [
+                UTType(filenameExtension: "mlpackage", conformingTo: .package) ?? .package,
+                UTType(filenameExtension: "mlmodelc", conformingTo: .package) ?? .package
+            ]) { result in
+                switch result {
+                case .success(let url):
+                    mobileCLIP2Installing = true
+                    mobileCLIPError = nil
+                    Task {
+                        do {
+                            try await MobileCLIP2RealLifeEncoder.shared.install(from: url)
+                            mobileCLIP2Installed = true
+                            store.visualModelDidInstall()
+                        } catch { mobileCLIPError = error.localizedDescription }
+                        mobileCLIP2Installing = false
+                    }
+                case .failure(let error): mobileCLIPError = error.localizedDescription
                 }
             }
             .fileExporter(isPresented: $exportingProfileFile, document: exportProfileFile,

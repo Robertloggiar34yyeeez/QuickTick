@@ -29,6 +29,61 @@ struct LocalStateStore {
     }
 }
 
+/// Fast launch metadata snapshot. This is distinct from recommendation
+/// training state: a feed preview can be discarded without losing taste,
+/// dislikes, downloads, or user settings.
+struct FeedPreviewSnapshot: Codable, Sendable {
+    let provider: Provider
+    let query: String
+    let sort: String
+    let mediaOnly: Bool
+    let savedAt: Date
+    let posts: [Post]
+}
+
+actor FeedPreviewPersistence {
+    private let url: URL
+    init(directory: URL? = nil) {
+        let base = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Quicktick", isDirectory: true)
+        url = base.appendingPathComponent("feed-preview-v1.json")
+    }
+
+    func load(provider: Provider, query: String, sort: String, mediaOnly: Bool) -> [Post] {
+        guard let snapshot = validSnapshot(),
+              snapshot.provider == provider, snapshot.query == query,
+              snapshot.sort == sort, snapshot.mediaOnly == mediaOnly else { return [] }
+        return Array(snapshot.posts.prefix(48))
+    }
+
+    func recentProvider() -> Provider? {
+        guard let snapshot = validSnapshot(), snapshot.query.isEmpty,
+              snapshot.sort == "recommended", !snapshot.mediaOnly else { return nil }
+        return snapshot.provider
+    }
+
+    private func validSnapshot() -> FeedPreviewSnapshot? {
+        guard let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode(FeedPreviewSnapshot.self, from: data),
+              snapshot.savedAt > Date().addingTimeInterval(-7 * 24 * 60 * 60) else { return nil }
+        return snapshot
+    }
+
+    func save(_ posts: [Post], provider: Provider, query: String, sort: String, mediaOnly: Bool) {
+        guard !posts.isEmpty else { return }
+        let snapshot = FeedPreviewSnapshot(provider: provider, query: query, sort: sort,
+                                           mediaOnly: mediaOnly, savedAt: .now,
+                                           posts: Array(posts.prefix(48)))
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(snapshot).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } catch {
+            // A temporary disk/file-protection failure must never make a
+            // healthy network feed fail to render on its first paint.
+        }
+    }
+}
+
 extension QuicktickSyncSnapshot {
     static var empty: Self {
         Self(updatedAt: 0, favorites: [:], favoriteMeta: [:], rule34: .init(updatedAt: 0, credentials: .init()), pornhub: .init(updatedAt: 0, auth: .init()), exclusions: .init(updatedAt: 0, tags: []), preferences: .init(updatedAt: 0, value: .init()))

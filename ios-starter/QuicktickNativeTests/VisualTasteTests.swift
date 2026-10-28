@@ -275,6 +275,14 @@ final class VisualTasteTests: XCTestCase {
         XCTAssertGreaterThan(profile.score(mobile), profile.score(vision))
         profile.record(.like, features: vision)
         XCTAssertEqual(profile.clusters, [[0, 1, 0]])
+        let mobile2 = VisualFeatures(domain: .realLife, attributes: ["setting:portrait": 1],
+            embedding: [0, 0, 1], version: MobileCLIP2RealLifeEncoder.version)
+        profile.record(.like, features: mobile2)
+        XCTAssertEqual(profile.embeddingSpace, "mobileclip2-s0-image")
+        XCTAssertEqual(profile.clusters, [[0, 0, 1]])
+        XCTAssertEqual(profile.attributes["setting:portrait"]?.positive, 4)
+        profile.record(.like, features: mobile)
+        XCTAssertEqual(profile.clusters, [[0, 0, 1]])
         let restored = try JSONDecoder().decode(VisualProfile.self, from: JSONEncoder().encode(profile))
         XCTAssertEqual(restored, profile)
     }

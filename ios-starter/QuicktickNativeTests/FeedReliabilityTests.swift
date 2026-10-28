@@ -39,6 +39,28 @@ private final class CandidatePageProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 final class FeedReliabilityTests: XCTestCase {
+    func testFeedPreviewRestoresBeforeNetworkAndKeepsProviderScope() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = FeedPreviewPersistence(directory: directory)
+        let cold = await cache.load(provider: .rule34, query: "", sort: "recommended", mediaOnly: false)
+        XCTAssertTrue(cold.isEmpty)
+        let post = Post(key: "eporner:preview", id: "preview", provider: "eporner",
+                        tags: ["cosplay"], thumbUrl: "https://example.com/p.jpg", type: "video")
+        await cache.save([post], provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        let restoredProvider = await cache.recentProvider()
+        XCTAssertEqual(restoredProvider, .eporner)
+        let restored = await cache.load(provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        XCTAssertEqual(restored.map(\.stableID), [post.stableID])
+        let otherProvider = await cache.load(provider: .rule34, query: "", sort: "recommended", mediaOnly: false)
+        let otherSearch = await cache.load(provider: .eporner, query: "cosplay", sort: "recommended", mediaOnly: false)
+        XCTAssertTrue(otherProvider.isEmpty)
+        XCTAssertTrue(otherSearch.isEmpty)
+        await cache.save([], provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        let afterEmptySave = await cache.load(provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        XCTAssertEqual(afterEmptySave.count, 1,
+                       "A temporarily empty network response must not erase the last usable feed")
+    }
     func testSavedMediaSearchMatchesTitlesTagsAndProvidersWithoutNetwork() {
         var liked = Post(key: "rule34:star", id: "star", provider: "Rule34",
                          tags: ["space_opera", "blue_hair"], type: "image")

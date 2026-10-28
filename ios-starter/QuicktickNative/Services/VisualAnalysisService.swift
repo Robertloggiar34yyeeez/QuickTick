@@ -115,6 +115,7 @@ actor VisualAnalysisService {
     }
     func releaseModels() async {
         await animeTagger.release()
+        await MobileCLIP2RealLifeEncoder.shared.release()
         await MobileCLIPRealLifeEncoder.shared.release()
     }
     private let directory: URL
@@ -322,10 +323,13 @@ actor VisualAnalysisService {
     private func revision(_ post: Post) -> String {
         let sources = [post.mediaUrl, post.previewUrl, post.thumbUrl].map { FeedExclusions.canonicalMediaURL($0) ?? $0 }
         let content = (sources + [post.tags.sorted().joined(separator: " "), post.category ?? "", post.type, post.creator ?? ""]).joined(separator: "|")
-        let realLifeModel = VisualDomain.classify(post).map {
+        let eligible = VisualDomain.classify(post).map {
             VisualAppearanceEncoder.prefersMobileCLIP(domain: $0, provider: post.provider)
-        } == true && MobileCLIPRealLifeEncoder.isInstalled()
-        return TasteConcepts.version + "|kemono-wd-v1|hhaven-wd-v1|irl-frames-v1|appearance-wd-v3-fp16|" + (realLifeModel ? MobileCLIPRealLifeEncoder.version : "vision")
+        } == true
+        let encoderVersion = eligible && MobileCLIP2RealLifeEncoder.isInstalled()
+            ? MobileCLIP2RealLifeEncoder.version
+            : eligible && MobileCLIPRealLifeEncoder.isInstalled() ? MobileCLIPRealLifeEncoder.version : "vision"
+        return TasteConcepts.version + "|kemono-wd-v1|hhaven-wd-v1|irl-frames-v1|appearance-wd-v3-fp16|" + encoderVersion
             + "|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.

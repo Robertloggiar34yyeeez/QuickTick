@@ -610,6 +610,30 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertFalse(blocked.contains(where: { $0.term == "pokemon" }))
     }
 
+    func testFranchiseDiscoveryPrefersPublicPopularSeriesBeyondLikedFranchises() {
+        let liked = Post(key: "rule34:old", id: "old", provider: "rule34", score: 900,
+            tags: ["pokemon"], thumbUrl: "https://example.com/liked.jpg", type: "image")
+        let popular = [
+            Post(key: "rule34:pop", id: "pop", provider: "rule34", score: 300,
+                 tags: ["pokemon"], thumbUrl: "https://example.com/pokemon.jpg", type: "image"),
+            Post(key: "rule34:zelda", id: "zelda", provider: "rule34", score: 200,
+                 tags: ["the_legend_of_zelda"], thumbUrl: "https://example.com/zelda.jpg", type: "image"),
+            Post(key: "rule34:ff", id: "ff", provider: "rule34", score: 160,
+                 tags: ["final_fantasy"], thumbUrl: "https://example.com/ff.jpg", type: "image")
+        ]
+        let result = HomeThemeSuggestions.make(provider: .rule34, learned: ["pokemon"],
+            chosen: ["pokemon"], visual: [], favorites: [liked], posts: [liked],
+            popular: popular, excluded: [], limit: 3, mode: .franchises)
+        XCTAssertEqual(result.count, 3)
+        XCTAssertEqual(Set(result.map(\.term)), Set(["pokemon", "the_legend_of_zelda", "final_fantasy"]))
+        XCTAssertNotEqual(result.first?.term, "pokemon", "A liked franchise must not monopolize discovery")
+        XCTAssertTrue(result.allSatisfy { $0.imageURL.hasPrefix("https://example.com/") })
+        let excluded = HomeThemeSuggestions.make(provider: .rule34, learned: [],
+            chosen: [], visual: [], favorites: [liked], posts: [liked],
+            popular: popular, excluded: ["pokemon"], limit: 3, mode: .franchises)
+        XCTAssertFalse(excluded.contains(where: { $0.term == "pokemon" }))
+    }
+
     func testPornhubHomeCategoryUsesActualCategoryParameter() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()

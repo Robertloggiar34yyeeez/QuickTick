@@ -260,6 +260,8 @@ final class AppStore: ObservableObject {
     private var pageFlight: Task<Void, Never>?
     private var local = LocalAppState()
     private let localStorage: LocalStateStore
+    private let feedPreviewPersistence: FeedPreviewPersistence
+    private var warmFeedRestored = false
     @Published private(set) var syncStatus = "Not yet synced"
     @Published private(set) var syncFailed = false
     @Published private(set) var isSyncing = false
@@ -281,6 +283,7 @@ final class AppStore: ObservableObject {
 
     init(api: QuicktickAPIClient = QuicktickAPIClient(), localStorage: LocalStateStore = LocalStateStore()) {
         self.localStorage = localStorage
+        self.feedPreviewPersistence = FeedPreviewPersistence(directory: localStorage.url.deletingLastPathComponent())
         self.api = api
         players.onPlaybackStart = { [weak self] in
             self?.idleTask?.cancel()
@@ -350,6 +353,19 @@ final class AppStore: ObservableObject {
         local.snapshot.pornhub.auth.session = credentials.pornhubSession
         await api.setCredentials(credentials)
         downloads.onCompleted = { [weak self] post in Task { await self?.record(.download, post: post) } }
+        if let previousProvider = await feedPreviewPersistence.recentProvider() {
+            selectedProvider = previousProvider
+        }
+        let cached = await feedPreviewPersistence.load(provider: selectedProvider, query: queryText,
+                                                       sort: feedSort, mediaOnly: false)
+        if !cached.isEmpty {
+            let banned = exclusions + QueryParser.parse(queryText).excluded + tasteChoice(for: selectedProvider).notInto
+            let visible = cached.filter { !RecommendationTagRules.rejects($0, exclusions: banned) }
+            if !visible.isEmpty {
+                posts = visible; encountered = Set(visible.map(\.stableID))
+                warmFeedRestored = true
+            }
+        }
         bootstrapped = true
         visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil
         await refresh()
@@ -531,6 +547,8 @@ final class AppStore: ObservableObject {
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
         let previousVisible = posts
+        let keepWarmFeed = warmFeedRestored && !previousVisible.isEmpty && activeTab == 0
+        warmFeedRestored = false
         let mediaOnly = immersive || activeTab == 1
         feedMediaOnly = mediaOnly
         protectedImmersiveIDs = []; immersivePlaybackID = nil
@@ -714,7 +732,15 @@ final class AppStore: ObservableObject {
                     favoriteIDs: favoriteExclusionIDs)
             }
             guard generation == token, !Task.isCancelled else { return }
-            posts = immediate
+            posts = immediate.isEmpty && keepWarmFeed ? previousVisible : immediate
+            if !immediate.isEmpty {
+                let snapshot = immediate
+                let persistence = feedPreviewPersistence
+                Task(priority: .utility) {
+                    await persistence.save(snapshot, provider: provider, query: requestedQuery,
+                                           sort: requestedSort, mediaOnly: mediaOnly)
+                }
+            }
             if tasteRanked {
                 await recommendations.recordOffered(immediate)
                 scheduleRecommendationPersistence()
@@ -726,7 +752,9 @@ final class AppStore: ObservableObject {
             recommendationMode = "On-device recommendations"
             scheduleIdleIntelligence()
             if generation == token, !restoreFailed {
-                if immediate.isEmpty {
+                if immediate.isEmpty && keepWarmFeed {
+                    lastError = nil // Keep a usable, filtered offline-first screen.
+                } else if immediate.isEmpty {
                     if ProviderSearchCategories.split(parsed, provider: provider).category != nil {
                         lastError = "No posts found in this category. Choose a different Home category or clear the filter."
                     } else if directCatalog && provider == .hhaven {
@@ -743,7 +771,7 @@ final class AppStore: ObservableObject {
                 } else { lastError = nil }
             }
         } catch {
-            if generation == token, !Task.isCancelled { recordFeedError(error, provider: provider) }
+            if generation == token, !Task.isCancelled, !keepWarmFeed { recordFeedError(error, provider: provider) }
         }
     }
 
@@ -814,6 +842,14 @@ final class AppStore: ObservableObject {
                 guard generation == token, !Task.isCancelled else { return }
             }
             posts.append(contentsOf: ranked)
+            if !ranked.isEmpty {
+                let snapshot = Array(posts.prefix(48)), persistence = feedPreviewPersistence
+                let query = queryText, sort = feedSort, mediaOnly = feedMediaOnly
+                Task(priority: .utility) {
+                    await persistence.save(snapshot, provider: provider, query: query,
+                                           sort: sort, mediaOnly: mediaOnly)
+                }
+            }
             if personalizedPage {
                 await recommendations.recordOffered(ranked)
                 scheduleRecommendationPersistence()

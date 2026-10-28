@@ -6,8 +6,11 @@ enum HanimeGeneratedAPI {
     static let settingKey = "quicktick-hanime-api-url"
 
     static func mediaHeaders(for url: URL) -> [String: String] {
-        url.scheme == "https" && url.host == "hanime.tv" && url.path.hasPrefix("/hls/")
-            ? ["Referer": "https://hanime.tv/"] : [:]
+        guard url.scheme == "https" else { return [:] }
+        let isStream = url.host == "hanime.tv" && url.path.hasPrefix("/hls/")
+        let isPoster = url.host == "cdn.hanime.tv" &&
+            ["jpg", "jpeg", "png", "webp", "avif"].contains(url.pathExtension.lowercased())
+        return isStream || isPoster ? ["Referer": "https://hanime.tv/"] : [:]
     }
 
     static var configuredURL: URL? {

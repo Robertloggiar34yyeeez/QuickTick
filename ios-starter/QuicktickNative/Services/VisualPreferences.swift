@@ -3,7 +3,13 @@ import Foundation
 enum VisualDomain: String, Codable, Sendable {
     case anime, threeD, realLife, mixed, uncertain
     static func classify(_ post: Post) -> Self? {
-        if post.providerKey == .coomer && !post.isAudio { return .realLife }
+        if !post.isAudio {
+            // Both sources are IRL catalogs. Treat their often sparse/loose
+            // tags as description, not evidence to switch the visual model.
+            if post.providerKey == .coomer || post.providerKey == .erome { return .realLife }
+            // Hanime's animated catalog always uses the anime WD Tagger path.
+            if post.providerKey == .hanime { return .anime }
+        }
         let tags = Set((post.tags + [post.category].compactMap { $0 }).map { $0.lowercased().replacingOccurrences(of: " ", with: "_") })
         let normalized = Set(tags.map(RecommendationTagRules.canonical))
         let flat = !normalized.isDisjoint(with: ["2d", "2d_art", "illustration", "drawing", "manga", "2d_animation", "medium:2d"])
@@ -21,11 +27,11 @@ enum VisualDomain: String, Codable, Sendable {
         // Public IRL video APIs rarely send a reliable `photo` tag at all;
         // treating them as "uncertain" suppressed every learned scene/camera
         // match. Explicit 2D/3D tags above always take precedence.
-        if post.providerKey.map({ [Provider.pornhub, .eporner, .redgifs, .erome].contains($0) }) == true { return .realLife }
+        if post.providerKey.map({ [Provider.pornhub, .eporner, .redgifs].contains($0) }) == true { return .realLife }
         // Hentai Haven's older saved posts can lack the synthetic `hentai`
         // tag. The provider is animated content even when its title supplies
         // no descriptive tags. Explicit photo/3D/mixed evidence above wins.
-        if !post.isAudio && (post.providerKey == .hhaven || post.providerKey == .hanime || post.providerKey == .nhentai) { return .anime }
+        if !post.isAudio && (post.providerKey == .hhaven || post.providerKey == .nhentai) { return .anime }
         return .uncertain
     }
 }

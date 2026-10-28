@@ -319,10 +319,16 @@ final class IntelligentRecommendationTests: XCTestCase {
     }
     func testContentBasedMediaClassificationAcrossProviders() {
         for provider in Provider.allCases {
-            // Coomer's real-life source is intentionally not reclassified by
-            // untrusted metadata tags; its illustrated-looking tags are not proof.
-            if provider == .coomer {
+            // Erome and Coomer use the IRL embedding/profile even when public
+            // catalog tags contain ambiguous words such as "2d" or "anime".
+            if provider == .coomer || provider == .erome {
                 XCTAssertEqual(VisualDomain.classify(post("a", ["2d"], provider: provider.rawValue)), .realLife)
+                XCTAssertEqual(VisualDomain.classify(post("b", ["3dcg", "anime"], provider: provider.rawValue)), .realLife)
+                continue
+            }
+            if provider == .hanime {
+                XCTAssertEqual(VisualDomain.classify(post("a", ["photo"], provider: provider.rawValue)), .anime)
+                XCTAssertEqual(VisualDomain.classify(post("b", ["3dcg"], provider: provider.rawValue)), .anime)
                 continue
             }
             XCTAssertEqual(VisualDomain.classify(post("a", ["2d"], provider: provider.rawValue)), .anime)
@@ -331,8 +337,8 @@ final class IntelligentRecommendationTests: XCTestCase {
             XCTAssertEqual(VisualDomain.classify(post("d", ["photo", "3d"], provider: provider.rawValue)), .mixed)
             // Catalog entries from these anime-only sources retain their known
             // medium until explicit photograph/3D evidence overrides it.
-            let expected: VisualDomain = ([Provider.hanime, .nhentai].contains(provider) ? .anime :
-                ([Provider.pornhub, .eporner, .redgifs, .erome].contains(provider) ? .realLife : .uncertain))
+            let expected: VisualDomain = provider == .nhentai ? .anime :
+                ([Provider.pornhub, .eporner, .redgifs].contains(provider) ? .realLife : .uncertain)
             XCTAssertEqual(VisualDomain.classify(post("e", ["animated", "realistic"], provider: provider.rawValue)), expected)
         }
     }

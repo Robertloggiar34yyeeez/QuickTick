@@ -331,7 +331,11 @@ actor VisualAnalysisService {
         let encoderVersion = eligible && MobileCLIP2RealLifeEncoder.isInstalled()
             ? MobileCLIP2RealLifeEncoder.version
             : eligible && MobileCLIPRealLifeEncoder.isInstalled() ? MobileCLIPRealLifeEncoder.version : "vision"
-        return TasteConcepts.version + "|kemono-wd-v1|hhaven-wd-v1|irl-frames-v1|appearance-wd-v3-fp16|" + encoderVersion
+        // Only invalidate these two providers' old visual snapshots when the
+        // source-to-encoder policy changes; don't rescan every saved source.
+        let routingRevision = post.providerKey == .hanime ? "|hanime-wd-v2"
+            : (post.providerKey == .erome ? "|erome-irl-v2" : "")
+        return TasteConcepts.version + "|kemono-wd-v1|hhaven-wd-v1|irl-frames-v1|appearance-wd-v3-fp16|" + encoderVersion + routingRevision
             + "|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.

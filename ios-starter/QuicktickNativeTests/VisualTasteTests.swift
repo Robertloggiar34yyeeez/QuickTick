@@ -258,6 +258,29 @@ final class VisualTasteTests: XCTestCase {
         let taggedAnime = Post(key: "anime", id: "2", provider: "redgifs", tags: ["2d", "anime"], type: "video")
         XCTAssertEqual(VisualDomain.classify(taggedAnime), .anime)
     }
+    func testHanimeUsesWDTaggerAndEromeUsesIRLVisualTaste() {
+        let hanime = Post(key: "hanime:fantasy", id: "fantasy", provider: "Hanime",
+                          tags: ["photo"], thumbUrl: "https://cdn.hanime.tv/poster.jpg", type: "video")
+        let erome = Post(key: "erome:ABC123", id: "ABC123", provider: "Erome",
+                         tags: ["2d", "anime"], thumbUrl: "https://s7.erome.com/album/poster.jpg", type: "video")
+        XCTAssertEqual(VisualDomain.classify(hanime), .anime)
+        XCTAssertTrue(AnimeVisualRecommendationPolicy.usesWDTagger(hanime, domain: .anime))
+        XCTAssertTrue(AnimeVisualRecommendationPolicy.fetchesIdlePreview(hanime,
+            domain: .anime, favorite: false, disliked: false, lightweight: false))
+        XCTAssertFalse(VisualAppearanceEncoder.prefersMobileCLIP(domain: .anime, provider: hanime.provider))
+        XCTAssertFalse(IRLVideoFrameSamplingPlan.eligible(hanime, domain: .anime))
+        XCTAssertEqual(TasteConcepts.profileKey(hanime), "hanime|anime")
+        XCTAssertEqual(HanimeGeneratedAPI.mediaHeaders(for: URL(string: hanime.thumbUrl)!),
+                       ["Referer": "https://hanime.tv/"])
+
+        XCTAssertEqual(VisualDomain.classify(erome), .realLife)
+        XCTAssertFalse(AnimeVisualRecommendationPolicy.usesWDTagger(erome, domain: .realLife))
+        XCTAssertTrue(VisualAppearanceEncoder.prefersMobileCLIP(domain: .realLife, provider: erome.provider))
+        XCTAssertTrue(IRLVideoFrameSamplingPlan.eligible(erome, domain: .realLife))
+        XCTAssertEqual(TasteConcepts.profileKey(erome), "erome|realLife")
+        XCTAssertEqual(EromeGeneratedAPI.mediaHeaders(for: URL(string: erome.thumbUrl)!),
+                       ["Referer": "https://www.erome.com/"])
+    }
     func testMobileCLIPMigrationNeverComparesOrBlendsVisionVectors() throws {
         let vision = VisualFeatures(domain: .realLife, attributes: ["setting:portrait": 1], embedding: [1, 0, 0], version: "vision-featureprint-r2-v2")
         let mobile = VisualFeatures(domain: .realLife, attributes: ["setting:portrait": 1], embedding: [0, 1, 0], version: MobileCLIPRealLifeEncoder.version)

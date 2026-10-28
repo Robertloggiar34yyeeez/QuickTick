@@ -114,6 +114,11 @@ actor MediaImagePipeline {
             let session = session
             pending = Task {
                 var request = URLRequest(url: url); request.timeoutInterval = 20
+                let sourceHeaders = EromeGeneratedAPI.mediaHeaders(for: url)
+                    .merging(HanimeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
+                for (header, value) in sourceHeaders {
+                    request.setValue(value, forHTTPHeaderField: header)
+                }
                 let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), data.count <= 32 * 1024 * 1024 else { throw URLError(.badServerResponse) }
                 return data

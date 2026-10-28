@@ -66,7 +66,9 @@ actor IRLVideoFrameSampler {
         else if let resolver { media = try? await resolver.resolve(post).mediaUrlURL }
         else { media = nil }
         guard !Task.isCancelled, let media, valid(media) else { return [] }
-        let asset = AVURLAsset(url: media)
+        let headers = EromeGeneratedAPI.mediaHeaders(for: media)
+        let asset = headers.isEmpty ? AVURLAsset(url: media)
+            : AVURLAsset(url: media, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         guard let duration = try? await asset.load(.duration) else { return [] }
         let times = IRLVideoFrameSamplingPlan.times(duration: duration.seconds)
         guard !times.isEmpty, !Task.isCancelled else { return [] }

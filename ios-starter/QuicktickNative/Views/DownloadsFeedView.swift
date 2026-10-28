@@ -45,11 +45,13 @@ enum DownloadExporter {
 
 struct DownloadsFeedView: View {
     @EnvironmentObject private var store: AppStore
-    var body: some View { DownloadContent(manager: store.downloads) }
+    var onImmersiveChange: (Bool) -> Void = { _ in }
+    var body: some View { DownloadContent(manager: store.downloads, onImmersiveChange: onImmersiveChange) }
 }
 
 private struct DownloadContent: View {
     @ObservedObject var manager: DownloadManager
+    var onImmersiveChange: (Bool) -> Void = { _ in }
     @State private var immersive = false
     @State private var rhythm = false
     @State private var immersivePostID: String?
@@ -171,6 +173,9 @@ private struct DownloadContent: View {
                     selecting = false
                 }
             } message: { Text("The saved files will be removed from this device. This cannot be undone.") }
+            .onAppear { onImmersiveChange(immersive) }
+            .onChange(of: immersive) { _, value in onImmersiveChange(value) }
+            .onDisappear { onImmersiveChange(false) }
     }
     private var selectionControls: some View {
         VStack(spacing: 10) {

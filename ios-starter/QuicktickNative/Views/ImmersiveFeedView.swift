@@ -26,6 +26,7 @@ struct ImmersiveFeedView: View {
     @State private var activeSince = Date.distantPast
     @State private var verticalDrag: CGFloat = 0
     @State private var horizontalCloseDrag: CGFloat = 0
+    @State private var closing = false
     @State private var dragAxis: ImmersiveDragAxis?
     @State private var searchVisible = false
     @State private var preferencesVisible = false
@@ -46,7 +47,7 @@ struct ImmersiveFeedView: View {
                 ?? (offline ? store.activeTab == 3 : (onClose != nil ? store.activeTab == 0 : store.activeTab == 1)))
     }
     private var playbackOwner: String { offline ? "offline-immersive" : (collectionTab == 2 ? "favorites-immersive" : (onClose != nil ? "home-immersive" : "immersive")) }
-    private var interactiveCloseAllowed: Bool { onClose != nil && (offline || collectionTab == 2) }
+    private var interactiveCloseAllowed: Bool { true }
 
     private var adjacentPost: Post? {
         let next = activeIndex + (verticalDrag < 0 ? 1 : -1)
@@ -203,6 +204,7 @@ struct ImmersiveFeedView: View {
     }
 
     private func updatePan(_ translation: CGSize, viewport: CGSize) {
+        guard !closing else { return }
         if dragAxis == nil {
             if interactiveCloseAllowed && translation.width > 12 &&
                 translation.width > abs(translation.height) * 1.2 {
@@ -229,9 +231,20 @@ struct ImmersiveFeedView: View {
         if dragAxis == .horizontal {
             let complete = horizontalCloseDrag >= viewport.width * 0.28 ||
                 (horizontalCloseDrag >= 50 && velocity.width >= 650)
-            if complete, let onClose {
-                withAnimation(.interactiveSpring(response: 0.26, dampingFraction: 0.91)) {
-                    onClose()
+            if complete {
+                closing = true
+                // Finish the finger-driven exit before switching the host.
+                // Dismissing at the start of the spring used to flash the
+                // destination and leave the outgoing frame half visible.
+                withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.93)) {
+                    horizontalCloseDrag = viewport.width
+                }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(220))
+                    if let onClose { onClose() }
+                    else { await store.selectFeedTab(0) }
+                    horizontalCloseDrag = 0
+                    closing = false
                 }
             } else {
                 withAnimation(.interactiveSpring(response: 0.25, dampingFraction: 0.88)) {
@@ -454,7 +467,6 @@ private struct ImmersiveItemView: View {
     let collection: Bool
     @ObservedObject var previews: ImmersivePreviewCache
     let onPageSwipe: (CGSize, CGSize, Bool) -> Void
-    @State private var mediaSize: CGSize?
     @State private var player: AVPlayer?
     @State private var ready = false
     @State private var introReady = true
@@ -497,31 +509,30 @@ private struct ImmersiveItemView: View {
                                            startPoint: .topLeading, endPoint: .bottomTrailing)
                         }
                         .ignoresSafeArea()
-                    if !ready || !introReady {
-                        Group {
-                            if let image = previews.images[post.stableID] {
-                                Image(uiImage: image).resizable().scaledToFill()
-                            } else if active {
-                                VStack(spacing: 12) {
-                                    Image(systemName: "play.rectangle.on.rectangle")
-                                        .font(.system(size: 40, weight: .light))
-                                    Text(post.caption?.isEmpty == false ? (post.caption ?? "") : post.provider)
-                                        .font(.headline).lineLimit(3).multilineTextAlignment(.center)
-                                    Text("Preparing preview")
-                                        .font(.caption).foregroundStyle(.white.opacity(0.6))
-                                }
-                                .foregroundStyle(.white.opacity(0.85))
-                                .padding(25)
+                    Group {
+                        if let image = previews.images[post.stableID] {
+                            Image(uiImage: image).resizable().scaledToFill()
+                        } else if active {
+                            VStack(spacing: 12) {
+                                Image(systemName: "play.rectangle.on.rectangle")
+                                    .font(.system(size: 40, weight: .light))
+                                Text(post.caption?.isEmpty == false ? (post.caption ?? "") : post.provider)
+                                    .font(.headline).lineLimit(3).multilineTextAlignment(.center)
+                                Text("Preparing preview")
+                                    .font(.caption).foregroundStyle(.white.opacity(0.6))
                             }
+                            .foregroundStyle(.white.opacity(0.85))
+                            .padding(25)
                         }
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        // Posters are already low-resolution cached previews;
-                        // a fullscreen live blur caused expensive iPad GPU
-                        // work on each transition without improving clarity.
-                        .clipped()
-                        .accessibilityHidden(true)
-                        .allowsHitTesting(false)
                     }
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .clipped()
+                    // Fade the poster out *with* the first video frame, not
+                    // one frame earlier when AVPlayer reports ready-to-play.
+                    .opacity(ready && introReady ? 0 : 1)
+                    .animation(.easeInOut(duration: 0.22), value: ready && introReady)
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "gif", active, !gifDecoded {
                     ZStack {
@@ -551,7 +562,7 @@ private struct ImmersiveItemView: View {
                         .allowsHitTesting(false)
                 }
                 if post.type.lowercased() == "gif", active, let gifURL {
-                    AnimatedGIFSurface(url: gifURL, playing: playing, onSize: { mediaSize = $0; gifDecoded = true; lastGIFSample = .now }).frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height).allowsHitTesting(false)
+                    AnimatedGIFSurface(url: gifURL, playing: playing, onSize: { _ in gifDecoded = true; lastGIFSample = .now }).frame(width: fittedSize(geo.size).width, height: fittedSize(geo.size).height).allowsHitTesting(false)
                 }
                 ImmersiveTouchSurface(id: post.stableID, onSingleTap: {
                     if post.isImmersiveMedia { playing.toggle(); playing ? player?.play() : player?.pause() }
@@ -656,7 +667,6 @@ private struct ImmersiveItemView: View {
                     let length = player.currentItem?.duration.seconds ?? 0
                     // Read already available item metadata; remote track loading
                     // must never suspend playback health/error monitoring.
-                    if let size = player.currentItem?.presentationSize, size.width > 0, size.height > 0, mediaSize != size { mediaSize = size }
                     if !restoredResume, introReady, player.currentItem?.status == .readyToPlay,
                        length.isFinite, length > 0 {
                         restoredResume = true
@@ -792,8 +802,8 @@ private struct ImmersiveItemView: View {
     }
     private func fittedSize(_ available: CGSize) -> CGSize {
         if available.width <= 600 { return available }
-        let size = mediaSize ?? post.nativeSize
-        return MediaSizing.immersive(aspect: size.map { $0.width / max(1,$0.height) } ?? 16/9, available: available)
+        return MediaSizing.immersive(aspect: post.nativeSize.map { $0.width / max(1, $0.height) } ?? 16 / 9,
+                                     available: available)
     }
     private func sampleExposure() {
         let now = Date()
@@ -956,10 +966,15 @@ struct CachedMediaImage: View {
     var onDecoded: ((DecodedMediaImage) -> Void)?
     @State private var decoded: DecodedMediaImage?
     @State private var previewDecoded: DecodedMediaImage?
+    @State private var imageRequestKey = ""
     @State private var failed = false
     var body: some View {
         Group {
-            if let image = decoded ?? previewDecoded { Image(uiImage: UIImage(cgImage: image.image)).resizable().aspectRatio(contentMode: fill ? .fill : .fit) }
+            if imageRequestKey == "\(url):\(pixels):\(comic)", let image = decoded ?? previewDecoded {
+                Image(uiImage: UIImage(cgImage: image.image))
+                    .resizable().aspectRatio(contentMode: fill ? .fill : .fit)
+                    .transition(.opacity)
+            }
             else {
                 ZStack {
                     LinearGradient(colors: [AppTheme.accent.opacity(0.24), Color(white: 0.07), AppTheme.accent.opacity(0.12)],
@@ -978,8 +993,20 @@ struct CachedMediaImage: View {
                     .padding(26)
                 }
             }
-        }.task(id: "\(url):\(pixels):\(comic)") {
-            decoded = nil; failed = false
+        }
+        .animation(.easeOut(duration: 0.16), value: decoded != nil || previewDecoded != nil)
+        .task(id: "\(url):\(pixels):\(comic)") {
+            let key = "\(url):\(pixels):\(comic)"
+            if imageRequestKey != key {
+                imageRequestKey = key
+                decoded = nil; previewDecoded = nil
+            }
+            failed = false
+            // Rehydrate instantly from the bounded shared cache after lazy
+            // rows are recycled. This avoids a second black/placeholder flash.
+            if decoded == nil, let cached = await MediaImagePipeline.shared.cachedPreview(raw: url), !Task.isCancelled {
+                decoded = cached
+            }
             do { let image = try await MediaImagePipeline.shared.image(raw: url, pixels: pixels, comicPreview: comic); try Task.checkCancellation(); decoded = image; onDecoded?(image) }
             catch { if !Task.isCancelled { failed = true } }
         }

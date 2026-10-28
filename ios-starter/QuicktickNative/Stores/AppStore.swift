@@ -468,6 +468,7 @@ final class AppStore: ObservableObject {
         var hasMore: Bool
         var context: String?
         var protected: Set<String>
+        var topic: String?
     }
     private var savedFeeds: [Int: SavedFeed] = [:]
     private var committingSearch = false
@@ -506,7 +507,7 @@ final class AppStore: ObservableObject {
         if activeTab < 2 {
             savedFeeds[activeTab] = SavedFeed(provider: selectedProvider, query: queryText, sort: feedSort, publishedQuery: publishedQuery, publishedSort: publishedSort,
                 posts: posts, encountered: Set(posts.map(\.stableID)), nextPage: publishedNextPage, hasMore: hasMore,
-                context: candidateContext, protected: protectedImmersiveIDs)
+                context: candidateContext, protected: protectedImmersiveIDs, topic: selectedTopicTerm)
         }
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel()
         generation = UUID(); feedRevision = generation; isLoading = false
@@ -515,6 +516,7 @@ final class AppStore: ObservableObject {
         feedMediaOnly = tab == 1
         if let saved = savedFeeds[tab], saved.provider == selectedProvider {
             commitSearch(query: saved.query, sort: saved.sort)
+            selectedTopicTerm = saved.topic
             let blocked = Set((exclusions + QueryParser.parse(saved.query).excluded + tasteChoice(for: selectedProvider).notInto).map { $0.lowercased() })
             posts = saved.posts.filter { !RecommendationTagRules.rejects($0, exclusions: Array(blocked)) }; encountered = saved.encountered; nextPage = saved.nextPage
             publishedNextPage = nextPage; publishedQuery = saved.publishedQuery; publishedSort = saved.publishedSort

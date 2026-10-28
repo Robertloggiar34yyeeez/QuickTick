@@ -462,23 +462,64 @@ struct QuicktickPressStyle: ButtonStyle {
 // Keep native vertical paging, AVPlayer controls and comic zoom gestures intact:
 // only an intentional rightward swipe from the extreme left edge exits.
 struct QuicktickEdgeBack: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dragX: CGFloat = 0
+    @State private var exiting = false
     let onBack: () -> Void
 
     func body(content: Content) -> some View {
-        content.overlay(alignment: .leading) {
-            Color.clear
-                .frame(width: 32)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 24).onEnded { gesture in
-                        let dx = gesture.translation.width
-                        let dy = gesture.translation.height
-                        guard dx > 80, abs(dy) < min(70, dx * 0.65) else { return }
-                        onBack()
-                    }
-                )
-                .padding(.top, 64)
-                .accessibilityHidden(true)
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                AppTheme.canvas
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
+                    .frame(width: 48, height: 48)
+                    .opacity(min(1, dragX / 90))
+                    .padding(.leading, 15)
+                    .accessibilityHidden(true)
+                content
+                    .offset(x: dragX)
+                    .shadow(color: .black.opacity(dragX > 0 ? 0.24 : 0), radius: 16, x: -6)
+                Color.clear
+                    .frame(width: 32)
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 12)
+                        .onChanged { gesture in
+                            guard !exiting, gesture.translation.width > 0,
+                                  abs(gesture.translation.height) < max(28, gesture.translation.width * 0.7) else { return }
+                            var transaction = Transaction(animation: nil)
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                dragX = min(geometry.size.width, gesture.translation.width)
+                            }
+                        }
+                        .onEnded { gesture in
+                            guard !exiting else { return }
+                            let dx = gesture.translation.width
+                            let dy = gesture.translation.height
+                            let predicted = gesture.predictedEndTranslation.width
+                            let horizontal = dx > 0 && abs(dy) < max(55, dx * 0.7)
+                            guard horizontal && (dx > 80 || predicted > 150) else {
+                                withAnimation(reduceMotion ? nil : .interactiveSpring(response: 0.3, dampingFraction: 0.88)) { dragX = 0 }
+                                return
+                            }
+                            exiting = true
+                            withAnimation(reduceMotion ? nil : .interactiveSpring(response: 0.3, dampingFraction: 0.93)) {
+                                dragX = geometry.size.width
+                            }
+                            Task { @MainActor in
+                                if !reduceMotion { try? await Task.sleep(for: .milliseconds(220)) }
+                                onBack()
+                                dragX = 0
+                                exiting = false
+                            }
+                        })
+                    .padding(.top, 64)
+                    .accessibilityHidden(true)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
         }
     }
 }

@@ -93,7 +93,8 @@ struct RootView: View {
     @AppStorage(BirthdayProfile.birthdateKey) private var birthdayDate = 0.0
     @AppStorage(BirthdayProfile.promptedKey) private var birthdayPrompted = false
     @AppStorage(BirthdayProfile.greetedYearKey) private var birthdayGreetedYear = 0
-    @State private var tabTransitionDirection: CGFloat = 1
+    @State private var tabEntranceOpacity = 1.0
+    @State private var collectionImmersive = false
     @AppStorage("quicktick-wrapped-last-week-v1") private var wrappedLastShownWeek = ""
     @State private var homeAnchor: String?
     @State private var immersiveAnchor: String?
@@ -111,11 +112,12 @@ struct RootView: View {
             navigationLayout(size: geometry.size)
         }
         .onChange(of: store.activeTab) { _, tab in
+            collectionImmersive = false
             tabNameTask?.cancel()
             guard !reduceMotion else { brieflyNamedTab = nil; return }
             withAnimation(.easeIn(duration: 0.11)) { brieflyNamedTab = tab }
             tabNameTask = Task {
-                try? await Task.sleep(for: .milliseconds(360))
+                try? await Task.sleep(for: .milliseconds(850))
                 guard !Task.isCancelled else { return }
                 withAnimation(.easeOut(duration: 0.14)) { brieflyNamedTab = nil }
             }
@@ -280,13 +282,13 @@ struct RootView: View {
             }
         case 2:
             NavigationStack {
-                FavoritesView().toolbar {
+                FavoritesView(onImmersiveChange: { collectionImmersive = $0 }).toolbar {
                     ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) }
                 }
             }
         case 3:
             NavigationStack {
-                DownloadsFeedView().toolbar {
+                DownloadsFeedView(onImmersiveChange: { collectionImmersive = $0 }).toolbar {
                     ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) }
                 }
             }
@@ -297,8 +299,9 @@ struct RootView: View {
 
     private func navigationLayout(size: CGSize) -> some View {
         let pinnedSideNavigation = ipadSidebarEnabled && size.width > 600
-        let sideNavigation = size.width > 600 && (store.activeTab == 1 || pinnedSideNavigation)
-        let bottomLength = max(1, size.width - CGFloat((modernUI ? 8 : 4) * 2))
+        let immersiveCanvas = store.activeTab == 1 || collectionImmersive
+        let sideNavigation = size.width > 600 && (immersiveCanvas || pinnedSideNavigation)
+        let bottomLength = max(1, size.width - CGFloat((modernUI ? 8 : 4) * 2) - (immersiveCanvas ? 20 : 0))
         // Keep the dock geometry as Int arithmetic until the final conversion.
         // A single mixed overloaded expression here exceeded Swift's type-check budget.
         let dockItemCount: Int = visibleTabIndices.count
@@ -306,21 +309,29 @@ struct RootView: View {
         let dockGapHeight: Int = Swift.max(0, dockItemCount - 1) * 10
         let createGapHeight: Int = aiTabVisible ? 6 : 0
         let sideLength: CGFloat = CGFloat(dockItemHeight + dockGapHeight + createGapHeight)
-        return VStack(spacing: 0) {
+        return ZStack(alignment: .bottom) {
             activeFeed
-                .id(store.activeTab)
-                .transition(.asymmetric(
-                    insertion: .offset(x: tabTransitionDirection * min(110, size.width * 0.18))
-                        .combined(with: .opacity),
-                    removal: .opacity))
-                .offset(x: sideNavigation ? 0 : navigationDrag.width * 0.20,
-                        y: sideNavigation ? navigationDrag.height * 0.14 : 0)
+                // Swapping two live media stacks through an animated
+                // transition briefly doubled decoding and player work.
+                // The dock indicator follows the finger, but the current
+                // feed must stay still during a navigation-bar scrub.
+                .opacity(tabEntranceOpacity)
                 .padding(.leading, pinnedSideNavigation && store.activeTab != 1 ? 174 : 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    // Lists reserve space to scroll past the floating bar;
+                    // immersive clips, including Likes/Downloads, fill the
+                    // canvas behind its translucent controls.
+                    if !sideNavigation && !immersiveCanvas {
+                        Color.clear.frame(height: store.audio.currentPost == nil ? 76 : 154)
+                    }
+                }
             if !sideNavigation {
-                BackgroundAudioMiniPlayer(audio: store.audio)
-                    .padding(.horizontal, 12).padding(.bottom, 3)
-                bottomDock(axisLength: bottomLength)
+                VStack(spacing: 3) {
+                    BackgroundAudioMiniPlayer(audio: store.audio)
+                        .padding(.horizontal, 12)
+                    bottomDock(axisLength: bottomLength, floating: immersiveCanvas)
+                }
             }
         }
         .frame(width: size.width, height: size.height)
@@ -335,8 +346,6 @@ struct RootView: View {
         }
         .animation(reduceMotion ? nil : .spring(response: 0.48, dampingFraction: 0.84),
                    value: sideNavigation)
-        .animation(reduceMotion ? nil : .interactiveSpring(response: 0.29, dampingFraction: 0.91),
-                   value: store.activeTab)
     }
 
     private func dockDrag(vertical: Bool, axisLength: CGFloat) -> some Gesture {
@@ -365,7 +374,7 @@ struct RootView: View {
             axisLength: axisLength, visibleIndices: visibleTabIndices)
         return RoundedRectangle(cornerRadius: 18, style: .continuous)
             .fill(AppTheme.gradient)
-            .frame(width: 138, height: 62)
+            .frame(width: brieflyNamedTab == nil ? 62 : 138, height: 62)
             .offset(y: center - 31)
             .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86),
                        value: store.activeTab)
@@ -384,7 +393,7 @@ struct RootView: View {
         }
     }
 
-    private func bottomDock(axisLength: CGFloat) -> some View {
+    private func bottomDock(axisLength: CGFloat, floating: Bool) -> some View {
         HStack(spacing: 0) { tabButtons(vertical: false, axisLength: axisLength) }
             .contentShape(Rectangle())
             .background(alignment: .leading) { bottomSelectionIndicator(axisLength: axisLength) }
@@ -393,19 +402,28 @@ struct RootView: View {
             .padding(.top, modernUI ? 8 : 4)
             .padding(.bottom, 0)
             .background {
-                if modernUI && !AppTheme.prefersOpaqueChrome {
+                if floating {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(AppTheme.prefersOpaqueChrome ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial))
+                } else if modernUI && !AppTheme.prefersOpaqueChrome {
                     Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(edges: .bottom)
                 } else {
                     AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
                 }
             }
             .overlay(alignment: .top) {
-                if modernUI {
+                if floating {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(AppTheme.border, lineWidth: 1)
+                } else if modernUI {
                     Rectangle().fill(.white.opacity(0.15)).frame(height: 0.5)
                 } else {
                     AppTheme.gradient.frame(height: 1).opacity(0.55)
                 }
             }
+            .shadow(color: .black.opacity(floating ? 0.32 : 0), radius: floating ? 16 : 0, y: 5)
+            .padding(.horizontal, floating ? 10 : 0)
+            .padding(.bottom, floating ? 8 : 0)
             .overlay(alignment: .top) { dockDestinationHint(vertical: false, axisLength: axisLength) }
             .sensoryFeedback(.selection,
                 trigger: swipePreview(vertical: false, axisLength: axisLength) ?? store.activeTab)
@@ -431,6 +449,7 @@ struct RootView: View {
             .sensoryFeedback(.selection,
                 trigger: swipePreview(vertical: true, axisLength: axisLength) ?? store.activeTab)
             .padding(.leading, 12)
+            .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: brieflyNamedTab)
             .id(aiTabVisible ? "five-side-tabs" : "four-side-tabs")
             .transition(.move(edge: .leading).combined(with: .opacity))
     }
@@ -441,16 +460,7 @@ struct RootView: View {
                                                          translation: translation, vertical: vertical,
                                                          axisLength: axisLength, visibleIndices: visibleTabIndices)
         else { return }
-        tabSelectionTask?.cancel()
-        tabTransitionDirection = CGFloat(tab < store.activeTab ? -1 : 1)
-        var refresh = false
-        withAnimation(reduceMotion ? nil : .interactiveSpring(response: 0.29, dampingFraction: 0.91)) {
-            refresh = store.beginFeedTabSelection(tab)
-        }
-        tabSelectionTask = Task { @MainActor in
-            guard !Task.isCancelled else { return }
-            if refresh { await store.refresh(immersive: tab == 1) }
-        }
+        selectTab(tab)
     }
 
     private func swipePreview(vertical: Bool, axisLength: CGFloat) -> Int? {
@@ -483,8 +493,6 @@ struct RootView: View {
                         if vertical {
                             HStack(spacing: 12) {
                                 Image(systemName: "plus").frame(width: 28)
-                                Text("Create").lineLimit(1)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .font(.system(size: 15, weight: .bold, design: .rounded))
                             .padding(.horizontal, 13)
@@ -494,7 +502,7 @@ struct RootView: View {
                         }
                     }
                         .foregroundStyle(.white)
-                        .frame(width: vertical ? 138 : 54, height: vertical ? 68 : 52)
+                        .frame(width: vertical ? (brieflyNamedTab == nil ? 62 : 138) : 54, height: vertical ? 68 : 52)
                         .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: modernUI ? 20 : 17, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 17).stroke(.white.opacity(0.25)))
                         .shadow(color: AppTheme.accent.opacity(AppTheme.isDeSlopified ? 0 : (modernUI ? 0.36 : 0.28)), radius: modernUI ? 18 : 13, y: 3)
@@ -506,37 +514,7 @@ struct RootView: View {
             } else {
                 let tabID = index < 2 ? index : index - 1
                 Button {
-                    let isRefresh = tabID < 2 && store.activeTab == tabID
-                    // Apply the selection while the button action is still
-                    // running. With an async-only switch, the next rapid tap
-                    // could be lost while SwiftUI remounted the dock.
-                    tabSelectionTask?.cancel()
-                    tabTransitionDirection = CGFloat(tabID < store.activeTab ? -1 : 1)
-                    var requiresRefresh = false
-                    withAnimation(reduceMotion ? nil : .interactiveSpring(response: 0.29, dampingFraction: 0.91)) {
-                        requiresRefresh = store.beginFeedTabSelection(tabID)
-                    }
-                    if isRefresh {
-                        refreshSpinDegrees = 0
-                        withAnimation(.smooth(duration: 0.18)) { refreshingTab = tabID }
-                        if !reduceMotion {
-                            withAnimation(.linear(duration: 1.05).repeatForever(autoreverses: false)) {
-                                refreshSpinDegrees = 360
-                            }
-                        }
-                    }
-                    tabSelectionTask = Task { @MainActor in
-                        guard !Task.isCancelled else { return }
-                        if requiresRefresh { await store.refresh(immersive: tabID == 1) }
-                        guard !Task.isCancelled else { return }
-                        if isRefresh {
-                            try? await Task.sleep(for: .milliseconds(450))
-                            if refreshingTab == tabID {
-                                withAnimation(.smooth(duration: 0.28)) { refreshingTab = nil }
-                                refreshSpinDegrees = 0
-                            }
-                        }
-                    }
+                    selectTab(tabID)
                 } label: {
                     Group {
                         if vertical {
@@ -544,10 +522,13 @@ struct RootView: View {
                                 Image(systemName: tabs[index].1)
                                     .font(.system(size: 21, weight: .semibold))
                                     .frame(width: 28)
-                                Text(tabs[index].0)
-                                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                                    .lineLimit(1).minimumScaleFactor(0.85)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if brieflyNamedTab == tabID {
+                                    Text(tabs[index].0)
+                                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                        .lineLimit(1).minimumScaleFactor(0.85)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .transition(.opacity.combined(with: .offset(x: -4)))
+                                }
                             }
                             .padding(.horizontal, 13)
                         } else if refreshingTab == tabID {
@@ -575,7 +556,7 @@ struct RootView: View {
                         }
                     }
                     .foregroundStyle(highlightedTab == tabID ? .white : .white.opacity(0.62))
-                    .frame(width: vertical ? 138 : nil, height: vertical ? 62 : 54)
+                    .frame(width: vertical ? (brieflyNamedTab == nil ? 62 : 138) : nil, height: vertical ? 62 : 54)
                     .frame(maxWidth: vertical ? nil : .infinity)
                     .contentShape(Rectangle())
                 }
@@ -586,6 +567,50 @@ struct RootView: View {
                 .accessibilityLabel(tabs[index].0)
                 .accessibilityIdentifier("tab-\(tabs[index].0)")
                 .accessibilityAddTraits(store.activeTab == tabID ? .isSelected : [])
+            }
+        }
+    }
+
+    private func selectTab(_ tabID: Int) {
+        let previous = store.activeTab
+        let isRefresh = tabID < 2 && previous == tabID
+        tabSelectionTask?.cancel()
+        if previous != tabID, !reduceMotion {
+            tabEntranceOpacity = 0.94
+        } else {
+            tabEntranceOpacity = 1
+        }
+        // Commit synchronously: quick successive taps must never be dropped.
+        let requiresRefresh = store.beginFeedTabSelection(tabID)
+        if isRefresh {
+            refreshSpinDegrees = 0
+            withAnimation(.smooth(duration: 0.18)) { refreshingTab = tabID }
+            if !reduceMotion {
+                withAnimation(.linear(duration: 1.05).repeatForever(autoreverses: false)) {
+                    refreshSpinDegrees = 360
+                }
+            }
+        } else {
+            refreshingTab = nil
+            refreshSpinDegrees = 0
+        }
+        tabSelectionTask = Task { @MainActor in
+            if previous != tabID {
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                    tabEntranceOpacity = 1
+                }
+            }
+            if requiresRefresh { await store.refresh(immersive: tabID == 1) }
+            guard !Task.isCancelled else { return }
+            if isRefresh {
+                try? await Task.sleep(for: .milliseconds(450))
+                guard !Task.isCancelled else { return }
+                if refreshingTab == tabID {
+                    withAnimation(.smooth(duration: 0.28)) { refreshingTab = nil }
+                    refreshSpinDegrees = 0
+                }
             }
         }
     }

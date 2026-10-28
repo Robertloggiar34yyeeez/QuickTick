@@ -170,6 +170,43 @@ struct HomeFeedView: View {
                     .accessibilityIdentifier("home-search-button")
                 }
                 .padding(.horizontal, 16)
+                if !store.queryText.isEmpty {
+                    HStack(spacing: 10) {
+                        Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(AppTheme.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(store.selectedTopicTerm == nil ? "Filtered feed" : "Topic selected")
+                                .font(.caption.weight(.semibold))
+                            Text(store.selectedTopicTerm?.replacingOccurrences(of: "_", with: " ") ?? store.queryText)
+                                .font(.caption2)
+                                .foregroundStyle(AppTheme.secondaryLabel)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 6)
+                        Button {
+                            // Topic cards rotate after refresh; this permanent
+                            // exit stays available even if a topic vanishes.
+                            store.commitSearch(query: "", sort: "recommended")
+                            Task { await store.refresh() }
+                        } label: {
+                            Label("For you", systemImage: "arrow.uturn.backward")
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 12)
+                                .frame(minHeight: 38)
+                                .background(AppTheme.gradient, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("home-clear-topic")
+                        .accessibilityLabel("Return to regular Recommended feed")
+                    }
+                    .padding(12)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 17).stroke(AppTheme.border))
+                    .padding(.horizontal, 16)
+                    .accessibilityIdentifier("home-active-filter")
+                }
                 if suggestedThemesEnabled && !themeSuggestions.isEmpty { suggestedThemeRow }
                 if store.selectedProvider == .hhaven || store.selectedProvider == .pornhub {
                     homeCategoryRow

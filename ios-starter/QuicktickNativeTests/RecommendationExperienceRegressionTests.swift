@@ -83,6 +83,23 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertEqual(store.queryText, "")
         XCTAssertEqual(store.selectedProvider, .kemono)
     }
+
+    @MainActor func testSuggestedTopicSurvivesTabReturnAndCanBeCleared() {
+        let store = AppStore()
+        store.commitSuggestedTopic("space_opera", excluded: [])
+        XCTAssertEqual(store.selectedTopicTerm, "space_opera")
+        XCTAssertFalse(store.queryText.isEmpty)
+
+        _ = store.beginFeedTabSelection(1)
+        _ = store.beginFeedTabSelection(0)
+        XCTAssertEqual(store.selectedTopicTerm, "space_opera")
+
+        // The persistent Home filter chip uses the same reset path.
+        store.commitSearch(query: "", sort: "recommended")
+        XCTAssertNil(store.selectedTopicTerm)
+        XCTAssertEqual(store.queryText, "")
+        XCTAssertEqual(store.feedSort, "recommended")
+    }
     func testPullRefreshRequiresTopOriginBeforeSwipe() {
         var gate = HomePullRefreshGate()
         gate.observe(startOffset: -420)

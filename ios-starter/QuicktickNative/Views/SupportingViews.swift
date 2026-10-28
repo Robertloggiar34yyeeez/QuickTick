@@ -1115,6 +1115,7 @@ struct FirstRunSetupView: View {
 
 struct FavoritesView: View {
     @EnvironmentObject private var store: AppStore
+    var onImmersiveChange: (Bool) -> Void = { _ in }
     @State private var immersive = false
     @State private var rhythm = false
     @State private var activeID: String?
@@ -1220,6 +1221,9 @@ struct FavoritesView: View {
         .fullScreenCover(isPresented: $rhythm) {
             RhythmSessionView(posts: saved.filter { $0.providerKey == .rule34 }, offline: false)
         }
+        .onAppear { onImmersiveChange(immersive) }
+        .onChange(of: immersive) { _, value in onImmersiveChange(value) }
+        .onDisappear { onImmersiveChange(false) }
     }
 }
 

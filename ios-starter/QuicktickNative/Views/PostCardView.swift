@@ -14,7 +14,6 @@ struct PostCardView: View {
     var playbackTab = 0
     var offline = false
     var onDelete: (() -> Void)?
-    @State private var nativeSize: CGSize?
     @State private var comments = false
     @State private var tags = false
     @State private var havenBrowser = false
@@ -32,7 +31,6 @@ struct PostCardView: View {
     @State private var manualPlaybackRequested = false
     @State private var playing = false
     @State private var preparing = false
-    @State private var mediaAspect: CGFloat = 4 / 3
     @State private var playbackError: String?
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
@@ -43,13 +41,15 @@ struct PostCardView: View {
     private var isWebsitePost: Bool { post.providerKey == .hhaven && post.type.lowercased() == "web" }
     private var cardRadius: CGFloat { fullBleed && !AppTheme.isDeSlopified ? 0 : AppTheme.cardRadius }
     private var mediaSize: CGSize {
+        // Reserve the final card bounds from stable post metadata. Delayed
+        // thumbnail/GIF/video dimensions must not resize a visible feed row.
         let aspect = (post.nativeSize.map {
             post.type.lowercased() == "image" && $0.height > $0.width * 4
                 ? CGFloat(2) / 3 : $0.width / $0.height
-        }) ?? mediaAspect
+        }) ?? CGFloat(4) / 3
         return fullBleed || (offline && playbackTab == 3)
             ? MediaSizing.feedCard(aspect: aspect, available: available)
-            : MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: aspect, available: available)
+            : MediaSizing.size(native: post.nativeSize, aspect: aspect, available: available)
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -233,10 +233,9 @@ struct PostCardView: View {
                         .opacity(ready && introReady ? 1 : 0)
                 }.aspectRatio(mediaSize.width / max(1,mediaSize.height), contentMode: .fit)
             } else if let gifURL {
-                AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true, onSize: { nativeSize = $0; mediaAspect = $0.width / max(1,$0.height) })
+                AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true)
             } else if post.type.lowercased() == "image" {
                 CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl, pixels: Int(mediaSize.width * 3), comic: true, fill: true) { decoded in
-                    nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height)
                     store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
                 }
             } else { PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
@@ -391,12 +390,8 @@ struct PostCardView: View {
                 }
             }
             player = p; preparing = false
-            // Start playback first; size discovery adjusts the card independently.
-            if let asset = p.currentItem?.asset, let track = try? await asset.loadTracks(withMediaType: .video).first,
-               let size = try? await track.load(.naturalSize), let transform = try? await track.load(.preferredTransform) {
-                let display = size.applying(transform)
-                if !Task.isCancelled, store.inlinePlaybackID == post.stableID, abs(display.height) > 0 { nativeSize = CGSize(width: abs(display.width), height: abs(display.height)); mediaAspect = abs(display.width / display.height) }
-            }
+            // Playback metadata may arrive seconds later; card geometry stays
+            // fixed so the LazyVStack never jumps while a video starts.
             if store.pausedPlaybackID != post.stableID, store.activeTab == 0 { store.recordImpression(post) }
             while !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }

@@ -22,12 +22,6 @@ struct SettingsView: View {
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
-    @AppStorage("quicktick-rhythm-finish-text-v1") private var rhythmFinishText = "Beautiful rhythm. Session complete."
-    @AppStorage("quicktick-rhythm-finish-style-v1") private var rhythmFinishStyle = "Glow"
-    @AppStorage("quicktick-rhythm-finish-animation-v1") private var rhythmFinishAnimation = "Scale"
-    @AppStorage("quicktick-rhythm-mode-v1") private var rhythmMode = "adaptive"
-    @AppStorage("quicktick-rhythm-metronome-v1") private var rhythmClicks = false
-    @AppStorage("quicktick-rhythm-haptics-v1") private var rhythmHaptics = true
     @State private var status = ""
     @State private var user = ""
     @State private var key = ""
@@ -454,26 +448,7 @@ struct SettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }.id(SettingsDestination.playback.rawValue)
             SettingsGroup(title: "Rhythm & floating player", icon: "waveform.path") {
-                Picker("Default rhythm", selection: $rhythmMode) {
-                    ForEach(RhythmPattern.allCases) { mode in Text(mode.title).tag(mode.rawValue) }
-                }
-                Toggle("Metronome sounds", isOn: $rhythmClicks)
-                    .modifier(SettingsControlRow())
-                Toggle("Beat haptics", isOn: $rhythmHaptics)
-                    .modifier(SettingsControlRow())
-                TextField("Completion message", text: $rhythmFinishText, axis: .vertical)
-                    .lineLimit(2...4)
-                    .modifier(SettingsTextFieldSurface())
-                Picker("Completion appearance", selection: $rhythmFinishStyle) {
-                    ForEach(["Glow", "Glass", "Minimal"], id: \.self) { Text($0) }
-                }
-                Picker("Completion animation", selection: $rhythmFinishAnimation) {
-                    ForEach(["Scale", "Slide", "Fade"], id: \.self) { Text($0) }
-                }
-                Toggle("Mute feed audio during floating video", isOn: $store.pipMuteFeed)
-                    .modifier(SettingsControlRow())
-                Text("Otherwise feed audio is reduced to 15% while a floating video plays. Normal audio returns when it closes.")
-                    .font(.caption).foregroundStyle(.secondary)
+                RhythmSettingsControls(pipMuteFeed: $store.pipMuteFeed)
             }
             }
             .frame(maxWidth: 780)
@@ -882,9 +857,80 @@ private struct SettingsControlRow: ViewModifier {
         content
             .padding(.horizontal, 12)
             .frame(minHeight: 50)
+            // Settings already have a bordered group surface. Avoid a second
+            // translucent stroke on every scrolling row (and the overdraw it
+            // caused on older iPhones).
             .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous)
-                .stroke(AppTheme.border.opacity(0.65), lineWidth: 1))
+    }
+}
+
+/// Own lightweight preferences locally so frequent player/feed publications
+/// do not reconstruct the rhythm pickers while Settings is being scrolled.
+private struct RhythmSettingsControls: View {
+    @AppStorage("quicktick-rhythm-finish-text-v1") private var finishText = "Beautiful rhythm. Session complete."
+    @AppStorage("quicktick-rhythm-finish-style-v1") private var finishStyle = "Glow"
+    @AppStorage("quicktick-rhythm-finish-animation-v1") private var finishAnimation = "Scale"
+    @AppStorage("quicktick-rhythm-mode-v1") private var rhythmMode = "adaptive"
+    @AppStorage("quicktick-rhythm-metronome-v1") private var rhythmClicks = false
+    @AppStorage("quicktick-rhythm-haptics-v1") private var rhythmHaptics = true
+    @Binding var pipMuteFeed: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Label("Default rhythm", systemImage: "waveform.path")
+                    .font(.subheadline.weight(.medium))
+                Spacer(minLength: 8)
+                Picker("Default rhythm", selection: $rhythmMode) {
+                    ForEach(RhythmPattern.allCases) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize(horizontal: true, vertical: false)
+            }
+            .modifier(SettingsControlRow())
+
+            Toggle("Metronome sounds", isOn: $rhythmClicks)
+                .modifier(SettingsControlRow())
+            Toggle("Beat haptics", isOn: $rhythmHaptics)
+                .modifier(SettingsControlRow())
+
+            Text("Session completion")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.secondaryLabel)
+                .padding(.top, 4)
+            TextField("Completion message", text: $finishText)
+                .textInputAutocapitalization(.sentences)
+                .modifier(SettingsTextFieldSurface())
+                .accessibilityIdentifier("rhythm-completion-message")
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Appearance")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                Picker("Completion appearance", selection: $finishStyle) {
+                    ForEach(["Glow", "Glass", "Minimal"], id: \.self) { Text($0).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("rhythm-finish-style")
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Animation")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                Picker("Completion animation", selection: $finishAnimation) {
+                    ForEach(["Scale", "Slide", "Fade"], id: \.self) { Text($0).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("rhythm-finish-animation")
+            }
+
+            Toggle("Mute feed audio during floating video", isOn: $pipMuteFeed)
+                .modifier(SettingsControlRow())
+            Text("When off, feed audio ducks to 15% during floating playback and returns afterward.")
+                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

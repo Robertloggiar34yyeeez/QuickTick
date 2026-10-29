@@ -33,7 +33,7 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         func target(_ current: Int, _ x: CGFloat, _ y: CGFloat = 0) -> Int? {
             TabSwipePolicy.scrubDestination(current: current,
                 translation: CGSize(width: x, height: y), vertical: false,
-                axisLength: 390, visibleIndices: slots)
+                axisLength: 390, visibleIndices: slots, accelerated: true)
         }
         XCTAssertEqual(target(0, 32), 1)
         XCTAssertEqual(target(0, 65), 2)
@@ -49,7 +49,7 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         func side(_ current: Int, _ y: CGFloat) -> Int? {
             TabSwipePolicy.scrubDestination(current: current,
                 translation: CGSize(width: 1, height: y), vertical: true,
-                axisLength: 260, visibleIndices: allTabs)
+                axisLength: 260, visibleIndices: allTabs, accelerated: true)
         }
         XCTAssertNil(side(1, 28))
         XCTAssertEqual(side(1, 65), 2)
@@ -60,11 +60,28 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
 
         XCTAssertEqual(TabSwipePolicy.scrubDestination(current: 1,
             translation: CGSize(width: 28, height: 2), vertical: false,
-            axisLength: 388, visibleIndices: [0, 1, 3, 4]), 2)
+            axisLength: 388, visibleIndices: [0, 1, 3, 4], accelerated: true), 2)
         let position = TabSwipePolicy.indicatorPosition(current: 0,
             translation: CGSize(width: 35, height: 0), vertical: false,
-            axisLength: 390, visibleIndices: allTabs)
+            axisLength: 390, visibleIndices: allTabs, accelerated: true)
         XCTAssertEqual(position, 131.75, accuracy: 0.01)
+    }
+
+    func testPhoneDockKeepsOriginalUnacceleratedTabDistances() {
+        let slots = [0, 1, 2, 3, 4]
+        func phone(_ dx: CGFloat) -> Int? {
+            TabSwipePolicy.scrubDestination(current: 0,
+                translation: CGSize(width: dx, height: 0), vertical: false,
+                axisLength: 390, visibleIndices: slots)
+        }
+        XCTAssertEqual(phone(85), 1)
+        XCTAssertEqual(phone(172), 2)
+        XCTAssertEqual(phone(290), 3)
+        XCTAssertNil(phone(14))
+        let indicator = TabSwipePolicy.indicatorPosition(current: 0,
+            translation: CGSize(width: 85, height: 0), vertical: false,
+            axisLength: 390, visibleIndices: slots)
+        XCTAssertEqual(indicator, 124, accuracy: 0.01)
     }
 
     @MainActor func testTypedArtistSelectionCanBeSavedFromTagsWithoutPrefix() {

@@ -593,7 +593,12 @@ final class AppStore: ObservableObject {
             // Hentai Haven has a small finite catalog; NHentai's public v2 API
             // permits only 15 anonymous catalog calls/minute. Fetch one real
             // page and rank locally rather than racing focused+broad requests.
-            let directCatalog = personalized && (provider == .hhaven || provider == .nhentai)
+            // Erome's album pages have real video URLs but very little tag
+            // metadata. A focused, two-lane recommendation search can miss
+            // every video and wait for dozens of album fetches. Start with
+            // the public video catalog and rank the resulting clips locally.
+            let directCatalog = personalized && (provider == .hhaven || provider == .nhentai ||
+                                                 (provider == .erome && mediaOnly))
             let banned = Set((exclusions + parsed.excluded + tasteChoice(for: provider).notInto).map(RecommendationTagRules.canonical))
             let context = provider.rawValue + "|batch40|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
             candidateContext = personalized && !directCatalog ? context : nil
@@ -642,8 +647,16 @@ final class AppStore: ObservableObject {
                     // previously offered (but never watched) videos.
                     epornerDiscovery.append(contentsOf: incoming.prefix(120 - epornerDiscovery.count))
                 }
+                let visibleBeforeNovelty = incoming
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
                 incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: tasteRanked, favoriteIDs: favoriteExclusionIDs)
+                if incoming.isEmpty, provider == .erome, mediaOnly {
+                    // Revisit public clips when everything has already been
+                    // offered. Otherwise Erome can permanently say "No videos"
+                    // even while its albums contain playable media.
+                    incoming = feedExclusions.filter(visibleBeforeNovelty,
+                        favorites: Array(favorites.values), recommended: false)
+                }
                 if personalized, provider == .nhentai {
                     nhentaiDiscovery.append(contentsOf: incoming.prefix(max(0, 40 - nhentaiDiscovery.count)))
                 }
@@ -659,8 +672,8 @@ final class AppStore: ObservableObject {
                     let cachedAppearance = await visual.scores(incoming)
                     filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
                         recent: recentProviderPosts, visualScores: cachedAppearance,
-                        strict: !topicPersonalized || (favorites.count >= 5 &&
-                            provider != .hhaven && provider != .nhentai))
+                        strict: provider != .erome && (!topicPersonalized || (favorites.count >= 5 &&
+                            provider != .hhaven && provider != .nhentai)))
                 } else { filtered = incoming }
                 let focusedMiss = filtered.isEmpty && acquisition?.focused == true
                 if focusedMiss, let acquisition {
@@ -799,7 +812,9 @@ final class AppStore: ObservableObject {
         do {
             let parsed = QueryParser.parse(queryText)
             lastError = nil
-            let directCatalog = (provider == .hhaven || provider == .nhentai) && feedSort == "recommended" && parsed.included.isEmpty
+            let directCatalog = (provider == .hhaven || provider == .nhentai ||
+                                 (provider == .erome && feedMediaOnly)) &&
+                feedSort == "recommended" && parsed.included.isEmpty
             let topicPersonalized = feedSort == "recommended" &&
                 selectedTopicTerm.map { parsed.included.contains($0) } == true
             let personalizedPage = candidateContext != nil || directCatalog || topicPersonalized
@@ -824,16 +839,21 @@ final class AppStore: ObservableObject {
                 encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia)
                     && !RecommendationTagRules.rejects($0, exclusions: Array(banned))
             }
+            let visibleBeforeNovelty = candidates
             if candidateContext != nil { candidates = await recommendations.unseenRecommendations(candidates) }
             candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
                 recommended: personalizedPage, favoriteIDs: favoriteExclusionIDs)
+            if candidates.isEmpty, provider == .erome, feedMediaOnly {
+                candidates = feedExclusions.filter(visibleBeforeNovelty,
+                    favorites: Array(favorites.values), existing: posts, recommended: false)
+            }
             let ranked: [Post]
             if personalizedPage {
                 let cachedAppearance = await visual.scores(candidates)
                 let strict = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                     recent: Array(posts.suffix(10)), visualScores: cachedAppearance,
-                    strict: !topicPersonalized || (favorites.count >= 5 &&
-                        provider != .hhaven && provider != .nhentai))
+                    strict: provider != .erome && (!topicPersonalized || (favorites.count >= 5 &&
+                        provider != .hhaven && provider != .nhentai)))
                 if strict.isEmpty && directCatalog {
                     ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                         recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: false)

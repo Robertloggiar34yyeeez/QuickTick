@@ -47,10 +47,15 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 .first(where: { $0.name == "q" })?.value
             payload = search == "summary-video"
                 ? #"<html><div id="albums"><div class="album"><a class="album-title" href="/a/ABC123">City portrait</a><img class="album-thumbnail" src="https://s7.erome.com/123/ABC123/poster.jpg"><span class="album-videos">1</span></div></div></html>"#
+                : search == "mixed-albums"
+                ? #"<html><div id="albums"><div class="album"><a class="album-title" href="/a/IMGONLY">Photo set</a><img class="album-thumbnail" src="https://s7.erome.com/123/ABC123/poster.jpg"></div><a class="album-link" href="/a/ABC123">Video not in summaries</a></div></html>"#
                 : #"<html><div id="albums"><a class="album-link" href="/a/ABC123">Album</a><a href="https://evil.invalid/a/FAKE" class="album-link">Do not read</a><a class="album-link" href="/a/ABC123">Duplicate</a></div></html>"#
         }
         else if host == "www.erome.com", path == "/a/ABC123" {
             payload = #"<html><head><title>City portrait - Erome</title><meta property="og:image" content="https://s7.erome.com/123/ABC123/poster.jpg"></head><body><video data-setup='{&quot;poster&quot;:&quot;https://s7.erome.com/123/ABC123/poster.jpg&quot;}'><source src="https://v12.erome.com/123/ABC123/clip_720p.mp4" type="video/mp4"></video><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div><div class="img"><img data-src="https://evil.invalid/malicious.jpg"></div></body></html>"#
+        }
+        else if host == "www.erome.com", path == "/a/IMGONLY" {
+            payload = #"<html><title>Photo set - Erome</title><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div></html>"#
         }
         else if host == "auth.hanime.tv", path == "/api/v11/search_hvs" {
             payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
@@ -267,6 +272,16 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(playable.items.map(\.id), ["ABC123:clip_720p.mp4"])
         XCTAssertEqual(playable.items.first?.mediaUrl,
                        "https://v12.erome.com/123/ABC123/clip_720p.mp4")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
+    }
+
+    func testEromeImmersiveDoesNotLoseVideoLinksBesideImageSummaries() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let query = ParsedQuery(included: ["mixed-albums"], excluded: [])
+        let page = try await api.posts(provider: .erome, query: query, page: 1, immersive: true)
+        XCTAssertEqual(page.items.map(\.id), ["ABC123:clip_720p.mp4"])
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/IMGONLY" })
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
     }
 

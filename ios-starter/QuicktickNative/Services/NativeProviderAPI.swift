@@ -82,6 +82,51 @@ enum HavenBrowserCatalog {
     }
 }
 
+/// Read a normal public Erome page through WebKit when URLSession receives a
+/// site-unavailable response. This uses WebKit's own first-party cookie store
+/// (not Safari's); it never fabricates verification or bypasses access controls.
+@MainActor
+enum EromeBrowserCatalog {
+    static func html(url: URL) async throws -> String {
+        guard url.scheme == "https", url.host == "www.erome.com" else {
+            throw APIError.invalidResponse
+        }
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let browser = WKWebView(frame: .zero, configuration: config)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        _ = browser.load(request)
+        defer { browser.stopLoading() }
+
+        var finishedTicks = 0
+        for _ in 0..<48 {
+            try Task.checkCancellation()
+            if let current = browser.url {
+                guard current.scheme == "https", current.host == "www.erome.com" else {
+                    throw APIError.server("Erome redirected away from its public website.")
+                }
+                if let markup = await usefulMarkup(in: browser) { return markup }
+            }
+            finishedTicks = browser.isLoading ? 0 : finishedTicks + 1
+            if finishedTicks >= 8 { break }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        throw APIError.server("Erome's in-app browser could not read public media. Open Erome inside QuickTick to check access.")
+    }
+
+    private static func usefulMarkup(in browser: WKWebView) async -> String? {
+        await withCheckedContinuation { continuation in
+            browser.evaluateJavaScript(
+                #"document.querySelector('a.album-link, a.album-title, video source, div.img img') ? document.documentElement.outerHTML : ''"#
+            ) { value, _ in
+                let html = value as? String
+                continuation.resume(returning: html?.isEmpty == false ? html : nil)
+            }
+        }
+    }
+}
+
 // Provider networking lives on the API actor, never on a scrolling view. No
 // requests in this service use the optional QuickTick Sync origin.
 enum NativeProviderAPI {
@@ -1329,12 +1374,15 @@ enum EromePublicCatalog {
             return NativeProviderAPI.page(summaries, hasMore: hasNextPage(html) || summaries.count >= 24,
                                           query: query, immersive: immersive)
         }
-        // Listing cards are lightweight album summaries: they have no mediaUrl.
-        // Immersive playback must hydrate the real video/GIF items from each
-        // public album instead of treating the preview as a playable video.
-        let albums = !summaries.isEmpty
-            ? summaries.compactMap { URL(string: $0.pageUrl) }
-            : albumLinks(html)
+        // Summaries are thumbnail-only, and not every album-link has a
+        // matching summary (or even a thumbnail). In particular, choosing
+        // only summaries can silently discard the page's video albums.
+        // Prefer known video albums, then merge in every public album link.
+        let prioritized = summaries.filter { $0.type == "video" } +
+            summaries.filter { $0.type != "video" }
+        var seenAlbumURLs = Set<String>()
+        let albums = (prioritized.compactMap { URL(string: $0.pageUrl) } + albumLinks(html))
+            .filter { seenAlbumURLs.insert($0.absoluteString).inserted }
         if albums.isEmpty {
             if page == 1, !html.lowercased().contains("id=\"albums\"") &&
                 !html.lowercased().contains("id='albums'") {
@@ -1345,7 +1393,7 @@ enum EromePublicCatalog {
 
         // Never request every album at once; the page's media links are read
         // off the main thread in small groups with the shared host rate gate.
-        let selected = Array(albums.prefix(24))
+        let selected = Array(albums.prefix(32))
         var items: [Post] = []
         var albumFailure: String?
         var successfulAlbums = 0
@@ -1366,6 +1414,9 @@ enum EromePublicCatalog {
             items.append(contentsOf: fetched.flatMap { $0.1 })
             successfulAlbums += fetched.filter { $0.2 == nil }.count
             if albumFailure == nil { albumFailure = fetched.compactMap { $0.2 }.first }
+            // An immersive page needs playable media, not every image in a
+            // large album. Stop after a useful initial deck to save data.
+            if immersive && items.filter(\.isImmersiveMedia).count >= 12 { break }
         }
         try Task.checkCancellation()
         if successfulAlbums == 0, let albumFailure {
@@ -1374,7 +1425,8 @@ enum EromePublicCatalog {
         guard !items.isEmpty else {
             throw APIError.server("Erome's public albums did not expose playable media. Try again later or check access in Safari.")
         }
-        return NativeProviderAPI.page(items, hasMore: page < 100, query: query, immersive: immersive)
+        let hasMore = hasNextPage(html) || albums.count >= 24
+        return NativeProviderAPI.page(items, hasMore: hasMore, query: query, immersive: immersive)
     }
 
     static func resolve(session: URLSession, post: Post) async throws -> ResolvedMedia {
@@ -1503,17 +1555,26 @@ enum EromePublicCatalog {
 
     private static func pageHTML(session: URLSession, url: URL) async throws -> String {
         guard url.host == origin.host else { throw APIError.invalidResponse }
-        let bytes: Data
+        let failure: Error
         do {
-            bytes = try await NativeProviderAPI.data(session: session, url: url,
+            let bytes = try await NativeProviderAPI.data(session: session, url: url,
                 provider: .erome, headers: headers, maxBytes: 4 * 1024 * 1024, timeout: 12)
+            guard !NativeProviderAPI.unavailableHTML(bytes) else {
+                throw APIError.server("Erome returned an unavailable page instead of a public album.")
+            }
+            return String(decoding: bytes, as: UTF8.self)
         } catch APIError.providerStatus(.erome, 403) {
-            throw APIError.server("Erome denied this connection (HTTP 403). Only public albums can be loaded; check access in Safari or configure your own authorized Erome API in Settings.")
+            failure = APIError.server("Erome denied this connection (HTTP 403). Check access in its in-app browser or configure your own authorized Erome API in Settings.")
+        } catch {
+            failure = error
         }
-        guard !NativeProviderAPI.unavailableHTML(bytes) else {
-            throw APIError.server("Erome returned an unavailable page instead of a public album.")
+        // URLProtocol sessions are deterministic tests. Never escape a test's
+        // fixture transport by opening the real public website in WebKit.
+        if session.configuration.protocolClasses?.isEmpty != false,
+           let html = try? await EromeBrowserCatalog.html(url: url) {
+            return html
         }
-        return String(decoding: bytes, as: UTF8.self)
+        throw failure
     }
 
     private static func albumURL(_ raw: String) -> URL? {

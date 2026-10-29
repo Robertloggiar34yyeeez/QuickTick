@@ -4,20 +4,21 @@ import UIKit
 /// Directional swipes belong to the navigation controls only. Media and the
 /// rest of the screen keep their own horizontal/vertical gestures.
 enum TabSwipePolicy {
-    /// Accelerated dock scrubbing: a short, deliberate thumb movement can
-    /// traverse the entire dock, including the Create gap. Media gestures
-    /// still belong to their own surfaces outside the navigation controls.
-    private static let scrubGain: CGFloat = 2.65
-    private static let minimumTravel: CGFloat = 12
+    /// Fast Feed dock scrubbing is iPad-only. On iPhone, keep one-point-per-
+    /// point navigation to avoid accidental multi-tab jumps near media.
+    private static func scrubGain(accelerated: Bool) -> CGFloat { accelerated ? 2.65 : 1 }
+    private static func minimumTravel(accelerated: Bool) -> CGFloat { accelerated ? 12 : 16 }
 
     static func scrubDestination(current: Int, translation: CGSize, vertical: Bool,
-                                 axisLength: CGFloat, visibleIndices: [Int]) -> Int? {
+                                 axisLength: CGFloat, visibleIndices: [Int],
+                                 accelerated: Bool = false) -> Int? {
         guard let layout = layout(current: current, axisLength: axisLength,
                                   visibleIndices: visibleIndices, vertical: vertical) else { return nil }
         let primary = vertical ? translation.height : translation.width
         let cross = vertical ? translation.width : translation.height
-        guard abs(primary) >= minimumTravel, abs(primary) > abs(cross) * 1.5 else { return nil }
-        let position = min(layout.last, max(layout.first, layout.start + primary * scrubGain))
+        guard abs(primary) >= minimumTravel(accelerated: accelerated),
+              abs(primary) > abs(cross) * 1.5 else { return nil }
+        let position = min(layout.last, max(layout.first, layout.start + primary * scrubGain(accelerated: accelerated)))
         let best = layout.feeds.min { lhs, rhs in
             let lhsDistance = abs(lhs.center - position) - (lhs.id == current ? 8 : 0)
             let rhsDistance = abs(rhs.center - position) - (rhs.id == current ? 8 : 0)
@@ -31,13 +32,14 @@ enum TabSwipePolicy {
     /// scaled finger distance keeps preview and final selection synchronized.
     static func indicatorPosition(current: Int, translation: CGSize,
                                   vertical: Bool, axisLength: CGFloat,
-                                  visibleIndices: [Int]) -> CGFloat {
+                                  visibleIndices: [Int], accelerated: Bool = false) -> CGFloat {
         guard let layout = layout(current: current, axisLength: axisLength,
                                   visibleIndices: visibleIndices, vertical: vertical) else { return 0 }
         let primary = vertical ? translation.height : translation.width
         let cross = vertical ? translation.width : translation.height
-        guard abs(primary) >= minimumTravel, abs(primary) > abs(cross) * 1.5 else { return layout.start }
-        return min(layout.last, max(layout.first, layout.start + primary * scrubGain))
+        guard abs(primary) >= minimumTravel(accelerated: accelerated),
+              abs(primary) > abs(cross) * 1.5 else { return layout.start }
+        return min(layout.last, max(layout.first, layout.start + primary * scrubGain(accelerated: accelerated)))
     }
 
     private struct Layout {
@@ -108,6 +110,7 @@ struct RootView: View {
     private let tabs = [("Home", "house.fill"), ("Immersive", "play.fill"),
                         ("Create", "plus"), ("Favorites", "heart"), ("Downloads", "arrow.down.to.line")]
     private var aiTabVisible: Bool { aiTabSessionOverride ?? showAITab }
+    private var fastDockEnabled: Bool { UIDevice.current.userInterfaceIdiom == .pad }
     private var visibleTabIndices: [Int] { aiTabVisible ? [0, 1, 2, 3, 4] : [0, 1, 3, 4] }
 
     var body: some View { presentedRoot }
@@ -360,7 +363,7 @@ struct RootView: View {
     }
 
     private func dockDrag(vertical: Bool, axisLength: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 12)
+        DragGesture(minimumDistance: fastDockEnabled ? 12 : 16)
             .updating($navigationDrag) { value, state, _ in state = value.translation }
             .onEnded { swipeTabs($0.translation, vertical: vertical, axisLength: axisLength) }
     }
@@ -369,7 +372,7 @@ struct RootView: View {
         let slotWidth = axisLength / CGFloat(visibleTabIndices.count)
         let center = TabSwipePolicy.indicatorPosition(
             current: store.activeTab, translation: navigationDrag, vertical: false,
-            axisLength: axisLength, visibleIndices: visibleTabIndices)
+            axisLength: axisLength, visibleIndices: visibleTabIndices, accelerated: fastDockEnabled)
         return RoundedRectangle(cornerRadius: modernUI ? 18 : 12, style: .continuous)
             .fill(AppTheme.gradient)
             .frame(width: slotWidth, height: 54)
@@ -382,7 +385,7 @@ struct RootView: View {
     private func sideSelectionIndicator(axisLength: CGFloat) -> some View {
         let center = TabSwipePolicy.indicatorPosition(
             current: store.activeTab, translation: navigationDrag, vertical: true,
-            axisLength: axisLength, visibleIndices: visibleTabIndices)
+            axisLength: axisLength, visibleIndices: visibleTabIndices, accelerated: fastDockEnabled)
         return RoundedRectangle(cornerRadius: 18, style: .continuous)
             .fill(AppTheme.gradient)
             .frame(width: brieflyNamedTab == nil ? 62 : 138, height: 62)
@@ -470,7 +473,8 @@ struct RootView: View {
         guard !showStudio, !showSettings,
               let tab = TabSwipePolicy.scrubDestination(current: store.activeTab,
                                                          translation: translation, vertical: vertical,
-                                                         axisLength: axisLength, visibleIndices: visibleTabIndices)
+                                                         axisLength: axisLength, visibleIndices: visibleTabIndices,
+                                                         accelerated: fastDockEnabled)
         else { return }
         selectTab(tab)
     }
@@ -479,7 +483,8 @@ struct RootView: View {
         guard !showStudio, !showSettings else { return nil }
         return TabSwipePolicy.scrubDestination(current: store.activeTab,
                                                translation: navigationDrag, vertical: vertical,
-                                               axisLength: axisLength, visibleIndices: visibleTabIndices)
+                                               axisLength: axisLength, visibleIndices: visibleTabIndices,
+                                               accelerated: fastDockEnabled)
     }
 
     private func feedName(_ tab: Int) -> String {

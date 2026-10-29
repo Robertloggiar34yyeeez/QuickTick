@@ -92,6 +92,102 @@ final class IntelligentRecommendationTests: XCTestCase {
         XCTAssertLessThan(session.score(provider: "rule34", terms: item.tags), positive)
     }
 
+    func testRepeatedFastSkipsLearnSpecificAversionWithoutManualTagBlocks() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        let one = post("skip-one", ["2d", "solo", "unwanted_presentation", "looking_at_viewer"])
+        let two = post("skip-two", ["2d", "solo", "unwanted_presentation", "looking_at_viewer"])
+        let repeated = post("candidate", ["2d", "solo", "unwanted_presentation", "looking_at_viewer"])
+        let different = post("other", ["2d", "solo", "wanted_presentation", "looking_at_viewer"])
+        await engine.recordReversibleSkip(one)
+        let first = await engine.score(repeated, taste: TasteChoice(), recent: [])
+        await engine.recordReversibleSkip(two)
+        let second = await engine.score(repeated, taste: TasteChoice(), recent: [])
+        let alternative = await engine.score(different, taste: TasteChoice(), recent: [])
+        XCTAssertLessThan(second, first)
+        XCTAssertGreaterThan(alternative, second)
+        _ = await engine.neutralizeReversibleSkip(two.stableID)
+        let restored = await engine.score(repeated, taste: TasteChoice(), recent: [])
+        XCTAssertEqual(restored, first, accuracy: 0.001)
+    }
+
+    func testFastSkipDoesNotTurnStrongFavoriteTagIntoNegativeTheme() {
+        let samples = (1...3).map { index in
+            ReversibleSkipModel.Evidence(id: "\(index)", provider: "rule34", terms: ["chun_li", "qipao", "solo"])
+        }
+        let ignored: Set<String> = ["solo"]
+        let generic = PassiveSkipPolicy.penalty(terms: ["solo"], samples: samples,
+            favored: [:], ignored: ignored)
+        let loved = PassiveSkipPolicy.penalty(terms: ["qipao"], samples: samples,
+            favored: ["qipao": 3.0], ignored: ignored)
+        let untrusted = PassiveSkipPolicy.penalty(terms: ["qipao"], samples: samples,
+            favored: [:], ignored: ignored)
+        XCTAssertEqual(generic, 0)
+        XCTAssertLessThan(loved, untrusted)
+    }
+
+    func testThreeDistinctSkipsAvoidSameIRLCameraAndSceneWithoutBlockingAllPOV() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        var sampled: [Post] = []
+        for index in 0..<3 {
+            var sample = post("irl-skip-\(index)", [], provider: "redgifs")
+            sample.caption = "POV cosplay clips"
+            sampled.append(sample)
+        }
+        var repeated = post("irl-repeat", [], provider: "redgifs")
+        repeated.caption = "Cosplay POV highlights"
+        var other = post("irl-variety", [], provider: "redgifs")
+        other.caption = "POV beach scenery"
+        await engine.recordReversibleSkip(sampled[0])
+        await engine.recordReversibleSkip(sampled[1])
+        let before = await engine.isHardDisliked(repeated, taste: TasteChoice())
+        XCTAssertFalse(before)
+        let beforePenalty = await engine.score(repeated, taste: TasteChoice(), recent: [])
+        await engine.recordReversibleSkip(sampled[2])
+        let afterPenalty = await engine.score(repeated, taste: TasteChoice(), recent: [])
+        let nowBlocked = await engine.isHardDisliked(repeated, taste: TasteChoice())
+        let unrelatedBlocked = await engine.isHardDisliked(other, taste: TasteChoice())
+        XCTAssertLessThan(afterPenalty, beforePenalty,
+            "Quick skips should downrank repeated context without creating a hard tag ban")
+        XCTAssertFalse(nowBlocked)
+        XCTAssertFalse(unrelatedBlocked)
+        _ = await engine.neutralizeReversibleSkip(sampled[2].stableID)
+        let restored = await engine.isHardDisliked(repeated, taste: TasteChoice())
+        XCTAssertFalse(restored)
+        let restoredPenalty = await engine.score(repeated, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(restoredPenalty, afterPenalty,
+            "Undoing a skip must restore its ranking weight")
+    }
+
+    func testIRLVideoCaptionsProvidePresentationEvidenceWithoutInferringIdentity() async throws {
+        var liked = post("irl-like", [], provider: "redgifs")
+        liked.caption = "Cosplay POV dancing at the beach"
+        let concepts = RealLifePresentation.tags(liked)
+        XCTAssertTrue(concepts.contains("scene:cosplay"))
+        XCTAssertTrue(concepts.contains("camera:pov"))
+        XCTAssertTrue(concepts.contains("setting:beach"))
+        let features = try XCTUnwrap(VisualFeatures.metadata(liked))
+        XCTAssertEqual(features.domain, .realLife,
+            "The known IRL source supplies the medium; the title never identifies a person")
+        XCTAssertEqual(features.attributes["camera:pov"], 0.8)
+        XCTAssertTrue(features.subjects.isEmpty, "A caption must not identify a real person")
+
+        var falsePositive = post("not-a-scene", [], provider: "redgifs")
+        falsePositive.caption = "Gymnastics and cosplayish sketches"
+        XCTAssertTrue(RealLifePresentation.tags(falsePositive).isEmpty)
+
+        var secondLike = post("irl-like-two", [], provider: "redgifs")
+        secondLike.caption = "POV cosplay behind the scenes"
+        var candidate = post("irl-candidate", [], provider: "redgifs")
+        candidate.caption = "POV cosplay video"
+        var unrelated = post("irl-other", [], provider: "redgifs")
+        unrelated.caption = "Gym workout outdoors"
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        await engine.configureFavorites([liked, secondLike])
+        let preferred = await engine.score(candidate, taste: TasteChoice(), recent: [])
+        let other = await engine.score(unrelated, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(preferred, other)
+    }
+
     func testHistoricalFavoritesRemainAWeakSignalRatherThanOvertakingDiversity() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let favorites = (0..<100).map { post("saved-\($0)", ["chun_li", "qipao", "art"]) }
@@ -223,11 +319,27 @@ final class IntelligentRecommendationTests: XCTestCase {
     }
     func testContentBasedMediaClassificationAcrossProviders() {
         for provider in Provider.allCases {
+            // Erome and Coomer use the IRL embedding/profile even when public
+            // catalog tags contain ambiguous words such as "2d" or "anime".
+            if provider == .coomer || provider == .erome {
+                XCTAssertEqual(VisualDomain.classify(post("a", ["2d"], provider: provider.rawValue)), .realLife)
+                XCTAssertEqual(VisualDomain.classify(post("b", ["3dcg", "anime"], provider: provider.rawValue)), .realLife)
+                continue
+            }
+            if provider == .hanime {
+                XCTAssertEqual(VisualDomain.classify(post("a", ["photo"], provider: provider.rawValue)), .anime)
+                XCTAssertEqual(VisualDomain.classify(post("b", ["3dcg"], provider: provider.rawValue)), .anime)
+                continue
+            }
             XCTAssertEqual(VisualDomain.classify(post("a", ["2d"], provider: provider.rawValue)), .anime)
             XCTAssertEqual(VisualDomain.classify(post("b", ["3dcg", "anime"], provider: provider.rawValue)), .threeD)
             XCTAssertEqual(VisualDomain.classify(post("c", ["photo"], provider: provider.rawValue)), .realLife)
             XCTAssertEqual(VisualDomain.classify(post("d", ["photo", "3d"], provider: provider.rawValue)), .mixed)
-            XCTAssertEqual(VisualDomain.classify(post("e", ["animated", "realistic"], provider: provider.rawValue)), .uncertain)
+            // Catalog entries from these anime-only sources retain their known
+            // medium until explicit photograph/3D evidence overrides it.
+            let expected: VisualDomain = provider == .nhentai ? .anime :
+                ([Provider.pornhub, .eporner, .redgifs].contains(provider) ? .realLife : .uncertain)
+            XCTAssertEqual(VisualDomain.classify(post("e", ["animated", "realistic"], provider: provider.rawValue)), expected)
         }
     }
     func testSpecificArtistMediumAndPresentationOutweighBroadSimilarity() throws {
@@ -296,7 +408,8 @@ final class IntelligentRecommendationTests: XCTestCase {
     func testExplicitAliasFamiliesHaveZeroLeakageAndInferredNegativesRemainSoft() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let taste = TasteChoice(done: true, into: [], notInto: ["anthropomorphic"])
-        let rejected = ["furry", "furry_male", "furry_female", "anthro", "anthro_female"].enumerated().map { post("\($0.offset)", [$0.element]) }
+        let rejected = ["furry", "furry_male", "furry_female", "anthro", "anthro_female",
+                        "carnivore", "canid", "canidae", "felid"].enumerated().map { post("\($0.offset)", [$0.element]) }
         let allowed = post("ok", ["anthropology", "furrowed_brow"])
         let ranked = await engine.rankFast(rejected + [allowed], taste: taste, recent: [])
         XCTAssertEqual(ranked, [allowed])
@@ -347,6 +460,46 @@ final class IntelligentRecommendationTests: XCTestCase {
         model.train([favorites[0]], taxonomy: nil)
         XCTAssertEqual(model.score(trusted, taxonomy: nil), 0, accuracy: 0.001,
             "Removing a favorite must clear that artist/medium pair")
+    }
+
+    func testContextualActionsBelongToTheLikedCharacterArtistAndFranchise() {
+        var model = ConditionalTasteModel()
+        let liked = (0..<3).map { post("reference-\($0)",
+            ["2d", "chun_li", "artist:trusted", "qipao", "sitting"]) }
+        model.train(liked, taxonomy: nil)
+        let familiar = post("new", ["2d", "chun_li", "artist:trusted", "qipao", "sitting"])
+        let wrongAction = post("opposite", ["2d", "chun_li", "artist:trusted", "qipao", "standing"])
+        let otherCharacter = post("unrelated", ["2d", "rouge_the_bat", "artist:unknown", "qipao", "sitting"])
+        let otherMedium = post("3d", ["3d", "chun_li", "artist:trusted", "qipao", "sitting"])
+        XCTAssertGreaterThan(model.score(familiar, taxonomy: nil), model.score(wrongAction, taxonomy: nil))
+        XCTAssertGreaterThan(model.score(familiar, taxonomy: nil), model.score(otherCharacter, taxonomy: nil))
+        XCTAssertEqual(model.score(otherMedium, taxonomy: nil), 0, accuracy: 0.001)
+    }
+
+    func testUntypedRule34TagsStillLearnExplicitArtistContext() {
+        var model = ConditionalTasteModel()
+        let reference = post("untyped", ["character:favorite", "artist:credited", "sitting"])
+        XCTAssertEqual(VisualDomain.classify(reference), .uncertain)
+        model.train([reference], taxonomy: nil)
+        let similar = post("same-artist", ["character:favorite", "artist:credited", "sitting"])
+        let other = post("other-artist", ["character:unrelated", "artist:unrelated", "standing"])
+        XCTAssertGreaterThan(model.score(similar, taxonomy: nil), model.score(other, taxonomy: nil))
+    }
+
+    func testRealLifePreferencesUseSceneCameraAndSettingNotCaptionIdentity() {
+        var model = ConditionalTasteModel()
+        let likes = (0..<3).map { index -> Post in
+            var item = post("irl-\(index)", [], provider: "redgifs")
+            item.caption = "POV cosplay filmed outdoors"
+            return item
+        }
+        model.train(likes, taxonomy: nil)
+        var matching = post("match", [], provider: "redgifs")
+        matching.caption = "Outdoor cosplay POV"
+        var different = post("different", [], provider: "redgifs")
+        different.caption = "Indoor gym workout"
+        XCTAssertGreaterThan(model.score(matching, taxonomy: nil), model.score(different, taxonomy: nil))
+        XCTAssertTrue(VisualFeatures.metadata(matching)?.subjects.isEmpty == true)
     }
 
     func testChunLi3DMatchesTrustedArtistsInsteadOfAny3DRender() async {

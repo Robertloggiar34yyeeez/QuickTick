@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct NativeSearchBar: View {
     @EnvironmentObject private var store: AppStore
@@ -9,80 +10,161 @@ struct NativeSearchBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var form = SearchDraft()
     @State private var suggestions: [TagSuggestion] = []
+    @State private var pornhubCategories = PornhubSearchFilters.commonCategories
+    @State private var suggestionsLoading = false
+    @State private var suggestionsUnavailable = false
     @State private var loaded = false
     init(immersive: Bool = false, focusRequested: Binding<Bool> = .constant(false)) {
         self.immersive = immersive; _focusRequested = focusRequested
     }
     private var tab: Int { immersive ? 1 : 0 }
+    private var isArchive: Bool { store.selectedProvider == .kemono || store.selectedProvider == .coomer }
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    inputRow
-                    if store.selectedProvider == .rule34 {
-                        autocompleteRow
-                    }
-                    filterRow
-                    if store.selectedProvider == .rule34 {
-                        HStack { Text("Selected tags").font(.headline); Spacer(); Button("Clear") { form.tags = []; form.text = ""; form.filters = SearchFilters() }.font(.caption) }
-                        selectedTagGrid
-                        Text("Tap a tag name to remove it. Tap its block icon to include or exclude it.").font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text("Search titles and keywords. Use quotes for phrases (\"red hair\") and -\"phrase\" to exclude them. Providers use free-text search, not Rule34 tags.")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                        Button("Clear keywords") { form.text = "" }
-                            .font(.caption).disabled(form.text.isEmpty)
-                    }
-                    Button(action: submit) {
-                        Label("Search", systemImage: "magnifyingglass")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity, minHeight: 52)
-                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-                    .buttonStyle(QuicktickPressStyle())
-                    .accessibilityIdentifier("apply-search-filters")
-                }.padding(20)
-            }.scrollDismissesKeyboard(.interactively).background(AppTheme.canvas.ignoresSafeArea())
-                .toolbarBackground(AppTheme.canvas, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
-                .toolbarColorScheme(.dark, for: .navigationBar)
-                .navigationTitle("Search").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.accessibilityIdentifier("close-search") } }
-                .onAppear {
-                    guard !loaded else { return }; loaded = true; focused = true
-                    let split = SearchFilters.split(store.queryText)
-                    if let saved = store.searchDrafts[tab], saved.provider == store.selectedProvider {
-                        form = saved
-                    } else {
-                        form = SearchDraft(
-                            text: store.selectedProvider == .rule34 ? "" : split.tags,
-                            tags: store.selectedProvider == .rule34 ? SearchTag.parse(split.tags) : [],
-                            filters: split.filters, sort: store.feedSort,
-                            provider: store.selectedProvider)
-                    }
-                }
-                .onDisappear {
-                    form.provider = store.selectedProvider
-                    store.searchDrafts[tab] = form
-                }
-                .task(id: store.selectedProvider.rawValue + ":" + form.text) {
-                    suggestions = []
-                    #if DEBUG
-                    if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
-                    #endif
-                    guard store.selectedProvider == .rule34, let token = form.text.split(whereSeparator: \.isWhitespace).last else { return }
-                    let query = token.hasPrefix("-") ? String(token.dropFirst()) : String(token)
-                    guard query.count >= 2 else { return }
-                    do {
-                        try await Task.sleep(for: .milliseconds(300))
-                        let values = try await store.api.suggestions(provider: .rule34, query: query)
-                        guard !Task.isCancelled else { return }; suggestions = values
-                    } catch { if !Task.isCancelled { suggestions = [] } }
-                }
+            searchScrollView
         }.background(AppTheme.canvas.ignoresSafeArea())
             .presentationBackground(AppTheme.canvas)
             .presentationDragIndicator(.hidden)
             .preferredColorScheme(.dark)
+    }
+
+    private var searchScrollView: some View {
+        ScrollView { searchForm }
+            .scrollDismissesKeyboard(.interactively)
+            .background(AppTheme.canvas.ignoresSafeArea())
+            .toolbarBackground(AppTheme.canvas, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .navigationTitle("Search")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }.accessibilityIdentifier("close-search")
+                }
+            }
+            .onAppear(perform: restoreSearchDraft)
+            .onDisappear(perform: persistSearchDraft)
+            .task(id: "artist-index-" + store.selectedProvider.rawValue) { await prefetchArtists() }
+            .task(id: "pornhub-categories-" + store.selectedProvider.rawValue) { await loadPornhubCategories() }
+            .task(id: store.selectedProvider.rawValue + ":" + form.text) { await updateSuggestions() }
+    }
+
+    private var searchForm: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            inputRow
+            if store.selectedProvider == .rule34 || isArchive { autocompleteRow }
+            filterRow
+            if store.selectedProvider == .pornhub {
+                PornhubFilterPanel(filters: $form.pornhub, categories: pornhubCategories)
+            }
+            queryEditingControls
+            submitButton
+        }.padding(20)
+    }
+
+    @ViewBuilder private var queryEditingControls: some View {
+        if store.selectedProvider == .rule34 {
+            HStack {
+                Text("Selected tags").font(.headline)
+                Spacer()
+                Button("Clear") { form.tags = []; form.text = ""; form.filters = SearchFilters() }.font(.caption)
+            }
+            selectedTagGrid
+            Text("Tap a tag name to remove it. Tap its block icon to include or exclude it.")
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            Text(isArchive ? "Search post titles or select an artist suggestion to see that creator's posts." :
+                (store.selectedProvider == .hanime
+                 ? "Search by title keywords or tags (for example fantasy, ahegao, or \"dark skin\"). Use -\"tag\" to exclude a tag."
+                 : "Search titles and keywords. Use quotes for phrases (\"red hair\") and -\"phrase\" to exclude them."))
+                .font(.subheadline).foregroundStyle(.secondary)
+            Button("Clear keywords") {
+                form.text = ""; form.archiveCreatorReference = nil; form.archiveCreatorLabel = nil
+            }.font(.caption).disabled(form.text.isEmpty)
+        }
+    }
+
+    private var submitButton: some View {
+        Button(action: submit) {
+            Label("Search", systemImage: "magnifyingglass")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(QuicktickPressStyle())
+        .accessibilityIdentifier("apply-search-filters")
+    }
+
+    private func restoreSearchDraft() {
+        guard !loaded else { return }
+        loaded = true; focused = true
+        let split = SearchFilters.split(store.queryText)
+        let parsed = QueryParser.parse(split.tags)
+        let keywords = ProviderSearchCategories.split(parsed, provider: store.selectedProvider).keywords
+        let plainQuery = store.selectedProvider == .hhaven || store.selectedProvider == .pornhub
+            ? QueryParser.formatted(ParsedQuery(included: keywords, excluded: parsed.excluded))
+            : split.tags
+        var pornhubFilters = PornhubSearchFilters.decode(store.queryText)
+        if store.selectedProvider == .pornhub, pornhubFilters.includedCategory == nil,
+           let selectedCategory = ProviderSearchCategories.split(parsed, provider: .pornhub).category {
+            pornhubFilters.includedCategory = String(selectedCategory.dropFirst("category:".count))
+        }
+        if let saved = store.searchDrafts[tab], saved.provider == store.selectedProvider {
+            form = saved
+        } else {
+            form = SearchDraft(text: store.selectedProvider == .rule34 ? "" : plainQuery,
+                               tags: store.selectedProvider == .rule34 ? SearchTag.parse(split.tags) : [],
+                               filters: split.filters, pornhub: pornhubFilters, sort: store.feedSort,
+                               provider: store.selectedProvider)
+        }
+    }
+
+    private func persistSearchDraft() {
+        form.provider = store.selectedProvider
+        store.searchDrafts[tab] = form
+    }
+
+    private func prefetchArtists() async {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
+        #endif
+        if isArchive { await store.api.prefetchArchiveCreators(for: store.selectedProvider) }
+    }
+
+    private func loadPornhubCategories() async {
+        guard store.selectedProvider == .pornhub else { return }
+        if let categories = try? await store.api.pornhubCategories(), !categories.isEmpty {
+            pornhubCategories = categories
+        }
+    }
+
+    private func updateSuggestions() async {
+        suggestions = []; suggestionsLoading = false; suggestionsUnavailable = false
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return }
+        #endif
+        let provider = store.selectedProvider
+        guard provider == .rule34 || provider == .kemono || provider == .coomer,
+              form.archiveCreatorReference == nil else { return }
+        let query: String
+        if provider == .rule34 {
+            guard let token = form.text.split(whereSeparator: \.isWhitespace).last else { return }
+            query = token.hasPrefix("-") ? String(token.dropFirst()) : String(token)
+        } else { query = form.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard query.count >= 2 else { return }
+        do {
+            try await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            suggestionsLoading = true
+            let values = try await store.api.suggestions(provider: provider, query: query)
+            guard !Task.isCancelled else { return }
+            suggestions = values; suggestionsLoading = false
+        } catch {
+            if !Task.isCancelled {
+                suggestions = []; suggestionsLoading = false
+                suggestionsUnavailable = isArchive
+            }
+        }
     }
     private var inputRow: some View {
         HStack(spacing: 10) {
@@ -90,12 +172,18 @@ struct NativeSearchBar: View {
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(focused ? AppTheme.accent : AppTheme.secondaryLabel)
                 .frame(width: 26)
-            TextField(store.selectedProvider == .rule34 ? "Search tags" : "Search titles and keywords", text: $form.text)
+            TextField(store.selectedProvider == .rule34 ? "Search tags" : (isArchive ? "Search artists or posts" : "Search titles and keywords"), text: $form.text)
                 .focused($focused)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
                 .onSubmit { submit() }
+                .onChange(of: form.text) { _, value in
+                    if form.archiveCreatorReference != nil, value != form.archiveCreatorLabel {
+                        form.archiveCreatorReference = nil
+                        form.archiveCreatorLabel = nil
+                    }
+                }
                 .tint(AppTheme.accent)
                 .accessibilityIdentifier("feed-search-input")
             if !form.text.isEmpty {
@@ -135,7 +223,7 @@ struct NativeSearchBar: View {
                     if !suggestions.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack { ForEach(suggestions.prefix(6)) { item in
-                                Button(item.value) { chooseSuggestion(item.value) }
+                                Button(item.label) { chooseSuggestion(item) }
                                     .font(.caption.weight(.medium))
                                     .padding(.horizontal, 12)
                                     .frame(minHeight: 36)
@@ -144,9 +232,18 @@ struct NativeSearchBar: View {
                                     .buttonStyle(QuicktickPressStyle())
                             } }
                         }
+                    } else if isArchive && suggestionsLoading {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Finding artists…").font(.caption).foregroundStyle(.secondary)
+                        }.accessibilityIdentifier("archive-artist-loading")
+                    } else if isArchive && suggestionsUnavailable {
+                        Text("Artist suggestions are temporarily unavailable. Post search still works.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
     }
     private var filterRow: some View {
+                    Group { if store.selectedProvider != .pornhub {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
                             Menu {
@@ -175,6 +272,7 @@ struct NativeSearchBar: View {
                             }
                         }
                     }
+                    } }
     }
     private var selectedTagGrid: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), spacing: 8)], spacing: 8) {
@@ -194,6 +292,11 @@ struct NativeSearchBar: View {
             .foregroundStyle(tag.excluded ? Color.orange : Color.white)
             .background(tag.excluded ? Color.orange.opacity(0.15) : AppTheme.elevatedSurface, in: Capsule())
             .overlay(Capsule().stroke(tag.excluded ? Color.orange.opacity(0.6) : .white.opacity(0.15)))
+            .contextMenu {
+                Button { UIPasteboard.general.string = tag.name } label: {
+                    Label("Copy tag", systemImage: "doc.on.doc")
+                }
+            }
     }
     private func filterLabel(_ title: String, icon: String) -> some View {
         Label(title, systemImage: icon).font(.subheadline).padding(.horizontal, 12).frame(height: 40)
@@ -206,11 +309,18 @@ struct NativeSearchBar: View {
             else { form.tags.append(tag) }
         }
     }
-    private func chooseSuggestion(_ value: String) {
+    private func chooseSuggestion(_ suggestion: TagSuggestion) {
+        if isArchive {
+            form.archiveCreatorReference = suggestion.value
+            form.archiveCreatorLabel = suggestion.label
+            form.text = suggestion.label
+            suggestions = []
+            return
+        }
         var parts = form.text.split(whereSeparator: \.isWhitespace).map(String.init)
         let excluded = parts.last?.hasPrefix("-") == true
         if !parts.isEmpty { parts.removeLast() }
-        parts.append((excluded ? "-" : "") + value)
+        parts.append((excluded ? "-" : "") + suggestion.value)
         add(parts.joined(separator: " ")); form.text = ""; suggestions = []
     }
     private func addTypedTags() { add(form.text); form.text = ""; suggestions = [] }
@@ -219,14 +329,18 @@ struct NativeSearchBar: View {
         if isTagProvider { addTypedTags() }
         focused = false
         form.provider = store.selectedProvider
-        store.searchDrafts[tab] = form
         let query: String
         if isTagProvider {
             let tags = form.tags.map { ($0.excluded ? "-" : "") + $0.name }.joined(separator: " ")
             query = form.filters.query(tags: tags, provider: store.selectedProvider)
+        } else if store.selectedProvider == .pornhub {
+            query = form.pornhub.encodedQuery(form.text)
+            form.sort = form.pornhub.order.feedSort
         } else {
-            query = form.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            query = (isArchive ? form.archiveCreatorReference : nil)
+                ?? form.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        store.searchDrafts[tab] = form
         store.commitSearch(query: query, sort: form.sort)
         dismiss()
         Task { await store.refresh(immersive: immersive, trainSearch: true) }

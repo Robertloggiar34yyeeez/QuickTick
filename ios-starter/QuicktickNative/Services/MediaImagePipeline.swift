@@ -20,6 +20,7 @@ actor MediaImagePipeline {
     private var prefetchedGIF: (key: String, bytes: Data)?
     private var flights: [String: Task<Data, Error>] = [:]
     private var waiters: [String: Set<UUID>] = [:]
+    private var unavailableUntil: [String: Date] = [:]
     private(set) var hits = 0
     private(set) var misses = 0
     init(session: URLSession? = nil) {
@@ -103,12 +104,21 @@ actor MediaImagePipeline {
         if url.isFileURL { return try Data(contentsOf: url) }
         guard NativeProviderAPI.mediaURL(url.absoluteString) != nil else { throw URLError(.badURL) }
         let key = url.absoluteString
+        // A provider may return 403/404 for hundreds of expired thumbnails.
+        // Avoid repeatedly sending the same failed request while a user scrolls;
+        // retry shortly afterward in case a CDN recovers.
+        if let deadline = unavailableUntil[key], deadline > .now { throw URLError(.badServerResponse) }
         let pending: Task<Data, Error>
         if let shared = flights[key] { pending = shared }
         else {
             let session = session
             pending = Task {
                 var request = URLRequest(url: url); request.timeoutInterval = 20
+                let sourceHeaders = EromeGeneratedAPI.mediaHeaders(for: url)
+                    .merging(HanimeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
+                for (header, value) in sourceHeaders {
+                    request.setValue(value, forHTTPHeaderField: header)
+                }
                 let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), data.count <= 32 * 1024 * 1024 else { throw URLError(.badServerResponse) }
                 return data
@@ -118,7 +128,24 @@ actor MediaImagePipeline {
         let waiter = UUID(); waiters[key, default: []].insert(waiter)
         return try await withTaskCancellationHandler {
             defer { finishWaiter(key, waiter: waiter, cancel: false) }
-            let bytes = try await pending.value; try Task.checkCancellation(); return bytes
+            do {
+                let bytes = try await pending.value
+                try Task.checkCancellation()
+                unavailableUntil.removeValue(forKey: key)
+                return bytes
+            } catch {
+                if !Task.isCancelled {
+                    if unavailableUntil.count >= 128 {
+                        unavailableUntil = unavailableUntil.filter { $0.value > .now }
+                        if unavailableUntil.count >= 128,
+                           let earliest = unavailableUntil.min(by: { $0.value < $1.value })?.key {
+                            unavailableUntil.removeValue(forKey: earliest)
+                        }
+                    }
+                    unavailableUntil[key] = .now.addingTimeInterval(8)
+                }
+                throw error
+            }
         } onCancel: { Task { await self.finishWaiter(key, waiter: waiter, cancel: true) } }
     }
     func prefetchGIF(url: URL) async {
@@ -133,7 +160,7 @@ actor MediaImagePipeline {
         }
     }
     private func touch(_ key: String) { order.removeAll { $0 == key }; order.append(key) }
-    func clearDecoded() { images.removeAll(); order.removeAll(); bytes = 0; prefetchedGIF = nil }
+    func clearDecoded() { images.removeAll(); order.removeAll(); bytes = 0; prefetchedGIF = nil; unavailableUntil.removeAll() }
     /// Analysis may reuse decoded previews only. It cannot trigger network traffic.
     func cachedAnalysisImage(raw: String) -> DecodedMediaImage? {
         guard let key = order.reversed().first(where: { $0.hasPrefix(raw + ":") }), let value = images[key] else { return nil }

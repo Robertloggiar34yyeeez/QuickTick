@@ -21,22 +21,159 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? url.path
         let payload: String
         if path == "/v2/auth/temporary" { payload = #"{"token":"synthetic-provider-token"}"# }
+        else if ["coomer.st", "kemono.cr"].contains(host), path == "/api/v1/creators" {
+            payload = #"[{"id":"42","service":"fanbox","name":"Fixture Artist","favorited":42},{"id":"51","service":"patreon","name":"Other Creator","favorited":8}]"#
+        }
+        else if ["coomer.st", "kemono.cr"].contains(host),
+                path == "/api/v1/posts" || path == "/api/v1/fanbox/user/42/posts" {
+            let parts = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if host == "kemono.cr", parts.contains(where: { $0.name == "q" && $0.value == "private-403" }) {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
+            if host == "kemono.cr", path == "/api/v1/posts",
+               parts.contains(where: { $0.name == "o" && $0.value == "100" }) {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
+            payload = #"{"posts":[{"id":"p100","service":"fanbox","user":"42","title":"Cosplay fantasy portrait","artist":"Fixture Artist","published":"2026-09-01T10:00:00Z","file":{"name":"portrait.jpg","path":"/ab/cd.jpg"},"attachments":[{"name":"clip.mp4","path":"/ab/ef.mp4"},{"name":"sound.mp3","path":"/ab/sound.mp3"},{"name":"archive.zip","path":"/ab/ignored.zip"}]}]}"#
+        }
+        else if ["coomer.st", "kemono.cr"].contains(host), path.hasSuffix("/comments") {
+            payload = #"[{"id":"1","author":"Visitor","content":"Amazing post","created_at":"2026-09-01"}]"#
+        }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
+        else if host == "www.erome.com", ["/explore", "/explore/new", "/search"].contains(path) {
+            let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "q" })?.value
+            payload = search == "summary-video"
+                ? #"<html><div id="albums"><div class="album"><a class="album-title" href="/a/ABC123">City portrait</a><img class="album-thumbnail" src="https://s7.erome.com/123/ABC123/poster.jpg"><span class="album-videos">1</span></div></div></html>"#
+                : search == "mixed-albums"
+                ? #"<html><div id="albums"><div class="album"><a class="album-title" href="/a/IMGONLY">Photo set</a><img class="album-thumbnail" src="https://s7.erome.com/123/ABC123/poster.jpg"></div><a class="album-link" href="/a/ABC123">Video not in summaries</a></div></html>"#
+                : #"<html><div id="albums"><a class="album-link" href="/a/ABC123">Album</a><a href="https://evil.invalid/a/FAKE" class="album-link">Do not read</a><a class="album-link" href="/a/ABC123">Duplicate</a></div></html>"#
+        }
+        else if host == "www.erome.com", path == "/a/ABC123" {
+            payload = #"<html><head><title>City portrait - Erome</title><meta property="og:image" content="https://s7.erome.com/123/ABC123/poster.jpg"></head><body><video data-setup='{&quot;poster&quot;:&quot;https://s7.erome.com/123/ABC123/poster.jpg&quot;}'><source src="https://v12.erome.com/123/ABC123/clip_720p.mp4" type="video/mp4"></video><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div><div class="img"><img data-src="https://evil.invalid/malicious.jpg"></div></body></html>"#
+        }
+        else if host == "www.erome.com", path == "/a/IMGONLY" {
+            payload = #"<html><title>Photo set - Erome</title><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div></html>"#
+        }
+        else if host == "auth.hanime.tv", path == "/api/v11/search_hvs" {
+            payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
+        }
+        else if host == "hanime.tv", path == "/api/v8/video" {
+            // Hanime's catalog may be public even when its stream URL has
+            // been removed from the unauthenticated video response.
+            payload = #"{"videos_manifest":{"servers":[{"streams":[]}]}}"#
+        }
         else if host == "api.rule34.xxx", path == "/autocomplete.php" { payload = #"[{"value":"engineering","label":"engineering (12)","count":12}]"# }
         else if host == "api.rule34.xxx" {
             let comments = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "s" && $0.value == "comment" } == true
             payload = comments ? #"<comments><comment id="7" creator="Fixture" body="A &amp; B" /></comments>"# : #"[{"id":1,"score":9,"tags":"engineering car","width":1920,"height":1080,"file_url":"https://media.rule34.xxx/clip.mp4","preview_url":"https://media.rule34.xxx/clip.jpg"}]"#
         } else if path.contains("/embed/") { payload = #"<html><script>var hash='00112233445566778899aabbccddeeff';</script></html>"# }
         else if path.contains("/xhr/video/") { payload = #"{"sources":{"mp4":{"360p":{"src":"https://cdn.eporner.com/small.mp4"},"1080p":{"src":"https://cdn.eporner.com/full.mp4"}}}}"# }
-        else if host == "www.eporner.com" { payload = #"{"total_pages":3,"videos":[{"id":"ep1","title":"Ground effect","keywords":"engineering,aerodynamics","views":10,"default_thumb":{"src":"https://cdn.eporner.com/thumb.jpg"}}]}"# }
+        else if host == "www.eporner.com" {
+            let parameters = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let page = Int(parameters.first(where: { $0.name == "page" })?.value ?? "1") ?? 1
+            let order = parameters.first(where: { $0.name == "order" })?.value
+            let quality = parameters.first(where: { $0.name == "lq" })?.value
+            let query = parameters.first(where: { $0.name == "query" })?.value
+            payload = page > 3 || (query == "all" && order == "latest" && quality == "0")
+                ? #"{"total_pages":3,"videos":[]}"#
+                : #"{"total_pages":3,"videos":[{"id":"ep1","title":"Ground effect","keywords":"engineering,aerodynamics","views":10,"default_thumb":{"src":"https://cdn.eporner.com/thumb.jpg"}}]}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/warden" {
+            payload = #"{"data":{"token":"fixture-warden-token"}}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/search" {
+            let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "q" })?.value
+            if q == "unavailable-response" {
+                payload = "<html><head><title>Site Unavailable</title></head><body>Unable to access this site.</body></html>"
+            } else if q == "embedded-429" {
+                payload = #"{"data":"429 Too many requests"}"#
+            } else if q == "embedded-502" || q == "fallback-web" {
+                payload = #"{"data":"502 Upstream unavailable"}"#
+            } else if q == "unmatched-interest" {
+                payload = #"{"data":"No search results"}"#
+            } else {
+                payload = #"{"data":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}]}"#
+            }
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/hentai/all" {
+            payload = ["fallback-test-token", "category-only-test-token"].contains(request.value(forHTTPHeaderField: "warden") ?? "")
+                ? #"{"data":{"hentais":[],"total_pages":0}}"#
+                : #"{"data":{"hentais":[{"post_id":12,"post_name":"maid-episode","post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"total_pages":3}}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/hentai/home" {
+            payload = request.value(forHTTPHeaderField: "warden") == "category-only-test-token"
+                ? #"{"data":{"trending_month":[],"last":[],"yuri":[{"post_id":19,"post_title":"Yuri romance","post_thumbnail":"https://cdn.hentaihaven.app/yuri.jpg"}]}}"#
+                : #"{"data":{"trending_month":[{"post_id":12,"post_title":"Maid episode","post_thumbnail":"https://cdn.hentaihaven.app/thumb.jpg"}],"yuri":[{"post_id":19,"post_title":"Yuri romance","post_thumbnail":"https://cdn.hentaihaven.app/yuri.jpg"}]}}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/genre/17" {
+            payload = #"{"data":{"hentais":[{"post_id":34,"post_title":"Maid academy","post_thumbnail":"https://cdn.hentaihaven.app/maid.jpg"}],"total_pages":2}}"#
+        }
+        else if host == "nhentai.net", path.hasPrefix("/api/galleries") || path.hasPrefix("/api/gallery/") {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self); return
+        }
+        else if host == "nhentai.net", path == "/api/v2/galleries/popular" {
+            payload = #"[{"id":456,"media_id":"321","english_title":"Space adventure","thumbnail":"galleries/321/cover.png","thumbnail_width":600,"thumbnail_height":900}]"#
+        }
+        else if host == "nhentai.net", path == "/api/v2/galleries" || path == "/api/v2/search" {
+            payload = #"{"result":[{"id":456,"media_id":"321","english_title":"Space adventure","japanese_title":null,"thumbnail":"galleries/321/cover.png","thumbnail_width":600,"thumbnail_height":900,"num_pages":3,"tag_ids":[100,200]}],"num_pages":3,"per_page":25}"#
+        }
+        else if host == "nhentai.net", path == "/api/v2/galleries/456" {
+            payload = #"{"id":456,"media_id":"321","title":{"english":"Space adventure","pretty":"Space adventure"},"pages":[{"number":1,"path":"galleries/321/1.jpg"},{"number":2,"path":"2.png"},{"number":3,"path":"3.webp"}]}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/hentai/12" {
+            payload = #"{"data":{"post_id":12,"episodes":[{"chapter_id":34,"chapter_name":"Episode 1"}]}}"#
+        }
+        else if host == "api.hentaihaven.app", path == "/v1/hentai/12/episode/34" {
+            payload = #"{"data":{"chapter_content":"https://cdn.hentaihaven.app/episode.m3u8"}}"#
+        }
+        else if host == "hentaihaven.xxx", path == "/" {
+            payload = #"<html><a href="/watch/fallback-web/"><img src="https://img.hentaihaven.xxx/poster.jpg" alt="Fallback web fantasy"></a><a href="/watch/another-title/"><img src="https://img.hentaihaven.xxx/second.jpg" alt="Another title"></a></html>"#
+        }
+        else if host == "hentaihaven.xxx", path == "/series/yuri/" {
+            payload = #"<html><a href="/watch/genre-entry/"><img src="https://coverlanyvd.org/cover.jpg" alt="Genre entry"></a></html>"#
+        }
+        else if host == "hentaihaven.xxx", path == "/watch/fallback-web/" {
+            payload = #"<html><video controls><source src="https://media.hentaihaven.xxx/episode.m3u8" type="application/vnd.apple.mpegurl"></video></html>"#
+        }
+        else if host == "hentaihaven.xxx", path == "/watch/no-public-stream/" {
+            payload = #"<html><div class="player">Player temporarily unavailable</div></html>"#
+        }
         else if host == "search.htv-services.com" { payload = #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fixture\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"}]}]"}"# }
         else if path == "/api/v8/video" { payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/full.m3u8"}]}]}}"# }
+        else if path == "/webmasters/categories" {
+            payload = #"{"categories":[{"category":"Cosplay"},{"category":"Vintage"},{"category":"Anal"}]}"#
+        }
         else if path == "/webmasters/search" || path == "/webmasters/search/" {
-            if path == "/webmasters/search", URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: { $0.name == "search" && $0.value == "route-fixture" }) == true {
+            let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "search" })?.value
+            if search == "unavailable-route" || search == "public-html" ||
+               search == "browse-missing-first" || search == "browse-soft404" ||
+               (search == "api-host" && host != "api.pornhub.com") ||
+               (path == "/webmasters/search" && search == "route-fixture") {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
             }
-            payload = #"{"videos":[{"video_id":"ph1","title":"Fixture","tags":[{"tag_name":"sample"}],"default_thumb":"https://cdn.pornhub.com/thumb.jpg"}]}"#
+            payload = search == "filtered-terms"
+                ? #"{"videos":[{"video_id":"allowed","title":"First","duration":"15:00","production":"homemade","categories":[{"category":"Cosplay"}]},{"video_id":"blocked","title":"Second","duration":"04:00","production":"professional","categories":[{"category":"Vintage"}]}]}"#
+                : search == "html-response"
+                ? "<html><head><title>404 Not Found</title></head><body>The requested URL was not found on this server.</body></html>"
+                : #"{"videos":[{"video_id":"ph1","title":"Fixture","tags":[{"tag_name":"sample"}],"default_thumb":"https://cdn.pornhub.com/thumb.jpg","thumbs":[{"size":"small","src":"https://cdn.pornhub.com/thumb-small.jpg"}]}]}"#
+        }
+        else if host == "www.pornhub.com", path == "/video/search" {
+            let params = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let search = params.first(where: { $0.name == "search" })?.value
+            if search == "browse-missing-first", params.contains(where: { $0.name == "page" }) {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
+            payload = search == "browse-soft404" && params.contains(where: { $0.name == "page" })
+                ? "<html><head><title>404 Not Found</title></head><body>The requested URL was not found on this server.</body></html>"
+                : #"<html><ul><li class="videoblock videoBox" data-video-vkey="phpublic"><a href="/view_video.php?viewkey=phpublic" title="Public &amp; indexed"><img data-thumb_url="https://cdn.pornhub.com/public.jpg" src="https://cdn.pornhub.com/public-small.jpg" alt="Public video"></a></li></ul></html>"#
         }
         else if path == "/view_video.php" {
             let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
@@ -73,16 +210,744 @@ private final class RateLimitProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class NativeProviderAPITests: XCTestCase {
+    func testFreeEromeCatalogSearchMediaAndRetry() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        XCTAssertEqual(Provider.identify("www.erome.com"), .erome)
+        XCTAssertEqual(Provider.identifyPage("https://www.erome.com/a/ABC123"), .erome)
+        XCTAssertNil(Provider.identifyPage("https://www.erome.com.evil.invalid/a/ABC123"))
+        let page = try await api.posts(provider: .erome,
+            query: ParsedQuery(included: [], excluded: []), page: 1, sort: "recent")
+        XCTAssertEqual(page.items.count, 2)
+        XCTAssertEqual(Set(page.items.map(\.type)), ["video", "image"])
+        XCTAssertEqual(page.items[0].stableID, "erome:ABC123:clip_720p.mp4")
+        XCTAssertEqual(page.items[0].cardPreviewURL, "https://s7.erome.com/123/ABC123/poster.jpg")
+        XCTAssertEqual(page.items[0].caption, "City portrait")
+        XCTAssertEqual(page.items[1].mediaUrl, "https://s7.erome.com/123/ABC123/photo.jpg")
+        XCTAssertEqual(VisualDomain.classify(page.items[0]), .realLife)
+        XCTAssertEqual(page.items[0].providerKey, .erome)
+        let resolved = try await api.resolveMedia(Post(key: page.items[0].key,
+            id: page.items[0].id, provider: "erome"))
+        XCTAssertEqual(resolved.mediaUrl, page.items[0].mediaUrl)
+        let routes = NativeProviderProtocol.log.snapshot().compactMap(\.url)
+        XCTAssertTrue(routes.contains { $0.path == "/explore/new" })
+        XCTAssertTrue(routes.allSatisfy { $0.host == "www.erome.com" },
+                      "Public Erome integration never calls paid Apify or untrusted album hosts")
+
+        NativeProviderProtocol.log.reset()
+        let searched = try await api.posts(provider: .erome,
+            query: ParsedQuery(included: ["city"], excluded: []), page: 2)
+        XCTAssertEqual(searched.items.count, 2)
+        let query = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first?.url)
+        XCTAssertEqual(query.path, "/search")
+        XCTAssertEqual(URLComponents(url: query, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "q" })?.value, "city")
+    }
+
+    func testEromeParserRejectsExternalHostsAndMalformedAlbumIDs() throws {
+        let malicious = #"<div id="albums"><a class="album-link" href="//evil.invalid/a/SNEAK">bad</a><a class="album-link" href="/a/GOOD_22">valid</a><a class="album-link" href="/a/../evil">traversal</a></div>"#
+        XCTAssertEqual(EromePublicCatalog.albumLinks(malicious).map(\.path), ["/a/GOOD_22"])
+        let album = try XCTUnwrap(URL(string: "https://www.erome.com/a/GOOD_22"))
+        let injected = #"<video><source src="https://video.evil.invalid/clip.mp4"></video><div class="img"><img data-src="https://s7.erome.com.evil.invalid/fake.jpg"></div>"#
+        XCTAssertTrue(EromePublicCatalog.albumMedia(injected, albumURL: album).isEmpty)
+    }
+
+    func testEromeListingSummariesDoNotDownloadAllAlbums() throws {
+        let html = #"<div id="albums"><div class="album"><a class="album-title" href="/a/ABC123">City portrait</a><img class="album-thumbnail" src="https://s7.erome.com/123/ABC123/poster.jpg"><span class="album-user">Creator</span><span class="album-videos">1</span></div></div>"#
+        let summaries = EromePublicCatalog.albumSummaries(html)
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertEqual(summaries.first?.stableID, "erome:ABC123")
+        XCTAssertEqual(summaries.first?.type, "video")
+        XCTAssertEqual(summaries.first?.mediaUrl, "")
+        XCTAssertTrue(summaries.first?.isUnresolvedEromePreview == true,
+                      "Scrolling past an Erome album summary must not begin video resolution")
+        XCTAssertEqual(summaries.first?.caption, "City portrait")
+        XCTAssertEqual(summaries.first?.creator, "Creator")
+    }
+
+    func testEromeImmersiveHydratesPlayablesFromAlbumSummaries() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let query = ParsedQuery(included: ["summary-video"], excluded: [])
+        let preview = try await api.posts(provider: .erome, query: query, page: 1)
+        XCTAssertEqual(preview.items.map(\.id), ["ABC123"])
+        XCTAssertEqual(preview.items.first?.mediaUrl, "")
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
+
+        NativeProviderProtocol.log.reset()
+        let playable = try await api.posts(provider: .erome, query: query, page: 1, immersive: true)
+        XCTAssertEqual(playable.items.map(\.id), ["ABC123:clip_720p.mp4"])
+        XCTAssertEqual(playable.items.first?.mediaUrl,
+                       "https://v12.erome.com/123/ABC123/clip_720p.mp4")
+        XCTAssertFalse(playable.items.first?.isUnresolvedEromePreview == true,
+                       "Immersive playback must keep auto-playing fully resolved videos")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
+    }
+
+    func testEromeAlbumMediaIsReusedAcrossImmersiveAndPlaybackResolution() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let query = ParsedQuery(included: ["summary-video"], excluded: [])
+        let page = try await api.posts(provider: .erome, query: query, page: 1, immersive: true)
+        let clip = try XCTUnwrap(page.items.first)
+        let unresolved = Post(key: "erome:ABC123", id: "ABC123", provider: "Erome", type: "video")
+        async let first = api.resolveMedia(unresolved)
+        async let second = api.resolveMedia(unresolved)
+        let (one, two) = try await (first, second)
+        XCTAssertEqual(one.mediaUrl, clip.mediaUrl)
+        XCTAssertEqual(two.mediaUrl, clip.mediaUrl)
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/a/ABC123" }.count, 1,
+                       "Replaying an Erome album should not repeat its expensive HTML/WebKit load")
+    }
+
+    func testEromeImmersiveDoesNotLoseVideoLinksBesideImageSummaries() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let query = ParsedQuery(included: ["mixed-albums"], excluded: [])
+        let page = try await api.posts(provider: .erome, query: query, page: 1, immersive: true)
+        XCTAssertEqual(page.items.map(\.id), ["ABC123:clip_720p.mp4"])
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/IMGONLY" })
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
+    }
+
+    func testHanimeV11CatalogSearchesTagsAndKeepsSiteHeaders() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .hanime,
+            query: ParsedQuery(included: ["dark skin"], excluded: []), page: 1)
+        XCTAssertEqual(page.items.map(\.stableID), ["hanime:sample"])
+        XCTAssertEqual(page.items.first?.tags, ["fantasy", "dark skin"])
+        let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first)
+        XCTAssertEqual(request.url?.host, "auth.hanime.tv")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature-version"), "app2")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature")?.count, 64)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "https://hanime.tv")
+        let filtered = try await api.posts(provider: .hanime,
+            query: ParsedQuery(included: ["fantasy"], excluded: ["dark skin"]), page: 1)
+        XCTAssertTrue(filtered.items.isEmpty)
+    }
+
+    func testHanimeCatalogReusesRecentResultsWithoutRepeatingNetworkRequest() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let query = ParsedQuery(included: ["fantasy"], excluded: [])
+        let first = try await api.posts(provider: .hanime, query: query, page: 1)
+        let second = try await api.posts(provider: .hanime, query: query, page: 1)
+        XCTAssertEqual(first.items, second.items)
+        XCTAssertEqual(first.hasMore, second.hasMore)
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
+            $0.url?.host == "auth.hanime.tv" && $0.url?.path == "/api/v11/search_hvs"
+        }.count, 1, "Switching back to Hanime should reuse the existing catalog")
+    }
+
+    func testHanimeMissingPublicStreamSuggestsSupportedPlaybackOptions() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "hanime:sample", id: "sample", provider: "Hanime", type: "video")
+        do {
+            _ = try await api.resolveMedia(post)
+            XCTFail("Expected a clear error when Hanime omits unauthenticated playback URLs")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Browse inside QuickTick"))
+            XCTAssertTrue(error.localizedDescription.contains("Hanime API"))
+        }
+    }
+
+    func testGeneratedProviderAPIsValidateURLsAndQueryExclusions() throws {
+        XCTAssertNotNil(HanimeGeneratedAPI.validatedURL("https://api.example.com"))
+        XCTAssertNil(HanimeGeneratedAPI.validatedURL("http://api.example.com"))
+        XCTAssertNil(HanimeGeneratedAPI.validatedURL("https://name:secret@api.example.com"))
+        XCTAssertTrue(HanimeGeneratedAPI.permittedStreamURL(URL(string: "https://hanime.tv/hls/valid.m3u8")!))
+        XCTAssertTrue(HanimeGeneratedAPI.permittedStreamURL(URL(string: "https://cdn.hanime.tv/videos/valid.m3u8?token=1")!))
+        XCTAssertFalse(HanimeGeneratedAPI.permittedStreamURL(URL(string: "https://cdn.hanime.tv.evil.invalid/valid.m3u8")!))
+        XCTAssertFalse(HanimeGeneratedAPI.permittedStreamURL(URL(string: "https://cdn.hanime.tv/watch.html")!))
+        let base = URL(string: "https://api.example.com")!
+        let query = ParsedQuery(included: ["dark skin"], excluded: ["blocked_tag"])
+        let hanime = try HanimeGeneratedAPI.listingURL(base: base, query: query, page: 2, sort: "recent")
+        let erome = try EromeGeneratedAPI.listingURL(base: base, query: query, page: 3,
+                                                     sort: "recent", immersive: true)
+        XCTAssertEqual(URLComponents(url: hanime, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "q" })?.value, "dark skin")
+        XCTAssertEqual(URLComponents(url: erome, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "exclude" })?.value, "blocked_tag")
+    }
+
+    func testArchiveDomainsNormalizeSafely() {
+        XCTAssertEqual(Provider.identify("coomer.st"), .coomer)
+        XCTAssertEqual(NativeProviderAPI.type("https://coomer.st/data/sound.mp3"), "audio")
+        XCTAssertTrue(Post(key: "sound", id: "sound", provider: "coomer", type: "audio").isAudio)
+        XCTAssertEqual(Provider.identify("kemono.cr"), .kemono)
+        XCTAssertEqual(Provider.identifyPage("https://kemono.cr/fanbox/user/42/post/p100"), .kemono)
+        XCTAssertNil(Provider.identifyPage("https://kemono.cr.evil.invalid/fanbox/user/42"))
+        XCTAssertNil(NativeProviderAPI.archiveMediaURL(path: "https://evil.invalid/fake.jpg", provider: .kemono))
+        XCTAssertEqual(NativeProviderAPI.archiveMediaURL(path: "/ab/cd.jpg", provider: .coomer)?.absoluteString,
+                       "https://coomer.st/data/ab/cd.jpg")
+        XCTAssertEqual(NativeProviderAPI.archiveMediaURL(path: "/ab/cd.jpg", provider: .kemono, thumbnail: true)?.absoluteString,
+                       "https://img.kemono.cr/thumbnail/data/ab/cd.jpg")
+        XCTAssertEqual(VisualDomain.classify(Post(key: "c", id: "1", provider: "coomer", type: "video")), .realLife)
+        XCTAssertEqual(VisualDomain.classify(Post(key: "art-label", id: "2", provider: "coomer", tags: ["anime"], type: "image")), .realLife)
+        XCTAssertNotNil(NativeProviderAPI.archiveMediaURL(path: "/ab/sound.mp3", provider: .coomer))
+        XCTAssertTrue(VisualAppearanceEncoder.prefersMobileCLIP(domain: .realLife, provider: "coomer"))
+    }
+
+    func testArchiveProvidersSupportPagedSearchMediaAndComments() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        for provider in [Provider.coomer, .kemono] {
+            NativeProviderProtocol.log.reset()
+            let page = try await api.posts(provider: provider,
+                query: ParsedQuery(included: ["cosplay"], excluded: []), page: 2)
+            XCTAssertEqual(page.items.count, 3)
+            XCTAssertEqual(Set(page.items.map(\.type)), ["image", "video", "audio"])
+            XCTAssertEqual(page.items[0].providerKey, provider)
+            XCTAssertEqual(page.items[0].mediaUrl,
+                           "https://\(provider == .kemono ? "kemono.cr" : "coomer.st")/data/ab/cd.jpg")
+            XCTAssertEqual(page.items[0].cardPreviewURL,
+                           "https://img.\(provider == .kemono ? "kemono.cr" : "coomer.st")/thumbnail/data/ab/cd.jpg")
+            let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot()
+                .first(where: { $0.url?.path == "/api/v1/posts" }))
+            XCTAssertTrue(request.value(forHTTPHeaderField: "Accept")?.contains("application/json") == true)
+            let q = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(q.first(where: { $0.name == "q" })?.value, "cosplay")
+            XCTAssertEqual(q.first(where: { $0.name == "o" })?.value, "50")
+            let sound = try XCTUnwrap(page.items.first(where: { $0.isAudio }))
+            XCTAssertTrue(sound.mediaUrl.hasSuffix("/ab/sound.mp3"))
+            XCTAssertTrue(sound.cardPreviewURL.isEmpty)
+            let resolved = try await api.resolveMedia(page.items[1])
+            XCTAssertTrue(resolved.mediaUrl.hasSuffix("/ab/ef.mp4"))
+            let comments = try await api.comments(page.items[0])
+            XCTAssertEqual(comments.items.first?.body, "Amazing post")
+            let filtered = NativeProviderAPI.page(page.items, hasMore: false,
+                query: ParsedQuery(included: [], excluded: ["cosplay"]), immersive: false)
+            XCTAssertTrue(filtered.items.isEmpty)
+        }
+    }
+
+    func testArchiveArtistAutocompleteSelectsExactCreatorAndCachesTheIndex() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        for provider in [Provider.kemono, .coomer] {
+            NativeProviderProtocol.log.reset()
+            let matches = try await api.suggestions(provider: provider, query: "fixture")
+            XCTAssertEqual(matches.first?.label, "Fixture Artist · fanbox")
+            XCTAssertEqual(matches.first?.value, "creator:fanbox:42")
+            _ = try await api.suggestions(provider: provider, query: "artist")
+            let creatorRequests = NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/api/v1/creators" }
+            XCTAssertEqual(creatorRequests.count, 1, "Creator index must not be downloaded on every keystroke")
+
+            let results = try await api.posts(provider: provider,
+                query: QueryParser.parse(try XCTUnwrap(matches.first?.value)), page: 2)
+            XCTAssertEqual(results.items.count, 3)
+            let route = try XCTUnwrap(NativeProviderProtocol.log.snapshot()
+                .last(where: { $0.url?.path == "/api/v1/fanbox/user/42/posts" }))
+            let query = URLComponents(url: try XCTUnwrap(route.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(query.first(where: { $0.name == "o" })?.value, "50")
+            XCTAssertNil(query.first(where: { $0.name == "q" }))
+        }
+        XCTAssertNil(NativeProviderAPI.archiveCreatorRoute("creator:fanbox:../evil"))
+    }
+
+    func testKemonoRecoverable404ReturnsBoundedLocallyFilteredPosts() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .kemono,
+            query: QueryParser.parse("cosplay"), page: 3)
+        XCTAssertEqual(page.items.count, 3)
+        XCTAssertFalse(page.hasMore ?? true, "A recovered page must not loop its broken cursor")
+        let requested = NativeProviderProtocol.log.snapshot().compactMap(\.url)
+        XCTAssertEqual(requested.count, 2)
+        let fallback = try XCTUnwrap(URLComponents(url: requested[1], resolvingAgainstBaseURL: false))
+        XCTAssertNil(fallback.queryItems?.first(where: { $0.name == "q" }))
+        XCTAssertEqual(fallback.queryItems?.first(where: { $0.name == "o" })?.value, "0")
+    }
+
+    func testKemono403ExplainsSourceRestrictionWithoutRetryingAccessDenied() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        do {
+            _ = try await api.posts(provider: .kemono,
+                query: QueryParser.parse("private-403"), page: 1)
+            XCTFail("HTTP 403 is an upstream restriction, not a search result")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("403"))
+            XCTAssertTrue(error.localizedDescription.contains("Kemono"))
+            XCTAssertTrue(error.localizedDescription.contains("site access"))
+        }
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter { $0.url?.host == "kemono.cr" }.count, 1,
+            "Do not hammer an endpoint after an access-denied response")
+    }
+
     func testDownloadsRecoverCanonicalProviderFromAliasesKeysAndOriginalPages() {
         XCTAssertEqual(Post(key: "legacy:1", id: "1", provider: "RedGIFs.com").providerKey, .redgifs)
         XCTAssertEqual(Post(key: "pornhub:2", id: "2", provider: "Unknown site").providerKey, .pornhub)
         XCTAssertEqual(Post(key: "legacy:3", id: "3", provider: "Rule34.xxx").providerKey, .rule34)
         XCTAssertEqual(Post(key: "legacy:4", id: "4", provider: "Hanime.tv").providerKey, .hanime)
+        XCTAssertEqual(Post(key: "hhaven:12", id: "12", provider: "Hentai Haven").providerKey, .hhaven)
+        XCTAssertTrue(Provider.allCases.contains(.hanime))
+        XCTAssertFalse(Provider.allCases.contains(.hhaven), "Keep legacy Haven downloads without showing Haven in the picker")
         var fromPage = Post(key: "legacy:5", id: "5", provider: "Imported")
         fromPage.pageUrl = "https://www.eporner.com/video-abc"
         XCTAssertEqual(fromPage.providerKey, .eporner)
         fromPage.pageUrl = "https://www.pornhub.com.evil.invalid/view_video.php"
         XCTAssertNil(fromPage.providerKey)
+    }
+
+    func testHavenCatalogAndPlaybackFollowDocumentedWardenEpisodeRoutes() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .hhaven,
+                                       query: QueryParser.parse(""), page: 1)
+        XCTAssertEqual(page.items.map(\.stableID), ["hhaven:12"])
+        XCTAssertEqual(page.items.first?.caption, "Maid episode")
+        XCTAssertEqual(page.items.first?.cardPreviewURL, "https://cdn.hentaihaven.app/thumb.jpg")
+        let post = try XCTUnwrap(page.items.first)
+        let stream = try await api.resolveMedia(post)
+        XCTAssertEqual(stream.mediaUrl, "https://cdn.hentaihaven.app/episode.m3u8")
+        XCTAssertEqual(stream.type, "hls")
+        let requests = NativeProviderProtocol.log.snapshot()
+        XCTAssertEqual(requests.filter { $0.url?.path == "/v1/warden" }.count, 1)
+        XCTAssertTrue(requests.contains { $0.url?.path == "/v1/hentai/12/episode/34" &&
+            $0.value(forHTTPHeaderField: "warden") == "fixture-warden-token" })
+        XCTAssertFalse(requests.contains { $0.url?.host == "search.htv-services.com" })
+        XCTAssertEqual(VisualDomain.classify(post), .anime)
+    }
+
+    func testHavenHTMLUnavailablePageIsNotMisreportedAsEmptyRecommendedFeed() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        do {
+            _ = try await api.posts(provider: .hhaven,
+                query: QueryParser.parse("unavailable-response"), page: 1)
+            XCTFail("Unavailable HTML from the catalog API must not become a zero-result feed")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Hentai Haven"))
+            XCTAssertTrue(error.localizedDescription.contains("unavailable"))
+        }
+    }
+
+    func testHavenEmbeddedRateLimitAndUpstreamFailuresAreNotEmptyCatalogs() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        do {
+            _ = try await api.posts(provider: .hhaven, query: QueryParser.parse("embedded-429"), page: 1)
+            XCTFail("Embedded 429 must not silently become an empty page")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("limiting requests"))
+        }
+        do {
+            _ = try await api.posts(provider: .hhaven, query: QueryParser.parse("embedded-502"), page: 1)
+            XCTFail("Embedded 502 must not silently become an empty page")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("upstream"))
+        }
+    }
+
+    func testHomeCategoryChipsHaveValidProviderSpecificFilters() {
+        let haven = ProviderSearchCategories.suggestions(provider: .hhaven)
+        let pornhub = ProviderSearchCategories.suggestions(provider: .pornhub)
+        XCTAssertTrue(haven.contains { $0.value == "category:section:yuri" && $0.label == "Yuri" })
+        XCTAssertTrue(pornhub.contains { $0.value == "category:hentai" && $0.label == "Hentai" })
+        XCTAssertEqual(ProviderSearchCategories.suggestions(provider: .hhaven, matching: "yur").map(\.label), ["Yuri"])
+        XCTAssertEqual(ProviderSearchCategories.suggestions(provider: .pornhub, matching: "anim").map(\.label), ["Animation"])
+        XCTAssertTrue(ProviderSearchCategories.valid("category:genre:17", provider: .hhaven))
+        XCTAssertFalse(ProviderSearchCategories.valid("category:genre:../private", provider: .hhaven))
+        XCTAssertFalse(ProviderSearchCategories.valid("category:../../private", provider: .pornhub))
+        let selected = ProviderSearchCategories.split(QueryParser.parse("category:section:yuri \"maid academy\""), provider: .hhaven)
+        XCTAssertEqual(selected.category, "category:section:yuri")
+        XCTAssertEqual(selected.keywords, ["maid academy"])
+    }
+
+    func testHavenHomeCategoriesOpenSectionOrGenreCatalog() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let section = try await api.posts(provider: .hhaven,
+            query: QueryParser.parse("category:section:yuri"), page: 1)
+        XCTAssertEqual(section.items.map(\.stableID), ["hhaven:19"])
+        XCTAssertEqual(section.items.first?.category, "yuri")
+        let genre = try await api.posts(provider: .hhaven,
+            query: QueryParser.parse("category:genre:17 maid"), page: 1)
+        XCTAssertEqual(genre.items.map(\.stableID), ["hhaven:34"])
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path == "/v1/genre/17" &&
+                URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?.contains(where: { $0.name == "p" && $0.value == "1" }) == true
+        })
+    }
+
+    func testHavenFirstCatalogPageFallsBackToPopulatedHomeIndex() async throws {
+        let (_, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let result = try await NativeProviderAPI.haven(session: session, token: "fallback-test-token",
+            query: ParsedQuery(included: [], excluded: []), page: 1,
+            sort: "recommended", immersive: false)
+        XCTAssertEqual(result.items.map(\.stableID), ["hhaven:12", "hhaven:19"])
+        let paths = NativeProviderProtocol.log.snapshot().compactMap { $0.url?.path }
+        XCTAssertTrue(paths.contains("/v1/hentai/all"))
+        XCTAssertTrue(paths.contains("/v1/hentai/home"))
+    }
+
+    func testHavenHomeFallbackUsesAvailableCategoriesWhenTrendingAndRecentAreEmpty() async throws {
+        let (_, session) = client(); defer { session.invalidateAndCancel() }
+        let result = try await NativeProviderAPI.haven(session: session, token: "category-only-test-token",
+            query: ParsedQuery(included: [], excluded: []), page: 1,
+            sort: "recommended", immersive: false)
+        XCTAssertEqual(result.items.map(\.stableID), ["hhaven:19"])
+    }
+
+    func testHavenShortCacheReusesTheSameFirstPage() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let query = ParsedQuery(included: [], excluded: [])
+        let first = try await api.posts(provider: .hhaven, query: query, page: 1, sort: "recommended")
+        let repeated = try await api.posts(provider: .hhaven, query: query, page: 1, sort: "recommended")
+        XCTAssertEqual(first.items.map(\.stableID), repeated.items.map(\.stableID))
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/v1/hentai/all" }.count, 1)
+    }
+
+    func testHavenPublicCatalogParsesWatchPagesAndRejectsUnrelatedLinks() async throws {
+        let (_, session) = client(); defer { session.invalidateAndCancel() }
+        let result = try await NativeProviderAPI.havenWebsiteCatalog(session: session,
+            query: QueryParser.parse("fallback-web"), page: 1,
+            sort: "recommended", immersive: false)
+        XCTAssertEqual(result.items.map(\.stableID), ["hhaven:web:fallback-web"])
+        XCTAssertEqual(result.items.first?.type, "video")
+        XCTAssertEqual(result.items.first?.pageUrl, "https://hentaihaven.xxx/watch/fallback-web/")
+        XCTAssertEqual(result.items.first?.thumbUrl, "https://img.hentaihaven.xxx/poster.jpg")
+        XCTAssertEqual(result.hasMore, false)
+    }
+
+    func testHavenFallsBackToPublicWatchPagesWhenUpstreamReturnsEmbedded502() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let response = try await api.posts(provider: .hhaven,
+            query: QueryParser.parse("fallback-web"), page: 1)
+        XCTAssertEqual(response.items.map(\.stableID), ["hhaven:web:fallback-web"])
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.host == "hentaihaven.xxx" })
+    }
+
+    func testHavenWebsiteCatalogUsesRealCategoryPagesAndRejectsBlockedHTML() async throws {
+        let (_, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let selection = QueryParser.parse("category:section:yuri")
+        let page = try await NativeProviderAPI.havenWebsiteCatalog(session: session,
+            query: selection, page: 1, sort: "recommended", immersive: false)
+        XCTAssertEqual(page.items.map(\.stableID), ["hhaven:web:genre-entry"])
+        XCTAssertEqual(page.items.first?.thumbUrl, "https://coverlanyvd.org/cover.jpg")
+        XCTAssertEqual(page.items.first?.category, "category:section:yuri")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().last?.url?.absoluteString.contains("/series/yuri/") == true,
+            "URL.path may normalize trailing slashes; the actual request must retain the category route")
+        XCTAssertNil(NativeProviderAPI.havenWebsiteURL(sort: "recommended",
+            query: QueryParser.parse("category:genre:17")))
+
+        let unavailable = "<html><head><title>Site Unavailable</title></head><body>Unable to access this site.</body></html>"
+        XCTAssertThrowsError(try NativeProviderAPI.havenWebsitePage(unavailable, query: QueryParser.parse("")))
+        let mistaken = #"<a href="https://different.invalid/watch/not-our-site/">Wrong host</a>"#
+        XCTAssertThrowsError(try NativeProviderAPI.havenWebsitePage(mistaken, query: QueryParser.parse("")))
+    }
+    func testHavenVerifiedTrendingPaginationAndRealCards() throws {
+        let popular = ParsedQuery(included: [], excluded: [])
+        XCTAssertEqual(NativeProviderAPI.havenWebsiteURL(sort: "popular", query: popular, page: 2)?.absoluteString,
+                       "https://hentaihaven.xxx/browse/trending/page/2/")
+        XCTAssertNil(NativeProviderAPI.havenWebsiteURL(sort: "recommended", query: popular, page: 2))
+        XCTAssertNil(NativeProviderAPI.havenWebsiteURL(sort: "popular", query: popular, page: 51))
+        let cards = (1...20).map { id in
+            #"<a href="/watch/fixture-\#(id)/"><img src="https://img.hentaihaven.xxx/\#(id).jpg" alt="Fixture \#(id)"></a>"#
+        }.joined()
+        let first = try NativeProviderAPI.havenWebsitePage(cards, query: popular, page: 1, sort: "popular")
+        XCTAssertEqual(first.items.count, 20)
+        XCTAssertEqual(first.hasMore, true)
+        let last = try NativeProviderAPI.havenWebsitePage(cards, query: popular, page: 50, sort: "popular")
+        XCTAssertEqual(last.hasMore, false)
+    }
+
+    func testHavenCatalogPlaysDirectlyWithoutOpeningAnyWebsiteView() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let catalog = try await api.posts(provider: .hhaven,
+            query: QueryParser.parse("fallback-web"), page: 1)
+        let post = try XCTUnwrap(catalog.items.first)
+        XCTAssertTrue(post.isImmersiveMedia)
+        XCTAssertEqual(post.type, "video")
+        let stream = try await api.resolveMedia(post)
+        XCTAssertEqual(stream.mediaUrl, "https://media.hentaihaven.xxx/episode.m3u8")
+        XCTAssertEqual(stream.type, "hls")
+        let urls = NativeProviderProtocol.log.snapshot().compactMap(\.url)
+        // URL.path can normalize a final slash; compare the transport URL,
+        // which is what the fixture and real website use.
+        XCTAssertTrue(urls.contains { $0.host == "hentaihaven.xxx" &&
+            $0.absoluteString.hasPrefix("https://hentaihaven.xxx/watch/fallback-web") })
+        XCTAssertFalse(urls.contains { $0.path == "/v1/hentai/fallback-web" })
+        let missing = Post(key: "hhaven:web:no-public-stream", id: "no-public-stream", provider: "hhaven",
+            pageUrl: "https://hentaihaven.xxx/watch/no-public-stream/", type: "video")
+        do {
+            _ = try await api.resolveMedia(missing)
+            XCTFail("An HTML watch page must never be handed to AVPlayer as a media URL")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("playable in-app stream"))
+        }
+    }
+
+    func testHavenEpisodeAcceptsMarkupAndNestedSourceWithoutTreatingHTMLAsAVAsset() {
+        let markup = ["chapter_content": #"<video controls><source src="https://media.hentaihaven.xxx/episode.m3u8?token=valid" type="application/x-mpegURL"></video>"#]
+        XCTAssertEqual(NativeProviderAPI.havenEpisodeMedia(markup)?.mediaUrl,
+                       "https://media.hentaihaven.xxx/episode.m3u8?token=valid")
+        XCTAssertEqual(NativeProviderAPI.havenEpisodeMedia(markup)?.type, "hls")
+        let nested: [String: Any] = ["sources": [["url": "https://media.hentaihaven.xxx/episode.mp4"]]]
+        XCTAssertEqual(NativeProviderAPI.havenEpisodeMedia(nested)?.mediaUrl,
+                       "https://media.hentaihaven.xxx/episode.mp4")
+        XCTAssertNil(NativeProviderAPI.havenEpisodeMedia(["chapter_content": "<html>Access denied</html>"]))
+    }
+
+    func testNHentaiGalleryBrowseSearchAndCompletePageManifest() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        XCTAssertEqual(Provider.identify("nhentai.net"), .nhentai)
+        XCTAssertEqual(Provider.identifyPage("https://nhentai.net/g/456/"), .nhentai)
+        XCTAssertEqual(VisualDomain.classify(Post(key: "nhentai:456", id: "456", provider: "nhentai", type: "manga")), .anime)
+        XCTAssertTrue(AnimeVisualRecommendationPolicy.usesWDTagger(
+            Post(key: "nhentai:456", id: "456", provider: "nhentai", type: "manga"), domain: .anime))
+        let home = try await api.posts(provider: .nhentai,
+            query: ParsedQuery(included: [], excluded: []), page: 1)
+        XCTAssertEqual(home.items.map(\.stableID), ["nhentai:456"])
+        XCTAssertEqual(home.items.first?.type, "manga")
+        XCTAssertEqual(home.items.first?.mediaUrl, "https://t1.nhentai.net/galleries/321/cover.png")
+        XCTAssertEqual(home.items.first?.caption, "Space adventure")
+        XCTAssertEqual(home.hasMore, true)
+        let recentRequest = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first {
+            $0.url?.path == "/api/v2/galleries"
+        })
+        XCTAssertTrue(recentRequest.value(forHTTPHeaderField: "User-Agent")?.contains("QuickTick/1.0") == true)
+        XCTAssertEqual(NativeProviderAPI.nhentaiImageURL(path: "2.png", mediaID: "321", thumbnail: false)?.absoluteString,
+                       "https://i1.nhentai.net/galleries/321/2.png")
+        XCTAssertNil(NativeProviderAPI.nhentaiImageURL(path: "https://example.invalid/page.jpg", mediaID: "321", thumbnail: false))
+        let pages = try await api.mangaPages(bookID: "456")
+        XCTAssertEqual(pages.map(\.absoluteString), [
+            "https://i1.nhentai.net/galleries/321/1.jpg",
+            "https://i1.nhentai.net/galleries/321/2.png",
+            "https://i1.nhentai.net/galleries/321/3.webp"
+        ])
+        let searched = try await api.posts(provider: .nhentai,
+            query: QueryParser.parse("cosplay"), page: 2)
+        XCTAssertEqual(searched.items.count, 1)
+        let popular = try await api.posts(provider: .nhentai,
+            query: ParsedQuery(included: [], excluded: []), page: 1, sort: "popular")
+        XCTAssertEqual(popular.items.map(\.stableID), ["nhentai:456"])
+        XCTAssertEqual(popular.hasMore, false)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v2/galleries/popular" })
+        let beforeRepeatedBrowse = NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/api/v2/galleries" }.count
+        _ = try await api.posts(provider: .nhentai, query: ParsedQuery(included: [], excluded: []), page: 1)
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/api/v2/galleries" }.count, beforeRepeatedBrowse,
+            "Short catalog cache should avoid spending a second anonymous rate-limit request")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path == "/api/v2/search" &&
+                URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?.contains(where: { $0.name == "query" && $0.value == "cosplay" }) == true
+        })
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path.hasPrefix("/api/galleries") == true || $0.url?.path.hasPrefix("/api/gallery/") == true
+        }, "The retired v1 API returns HTTP 403; every catalog and reader request must use v2")
+        _ = try await api.posts(provider: .nhentai,
+            query: QueryParser.parse("adventure -violence"), page: 1)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path == "/api/v2/search" &&
+                URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?.contains(where: { $0.name == "query" && $0.value == "adventure -violence" }) == true
+        })
+        let immersivePage = try await api.posts(provider: .nhentai,
+            query: ParsedQuery(included: [], excluded: []), page: 1, immersive: true)
+        XCTAssertTrue(immersivePage.items.isEmpty)
+    }
+
+    func testSuggestedThemesRespectProviderPreferencesAndRequireRealExamples() {
+        let preferred = Post(key: "nhentai:456", id: "456", provider: "nhentai",
+            tags: ["cosplay", "adventure"], thumbUrl: "https://t1.nhentai.net/galleries/321/cover.jpg",
+            type: "manga")
+        let unrelated = Post(key: "rule34:1", id: "1", provider: "rule34",
+            tags: ["cosplay"], thumbUrl: "https://example.com/unrelated.jpg", type: "image")
+        let suggestions = HomeThemeSuggestions.make(provider: .nhentai,
+            learned: ["cosplay"], chosen: [], visual: ["adventure"],
+            favorites: [preferred, unrelated], posts: [], excluded: ["adventure"])
+        XCTAssertEqual(suggestions.map(\.term), ["cosplay"])
+        XCTAssertEqual(suggestions.first?.imageURL, preferred.thumbUrl)
+        XCTAssertTrue(HomeThemeSuggestions.make(provider: .redgifs,
+            learned: ["cosplay"], chosen: [], visual: [],
+            favorites: [preferred], posts: [unrelated], excluded: []).isEmpty)
+    }
+
+    func testSuggestedThemesRotateOnRefreshWithoutLosingTasteOrExamples() {
+        let terms = ["cosplay", "adventure", "portrait", "flowers", "fantasy", "costume"]
+        let examples = terms.enumerated().map { index, term in
+            Post(key: "rule34:\(index)", id: String(index), provider: "rule34",
+                 tags: [term], thumbUrl: "https://example.com/post-\(index).jpg", type: "image")
+        }
+        let baseline = HomeThemeSuggestions.make(provider: .rule34, learned: terms,
+            chosen: [], visual: [], favorites: examples, posts: [], excluded: [], limit: 3, rotation: 0)
+        let refreshed = HomeThemeSuggestions.make(provider: .rule34, learned: terms,
+            chosen: [], visual: [], favorites: examples, posts: [], excluded: [], limit: 3, rotation: 1)
+        XCTAssertEqual(baseline.count, 3)
+        XCTAssertEqual(refreshed.count, 3)
+        XCTAssertNotEqual(baseline.map(\.term), refreshed.map(\.term))
+        XCTAssertTrue(refreshed.allSatisfy { !$0.imageURL.isEmpty && terms.contains($0.term) })
+    }
+
+    func testSuggestedThemeModeDiscoversObservedPopularFranchisesAndMixesTags() {
+        let popular = Post(key: "rule34:pokemon", id: "1", provider: "rule34", score: 125,
+            tags: ["pokemon", "portrait"], thumbUrl: "https://example.com/pokemon.jpg", type: "image")
+        let niche = Post(key: "rule34:streetfighter", id: "2", provider: "rule34", score: 5,
+            tags: ["street_fighter", "dynamic_pose"], thumbUrl: "https://example.com/sf.jpg", type: "image")
+        let settings = (learned: ["portrait"], chosen: [String](), visual: ["dynamic_pose"])
+        let series = HomeThemeSuggestions.make(provider: .rule34, learned: settings.learned,
+            chosen: settings.chosen, visual: settings.visual, favorites: [], posts: [popular, niche],
+            excluded: [], limit: 2, mode: .franchises)
+        XCTAssertEqual(series.first?.term, "pokemon")
+        XCTAssertEqual(Set(series.map(\.term)), ["pokemon", "street_fighter"])
+        XCTAssertTrue(series.allSatisfy { $0.kind == "franchise" && !$0.imageURL.isEmpty })
+        let mixed = HomeThemeSuggestions.make(provider: .rule34, learned: settings.learned,
+            chosen: settings.chosen, visual: settings.visual, favorites: [popular], posts: [popular, niche],
+            excluded: [], limit: 3, mode: .balanced)
+        XCTAssertTrue(mixed.contains(where: { $0.kind == "franchise" }))
+        XCTAssertTrue(mixed.contains(where: { $0.kind == "tag" }))
+        let blocked = HomeThemeSuggestions.make(provider: .rule34, learned: settings.learned,
+            chosen: settings.chosen, visual: settings.visual, favorites: [], posts: [popular, niche],
+            excluded: ["pokemon"], limit: 2, mode: .franchises)
+        XCTAssertFalse(blocked.contains(where: { $0.term == "pokemon" }))
+    }
+
+    func testFranchiseDiscoveryPrefersPublicPopularSeriesBeyondLikedFranchises() {
+        let liked = Post(key: "rule34:old", id: "old", provider: "rule34", score: 900,
+            tags: ["pokemon"], thumbUrl: "https://example.com/liked.jpg", type: "image")
+        let popular = [
+            Post(key: "rule34:pop", id: "pop", provider: "rule34", score: 300,
+                 tags: ["pokemon"], thumbUrl: "https://example.com/pokemon.jpg", type: "image"),
+            Post(key: "rule34:zelda", id: "zelda", provider: "rule34", score: 200,
+                 tags: ["the_legend_of_zelda"], thumbUrl: "https://example.com/zelda.jpg", type: "image"),
+            Post(key: "rule34:ff", id: "ff", provider: "rule34", score: 160,
+                 tags: ["final_fantasy"], thumbUrl: "https://example.com/ff.jpg", type: "image")
+        ]
+        let result = HomeThemeSuggestions.make(provider: .rule34, learned: ["pokemon"],
+            chosen: ["pokemon"], visual: [], favorites: [liked], posts: [liked],
+            popular: popular, excluded: [], limit: 3, mode: .franchises)
+        XCTAssertEqual(result.count, 3)
+        XCTAssertEqual(Set(result.map(\.term)), Set(["pokemon", "the_legend_of_zelda", "final_fantasy"]))
+        XCTAssertNotEqual(result.first?.term, "pokemon", "A liked franchise must not monopolize discovery")
+        XCTAssertTrue(result.allSatisfy { $0.imageURL.hasPrefix("https://example.com/") })
+        let excluded = HomeThemeSuggestions.make(provider: .rule34, learned: [],
+            chosen: [], visual: [], favorites: [liked], posts: [liked],
+            popular: popular, excluded: ["pokemon"], limit: 3, mode: .franchises)
+        XCTAssertFalse(excluded.contains(where: { $0.term == "pokemon" }))
+    }
+
+    func testPornhubHomeCategoryUsesActualCategoryParameter() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .pornhub,
+            query: QueryParser.parse("category:hentai"), page: 1)
+        XCTAssertEqual(page.items.map(\.stableID), ["pornhub:ph1"])
+        XCTAssertEqual(page.items.first?.previewImageURLs, [
+            "https://cdn.pornhub.com/thumb.jpg", "https://cdn.pornhub.com/thumb-small.jpg"
+        ], "If the large poster is missing or blocked, Home must still try the provider's alternate thumbnail")
+        let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first {
+            $0.url?.path == "/webmasters/search"
+        })
+        let params = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(params.first(where: { $0.name == "category" })?.value, "hentai")
+        XCTAssertNil(params.first(where: { $0.name == "search" }),
+            "A category-only chip must not be sent as an unrelated title search")
+    }
+
+    func testPornhubSearchOnlyAppliesSelectedProviderFilters() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        var filters = PornhubSearchFilters(order: .topRated, production: .homemade,
+                                           minimumMinutes: 10, maximumMinutes: 20,
+                                           includedCategory: "Cosplay", excludedCategories: ["Vintage"])
+        let query = QueryParser.parse(filters.encodedQuery("filtered-terms"))
+        let result = try await api.posts(provider: .pornhub, query: query, page: 2, sort: "popular")
+        XCTAssertEqual(result.items.map(\.stableID), ["pornhub:allowed"])
+        let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first { $0.url?.path == "/webmasters/search" })
+        let params = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func value(_ key: String) -> String? { params.first { $0.name == key }?.value }
+        XCTAssertEqual(value("ordering"), "rating")
+        XCTAssertEqual(value("production"), "homemade")
+        XCTAssertEqual(value("min_duration"), "10")
+        XCTAssertEqual(value("max_duration"), "20")
+        XCTAssertEqual(value("category"), "Cosplay")
+        XCTAssertEqual(value("exclude_category[]"), "Vintage")
+        XCTAssertEqual(value("search"), "filtered-terms")
+
+        let categories = try await api.pornhubCategories()
+        XCTAssertEqual(categories, ["Anal", "Cosplay", "Vintage"])
+        let unrestricted = NativeProviderAPI.pornhubSearchParameters(query: QueryParser.parse("filtered-terms"), page: 1, sort: "recent")
+        XCTAssertFalse(unrestricted.contains(where: { ["production", "min_duration", "max_duration", "category", "exclude_category[]"].contains($0.name) }))
+        XCTAssertEqual(unrestricted.first { $0.name == "ordering" }?.value, "newest")
+        XCTAssertEqual(NativeProviderAPI.pornhubDurationSeconds("1:05:30"), 3930)
+        XCTAssertNil(NativeProviderAPI.pornhubDurationSeconds("unknown"))
+    }
+
+    func testPornhubWebmaster404UsesSameSitePublicCatalog() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let result = try await api.posts(provider: .pornhub,
+            query: QueryParser.parse("public-html"), page: 1)
+        XCTAssertEqual(result.items.map(\.stableID), ["pornhub:phpublic"])
+        XCTAssertEqual(result.items.first?.caption, "Public & indexed")
+        XCTAssertEqual(result.items.first?.previewUrl, "https://cdn.pornhub.com/public.jpg")
+        XCTAssertEqual(result.items.first?.thumbUrl, "https://cdn.pornhub.com/public-small.jpg")
+        XCTAssertEqual(result.items.first?.previewImageURLs, [
+            "https://cdn.pornhub.com/public.jpg", "https://cdn.pornhub.com/public-small.jpg"
+        ])
+        let requests = NativeProviderProtocol.log.snapshot()
+        XCTAssertTrue(requests.contains { $0.url?.path == "/webmasters/search" })
+        XCTAssertTrue(requests.contains { $0.url?.path == "/video/search" })
+        XCTAssertFalse(requests.contains { $0.url?.host?.contains("proxy") == true })
+    }
+
+    func testPornhubHTMLMissingPageAlsoFallsBackAndIsNeverTreatedAsJSON() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let result = try await api.posts(provider: .pornhub,
+            query: QueryParser.parse("html-response"), page: 1)
+        XCTAssertEqual(result.items.map(\.stableID), ["pornhub:phpublic"])
+        let unavailable = Data("<html><title>Site Unavailable</title></html>".utf8)
+        XCTAssertTrue(NativeProviderAPI.unavailableHTML(unavailable))
+        XCTAssertFalse(NativeProviderAPI.unavailableHTML(Data(#"{"videos":[]}"#.utf8)))
+    }
+
+    func testPornhubMissingBrowseRouteRetriesUnparameterizedFirstPartyURL() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        for query in ["browse-missing-first", "browse-soft404"] {
+            NativeProviderProtocol.log.reset()
+            let result = try await api.posts(provider: .pornhub,
+                query: QueryParser.parse(query), page: 1)
+            XCTAssertEqual(result.items.map(\.stableID), ["pornhub:phpublic"])
+            let listing = NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/video/search" }
+            XCTAssertEqual(listing.count, 2, "Only the bad first-page URL and clean canonical search may be tried")
+            XCTAssertTrue(listing[0].url?.query?.contains("page=1") == true)
+            XCTAssertFalse(listing[1].url?.query?.contains("page=") == true)
+            XCTAssertTrue(listing[1].value(forHTTPHeaderField: "Accept")?.contains("text/html") == true)
+        }
+    }
+
+    func testPornhubMissingWebmasterRouteTriesFirstPartyAPIHost() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let result = try await api.posts(provider: .pornhub,
+            query: QueryParser.parse("api-host"), page: 1)
+        XCTAssertEqual(result.items.map(\.stableID), ["pornhub:ph1"])
+        let requests = NativeProviderProtocol.log.snapshot()
+        XCTAssertTrue(requests.contains { $0.url?.host == "api.pornhub.com" && $0.url?.path == "/webmasters/search" })
+        XCTAssertFalse(requests.contains { $0.url?.path == "/video/search" },
+            "A valid response from the provider's first-party API host should avoid scraping its browse HTML")
+    }
+
+    @MainActor func testMigratedHavenSelectionLoadsHanimePublicCatalog() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+        await store.bootstrap()
+        store.selectedProvider = .hhaven
+        XCTAssertEqual(store.selectedProvider, .hanime)
+        store.tasteSetup.sources[Provider.hanime.rawValue] = TasteChoice(done: true, into: ["fantasy"])
+        await store.recommendations.load(RecommendationState())
+        await store.refresh()
+        XCTAssertEqual(store.posts.map(\.stableID), ["hanime:sample"],
+            "Migrating a saved Haven selection must use Hanime's available catalog")
+        XCTAssertNil(store.lastError)
     }
 
     func testUnknownSiteCanDownloadValidDirectMediaWithoutProviderRequest() async throws {
@@ -109,7 +974,7 @@ final class NativeProviderAPITests: XCTestCase {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let phrase = "cosplay scene"
         let parsed = QueryParser.parse("\"cosplay scene\" -\"unwanted intro\"")
-        for provider in [Provider.eporner, .redgifs, .hanime, .pornhub] {
+        for provider in [Provider.eporner, .redgifs, .hhaven, .pornhub] {
             NativeProviderProtocol.log.reset()
             _ = try await api.posts(provider: provider, query: parsed, page: 1)
             let requests = NativeProviderProtocol.log.snapshot()
@@ -117,22 +982,15 @@ final class NativeProviderAPITests: XCTestCase {
                 switch provider {
                 case .eporner: request.url?.host == "www.eporner.com"
                 case .redgifs: request.url?.host == "api.redgifs.com" && request.url?.path.contains("search") == true
-                case .hanime: request.url?.host == "search.htv-services.com"
+                case .hhaven: request.url?.host == "api.hentaihaven.app" && request.url?.path == "/v1/search"
                 case .pornhub: request.url?.host == "www.pornhub.com"
                 default: false
                 }
             }
             let actual = try XCTUnwrap(search, "No keyword search request for \(provider.rawValue)")
-            if provider == .hanime {
-                XCTAssertEqual(actual.httpMethod, "POST")
-                let body = try NativeProviderAPI.hanimeSearchBody(query: parsed, page: 1, sort: "recommended")
-                let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
-                XCTAssertEqual(json["search_text"] as? String, phrase)
-            } else {
-                let items = URLComponents(url: try XCTUnwrap(actual.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
-                let parameter = provider == .eporner ? "query" : provider == .redgifs ? "search_text" : "search"
-                XCTAssertEqual(items.first(where: { $0.name == parameter })?.value, phrase)
-            }
+            let items = URLComponents(url: try XCTUnwrap(actual.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let parameter = provider == .eporner ? "query" : provider == .redgifs ? "search_text" : provider == .hhaven ? "q" : "search"
+            XCTAssertEqual(items.first(where: { $0.name == parameter })?.value, phrase)
         }
     }
     func testKeywordProviderExclusionsMatchTitlesAndCreatorWithoutSubstringErrors() {
@@ -166,6 +1024,35 @@ final class NativeProviderAPITests: XCTestCase {
             query: ParsedQuery(included: ["red hair"], excluded: ["blue hair"]),
             immersive: false)
         XCTAssertEqual(result.map(\.stableID), [matching.stableID])
+    }
+
+    func testEpornerEmptyHDOnlyCatalogRetriesWithInclusiveQuality() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let result = try await api.posts(provider: .eporner,
+            query: ParsedQuery(included: [], excluded: []), page: 1, sort: "recent")
+        XCTAssertEqual(result.items.map(\.stableID), ["eporner:ep1"])
+        let requests = NativeProviderProtocol.log.snapshot()
+            .filter { $0.url?.host == "www.eporner.com" && $0.url?.path.hasPrefix("/api/v2/video/search") == true }
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests.compactMap { URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "lq" })?.value }, ["0", "1"])
+    }
+
+    @MainActor func testEpornerRecommendedRecoversWhenCatalogRepeatsOfferedPosts() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+        await store.bootstrap()
+        store.selectedProvider = .eporner
+        await store.recommendations.load(RecommendationState())
+        for _ in 0..<4 {
+            await store.refresh()
+            XCTAssertEqual(store.posts.map(\.stableID), ["eporner:ep1"],
+                "Repeated public pages must not permanently blank Home when the available video was offered but never watched")
+            XCTAssertNil(store.lastError)
+        }
     }
 
 
@@ -234,6 +1121,24 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(rawPaths, ["/webmasters/search", "/webmasters/search/"],
                        "Fallback request should retain its trailing slash")
     }
+    func testPornhubEmptySearchIsOmittedAndUnavailableRouteExplained() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        _ = try await api.posts(provider: .pornhub,
+            query: ParsedQuery(included: [], excluded: []), page: 1)
+        let home = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first?.url)
+        let terms = URLComponents(url: home, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertFalse(terms.contains(where: { $0.name == "search" }))
+
+        NativeProviderProtocol.log.reset()
+        let fallback = try await api.posts(provider: .pornhub,
+            query: QueryParser.parse("unavailable-route"), page: 1)
+        XCTAssertEqual(fallback.items.map(\.stableID), ["pornhub:phpublic"])
+        let paths = NativeProviderProtocol.log.snapshot().compactMap { $0.url?.path }
+        XCTAssertEqual(paths, ["/webmasters/search", "/webmasters/search", "/webmasters/search", "/video/search"],
+            "All first-party webmaster routes may fail, in which case the same-site catalog is used")
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot()[2].url?.host, "api.pornhub.com")
+    }
     func testPornhubUsesCanonicalPageAndSurvivesRemovedMP4Definition() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let post = Post(key: "ph:wrong-id", id: "wrong-id", provider: "Pornhub", pageUrl: "https://www.pornhub.com/view_video.php?viewkey=fallback", type: "video")
@@ -253,6 +1158,29 @@ final class NativeProviderAPITests: XCTestCase {
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             XCTAssertTrue(query.contains { $0.name == "limit" && $0.value == "40" })
             XCTAssertTrue(query.contains { $0.name == "pid" && $0.value == "1" })
+        }
+    }
+    func testRule34ExcessExclusionsStayLocalRatherThanBreakingTheProviderQuery() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let bans = ["filler1", "filler2", "filler3", "filler4", "filler5", "car"]
+        let page = try await api.posts(provider: .rule34,
+            query: ParsedQuery(included: [], excluded: bans), page: 1)
+        XCTAssertTrue(page.items.isEmpty, "Locally excluded tags must still be enforced even when omitted from the API URL")
+        let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first)
+        let remote = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "tags" }?.value ?? ""
+        XCTAssertEqual(remote.split(separator: " ").count, 5)
+        XCTAssertFalse(remote.contains("-car"))
+    }
+    func testRule34DAPIEmptyAndRejectedResponsesAreNotGenericInvalidServerErrors() throws {
+        XCTAssertTrue(try NativeProviderAPI.rule34Payload(Data("{}".utf8)).posts.isEmpty)
+        XCTAssertTrue(try NativeProviderAPI.rule34Payload(Data(#"{"count":0}"#.utf8)).posts.isEmpty)
+        let single = Data(#"{"count":1,"post":{"id":17}}"#.utf8)
+        XCTAssertEqual(try NativeProviderAPI.rule34Payload(single).posts.count, 1)
+        let rejected = Data(#"{"success":false,"message":"search down"}"#.utf8)
+        XCTAssertThrowsError(try NativeProviderAPI.rule34Payload(rejected)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("search down"))
         }
     }
     private func rateSession() -> URLSession {
@@ -354,7 +1282,8 @@ final class NativeProviderAPITests: XCTestCase {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         for provider in Provider.allCases {
             let page = try await api.posts(provider: provider, query: QueryParser.parse(""), page: 1)
-            XCTAssertEqual(page.items.count, 1, provider.rawValue)
+            XCTAssertEqual(page.items.count,
+                           provider == .kemono || provider == .coomer ? 3 : (provider == .erome ? 2 : 1), provider.rawValue)
             XCTAssertEqual(page.items.first?.providerKey, provider)
         }
         let requests = NativeProviderProtocol.log.snapshot()
@@ -370,7 +1299,9 @@ final class NativeProviderAPITests: XCTestCase {
     }
     func testDirectResolversPreferHighQualityAndCommentsDecodeXML() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
-        for (provider, expected) in [(Provider.eporner, "https://cdn.eporner.com/full.mp4"), (.hanime, "https://cdn.hanime.tv/full.m3u8"), (.pornhub, "https://cdn.pornhub.com/full.mp4")] {
+        // Hanime's public catalog no longer guarantees a playback stream.
+        // Its missing-stream behavior is covered by a separate regression test.
+        for (provider, expected) in [(Provider.eporner, "https://cdn.eporner.com/full.mp4"), (.pornhub, "https://cdn.pornhub.com/full.mp4")] {
             let post = Post(key: "fixture", id: "sample", provider: provider.displayName, type: "video")
             let media = try await api.resolveMedia(post); XCTAssertEqual(media.mediaUrl, expected)
         }

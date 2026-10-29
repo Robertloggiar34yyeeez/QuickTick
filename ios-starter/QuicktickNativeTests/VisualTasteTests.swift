@@ -3,11 +3,38 @@ import CoreGraphics
 @testable import QuicktickNative
 
 final class VisualTasteTests: XCTestCase {
+    func testMobileCLIP2RemotePackageAcceptsOnlyHTTPSCoreMLDirectories() throws {
+        let directory = try XCTUnwrap(URL(string: "https://huggingface.co/research/project/resolve/abc123/mobileclip2_s0_image.mlpackage/"))
+        let files = try XCTUnwrap(MobileCLIP2RealLifeEncoder.packageFileURLs(from: directory))
+        XCTAssertEqual(files.map(\.absoluteString), [
+            "https://huggingface.co/research/project/resolve/abc123/mobileclip2_s0_image.mlpackage/Manifest.json",
+            "https://huggingface.co/research/project/resolve/abc123/mobileclip2_s0_image.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "https://huggingface.co/research/project/resolve/abc123/mobileclip2_s0_image.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+        ])
+        for invalid in [
+            "http://example.com/model.mlpackage",
+            "https://example.com/model.pt",
+            "https://example.com/model.mlmodelc",
+            "https://example.com/model.mlpackage?token=secret",
+            "https://name:password@example.com/model.mlpackage",
+            "https://example.com/model.mlpackage#fragment"
+        ] {
+            XCTAssertNil(MobileCLIP2RealLifeEncoder.packageFileURLs(from: try XCTUnwrap(URL(string: invalid))), invalid)
+        }
+    }
+
     func testGalaxyPaletteIsSelectableAndHasDistinctNebulaGradient() {
         XCTAssertTrue(AppTheme.AccentPalette.allCases.contains(.galaxy))
         XCTAssertEqual(AppTheme.AccentPalette(rawValue: "galaxy"), .galaxy)
         XCTAssertEqual(AppTheme.AccentPalette.galaxy.gradientColors.count, 3)
         XCTAssertEqual(AppTheme.AccentPalette.violet.gradientColors.count, 2)
+    }
+
+    func testDeSlopifiedPaletteHasFlatAccentAndStableSettingsName() {
+        XCTAssertTrue(AppTheme.AccentPalette.allCases.contains(.deSlopified))
+        XCTAssertEqual(AppTheme.AccentPalette(rawValue: "deSlopified"), .deSlopified)
+        XCTAssertEqual(AppTheme.AccentPalette.deSlopified.name, "De-slopified")
+        XCTAssertEqual(AppTheme.AccentPalette.deSlopified.gradientColors.count, 2)
     }
 
     func testStudioFavoritePromptKeepsOneCharacterOneSceneAndOnePose() {
@@ -76,6 +103,29 @@ final class VisualTasteTests: XCTestCase {
         let real = try XCTUnwrap(VisualFeatures.metadata(realPost, taxonomy: taxonomy))
         XCTAssertTrue(real.subjects.isEmpty); XCTAssertTrue((real.artists ?? []).isEmpty)
     }
+    func testCreditedArchiveArtistBecomesIdentityButPhotoUploaderDoesNot() throws {
+        var kemono = Post(key: "kemono:42", id: "42", provider: "kemono", tags: ["sitting", "indoors"], type: "image")
+        kemono.creator = "Studio Artist"
+        XCTAssertEqual(ArtistAttribution.credited(in: kemono), ["studio_artist"])
+        let anime = try XCTUnwrap(VisualFeatures.metadata(kemono))
+        XCTAssertEqual(anime.artists, ["studio_artist"])
+
+        var comic = Post(key: "nhentai:17", id: "17", provider: "nhentai", tags: ["manga", "kneeling"], type: "image")
+        comic.creator = "Studio Artist"
+        XCTAssertEqual(VisualFeatures.metadata(comic)?.artists, ["studio_artist"])
+
+        var real = Post(key: "coomer:55", id: "55", provider: "coomer", tags: ["photo"], type: "image")
+        real.creator = "Studio Artist"
+        XCTAssertEqual(ArtistAttribution.credited(in: real), ["studio_artist"])
+        XCTAssertTrue(VisualFeatures.metadata(real)?.artists?.isEmpty ?? true)
+    }
+
+    func testArtistPreferencesDecodeFromLegacyChoiceAndRoundTrip() throws {
+        let old = try JSONDecoder().decode(TasteChoice.self, from: Data(#"{"done":true,"into":["pose"]}"#.utf8))
+        XCTAssertTrue(old.artists.isEmpty)
+        let chosen = TasteChoice(done: true, into: ["pose"], artists: ["artist_one"])
+        XCTAssertEqual(try JSONDecoder().decode(TasteChoice.self, from: JSONEncoder().encode(chosen)).artists, ["artist_one"])
+    }
     func testBundledArtistTaxonomyAndLegacyProfileMigration() throws {
         let url = try XCTUnwrap(Bundle.main.url(forResource: "visual-tag-taxonomy", withExtension: "json"))
         let taxonomy = try JSONDecoder().decode(VisualTagTaxonomy.self, from: Data(contentsOf: url))
@@ -124,6 +174,56 @@ final class VisualTasteTests: XCTestCase {
         let ranked = await engine.rankFast([wrongPresentation, preferred], taste: TasteChoice(),
                                            recent: [], visualScores: scores)
         XCTAssertEqual(ranked.first?.stableID, preferred.stableID)
+    }
+    func testHavenCatalogAndSavedVideosUseDeferredAnimeWDTagger() {
+        let haven = Post(key: "hhaven:12", id: "12", provider: "hhaven", tags: ["hentai"],
+                         thumbUrl: "https://cdn.hentaihaven.app/thumb.jpg", type: "video")
+        let legacy = Post(key: "hhaven:13", id: "13", provider: "hhaven",
+                          thumbUrl: haven.thumbUrl, type: "video")
+        for post in [haven, legacy] {
+            XCTAssertEqual(VisualDomain.classify(post), .anime)
+            XCTAssertTrue(AnimeVisualRecommendationPolicy.usesWDTagger(post, domain: .anime))
+            XCTAssertTrue(AnimeVisualRecommendationPolicy.fetchesIdlePreview(post, domain: .anime,
+                favorite: false, disliked: false, lightweight: false))
+            XCTAssertFalse(AnimeVisualRecommendationPolicy.fetchesIdlePreview(post, domain: .anime,
+                favorite: false, disliked: false, lightweight: true))
+            XCTAssertEqual(VisualPreviewLoader.thumbnailURL(post)?.absoluteString, haven.thumbUrl)
+        }
+        let real = Post(key: "coomer:1", id: "1", provider: "coomer", type: "video")
+        XCTAssertFalse(AnimeVisualRecommendationPolicy.usesWDTagger(real, domain: .realLife))
+        XCTAssertFalse(AnimeVisualRecommendationPolicy.fetchesIdlePreview(real, domain: .realLife,
+            favorite: false, disliked: false, lightweight: false))
+        let audio = Post(key: "hhaven:audio", id: "audio", provider: "hhaven", type: "audio")
+        XCTAssertFalse(AnimeVisualRecommendationPolicy.usesWDTagger(audio, domain: .anime))
+    }
+    func testHavenWDVisualSignalsImproveRankingBeyondAnimeTitleTags() async {
+        let labels = [WDAnimeTagger.Label(name: "long_hair", category: 0),
+                      WDAnimeTagger.Label(name: "blue_eyes", category: 0),
+                      WDAnimeTagger.Label(name: "character_one", category: 4)]
+        let signals = WDAnimeTagger.signals(labels: labels, probabilities: [0.95, 0.9, 0.96])
+        var liked = VisualFeatures(domain: .anime, subjects: ["title_character"])
+        AnimeVisualRecommendationPolicy.mergeWD(signals, into: &liked)
+        XCTAssertEqual(liked.subjects, ["character_one", "title_character"])
+        XCTAssertNotNil(liked.attributes["appearance:long_hair"])
+        XCTAssertEqual(liked.conceptEvidence?["character:character_one"]?.origin, "wd-v3-high-confidence")
+        var profile = VisualProfile()
+        profile.record(.like, features: liked)
+        var matched = VisualFeatures(domain: .anime)
+        AnimeVisualRecommendationPolicy.mergeWD(signals, into: &matched)
+        let unmatched = VisualFeatures(domain: .anime, attributes: ["appearance:short_hair": 0.9])
+        XCTAssertGreaterThan(profile.score(matched), profile.score(unmatched))
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = VisualAnalysisService(directory: directory)
+        let post = Post(key: "hhaven:liked", id: "liked", provider: "hhaven",
+                        tags: ["hentai", "long_hair"], type: "video")
+        await service.record(.like, post: post, queueAnalysis: false)
+        let candidate = Post(key: "hhaven:candidate", id: "candidate", provider: "hhaven",
+                             tags: ["hentai", "long_hair"], type: "video")
+        let scores = await service.scores([candidate])
+        XCTAssertGreaterThan(scores[candidate.stableID] ?? 0, 0,
+            "Haven visual profiles must score future Haven candidates independently of Rule34")
     }
     func testVisualDiscoveryAlternatesWithBroadExplorationAndRespectsExclusions() {
         let queries = [["sample_character_one", "2d"], ["sample_artist", "2d"], ["sample_character_two", "2d"]]
@@ -174,9 +274,32 @@ final class VisualTasteTests: XCTestCase {
         }
         XCTAssertFalse(VisualAppearanceEncoder.prefersMobileCLIP(domain: .uncertain, provider: "rule34"))
         let unknownVideo = Post(key: "unknown", id: "1", provider: "redgifs", tags: ["solo"], type: "video")
-        XCTAssertEqual(VisualDomain.classify(unknownVideo), .uncertain)
+        XCTAssertEqual(VisualDomain.classify(unknownVideo), .realLife)
         let taggedAnime = Post(key: "anime", id: "2", provider: "redgifs", tags: ["2d", "anime"], type: "video")
         XCTAssertEqual(VisualDomain.classify(taggedAnime), .anime)
+    }
+    func testHanimeUsesWDTaggerAndEromeUsesIRLVisualTaste() {
+        let hanime = Post(key: "hanime:fantasy", id: "fantasy", provider: "Hanime",
+                          tags: ["photo"], thumbUrl: "https://cdn.hanime.tv/poster.jpg", type: "video")
+        let erome = Post(key: "erome:ABC123", id: "ABC123", provider: "Erome",
+                         tags: ["2d", "anime"], thumbUrl: "https://s7.erome.com/album/poster.jpg", type: "video")
+        XCTAssertEqual(VisualDomain.classify(hanime), .anime)
+        XCTAssertTrue(AnimeVisualRecommendationPolicy.usesWDTagger(hanime, domain: .anime))
+        XCTAssertTrue(AnimeVisualRecommendationPolicy.fetchesIdlePreview(hanime,
+            domain: .anime, favorite: false, disliked: false, lightweight: false))
+        XCTAssertFalse(VisualAppearanceEncoder.prefersMobileCLIP(domain: .anime, provider: hanime.provider))
+        XCTAssertFalse(IRLVideoFrameSamplingPlan.eligible(hanime, domain: .anime))
+        XCTAssertEqual(TasteConcepts.profileKey(hanime), "hanime|anime")
+        XCTAssertEqual(HanimeGeneratedAPI.mediaHeaders(for: URL(string: hanime.thumbUrl)!),
+                       ["Referer": "https://hanime.tv/"])
+
+        XCTAssertEqual(VisualDomain.classify(erome), .realLife)
+        XCTAssertFalse(AnimeVisualRecommendationPolicy.usesWDTagger(erome, domain: .realLife))
+        XCTAssertTrue(VisualAppearanceEncoder.prefersMobileCLIP(domain: .realLife, provider: erome.provider))
+        XCTAssertTrue(IRLVideoFrameSamplingPlan.eligible(erome, domain: .realLife))
+        XCTAssertEqual(TasteConcepts.profileKey(erome), "erome|realLife")
+        XCTAssertEqual(EromeGeneratedAPI.mediaHeaders(for: URL(string: erome.thumbUrl)!),
+                       ["Referer": "https://www.erome.com/"])
     }
     func testMobileCLIPMigrationNeverComparesOrBlendsVisionVectors() throws {
         let vision = VisualFeatures(domain: .realLife, attributes: ["setting:portrait": 1], embedding: [1, 0, 0], version: "vision-featureprint-r2-v2")
@@ -195,6 +318,14 @@ final class VisualTasteTests: XCTestCase {
         XCTAssertGreaterThan(profile.score(mobile), profile.score(vision))
         profile.record(.like, features: vision)
         XCTAssertEqual(profile.clusters, [[0, 1, 0]])
+        let mobile2 = VisualFeatures(domain: .realLife, attributes: ["setting:portrait": 1],
+            embedding: [0, 0, 1], version: MobileCLIP2RealLifeEncoder.version)
+        profile.record(.like, features: mobile2)
+        XCTAssertEqual(profile.embeddingSpace, "mobileclip2-s0-image")
+        XCTAssertEqual(profile.clusters, [[0, 0, 1]])
+        XCTAssertEqual(profile.attributes["setting:portrait"]?.positive, 4)
+        profile.record(.like, features: mobile)
+        XCTAssertEqual(profile.clusters, [[0, 0, 1]])
         let restored = try JSONDecoder().decode(VisualProfile.self, from: JSONEncoder().encode(profile))
         XCTAssertEqual(restored, profile)
     }

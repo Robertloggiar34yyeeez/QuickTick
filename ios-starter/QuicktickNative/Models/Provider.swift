@@ -1,7 +1,10 @@
 import Foundation
 
 enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
-    case rule34, redgifs, pornhub, eporner, hanime
+    case rule34, redgifs, pornhub, eporner, erome, hhaven, coomer, kemono, nhentai
+    // Historical Haven downloads stay readable, but Hanime replaces Haven in menus.
+    case hanime
+    static var allCases: [Provider] { [.rule34, .redgifs, .pornhub, .eporner, .erome, .hanime, .coomer, .kemono, .nhentai] }
     var id: String { rawValue }
     /// Older imports and restored downloads may use website names instead of
     /// the canonical provider ID. Restrict aliases to known sources rather
@@ -15,7 +18,12 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         case "redgifs", "redgifscom": return .redgifs
         case "pornhub", "pornhubcom": return .pornhub
         case "eporner", "epornercom": return .eporner
+        case "erome", "eromecom", "wwweromecom": return .erome
         case "hanime", "hanimetv": return .hanime
+        case "hhaven", "hentaihaven", "hentaihavenapp", "hentaihavenxxx": return .hhaven
+        case "coomer", "coomerst": return .coomer
+        case "kemono", "kemonocr": return .kemono
+        case "nhentai", "nhentainet": return .nhentai
         default: return nil
         }
     }
@@ -25,10 +33,27 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
               let host = url.host?.lowercased() else { return nil }
         for (domain, source) in [("rule34.xxx", Provider.rule34), ("redgifs.com", .redgifs),
                                   ("pornhub.com", .pornhub), ("eporner.com", .eporner),
-                                  ("hanime.tv", .hanime)] {
+                                  ("erome.com", .erome),
+                                  ("hanime.tv", .hanime), ("hentaihaven.xxx", .hhaven),
+                                  ("hentaihaven.app", .hhaven), ("coomer.st", .coomer),
+                                  ("kemono.cr", .kemono), ("nhentai.net", .nhentai)] {
             if host == domain || host.hasSuffix("." + domain) { return source }
         }
         return nil
+    }
+    var monogram: String {
+        switch self {
+        case .rule34: "34"
+        case .redgifs: "RG"
+        case .pornhub: "PH"
+        case .eporner: "EP"
+        case .erome: "ER"
+        case .hanime: "HA"
+        case .hhaven: "HH"
+        case .coomer: "CO"
+        case .kemono: "KE"
+        case .nhentai: "NH"
+        }
     }
     var displayName: String {
         switch self {
@@ -36,7 +61,12 @@ enum Provider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .redgifs: "RedGIFs"
         case .pornhub: "Pornhub"
         case .eporner: "Eporner"
+        case .erome: "Erome"
         case .hanime: "Hanime"
+        case .hhaven: "Hentai Haven"
+        case .coomer: "Coomer"
+        case .kemono: "Kemono"
+        case .nhentai: "NHentai"
         }
     }
 }

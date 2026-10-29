@@ -31,6 +31,43 @@ enum VisualDiscoveryPolicy {
     }
 }
 
+/// Routes known anime sources through the same on-device WD-v3 pipeline as
+/// Rule34. Catalog videos use their bounded poster image, never a stream or
+/// network request on the scrolling/playback path.
+enum AnimeVisualRecommendationPolicy {
+    static func usesWDTagger(_ post: Post, domain: VisualDomain) -> Bool {
+        guard !post.isAudio else { return false }
+        return domain == .anime || (domain == .uncertain &&
+            (post.providerKey == .kemono || post.providerKey == .hhaven ||
+             post.providerKey == .hanime || post.providerKey == .nhentai))
+    }
+
+    static func fetchesIdlePreview(_ post: Post, domain: VisualDomain,
+                                   favorite: Bool, disliked: Bool, lightweight: Bool) -> Bool {
+        guard !lightweight else { return false }
+        // Unseen Haven cards are often video posters that have not passed
+        // through the decoded image cache. Fetch a *small* preview in the
+        // existing serial, Wi-Fi-only idle worker so visual ranking can learn
+        // from more than just previously opened posts.
+        return favorite || disliked ||
+            ((post.providerKey == .hhaven || post.providerKey == .hanime ||
+              post.providerKey == .nhentai) && usesWDTagger(post, domain: domain))
+    }
+
+    static func mergeWD(_ tagged: WDAnimeTagger.Result, into features: inout VisualFeatures) {
+        features.attributes.merge(tagged.attributes, uniquingKeysWith: max)
+        guard features.domain == .anime else { return }
+        // Title-derived subjects must not suppress high-confidence visual
+        // subjects when multiple characters appear on the poster.
+        features.subjects = Array(Set(features.subjects + tagged.subjects)).sorted()
+        if features.conceptEvidence == nil { features.conceptEvidence = [:] }
+        for subject in tagged.subjects where features.conceptEvidence?["character:" + subject] == nil {
+            features.conceptEvidence?["character:" + subject] =
+                ConceptEvidence(confidence: 0.9, origin: "wd-v3-high-confidence")
+        }
+    }
+}
+
 /// One bounded worker; metadata feedback is independent of model execution.
 actor VisualAnalysisService {
     struct State: Codable, Sendable {
@@ -80,6 +117,7 @@ actor VisualAnalysisService {
     }
     func releaseModels() async {
         await animeTagger.release()
+        await MobileCLIP2RealLifeEncoder.shared.release()
         await MobileCLIPRealLifeEncoder.shared.release()
     }
     private let directory: URL
@@ -259,15 +297,22 @@ actor VisualAnalysisService {
     }
     /// Lightweight cache-only attributes can run during browsing. Heavy models
     /// and bounded thumbnail requests require an uncontended resource window.
-    func processNext(heavy: Bool) async -> Bool {
+    func processNext(heavy: Bool, resolver: MediaResolver? = nil) async -> Bool {
         restore()
         guard !analyzing, resourcesAllowAnalysis(), let work = state.pending?.filter({ $0.retryAfter <= .now })
             .sorted(by: { a, b in a.priority == b.priority ? (a.priority >= 4 ? a.created > b.created : a.created < b.created) : a.priority > b.priority }).first else { return false }
         let started = Date()
         defer { FeedPerformance.emit(heavy ? "visual_heavy_slice" : "visual_cached_slice", started: started, count: 1) }
         let before = state.features[work.post.stableID]
+        if work.post.isAudio {
+            if state.analysisVersions == nil { state.analysisVersions = [:] }
+            state.analysisVersions?[work.post.stableID] = revision(work.post)
+            state.pending?.removeAll { $0.post.stableID == work.post.stableID }
+            persist()
+            return false
+        }
         await analyze(work.post, favorite: state.liked.contains(work.post.stableID), useVision: heavy,
-            disliked: state.disliked.contains(work.post.stableID), lightweight: !heavy)
+            disliked: state.disliked.contains(work.post.stableID), lightweight: !heavy, resolver: resolver)
         guard !Task.isCancelled else { return false }
         let complete = state.analysisVersions?[work.post.stableID] == revision(work.post)
         if complete { state.pending?.removeAll { $0.post.stableID == work.post.stableID } }
@@ -280,15 +325,22 @@ actor VisualAnalysisService {
     private func revision(_ post: Post) -> String {
         let sources = [post.mediaUrl, post.previewUrl, post.thumbUrl].map { FeedExclusions.canonicalMediaURL($0) ?? $0 }
         let content = (sources + [post.tags.sorted().joined(separator: " "), post.category ?? "", post.type, post.creator ?? ""]).joined(separator: "|")
-        let realLifeModel = VisualDomain.classify(post).map {
+        let eligible = VisualDomain.classify(post).map {
             VisualAppearanceEncoder.prefersMobileCLIP(domain: $0, provider: post.provider)
-        } == true && MobileCLIPRealLifeEncoder.isInstalled()
-        return TasteConcepts.version + "|appearance-wd-v3-fp16|" + (realLifeModel ? MobileCLIPRealLifeEncoder.version : "vision")
+        } == true
+        let encoderVersion = eligible && MobileCLIP2RealLifeEncoder.isInstalled()
+            ? MobileCLIP2RealLifeEncoder.version
+            : eligible && MobileCLIPRealLifeEncoder.isInstalled() ? MobileCLIPRealLifeEncoder.version : "vision"
+        // Only invalidate these two providers' old visual snapshots when the
+        // source-to-encoder policy changes; don't rescan every saved source.
+        let routingRevision = post.providerKey == .hanime ? "|hanime-wd-v2"
+            : (post.providerKey == .erome ? "|erome-irl-v2" : "")
+        return TasteConcepts.version + "|kemono-wd-v1|hhaven-wd-v1|irl-frames-v1|appearance-wd-v3-fp16|" + encoderVersion + routingRevision
             + "|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// Called for every favorite over successive idle slices. Ledger prevents repeated learning.
-    func analyzeFavorite(_ post: Post, useVision: Bool) async {
-        await analyze(post, favorite: true, useVision: useVision)
+    func analyzeFavorite(_ post: Post, useVision: Bool, resolver: MediaResolver? = nil) async {
+        await analyze(post, favorite: true, useVision: useVision, resolver: resolver)
     }
     func analyzeCachedPost(_ post: Post, useVision: Bool) async {
         await analyze(post, favorite: false, useVision: useVision)
@@ -300,7 +352,7 @@ actor VisualAnalysisService {
         restore(); loadTaxonomy()
         return posts.filter { state.analysisVersions?[$0.stableID] != revision($0) }.sorted { $0.stableID < $1.stableID }
     }
-    private func analyze(_ post: Post, favorite: Bool, useVision: Bool, disliked: Bool = false, lightweight: Bool = false) async {
+    private func analyze(_ post: Post, favorite: Bool, useVision: Bool, disliked: Bool = false, lightweight: Bool = false, resolver: MediaResolver? = nil) async {
         guard !analyzing, resourcesAllowAnalysis() else { return }
         analyzing = true; defer { analyzing = false }
         restore()
@@ -328,7 +380,10 @@ actor VisualAnalysisService {
         if lightweight, lightVersions[post.stableID] == revision { return }
         let before = state.features[post.stableID]?.domain == metadata.domain ? state.features[post.stableID]! : metadata
         var preview = await MediaImagePipeline.shared.cachedAnalysisImage(raw: post.cardPreviewURL)
-        if preview == nil, !lightweight, (favorite || disliked), resourcesAllowAnalysis(), VisualPreviewLoader.thumbnailURL(post) != nil {
+        if preview == nil,
+           AnimeVisualRecommendationPolicy.fetchesIdlePreview(post, domain: metadata.domain,
+               favorite: favorite, disliked: disliked, lightweight: lightweight),
+           resourcesAllowAnalysis(), VisualPreviewLoader.thumbnailURL(post) != nil {
             // Keep requests bounded while avoiding a three-second penalty per
             // favorite during an explicit idle/manual refresh.
             let delay = 0.9 - Date().timeIntervalSince(lastPreviewAttempt)
@@ -337,10 +392,17 @@ actor VisualAnalysisService {
             lastPreviewAttempt = .now
             preview = await VisualPreviewLoader.shared.image(post)
         }
-        guard let image = preview else { return }
-        guard resourcesAllowAnalysis() else { return }
+        // Decode only for liked/disliked real-life videos in the serial heavy
+        // worker. Never request frame decoding during paging or playback.
+        let shouldSample = !lightweight && (favorite || disliked) &&
+            IRLVideoFrameSamplingPlan.eligible(post, domain: metadata.domain)
+        let sampled = shouldSample && resourcesAllowAnalysis()
+            ? await IRLVideoFrameSampler.shared.frames(for: post, resolver: resolver) : []
+        if preview == nil { preview = sampled.first }
+        guard let image = preview, resourcesAllowAnalysis() else { return }
         var enriched = metadata
-        let taggerCoolingDown = !lightweight && before.domain == .anime ? await animeTagger.cooldownDelay() > 0 : false
+        let useWDTagger = AnimeVisualRecommendationPolicy.usesWDTagger(post, domain: before.domain)
+        let taggerCoolingDown = !lightweight && useWDTagger ? await animeTagger.cooldownDelay() > 0 : false
         enriched.pixelsAnalyzed = true
         enriched.version = "cached-appearance-v2"
         enriched.fingerprint = Self.fingerprint(image.image)
@@ -351,23 +413,47 @@ actor VisualAnalysisService {
         } else if !lightweight, let encoded = try? await VisualAppearanceEncoder.embedding(image, domain: before.domain, provider: post.provider) {
             enriched.embedding = encoded.vector; enriched.version = encoded.version
         }
-        guard resourcesAllowAnalysis() else { return }
-        if !lightweight, !taggerCoolingDown, before.domain == .anime, let tagged = await animeTagger.analyze(image, domain: .anime) {
-            enriched.attributes.merge(tagged.attributes, uniquingKeysWith: max)
-            if enriched.subjects.isEmpty { enriched.subjects = tagged.subjects }
-            for subject in tagged.subjects where enriched.conceptEvidence?["character:" + subject] == nil {
-                if enriched.conceptEvidence == nil { enriched.conceptEvidence = [:] }
-                enriched.conceptEvidence?["character:" + subject] = ConceptEvidence(confidence: 0.9, origin: "wd-v3-high-confidence")
+        if !sampled.isEmpty, !lightweight, resourcesAllowAnalysis() {
+            var vectors: [[Float]] = []
+            var observations: [[String: Double]] = []
+            for frame in sampled.prefix(3) {
+                guard resourcesAllowAnalysis() else { break }
+                var attributes = VisualAppearanceEncoder.attributes(frame.image)
+                attributes.merge(await VisualAppearanceEncoder.sceneAttributes(frame), uniquingKeysWith: max)
+                observations.append(attributes)
+                guard resourcesAllowAnalysis() else { break }
+                if let encoded = try? await VisualAppearanceEncoder.embedding(frame, domain: before.domain, provider: post.provider) {
+                    // Never mix Vision and MobileCLIP embedding spaces.
+                    if enriched.embedding.isEmpty { enriched.version = encoded.version }
+                    if enriched.version == encoded.version { vectors.append(encoded.vector) }
+                }
             }
+            if vectors.count >= 2 {
+                let allVectors = (enriched.embedding.isEmpty ? [] : [enriched.embedding]) + vectors
+                let centroid = IRLVideoFrameSamplingPlan.centroid(allVectors)
+                if !centroid.isEmpty {
+                    enriched.embedding = centroid
+                    enriched.sampledVideoFrames = vectors.count
+                }
+            }
+            // Only repeated, confident presentation clues survive a scene cut.
+            enriched.attributes.merge(IRLVideoFrameSamplingPlan.consensus(observations), uniquingKeysWith: max)
+        }
+        guard resourcesAllowAnalysis() else { return }
+        if !lightweight, !taggerCoolingDown, useWDTagger,
+           let tagged = await animeTagger.analyze(image, domain: before.domain),
+           (before.domain == .anime || tagged.attributes.count >= 4) {
+            AnimeVisualRecommendationPolicy.mergeWD(tagged, into: &enriched)
             enriched.version += "+wd-vit-v3-7f6b584-fp16"
-            let mapped = TasteConcepts.resolve(tagged.subjects)
+            let mapped = TasteConcepts.resolve(before.domain == .anime ? tagged.subjects : [])
             enriched.franchises = Array(Set((enriched.franchises ?? []) + mapped.franchises)).sorted()
             for franchise in mapped.franchises {
                 enriched.conceptEvidence?["franchise:" + franchise] = ConceptEvidence(confidence: 0.85, origin: "wd-v3+reviewed_mapping")
             }
         }
         guard resourcesAllowAnalysis() else { return }
-        if !lightweight, before.domain == .realLife {
+        if !lightweight, (before.domain == .realLife ||
+            IRLVideoFrameSamplingPlan.eligible(post, domain: before.domain)) {
             // Vision labels describe presentation. Faces are never identity evidence.
             enriched.attributes.merge(await VisualAppearanceEncoder.sceneAttributes(image), uniquingKeysWith: max)
         }

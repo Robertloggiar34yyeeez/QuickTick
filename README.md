@@ -2,9 +2,9 @@
 
 **Native media discovery for iPhone and iPad.** Browse, discover, save and revisit media with a customizable SwiftUI interface, an immersive player, on-device recommendations and an optional local image studio.
 
-![Version](https://img.shields.io/badge/version-0.9.9-8b5cf6) ![iOS](https://img.shields.io/badge/iOS-17%2B-2563eb) ![Build](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/workflows/ios.yml/badge.svg?branch=main)
+![Version](https://img.shields.io/badge/version-1.0-8b5cf6) ![iOS](https://img.shields.io/badge/iOS-17%2B-2563eb) ![Build](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/workflows/ios.yml/badge.svg?branch=main)
 
-**Latest verified source:** v0.9.9 (build 29), merged into `main` on October 25, 2026. The [successful iOS workflow](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/runs/40188749487) built an unsigned IPA and completed its automated iPhone/iPad tests. Real-device performance, model compatibility and external content availability vary and are not guaranteed by CI.
+**Current development version:** v1.0 (build 30). The previously verified v0.9.9 (build 29) source was merged into `main` on October 25, 2026. Its [successful iOS workflow](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/runs/40188749487) built an unsigned IPA and completed its automated iPhone/iPad tests. Real-device performance, model compatibility and external content availability vary and are not guaranteed by CI.
 
 ## Screenshots
 
@@ -19,18 +19,24 @@ These are **actual iOS Simulator screenshots** exported from the successful UI-t
 - **For You feed:** A native Home feed with Recommended/Popular modes, search, sorting, tag include/exclude controls, likes, dislikes and history-aware discovery.
 - **Visual Taste recommendations:** Local preference learning combines saved interests, interaction signals, semantic text embeddings and visual/tag information. Ranking includes exploration and diversity safeguards to reduce repetitive recommendations; relevance is still a work in progress.
 - **Immersive viewing:** Swipe-driven full-screen browsing with playback controls, favorites, quick feedback, gesture and paging fixes, adaptive iPhone/iPad layouts and a vertically scrollable comic viewer.
-- **Favorites and Downloads:** Save media for an offline feed, revisit liked posts, see download progress and share/export a recommendation profile.
+- **Favorites and Downloads:** Save media for a full-width offline feed, revisit liked posts, shuffle both collections, see download progress and share/export a recommendation profile.
 - **Rhythm and floating playback:** Optional rhythm sessions for Likes and Downloads with changing Regular/Duo/Triple/Quad phrases, automatic media shuffling, and a floating video player.
 - **On-device Create:** An optional image generation tab with local model management, aspect ratios, prompting assistance, model/LoRA discovery, Anima Metal support paths and compatible upscaling. Large models require capable hardware; some model/LoRA combinations remain experimental.
 - **Personalization:** Themes including cosmic variants, playback settings, recommendation rescans and an option to hide the Create tab.
 
 ## Install an IPA
 
-1. Open [GitHub Actions → Native iOS build and IPA](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/workflows/ios.yml) and choose a **successful** run for `main`.
-2. Under **Artifacts**, download `QuickTick-0.9.9-unsigned-IPA` (while retained by GitHub Actions).
+1. Open [GitHub Actions → Native iOS build and IPA](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/workflows/ios.yml) and choose a **successful** run for the version and branch you want.
+2. Under **Artifacts**, download `QuickTick-1.0-unsigned-IPA` from a v1.0 run (while retained by GitHub Actions).
 3. Extract the archive and sign/sideload the included `.ipa` using a compatible installation method. The IPA is **unsigned**; it will not install directly like an App Store app.
 
 GitHub Actions artifacts are temporary (currently retained for 14 days). This repository does not promise a permanent binary download or App Store distribution. To build from source, open `ios-starter/QuicktickNative.xcodeproj` with a compatible Xcode release on macOS; see [the iOS workflow](.github/workflows/ios.yml) for the exact build pipeline.
+
+## Optional on-device visual model
+
+- **MobileCLIP-S0** can be downloaded directly in **Settings → Visual intelligence** from Apple's existing Core ML image-encoder release.
+- **MobileCLIP2-S0** is **not** bundled or auto-downloaded. Apple's [MobileCLIP2-S0 release](https://huggingface.co/apple/MobileCLIP2-S0) contains PyTorch weights under a [research-only license](https://huggingface.co/apple/MobileCLIP2-S0/blob/main/LICENSE), not an installable Core ML export. For permitted research use, convert the image encoder to a Core ML model with an `image` input of 256×256 pixels and a `final_emb_1` vector output.
+- Open **Settings → Visual intelligence** and import the resulting `.mlpackage` or `.mlmodelc` through Files. Alternatively, host the `.mlpackage` directory over HTTPS (including `Manifest.json`, `Data/com.apple.CoreML/model.mlmodel` and `Data/com.apple.CoreML/weights/weight.bin`), paste its directory URL and choose **Download MobileCLIP2-S0 Core ML**. QuickTick validates and compiles the package before using it during idle scans. Models are never downloaded during scrolling or playback.
 
 ## Development and privacy
 

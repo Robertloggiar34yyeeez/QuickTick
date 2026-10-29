@@ -33,8 +33,11 @@ products=[]; targets=[]
 package_specs=[
     ('ml-stable-diffusion','https://github.com/apple-aiml-research/ml-stable-diffusion.git',
      {'kind':'exactVersion','version':'1.1.1'},'StableDiffusion'),
-    ('ZIPFoundation','https://github.com/tuist/ZIPFoundation.git',
-     {'kind':'exactVersion','version':'0.9.21'},'ZIPFoundation'),
+    # DrawThings already bundles a ZIPFoundation target in its package graph.
+    # Adding tuist/ZIPFoundation separately creates duplicate target names and
+    # makes Xcode's package resolution fail before any app code is compiled.
+    ('DrawThings','https://github.com/drawthingsai/draw-things-community.git',
+     {'kind':'revision','revision':'0621d8198f3ed505bb7cefc71b84f8f0e1ce5936'},'_MediaGenerationKit'),
 ]
 package_references=[]; package_products=[]; package_build_files=[]
 for identity,url,requirement,product_name in package_specs:
@@ -44,6 +47,14 @@ for identity,url,requirement,product_name in package_specs:
     package_references.append(ref)
     package_products.append(dependency)
     package_build_files.append(build)
+# The generated project must link the same *local*, LoRA-enabled Mirage
+# runtime as project.yml. Otherwise Swift sees `import Mirage` with no module
+# despite CI having restored sdcpp.xcframework from the native build cache.
+mirage_ref=add('package:QuicktickMirageRuntime','XCLocalSwiftPackageReference',relativePath='MirageRuntime')
+mirage_dependency=add('package-product:QuicktickMirageRuntime','XCSwiftPackageProductDependency',package=mirage_ref,productName='Mirage')
+package_references.append(mirage_ref)
+package_products.append(mirage_dependency)
+package_build_files.append(add('package-build:QuicktickMirageRuntime','PBXBuildFile',productRef=mirage_dependency))
 for name,kind in [('QuicktickNative','application'),('QuicktickNativeTests','bundle.unit-test'),('QuicktickNativeUITests','bundle.ui-testing')]:
     if not (ROOT/name).exists(): continue
     app=kind=='application'
@@ -58,7 +69,7 @@ for name,kind in [('QuicktickNative','application'),('QuicktickNativeTests','bun
         settings={'PRODUCT_BUNDLE_IDENTIFIER':'com.quicktick.'+name,'PRODUCT_NAME':'$(TARGET_NAME)','GENERATE_INFOPLIST_FILE':'YES','SWIFT_VERSION':'6.0','IPHONEOS_DEPLOYMENT_TARGET':'17.0','TARGETED_DEVICE_FAMILY':'1,2','CODE_SIGN_STYLE':'Automatic','SWIFT_EMIT_LOC_STRINGS':'YES'}
         extra={}
         if app:
-            settings.update({'MARKETING_VERSION':'0.9.6','CURRENT_PROJECT_VERSION':'26','INFOPLIST_KEY_QUICKTICK_API_BASE_URL':'$(QUICKTICK_API_BASE_URL)','INFOPLIST_KEY_UIApplicationSceneManifest_Generation':'YES','INFOPLIST_KEY_UILaunchScreen_Generation':'YES','INFOPLIST_KEY_UISupportedInterfaceOrientations':'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad':'UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_CFBundleDisplayName':'Quicktick','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
+            settings.update({'MARKETING_VERSION':'1.0','CURRENT_PROJECT_VERSION':'30','INFOPLIST_KEY_QUICKTICK_API_BASE_URL':'$(QUICKTICK_API_BASE_URL)','INFOPLIST_KEY_UIApplicationSceneManifest_Generation':'YES','INFOPLIST_KEY_UILaunchScreen_Generation':'YES','INFOPLIST_KEY_UISupportedInterfaceOrientations':'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad':'UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight','INFOPLIST_KEY_CFBundleDisplayName':'Quicktick','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
             extra['baseConfigurationReference']=uid('file:Config/'+config+'.xcconfig')
             settings['ASSETCATALOG_COMPILER_APPICON_NAME']='AppIcon'
             settings['GENERATE_INFOPLIST_FILE']='NO'

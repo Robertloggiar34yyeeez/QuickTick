@@ -3,6 +3,20 @@ import AVFoundation
 @testable import QuicktickNative
 
 final class ImmersiveMediaTests: XCTestCase {
+    func testImmersivePreloadsTwoUpcomingPostsAndRetainsPreviousForReverseSwipe() {
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 0, count: 5), [0, 1, 2])
+        XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 0, count: 5), [1, 2])
+        XCTAssertEqual(ImmersivePreloadPlan.nextIndex(current: 0, count: 5), 1)
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 2, count: 5), [1, 2, 3, 4])
+        XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 2, count: 5), [3, 4])
+        XCTAssertEqual(ImmersivePreloadPlan.nextIndex(current: 2, count: 5), 3)
+        XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 4, count: 5), [3, 4])
+        XCTAssertNil(ImmersivePreloadPlan.nextIndex(current: 4, count: 5))
+        XCTAssertTrue(ImmersivePreloadPlan.forwardIndices(current: 4, count: 5).isEmpty)
+        XCTAssertTrue(ImmersivePreloadPlan.retainedIndices(current: 0, count: 0).isEmpty)
+        XCTAssertNil(ImmersivePreloadPlan.nextIndex(current: -1, count: 5))
+    }
+
     func testPagingGapKeepsCurrentPlayerButDeletedPostDoesNot() {
         let viewport = CGRect(x: 0, y: 0, width: 400, height: 800)
         let halfway = ["first": CGRect(x: 0, y: -400, width: 400, height: 800), "next": CGRect(x: 0, y: 400, width: 400, height: 800)]
@@ -51,8 +65,8 @@ final class ImmersiveMediaTests: XCTestCase {
         let output = MediaSizing.immersive(aspect: 16 / 9, available: available)
         XCTAssertEqual(output.width, 1280)
         XCTAssertEqual(output.height, 720)
-        XCTAssertEqual(MediaSizing.size(native: CGSize(width: 320, height: 180), aspect: 16 / 9, available: available).width, 320,
-                       "Home should not upscale native media while Immersive uses the full canvas")
+        XCTAssertEqual(MediaSizing.size(native: CGSize(width: 320, height: 180), aspect: 16 / 9, available: available).width, 680,
+                       "Small source thumbnails must not turn iPad feed videos into tiny cutouts")
     }
     func testImmersiveAspectFitAcrossRotationAndSplitWindows() {
         for available in [CGSize(width: 1280, height: 900), CGSize(width: 900, height: 1280), CGSize(width: 600, height: 800)] {

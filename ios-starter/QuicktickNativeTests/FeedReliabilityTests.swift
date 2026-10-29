@@ -39,6 +39,76 @@ private final class CandidatePageProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 final class FeedReliabilityTests: XCTestCase {
+    func testFeedPreviewRestoresBeforeNetworkAndKeepsProviderScope() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = FeedPreviewPersistence(directory: directory)
+        let cold = await cache.load(provider: .rule34, query: "", sort: "recommended", mediaOnly: false)
+        XCTAssertTrue(cold.isEmpty)
+        let post = Post(key: "eporner:preview", id: "preview", provider: "eporner",
+                        tags: ["cosplay"], thumbUrl: "https://example.com/p.jpg", type: "video")
+        await cache.save([post], provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        let restoredProvider = await cache.recentProvider()
+        XCTAssertEqual(restoredProvider, .eporner)
+        let restored = await cache.load(provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        XCTAssertEqual(restored.map(\.stableID), [post.stableID])
+        let otherProvider = await cache.load(provider: .rule34, query: "", sort: "recommended", mediaOnly: false)
+        let otherSearch = await cache.load(provider: .eporner, query: "cosplay", sort: "recommended", mediaOnly: false)
+        XCTAssertTrue(otherProvider.isEmpty)
+        XCTAssertTrue(otherSearch.isEmpty)
+        await cache.save([], provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        await cache.save([post], provider: .rule34, query: "zelda", sort: "popular", mediaOnly: false)
+        await cache.save([post], provider: .rule34, query: "", sort: "recommended", mediaOnly: true)
+        let afterEmptySave = await cache.load(provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        XCTAssertEqual(afterEmptySave.count, 1,
+                       "Empty responses or temporary browsing modes must not erase the last usable Home feed")
+    }
+    func testSavedMediaSearchMatchesTitlesTagsAndProvidersWithoutNetwork() {
+        var liked = Post(key: "rule34:star", id: "star", provider: "Rule34",
+                         tags: ["space_opera", "blue_hair"], type: "image")
+        liked.caption = "Cosmic Adventure"
+        liked.creator = "Sample Artist"
+        XCTAssertTrue(CollectionSearch.matches(liked, query: "SPACE opera"))
+        XCTAssertTrue(CollectionSearch.matches(liked, query: "rule34 artist"))
+        XCTAssertFalse(CollectionSearch.matches(liked, query: "football"))
+        XCTAssertTrue(CollectionSearch.matches(liked, query: ""))
+
+        let download = DownloadRecord(key: "eporner:clip", provider: "Eporner", postID: "clip",
+            title: "Cosplay Session", tags: ["science_fiction", "blonde"],
+            thumbnailRemoteURL: "", kind: .file, state: .complete, progress: 1, createdAt: .now)
+        XCTAssertTrue(CollectionSearch.matches(download, query: "Eporner science fiction"))
+        XCTAssertTrue(CollectionSearch.matches(download, query: "session"))
+        XCTAssertFalse(CollectionSearch.matches(download, query: "cooking"))
+        XCTAssertEqual(CollectionSearch.filter([liked], query: "SPACE opera").map(\.stableID), [liked.stableID])
+        XCTAssertTrue(CollectionSearch.filter([liked], query: "football").isEmpty)
+        XCTAssertEqual(CollectionSearch.matchingDownloadKeys([download], query: "Eporner science fiction"), [download.key])
+        XCTAssertTrue(CollectionSearch.matchingDownloadKeys([download], query: "cooking").isEmpty)
+    }
+
+    func testCollectionProviderFilterNormalizesRestoredSourceNames() {
+        XCTAssertEqual(CollectionProviderOrder.key("Erome"), "erome")
+        XCTAssertEqual(CollectionProviderOrder.key("www.erome.com"), "erome")
+        XCTAssertEqual(CollectionProviderOrder.key("hentaihaven.xxx"), "hhaven")
+        XCTAssertEqual(CollectionProviderOrder.name("hhaven"), "Hentai Haven")
+        XCTAssertEqual(CollectionProviderOrder.available(["erome", "Rule34", "Erome", "hanime.tv"]),
+                       ["erome", "hanime", "rule34"])
+    }
+
+    func testDownloadResponseRejectsPornhubHTMLAndPreservesBinaryMedia() {
+        let url = URL(string: "https://cdn.pornhub.com/video.mp4")!
+        let htmlResponse = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                           headerFields: ["Content-Type": "text/html"])!
+        XCTAssertNotNil(DownloadResponseValidator.failure(response: htmlResponse,
+                        header: Data("<html>Unavailable</html>".utf8)))
+        let disguisedResponse = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                               headerFields: ["Content-Type": "application/octet-stream"])!
+        XCTAssertNotNil(DownloadResponseValidator.failure(response: disguisedResponse,
+                        header: Data("<!DOCTYPE html><html></html>".utf8)))
+        XCTAssertNil(DownloadResponseValidator.failure(response: disguisedResponse,
+                     header: Data([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D])))
+        let forbidden = HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: [:])!
+        XCTAssertTrue(DownloadResponseValidator.failure(response: forbidden, header: Data())?.contains("403") == true)
+    }
     @MainActor func testRecommendedContinuesPastPageRemovedByNegativePreferences() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
@@ -165,6 +235,32 @@ final class FeedReliabilityTests: XCTestCase {
         let pages = ["first": CGRect(x: 0, y: -700, width: 390, height: 700), "next": CGRect(x: 0, y: 0, width: 390, height: 700)]
         XCTAssertEqual(VisiblePostSelector.select(frames: pages, viewport: viewport, current: "first"), "next", "A stale scroll restoration target must not keep the outgoing page active")
     }
+    func testAutomaticPaginationNeedsANewUpwardUserGesture() {
+        XCTAssertFalse(HomePaginationPolicy.shouldLoad(upwardDragSequence: 0, consumedSequence: 0,
+                                                        loading: false, hasMore: true))
+        XCTAssertTrue(HomePaginationPolicy.shouldLoad(upwardDragSequence: 1, consumedSequence: 0,
+                                                       loading: false, hasMore: true))
+        XCTAssertFalse(HomePaginationPolicy.shouldLoad(upwardDragSequence: 1, consumedSequence: 1,
+                                                        loading: false, hasMore: true),
+                       "A preview re-layout must not request a second page")
+        XCTAssertFalse(HomePaginationPolicy.shouldLoad(upwardDragSequence: 2, consumedSequence: 1,
+                                                        loading: true, hasMore: true))
+        XCTAssertFalse(HomePaginationPolicy.shouldLoad(upwardDragSequence: 2, consumedSequence: 1,
+                                                        loading: false, hasMore: false))
+    }
+    func testImmersiveFitsOriginalAspectOnPhoneWithoutZooming() {
+        let viewport = CGSize(width: 390, height: 820)
+        let landscape = MediaSizing.immersive(aspect: 16 / 9, available: viewport)
+        XCTAssertEqual(landscape.width, 390, accuracy: 0.001)
+        XCTAssertEqual(landscape.height, 390 * 9 / 16, accuracy: 0.001)
+        let square = MediaSizing.immersive(aspect: 1, available: viewport)
+        XCTAssertEqual(square.width, square.height, accuracy: 0.001)
+        XCTAssertEqual(square.width, 390, accuracy: 0.001)
+        let portrait = MediaSizing.immersive(aspect: 9 / 16, available: viewport)
+        XCTAssertEqual(portrait.width / portrait.height, 9.0 / 16, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(portrait.width, viewport.width)
+        XCTAssertLessThanOrEqual(portrait.height, viewport.height)
+    }
     func testPlaybackUsesMediaBoundsWhenMetadataIsBelowLandscapeViewport() {
         let viewport = CGRect(x: 0, y: 0, width: 874, height: 254)
         let visibleMedia = CGRect(x: 277, y: 164, width: 320, height: 80)
@@ -248,15 +344,40 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertFalse(RecommendationTagRules.rejects(battle, exclusions: ["bat"]))
     }
 
+    func testFurryAliasDatabaseBlocksBooruSpeciesButNotWildlifePhotos() {
+        for alias in ["carnivore", "canid", "canidae", "felid", "anthropomorphic_wolf", "scalie", "feral_fox"] {
+            let illustration = Post(key: "rule34:\(alias)", id: alias, provider: "rule34",
+                                    tags: [alias], type: "image")
+            XCTAssertTrue(RecommendationTagRules.rejects(illustration, exclusions: ["furry"]),
+                          "Expected furry umbrella exclusion for \(alias)")
+        }
+        let wildlife = Post(key: "redgifs:wildlife", id: "wildlife", provider: "redgifs",
+                            tags: ["canid", "wildlife", "photo"], type: "video")
+        XCTAssertFalse(RecommendationTagRules.rejects(wildlife, exclusions: ["furry"]))
+        let unrelated = Post(key: "rule34:other", id: "other", provider: "rule34",
+                             tags: ["portrait", "landscape"], type: "image")
+        XCTAssertFalse(RecommendationTagRules.rejects(unrelated, exclusions: ["furry"]))
+    }
+
     func testSizingMatrixForPhoneTabletAndSplitWindows() {
         for available in [CGSize(width: 358,height: 750),CGSize(width: 810,height: 1080),CGSize(width: 1180,height: 720),CGSize(width: 480,height: 1024)] {
             for native in [CGSize(width: 240,height: 426),CGSize(width: 1920,height: 1080),CGSize(width: 3000,height: 5000),CGSize(width: 320,height: 320)] {
                 let output = MediaSizing.size(native: native,aspect: native.width/native.height,available: available)
-                XCTAssertLessThanOrEqual(output.width, min(native.width,available.width,680))
+                XCTAssertLessThanOrEqual(output.width, min(available.width,680))
                 XCTAssertLessThanOrEqual(output.height,min(620,available.height*0.72)+1)
                 XCTAssertEqual(output.width/output.height,native.width/native.height,accuracy: 0.001)
             }
         }
+    }
+    func testLowResolutionThumbnailsDoNotShrinkVideoCards() {
+        let smallSourceVideo = MediaSizing.size(native: CGSize(width: 240,height: 135),
+                                                 aspect: 16 / 9,
+                                                 available: CGSize(width: 1024,height: 800))
+        XCTAssertEqual(smallSourceVideo.width, 680)
+        let landscape = MediaSizing.size(native: CGSize(width: 320,height: 180),
+                                         aspect: 16 / 9,
+                                         available: CGSize(width: 874,height: 322))
+        XCTAssertLessThanOrEqual(landscape.height, 322 * 0.60 + 0.01)
     }
     func testImageCacheDownsamplesAndAvoidsRepeatedDecode() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".png")
@@ -272,6 +393,24 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertTrue(first.image === second.image);XCTAssertLessThanOrEqual(first.image.width,512)
         let hits = await pipeline.hits;XCTAssertEqual(hits,1)
         print("QUICKTICK_METRIC image cold_ms=\(cold*1000) warm_ms=\(warm*1000)")
+    }
+    func testCardPreviewsKeepFallbackThumbnailsWithoutFetchingVideosAsImages() {
+        let video = Post(key: "pornhub:fixture", id: "fixture", provider: "Pornhub",
+            mediaUrl: "https://media.example.invalid/video.mp4", previewUrl: "https://img.example.invalid/large.jpg",
+            thumbUrl: "https://img.example.invalid/small.jpg", type: "video")
+        XCTAssertEqual(video.previewImageURLs, [
+            "https://img.example.invalid/large.jpg", "https://img.example.invalid/small.jpg"
+        ])
+        let noPoster = Post(key: "pornhub:empty", id: "empty", provider: "Pornhub",
+            mediaUrl: "https://media.example.invalid/video.mp4", type: "video")
+        XCTAssertTrue(noPoster.previewImageURLs.isEmpty,
+            "The UI must display its designed fallback instead of decoding a movie as a poster")
+        let image = Post(key: "rule34:fixture", id: "fixture", provider: "Rule34",
+            mediaUrl: "https://media.example.invalid/original.jpg", previewUrl: "https://media.example.invalid/thumb.jpg",
+            thumbUrl: "https://media.example.invalid/thumb.jpg", type: "image")
+        XCTAssertEqual(image.previewImageURLs, [
+            "https://media.example.invalid/thumb.jpg", "https://media.example.invalid/original.jpg"
+        ])
     }
     func testLargeComicPreviewIsBoundedAndKeepsNativeMetadata() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".png")

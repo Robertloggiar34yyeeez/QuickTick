@@ -7,8 +7,16 @@ enum VideoIntroPolicy {
         provider.lowercased() == "pornhub"
     }
 
+    static func isHaven(_ provider: String) -> Bool {
+        ["hhaven", "hentai haven", "hentaihaven"].contains(provider.lowercased())
+    }
+
+    static func enabled(provider: String, pornhub: Bool, haven: Bool) -> Bool {
+        isHaven(provider) ? haven : (isPornhub(provider) && pornhub)
+    }
+
     static func startTime(duration: Double, enabled: Bool, provider: String) -> Double {
-        enabled && isPornhub(provider) && duration.isFinite && duration > 12 ? 10 : 0
+        enabled && (isPornhub(provider) || isHaven(provider)) && duration.isFinite && duration > 12 ? 10 : 0
     }
 
     static func bufferedFrom(_ start: Double, ranges: [CMTimeRange], requiredSeconds: Double = 0.7) -> Bool {
@@ -57,6 +65,11 @@ final class PlayerPool: ObservableObject {
     }
     var onPlaybackStart: (() -> Void)?
     func isPreparing(_ key: String) -> Bool { warming.contains(key) }
+    func preparedURL(for key: String) -> URL? {
+        guard let player = players[key], player.status != .failed,
+              player.currentItem?.status != .failed else { return nil }
+        return urls[key]
+    }
     func transitionVisiblePost() {
         suspendedPlayback = nil
         if let activeKey {
@@ -71,7 +84,11 @@ final class PlayerPool: ObservableObject {
         if let existing = players[key], urls[key] == url,
            existing.status != .failed, existing.currentItem?.status != .failed { touch(key); return existing }
         release(key)
-        let item = AVPlayerItem(url: url)
+        let mediaHeaders = HanimeGeneratedAPI.mediaHeaders(for: url)
+            .merging(EromeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
+        let asset = mediaHeaders.isEmpty ? AVURLAsset(url: url)
+            : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": mediaHeaders])
+        let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 3
         let player = AVPlayer(playerItem: item)
         player.volume = feedVolumeScale
@@ -97,24 +114,30 @@ final class PlayerPool: ObservableObject {
         warming.remove(key)
         p.cancelPendingPrerolls()
         p.automaticallyWaitsToMinimizeStalling = !url.isFileURL
-        p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 2.5
+        // Favor first frame latency for swipe-through playback. Longer
+        // buffering remains AVFoundation's responsibility after startup.
+        p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 1.5
         activeKey = key; activeOwner = owner; p.isMuted = muted
         p.volume = feedVolumeScale
-        if UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
-           key.lowercased().hasPrefix("pornhub:"), !introSkipped.contains(key),
+        let provider = String(key.split(separator: ":", maxSplits: 1).first ?? "")
+        let skipIntro = VideoIntroPolicy.enabled(provider: provider,
+            pornhub: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
+            haven: UserDefaults.standard.object(forKey: "quicktick-skip-hhaven-intros-v1") as? Bool ?? true)
+        if skipIntro, !introSkipped.contains(key),
            p.currentItem != nil {
             // Crucially: never decode 0:00 and seek a playing video afterward.
             // Keep the poster visible while metadata, the seek, and the first
             // post-seek playable frame become ready.
             p.pause()
-            scheduleIntroSkip(key: key, player: p, autoplay: autoplay, onIntroReady: onIntroReady)
+            scheduleIntroSkip(key: key, provider: provider, player: p,
+                              autoplay: autoplay, onIntroReady: onIntroReady)
         } else {
             if autoplay { p.play() } else { p.pause() }
             onIntroReady?()
         }
         return p
     }
-    private func scheduleIntroSkip(key: String, player: AVPlayer, autoplay: Bool,
+    private func scheduleIntroSkip(key: String, provider: String, player: AVPlayer, autoplay: Bool,
                                    onIntroReady: (@MainActor () -> Void)?) {
         guard let item = player.currentItem else { onIntroReady?(); return }
         let attempt = UUID()
@@ -129,7 +152,7 @@ final class PlayerPool: ObservableObject {
                 let current = player.currentTime().seconds
                 guard self.players[key] === player, self.activeKey == key,
                       self.introAttempts[key] == attempt else { return }
-                let start = VideoIntroPolicy.startTime(duration: duration, enabled: true, provider: "pornhub")
+                let start = VideoIntroPolicy.startTime(duration: duration, enabled: true, provider: provider)
                 if current.isFinite, current < 9.5, start > 0 {
                     let seeked = await player.seek(to: CMTime(seconds: start, preferredTimescale: 600),
                             toleranceBefore: CMTime(seconds: 0.15, preferredTimescale: 600),
@@ -137,8 +160,13 @@ final class PlayerPool: ObservableObject {
                     guard self.players[key] === player, self.activeKey == key,
                           self.introAttempts[key] == attempt else { return }
                     guard seeked else {
-                        // A canceled seek must not reveal the wrong timestamp.
+                        // A provider rejecting a timed intro seek must not
+                        // leave autoplay permanently paused. Resume from its
+                        // playable beginning and let the normal video layer
+                        // report readiness.
                         self.introAttempts.removeValue(forKey: key)
+                        if autoplay { player.play() }
+                        onIntroReady?()
                         return
                     }
                     self.introSkipped.insert(key)
@@ -169,8 +197,9 @@ final class PlayerPool: ObservableObject {
                 // Waiting for .readyToPlay or seek completion alone can still
                 // expose the old 0:00 frame. Only reveal once playback advances
                 // from the target time; the loop exits when the post deactivates.
+                let revealDeadline = Date().addingTimeInterval(8)
                 while self.players[key] === player, self.activeKey == key,
-                      self.introAttempts[key] == attempt {
+                      self.introAttempts[key] == attempt, Date() < revealDeadline {
                     let seconds = player.currentTime().seconds
                     if seconds.isFinite, seconds >= start - 0.2,
                        player.timeControlStatus == .playing {
@@ -180,6 +209,14 @@ final class PlayerPool: ObservableObject {
                     }
                     do { try await Task.sleep(for: .milliseconds(120)) }
                     catch { return }
+                }
+                if self.players[key] === player, self.activeKey == key,
+                   self.introAttempts[key] == attempt {
+                    // Some CDNs never update loadedTimeRanges reliably. The
+                    // player may still buffer; don't keep the UI's intro
+                    // gate closed indefinitely after starting playback.
+                    self.introAttempts.removeValue(forKey: key)
+                    onIntroReady?()
                 }
             }
         }

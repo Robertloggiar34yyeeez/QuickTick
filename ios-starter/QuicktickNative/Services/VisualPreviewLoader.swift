@@ -26,6 +26,11 @@ actor VisualPreviewLoader {
         loading = true; defer { loading = false }
         do {
             var request = URLRequest(url: url); request.networkServiceType = .background
+            let sourceHeaders = EromeGeneratedAPI.mediaHeaders(for: url)
+                .merging(HanimeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
+            for (header, value) in sourceHeaders {
+                request.setValue(value, forHTTPHeaderField: header)
+            }
             let (stream, response) = try await session.bytes(for: request)
             stream.task.priority = URLSessionTask.lowPriority
             defer { stream.task.cancel() }

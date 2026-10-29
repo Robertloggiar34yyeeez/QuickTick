@@ -1,40 +1,129 @@
 import SwiftUI
 
+/// Pull refresh is a gesture that *begins* at the top, not one that happens
+/// to end there. A long downward swipe from the middle can otherwise reload
+/// the whole feed and throw the reader back to the first post.
+struct HomePullRefreshGate {
+    private var beganAtTop: Bool?
+
+    mutating func observe(startOffset: CGFloat?) {
+        // LazyVStack unmounts the header well below the fold. An absent
+        // preference must NOT use a zero offset: zero means "at the top" and
+        // accidentally turns an ordinary upward journey into a full refresh.
+        if beganAtTop == nil { beganAtTop = startOffset.map { (-12...22).contains($0) } ?? false }
+    }
+
+    mutating func finish(translation: CGSize) -> Bool {
+        defer { beganAtTop = nil }
+        return beganAtTop == true && translation.height >= 105
+            && abs(translation.width) < translation.height * 0.65
+    }
+
+    mutating func cancel() { beganAtTop = nil }
+}
+
+/// Geometric preferences arrive for nearly every scroll pixel. The last
+/// observed rectangles are transient playback state, not UI state: publishing
+/// them through @State invalidated the entire media feed on every frame.
+private final class HomeVisibleFrameCache {
+    var frames: [String: CGRect] = [:]
+    // Drag/geometry samples are deliberately not @State. Updating @State for
+    // every pixel of a UIScrollView drag invalidates the entire LazyVStack.
+    var topOffset: CGFloat?
+    var pullRefreshGate = HomePullRefreshGate()
+    var lastMotionSample = Date.distantPast
+    var lastIntelligencePause = Date.distantPast
+    var lastAnchorPublished = Date.distantPast
+    var lastVisibilityAnalysis = Date.distantPast
+    var lastVisibleTop: String?
+    var visibleTopSince = Date.distantPast
+    var remountGraceUntil = Date.distantPast
+    var scrollRestTask: Task<Void, Never>?
+    var upwardDragActive = false
+    var upwardDragSequence = 0
+    var paginatedDragSequence = 0
+}
+
+enum HomePaginationPolicy {
+    static func shouldLoad(upwardDragSequence: Int, consumedSequence: Int,
+                           loading: Bool, hasMore: Bool) -> Bool {
+        upwardDragSequence > consumedSequence && !loading && hasMore
+    }
+}
+
 struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
     @Binding var scrollAnchor: String?
-    @AppStorage("quicktick-first-run-completed-v2") private var firstRunCompleted = false
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
+    @AppStorage("quicktick-suggested-themes-v1") private var suggestedThemesEnabled = true
+    @AppStorage(SuggestedThemeMode.storageKey) private var suggestedThemesMode = SuggestedThemeMode.balanced.rawValue
     @State private var showSearch = false
-    @State private var onboarding = false
+    @State private var showProviderWebsite = false
     @State private var immersive = false
     @State private var immersivePostID: String?
-    @State private var visibleFrames: [String: CGRect] = [:]
+    @State private var visibleFrameCache = HomeVisibleFrameCache()
     // Video eligibility changes only when the feed changes, not on every
     // scroll/layout pass. Avoid rebuilding a Set from the whole feed per frame.
     @State private var playableIDs: Set<String> = []
-    @State private var lastVisibleTop: String?
-    @State private var visibleTopSince = Date.distantPast
+    @State private var isScrollMoving = false
+    @State private var pullRefreshInFlight = false
+    @State private var visualThemeTerms: [String] = []
+    @State private var themeSuggestions: [HomeThemeSuggestion] = []
+    @State private var publicPopularFranchisePosts: [Post] = []
+    @State private var themeRefreshCycle = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var postSignature: String {
+        "\(store.feedRevision)|\(store.posts.count)|\(store.posts.first?.stableID ?? "")|\(store.posts.last?.stableID ?? "")"
+    }
 
     var body: some View {
         GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                feedScroll(viewport: viewport, proxy: proxy)
+            }
+        }
+        .sheet(isPresented: $showProviderWebsite) {
+            SourceWebsiteView(url: NativeProviderAPI.origin(store.selectedProvider)).ignoresSafeArea()
+        }
+    }
+
+    // Keep the root body small: the Home feed has independent scroll,
+    // navigation, playback and gesture modifiers, and Swift 6 cannot reliably
+    // type-check all of those inside one nested GeometryReader expression.
+    private func feedScroll(viewport: GeometryProxy, proxy: ScrollViewProxy) -> some View {
         let revision = store.feedRevision
-        ScrollViewReader { proxy in
-        ScrollView {
+        let cardInset = AppTheme.isDeSlopified ? AppTheme.contentMargin : 0
+        let scrollContent = ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(store.feedSort == "recommended" ? "For you" : "Trending")
-                            .font(.system(size: 33, weight: .bold, design: .rounded))
-                            .tracking(-1.3)
+                            .font(.system(size: AppTheme.isDeSlopified ? 26 : 33,
+                                          weight: AppTheme.isDeSlopified ? .semibold : .bold,
+                                          design: AppTheme.isDeSlopified ? .default : .rounded))
+                            .tracking(AppTheme.isDeSlopified ? -0.4 : -1.3)
                         Text(store.feedSort == "recommended" ? "Selected for your interests" : "Popular from your sources")
                             .font(.subheadline)
                             .foregroundStyle(AppTheme.secondaryLabel)
                             .accessibilityIdentifier("home-title")
                     }
                     Spacer()
+                    Button { Task { await refreshFromGesture() } } label: {
+                        Group {
+                            if pullRefreshInFlight { ProgressView().tint(.white) }
+                            else { Image(systemName: "arrow.clockwise").font(.system(size: 18, weight: .semibold)) }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(width: 48, height: 48)
+                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 16))
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(AppTheme.border))
+                    }
+                    .buttonStyle(QuicktickPressStyle())
+                    .disabled(pullRefreshInFlight)
+                    .accessibilityLabel("Refresh feed")
+                    .accessibilityIdentifier("home-refresh")
+                    if !AppTheme.isDeSlopified {
                     Image(systemName: store.feedSort == "recommended" ? "sparkles" : "flame.fill")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.white)
@@ -42,8 +131,13 @@ struct HomeFeedView: View {
                         .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 17))
                         .rotationEffect(.degrees(-9))
                         .accessibilityHidden(true)
+                    }
                 }
                 .id("home-top")
+                .background(GeometryReader { origin in
+                    Color.clear.preference(key: HomeTopOffsetPreference.self,
+                                           value: origin.frame(in: .named("home-viewport")).minY)
+                })
                 .padding(.top, 14)
                 .padding(.horizontal, 16)
                 HStack(spacing: 10) {
@@ -91,42 +185,74 @@ struct HomeFeedView: View {
                     .accessibilityIdentifier("home-search-button")
                 }
                 .padding(.horizontal, 16)
-                Button { onboarding = true } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "slider.horizontal.3")
-                            .foregroundStyle(.white)
-                            .frame(width: 38, height: 38)
-                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 13))
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Make it yours")
-                                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                            Text("Fine-tune your feed and interests")
-                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                if !store.queryText.isEmpty {
+                    HStack(spacing: 10) {
+                        Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(AppTheme.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(store.selectedTopicTerm == nil ? "Filtered feed" : "Topic selected")
+                                .font(.caption.weight(.semibold))
+                            Text(store.selectedTopicTerm?.replacingOccurrences(of: "_", with: " ") ?? store.queryText)
+                                .font(.caption2)
+                                .foregroundStyle(AppTheme.secondaryLabel)
+                                .lineLimit(1)
                         }
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AppTheme.secondaryLabel)
+                        Spacer(minLength: 6)
+                        Button {
+                            // Topic cards rotate after refresh; this permanent
+                            // exit stays available even if a topic vanishes.
+                            store.commitSearch(query: "", sort: "recommended")
+                            Task { await store.refresh() }
+                        } label: {
+                            Label("For you", systemImage: "arrow.uturn.backward")
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 12)
+                                .frame(minHeight: 38)
+                                .background(AppTheme.gradient, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("home-clear-topic")
+                        .accessibilityLabel("Return to regular Recommended feed")
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, minHeight: 58)
-                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous).stroke(AppTheme.accent.opacity(0.26), lineWidth: 1))
+                    .padding(12)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 17).stroke(AppTheme.border))
+                    .padding(.horizontal, 16)
+                    .accessibilityIdentifier("home-active-filter")
                 }
-                .buttonStyle(QuicktickPressStyle())
-                .accessibilityIdentifier("personalize-feed")
-                .padding(.horizontal, 16)
-                if let error = store.lastError {
-                    ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: { Button("Try again") { Task { await store.refresh() } } }
-                } else if store.posts.isEmpty && !store.isLoading {
+                if suggestedThemesEnabled && !themeSuggestions.isEmpty { suggestedThemeRow }
+                if store.selectedProvider == .pornhub {
+                    homeCategoryRow
+                }
+                if store.posts.isEmpty && !store.bootstrapped {
+                    RoundedRectangle(cornerRadius: 22)
+                        .fill(AppTheme.surface)
+                        .frame(height: 220)
+                        .overlay { ProgressView().tint(AppTheme.accent) }
+                        .accessibilityIdentifier("feed-restoring")
+                } else if let error = store.lastError, store.posts.isEmpty, store.bootstrapped, !store.isLoading {
+                    ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: {
+                        Button("Try again") { Task { await store.refresh() } }
+                        if [.nhentai, .kemono, .coomer, .erome, .hanime, .pornhub].contains(store.selectedProvider) {
+                            Button("Browse inside QuickTick") { showProviderWebsite = true }
+                        }
+                        if store.selectedProvider == .hanime,
+                           let website = URL(string: "https://hanime.tv/") {
+                            Link("Verify Hanime in Safari", destination: website)
+                            Button("Configure Hanime API") { showSettings = true }
+                        }
+                    }
+                } else if store.posts.isEmpty && !store.isLoading && store.bootstrapped {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))
                 }
                 ForEach(store.posts, id: \.stableID) { post in
-                    PostCardView(post: post, available: CGSize(width: min(680, viewport.size.width), height: viewport.size.height))
+                    PostCardView(post: post, available: CGSize(width: max(1, min(AppTheme.feedWidth, viewport.size.width) - cardInset * 2), height: viewport.size.height))
+                        .padding(.horizontal, cardInset)
                         .frame(maxWidth: .infinity)
                         .id(post.stableID)
-                        .onAppear {
-                        if store.activeTab == 0, let index = store.posts.firstIndex(where: { $0.stableID == post.stableID }), index >= store.posts.count - 4 { Task { await store.loadMore() } }
-                    }
+                        .onAppear { maybeLoadMoreAfterUserScroll(visibleID: post.stableID) }
                 }
                 if store.isLoading {
                     RoundedRectangle(cornerRadius: 22).fill(AppTheme.surface).frame(height: 220)
@@ -142,10 +268,10 @@ struct HomeFeedView: View {
                     Button("Load more") { Task { await store.loadMore() } }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .padding(.horizontal, 16)
-                        .onAppear { if store.activeTab == 0 && !store.isLoading && store.lastError == nil { Task { await store.loadMore() } } }
                 }
             }.frame(maxWidth: AppTheme.feedWidth).frame(maxWidth: .infinity).padding(.bottom, 18)
         }
+        let restoredScroll = scrollContent
         // A regular feed must keep free scroll offsets through rotation and
         // keyboard changes. Restore its anchor only when this host mounts;
         // continuously binding a .top target fought scrollTo and focus changes.
@@ -155,69 +281,150 @@ struct HomeFeedView: View {
             }
         }
         .onChange(of: store.feedRevision) { _, _ in
-            lastVisibleTop = nil
-            visibleTopSince = .distantPast
+            visibleFrameCache.lastVisibleTop = nil
+            visibleFrameCache.visibleTopSince = .distantPast
             proxy.scrollTo("home-top", anchor: .top)
         }
-        .overlay(alignment: .bottomTrailing) {
-            Group {
+        let scrollControls = restoredScroll
+        .overlay(alignment: .bottomLeading) {
+            if !isScrollMoving {
                 Button {
                     withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo("home-top", anchor: .top) }
                 } label: {
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 13, weight: .bold))
-                        .frame(width: 34, height: 34)
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 48, height: 48)
                         .background(AppTheme.gradient, in: Circle())
-                        .shadow(color: .black.opacity(0.35), radius: 7)
-                        .frame(width: 44, height: 44, alignment: .center)
+                        .overlay(Circle().strokeBorder(.white.opacity(0.27), lineWidth: 1))
+                        .shadow(color: AppTheme.accent.opacity(0.28), radius: 14, y: 5)
+                        .shadow(color: .black.opacity(0.34), radius: 9, y: 4)
                 }
                 .buttonStyle(.plain)
-                .frame(width: 44, height: 44)
+                .frame(width: 48, height: 48)
                 .fixedSize()
                 .contentShape(Rectangle())
-                .padding(.trailing, 12)
-                .padding(.bottom, 12)
+                .padding(.leading, viewport.size.width > 700 ? 88 : 14)
+                .padding(.bottom, 14)
+                .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
                 .accessibilityLabel("Scroll to top")
                 .accessibilityIdentifier("home-scroll-top")
             }
         }
         .coordinateSpace(name: "home-viewport")
+        .onPreferenceChange(HomeTopOffsetPreference.self) { visibleFrameCache.topOffset = $0 }
+        let gesturedScroll = scrollControls
+        .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { touch in
+            let gutter = (viewport.size.width - AppTheme.feedWidth) / 2
+            guard gutter >= 48,
+                  touch.location.x < gutter || touch.location.x > viewport.size.width - gutter else { return }
+            likeVisiblePost(in: viewport.size)
+        })
+        // Track the offset on the FIRST drag event. Checking only onEnded
+        // mistakes scrolling back up to the header for a refresh. Use one
+        // gesture recognizer so native refresh cannot independently fire.
+        .simultaneousGesture(DragGesture(minimumDistance: 18)
+            .onChanged { drag in
+                if drag.translation.height < -18,
+                   abs(drag.translation.height) > abs(drag.translation.width) * 1.2,
+                   !visibleFrameCache.upwardDragActive {
+                    visibleFrameCache.upwardDragActive = true
+                    visibleFrameCache.upwardDragSequence &+= 1
+                }
+                // Reconstruct the header position at gesture START, not after
+                // a long swipe has already carried it into the visible area.
+                visibleFrameCache.pullRefreshGate.observe(startOffset: visibleFrameCache.topOffset.map { $0 - drag.translation.height })
+            }
+            .onEnded { drag in
+            visibleFrameCache.upwardDragActive = false
+            guard visibleFrameCache.pullRefreshGate.finish(translation: drag.translation) else { return }
+            Task { await refreshFromGesture() }
+        })
+        let trackedScroll = gesturedScroll
         .onPreferenceChange(HomeVisibleFrames.self) { frames in
             guard store.feedRevision == revision else { return }
-            guard frames != visibleFrames else { return }
-            visibleFrames = frames
+            guard frames != visibleFrameCache.frames else { return }
+            // Geometry changes reveal actual scrolling without attaching a
+            // gesture that competes with normal vertical paging. Hide the
+            // shortcut during motion; restore it after a quiet interval.
+            let moved = frames.contains { id, rect in
+                guard let previous = visibleFrameCache.frames[id] else { return false }
+                return abs(previous.minY - rect.minY) > 2
+            }
+            if moved { noteScrollMotion() }
+            visibleFrameCache.frames = frames
+            // Preference updates are emitted almost once per display frame.
+            // Playback selection, impression protection, and recommendation
+            // bookkeeping are much more expensive than storing the geometry;
+            // sample them at ~10 Hz while scrolling to keep rendering fluid.
+            let sampleTime = Date()
+            if moved && sampleTime.timeIntervalSince(visibleFrameCache.lastVisibilityAnalysis) < 0.10 { return }
+            visibleFrameCache.lastVisibilityAnalysis = sampleTime
             let bounds = CGRect(origin: .zero, size: viewport.size)
-            let top = frames.filter { $0.value.intersects(bounds) }.min { $0.value.minY < $1.value.minY }?.key
-            if let top, scrollAnchor != top { scrollAnchor = top }
-            if let top, top != lastVisibleTop {
+            var visible = Set<String>()
+            var top: String?
+            var topY = CGFloat.infinity
+            for (id, rect) in frames where rect.intersects(bounds) {
+                visible.insert(id)
+                if rect.minY < topY { top = id; topY = rect.minY }
+            }
+            // Scroll restoration does not need a 60 Hz update. In particular,
+            // the RootView binding should not be dirtied on every new row of
+            // a fast fling; it is only a coarse return-to-position bookmark.
+            if let top, scrollAnchor != top, Date().timeIntervalSince(visibleFrameCache.lastAnchorPublished) >= 0.18 {
+                visibleFrameCache.lastAnchorPublished = .now
+                scrollAnchor = top
+            }
+            if let top, top != visibleFrameCache.lastVisibleTop {
                 let now = Date()
                 if !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented,
                    store.feedSort == "recommended", !store.isLoading,
-                   let previousID = lastVisibleTop,
+                   let previousID = visibleFrameCache.lastVisibleTop,
                    let previousIndex = store.posts.firstIndex(where: { $0.stableID == previousID }),
                    let nextIndex = store.posts.firstIndex(where: { $0.stableID == top }) {
-                    let dwell = now.timeIntervalSince(visibleTopSince)
+                    let dwell = now.timeIntervalSince(visibleFrameCache.visibleTopSince)
                     if QuickSkipDecision.dislikes(elapsed: dwell, from: previousIndex, to: nextIndex) {
                         store.recordQuickSkip(store.posts[previousIndex])
                     }
                     store.neutralizeQuickSkip(store.posts[nextIndex])
                 }
-                lastVisibleTop = top
-                visibleTopSince = now
+                visibleFrameCache.lastVisibleTop = top
+                visibleFrameCache.visibleTopSince = now
             }
-            store.protectVisibleHomePosts(Set(frames.filter { $0.value.intersects(bounds) }.keys))
+            store.protectVisibleHomePosts(visible)
             selectVisiblePlayback(viewport: viewport.size)
         }
+        let mountedScroll = trackedScroll
         .onAppear {
             playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
+            visibleFrameCache.remountGraceUntil = Date().addingTimeInterval(0.85)
+            // Tab transitions clear the active player, but the Home feed's
+            // previously visible post is still known before SwiftUI delivers
+            // fresh geometry preferences. Restore it immediately so cards can
+            // start preparing playback rather than waiting for a second scroll.
+            if store.activeTab == 0, store.inlinePlaybackID == nil,
+               let retained = store.retainedHomePlaybackID, playableIDs.contains(retained) {
+                store.inlinePlaybackID = retained
+            }
             // Switching back from Immersive remounts Home. Frame preferences
             // can arrive before the resumed feed is fully laid out, so retry
-            // selection once after the first layout pass.
+            // selection through the first few layout passes.
             Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(180))
-                selectVisiblePlayback(viewport: viewport.size)
+                for delay in [120, 260, 420, 1_100] {
+                    do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
+                    guard store.activeTab == 0 else { return }
+                    selectVisiblePlayback(viewport: viewport.size)
+                }
             }
         }
+        .onDisappear {
+            visibleFrameCache.scrollRestTask?.cancel()
+            visibleFrameCache.scrollRestTask = nil
+            visibleFrameCache.pullRefreshGate.cancel()
+            // Geometry from the outgoing tab is invalid on the next mount.
+            visibleFrameCache.frames = [:]
+        }
+        let preparedScroll = mountedScroll
         .task(id: "\(visibleCandidate(viewport: viewport.size) ?? ""):\(store.inlinePlaybackID ?? ""):\(store.activeTab):\(store.isForeground):\(store.isStudioPresented):\(store.feedRevision):\(store.fullScreenPlaybackID ?? "")") {
             guard !Task.isCancelled, store.feedRevision == revision else { return }
             selectVisiblePlayback(viewport: viewport.size)
@@ -226,16 +433,37 @@ struct HomeFeedView: View {
             guard !Task.isCancelled, store.activeTab == 0, store.isForeground, !store.isStudioPresented, store.feedRevision == revision else { return }
             await warmNext(after: store.inlinePlaybackID)
         }
+        .task(id: "\(store.feedRevision):\(store.posts.first?.stableID ?? "")") {
+            guard !Task.isCancelled, store.activeTab == 0, store.isForeground, !store.isStudioPresented else { return }
+            // Start the first visible posters immediately, including when
+            // autoplay is disabled. Match the 1024px card cache bucket so a
+            // first scroll never redownloads what look-ahead already fetched.
+            let firstScreen = Array(store.posts.prefix(3))
+            await withTaskGroup(of: Void.self) { group in
+                for post in firstScreen {
+                    group.addTask(priority: .utility) {
+                        for url in post.previewImageURLs {
+                            guard !Task.isCancelled else { return }
+                            if (try? await MediaImagePipeline.shared.image(raw: url, pixels: 1024)) != nil { return }
+                        }
+                    }
+                }
+            }
+        }
         #if DEBUG
+        let debugScroll = preparedScroll
         .overlay(alignment: .bottomTrailing) {
             if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
-                Text("active=\(store.inlinePlaybackID ?? "nil") candidate=\(visibleCandidate(viewport: viewport.size) ?? "nil") paused=\(store.pausedPlaybackID ?? "nil") foreground=\(store.isForeground) frames=\(visibleFrames.count) player=\(store.players.activeKey ?? "nil") owner=\(store.players.activeOwner ?? "nil")")
+                Text("active=\(store.inlinePlaybackID ?? "nil") candidate=\(visibleCandidate(viewport: viewport.size) ?? "nil") paused=\(store.pausedPlaybackID ?? "nil") foreground=\(store.isForeground) frames=\(visibleFrameCache.frames.count) player=\(store.players.activeKey ?? "nil") owner=\(store.players.activeOwner ?? "nil")")
                     .font(.system(size: 1)).opacity(0.01).allowsHitTesting(false)
                     .accessibilityIdentifier("home-playback-debug")
             }
         }
+        #else
+        let debugScroll = preparedScroll
         #endif
-        .background(AppTheme.canvas)
+        let navigableScroll = debugScroll
+        .background(ThemeBackdrop())
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(AppTheme.background, for: .navigationBar)
@@ -250,34 +478,246 @@ struct HomeFeedView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 6) {
                     Menu { ForEach(Provider.allCases) { p in Button(p.displayName) { store.selectedProvider = p; Task { await store.refresh() } } } } label: {
-                        Text(store.selectedProvider.displayName).font(.caption.weight(.medium)).padding(.horizontal, 10).frame(height: 44)
-                            .background(AppTheme.surface, in: Capsule()).overlay(Capsule().stroke(.white.opacity(0.15)))
+                        ProviderLogoView(provider: store.selectedProvider)
+                            .frame(width: 52, height: 44)
+                            .background(AppTheme.surface, in: Capsule())
+                            .overlay(Capsule().stroke(.white.opacity(0.15)))
+                            .accessibilityLabel("Provider: \(store.selectedProvider.displayName)")
                     }
                     SettingsLauncher(isPresented: $showSettings)
                 }
             }
         }
 
-        .onChange(of: store.feedRevision) { _, _ in
-            // Keep the search sheet alive while new results are committed.
-            // Scroll, rather than replacing the whole NavigationStack subtree.
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
-                proxy.scrollTo("home-top", anchor: .top)
-            }
-        }
-        .refreshable { await store.refresh() }
+        // Refresh is deliberately owned by the top-origin drag above. Native
+        // .refreshable also treats a swipe arriving at the top as a refresh.
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
-        .sheet(isPresented: $onboarding) { TasteOnboardingView() }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
-        .onChange(of: store.posts) { _, posts in
-            playableIDs = Set(posts.filter(\.isImmersiveMedia).map(\.stableID))
-            // The first-run wizard owns initial taste setup. Do not queue a
-            // second modal underneath its full-screen presentation.
-            if firstRunCompleted && !posts.isEmpty
-                && !store.tasteChoice(for: store.selectedProvider).done { onboarding = true }
+        let suggestionsScroll = navigableScroll
+        .task(id: "franchise-discovery:\(store.selectedProvider.rawValue):\(suggestedThemesMode):\(suggestedThemesEnabled):\(store.bootstrapped)") {
+            guard store.bootstrapped, store.selectedProvider == .rule34,
+                  suggestedThemesEnabled, suggestedThemesMode != SuggestedThemeMode.tags.rawValue else {
+                publicPopularFranchisePosts = []
+                return
+            }
+            // Public franchise discovery is its own, broad popularity lane.
+            // It must never inherit the user's liked tags or focused query.
+            // Defer it until after Home's initial feed request starts.
+            do { try await Task.sleep(for: .milliseconds(1_400)) } catch { return }
+            guard !Task.isCancelled else { return }
+            do {
+                let page = try await store.api.posts(provider: .rule34,
+                    query: ParsedQuery(included: [], excluded: []), page: 1,
+                    sort: "popular")
+                guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
+                var discovered = page.items
+                // A second public top-scored page expands the choice of
+                // franchises without gating Home's first visible results.
+                if let next = try? await store.api.posts(provider: .rule34,
+                    query: ParsedQuery(included: [], excluded: []), page: 2,
+                    sort: "popular"), !Task.isCancelled, store.selectedProvider == .rule34 {
+                    let seen = Set(page.items.map(\.stableID))
+                    discovered += next.items.filter { !seen.contains($0.stableID) }
+                }
+                guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
+                publicPopularFranchisePosts = discovered
+                refreshThemeSuggestions()
+            } catch {
+                // A slow or unavailable popularity endpoint must never stall
+                // the main Home feed or replace its valid suggestions.
+            }
         }
+        .task(id: store.selectedProvider) {
+            let provider = store.selectedProvider
+            let discovered = await store.visual.discoveryTerms(provider: provider)
+            guard !Task.isCancelled, store.selectedProvider == provider else { return }
+            visualThemeTerms = discovered
+            refreshThemeSuggestions()
         }
+        .onChange(of: postSignature) { _, _ in
+            playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
+            // Growing a feed or receiving delayed metadata must not replace
+            // topic cards while the user is reading or scrolling.
+            if themeSuggestions.isEmpty { refreshThemeSuggestions() }
+        }
+        .onChange(of: store.favorites.count) { _, _ in refreshThemeSuggestions() }
+        // Idle taste updates are not navigation events. Keep the visible topic
+        // cards stable until the next explicit refresh or preference change.
+        .onChange(of: store.tasteChoice(for: store.selectedProvider)) { _, _ in refreshThemeSuggestions() }
+        .onChange(of: store.exclusions) { _, _ in refreshThemeSuggestions() }
+        .onChange(of: suggestedThemesEnabled) { _, _ in refreshThemeSuggestions() }
+        .onChange(of: suggestedThemesMode) { _, _ in refreshThemeSuggestions() }
+        .onChange(of: store.selectedProvider) { _, _ in
+            visualThemeTerms = []
+            publicPopularFranchisePosts = []
+            themeSuggestions = []
+            refreshThemeSuggestions()
+        }
+        return suggestionsScroll
+    }
+
+    private func refreshThemeSuggestions() {
+        guard suggestedThemesEnabled else { themeSuggestions = []; return }
+        let provider = store.selectedProvider
+        let taste = store.tasteChoice(for: provider)
+        let proposed = HomeThemeSuggestions.make(provider: provider,
+            learned: store.learnedInterests, chosen: taste.into,
+            visual: visualThemeTerms, favorites: Array(store.favorites.values),
+            posts: store.posts, popular: publicPopularFranchisePosts,
+            excluded: store.exclusions + taste.notInto,
+            limit: 5, rotation: themeRefreshCycle,
+            mode: SuggestedThemeMode(rawValue: suggestedThemesMode) ?? .balanced)
+        if proposed != themeSuggestions { themeSuggestions = proposed }
+    }
+
+    /// Personal suggestions work on *every* provider and use real covers or
+    /// thumbnails from posts matching this provider's learned interests.
+    @ViewBuilder private var suggestedThemeRow: some View {
+        if !themeSuggestions.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
+                    Text("Suggested topics").font(.subheadline.weight(.bold))
+                    Text(store.selectedProvider == .rule34 && suggestedThemesMode == SuggestedThemeMode.franchises.rawValue
+                         ? "Franchise discovery" : "Based on your taste")
+                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                    Spacer()
+                }.padding(.horizontal, 16)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(themeSuggestions) { theme in
+                            let selected = QueryParser.parse(store.queryText).included.contains(theme.term)
+                            Button {
+                                let current = QueryParser.parse(store.queryText)
+                                store.commitSuggestedTopic(selected ? nil : theme.term,
+                                                           excluded: current.excluded)
+                                Task { await store.refresh() }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(theme.label).font(.subheadline.weight(.semibold))
+                                        .lineLimit(2).foregroundStyle(.white)
+                                        .frame(height: 36, alignment: .topLeading)
+                                    if !theme.imageURL.isEmpty {
+                                        CachedMediaImage(url: theme.imageURL, pixels: 320, fill: true)
+                                            .frame(width: 154, height: 184)
+                                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                    } else {
+                                        RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                            .fill(AppTheme.gradient)
+                                            .overlay(Image(systemName: "tag.fill")
+                                                .font(.system(size: 40, weight: .light)).foregroundStyle(.white))
+                                            .frame(width: 154, height: 184)
+                                    }
+                                }
+                                .frame(width: 154, alignment: .leading)
+                                .padding(10)
+                                .background(selected ? AnyShapeStyle(AppTheme.accent.opacity(0.25)) : AnyShapeStyle(AppTheme.elevatedSurface),
+                                            in: RoundedRectangle(cornerRadius: 21, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 21, style: .continuous)
+                                    .stroke(selected ? AppTheme.accent : AppTheme.border, lineWidth: 1.5))
+                            }
+                            .buttonStyle(QuicktickPressStyle())
+                            .accessibilityLabel("Suggested theme: \(theme.label)")
+                            .accessibilityIdentifier("suggested-theme-\(theme.term)")
+                        }
+                    }.padding(.horizontal, 16)
+                }
+            }.accessibilityIdentifier("home-suggested-themes")
+        }
+    }
+
+    /// Provider categories live on Home as one-tap discovery chips. They are
+    /// intentionally not part of the Search sheet's autocomplete suggestions.
+    private var homeCategoryRow: some View {
+        let provider = store.selectedProvider
+        let selected = ProviderSearchCategories.split(QueryParser.parse(store.queryText), provider: provider).category
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Text("Categories")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.secondaryLabel)
+                ForEach(ProviderSearchCategories.suggestions(provider: provider)) { item in
+                    let active = selected == item.value
+                    Button {
+                        let current = QueryParser.parse(store.queryText)
+                        let keywords = ProviderSearchCategories.split(current, provider: provider).keywords
+                        let next = ParsedQuery(included: (active ? [] : [item.value]) + keywords,
+                                               excluded: current.excluded)
+                        store.commitSearch(query: QueryParser.formatted(next), sort: store.feedSort)
+                        Task { await store.refresh() }
+                    } label: {
+                        Text(item.label)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(active ? .white : AppTheme.secondaryLabel)
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 36)
+                            .background(active ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface),
+                                        in: Capsule())
+                            .overlay(Capsule().stroke(active ? AppTheme.accent : AppTheme.border, lineWidth: 1))
+                    }
+                    .buttonStyle(QuicktickPressStyle())
+                    .accessibilityIdentifier("home-category-\(item.value)")
+                    .accessibilityAddTraits(active ? .isSelected : [])
+                }
+            }.padding(.horizontal, 16)
+        }.accessibilityIdentifier("home-categories")
+    }
+
+    private func refreshFromGesture() async {
+        guard !pullRefreshInFlight else { return }
+        pullRefreshInFlight = true
+        defer { pullRefreshInFlight = false }
+        await store.refresh()
+        themeRefreshCycle &+= 1
+        refreshThemeSuggestions()
+    }
+
+    private func maybeLoadMoreAfterUserScroll(visibleID: String) {
+        guard store.activeTab == 0, store.lastError == nil,
+              store.posts.suffix(8).contains(where: { $0.stableID == visibleID }),
+              HomePaginationPolicy.shouldLoad(
+                  upwardDragSequence: visibleFrameCache.upwardDragSequence,
+                  consumedSequence: visibleFrameCache.paginatedDragSequence,
+                  loading: store.isLoading, hasMore: store.hasMore) else { return }
+        // One page at most per deliberate upward gesture. A preview resize or
+        // a SwiftUI remount cannot silently chain dozens of page requests.
+        visibleFrameCache.paginatedDragSequence = visibleFrameCache.upwardDragSequence
+        Task { await store.loadMore() }
+    }
+
+    private func likeVisiblePost(in viewport: CGSize) {
+        let bounds = CGRect(origin: .zero, size: viewport)
+        guard let chosen = visibleFrameCache.frames
+            .filter({ $0.value.intersects(bounds) })
+            .max(by: { $0.value.intersection(bounds).height < $1.value.intersection(bounds).height }),
+              let post = store.posts.first(where: { $0.stableID == chosen.key }),
+              store.favorites[post.stableID] == nil else { return }
+        store.toggleFavorite(post)
+    }
+
+    private func noteScrollMotion() {
+        let now = Date()
+        // Scroll geometry can publish at display refresh frequency. Updating
+        // SwiftUI state for timing samples caused visible hitching.
+        if now.timeIntervalSince(visibleFrameCache.lastIntelligencePause) >= 0.3 {
+            visibleFrameCache.lastIntelligencePause = now
+            store.noteFeedMotion()
+        }
+        visibleFrameCache.lastMotionSample = now
+        if !isScrollMoving {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { isScrollMoving = true }
+        }
+        guard visibleFrameCache.scrollRestTask == nil else { return }
+        visibleFrameCache.scrollRestTask = Task { @MainActor in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(180)) } catch { break }
+                if Date().timeIntervalSince(visibleFrameCache.lastMotionSample) >= 0.6 {
+                    withAnimation(reduceMotion ? nil : .easeIn(duration: 0.18)) { isScrollMoving = false }
+                    break
+                }
+            }
+            visibleFrameCache.scrollRestTask = nil
         }
     }
 
@@ -292,36 +732,46 @@ struct HomeFeedView: View {
         // A remounted Home has an empty frame-preference dictionary until the
         // first layout. Returning nil here cleared the just-restored player
         // and sometimes left it paused permanently.
-        if visibleFrames.isEmpty, let retained = store.retainedHomePlaybackID,
+        if visibleFrameCache.frames.isEmpty, let retained = store.retainedHomePlaybackID,
            playableIDs.contains(retained), store.posts.contains(where: { $0.stableID == retained }) {
             return retained
         }
-        return VisiblePostSelector.select(frames: visibleFrames, viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID, eligible: playableIDs)
+        let selected = VisiblePostSelector.select(frames: visibleFrameCache.frames,
+            viewport: CGRect(origin: .zero, size: viewport), current: store.inlinePlaybackID,
+            eligible: playableIDs)
+        if let selected { return selected }
+        if let current = store.inlinePlaybackID, playableIDs.contains(current),
+           let frame = visibleFrameCache.frames[current], frame.height > 0,
+           frame.intersection(CGRect(origin: .zero, size: viewport)).height >= min(frame.height, viewport.height) * 0.20 {
+            // Between two cards the next media may not yet meet the selection
+            // threshold. Keep the old player alive through that short gap.
+            return current
+        }
+        // Partial layout preferences can describe only the header or an
+        // offscreen cell during a tab remount. Don't clear a known playable
+        // card in that brief window; a final selection runs once layout has
+        // stabilized. Ordinary scrolling never uses this fallback.
+        if Date() < visibleFrameCache.remountGraceUntil,
+           let retained = store.retainedHomePlaybackID, playableIDs.contains(retained),
+           store.posts.contains(where: { $0.stableID == retained }) {
+            return retained
+        }
+        return nil
     }
     private func warmNext(after key: String?) async {
         guard !immersive, store.activeTab == 0, store.isForeground, !store.isStudioPresented, !Task.isCancelled else { return }
-        guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { store.players.retain([]); return }
-        let next = Array(store.posts.dropFirst(index + 1).prefix(2))
-        let nextVideo = autoplayVideos ? store.posts.dropFirst(index + 1).prefix(4).first { $0.type.lowercased() == "video" } : nil
-        store.players.retain(Set([key] + [nextVideo?.stableID].compactMap { $0 }))
-        let feedStore = store
-        let resolver = store.resolver
-        // A slow thumbnail must never hold up video preparation.
-        await withTaskGroup(of: Void.self) { group in
-            if let post = nextVideo {
-                group.addTask {
-                    guard let media = try? await resolver.resolve(post), let url = media.mediaUrlURL else { return }
-                    await MainActor.run {
-                        guard !Task.isCancelled, feedStore.inlinePlaybackID == key, feedStore.activeTab == 0, feedStore.isForeground else { return }
-                        feedStore.players.prewarm(key: post.stableID, url: url)
-                    }
-                }
-            }
-            for post in next {
-                group.addTask(priority: .utility) {
-                    guard !Task.isCancelled else { return }
-                    _ = try? await MediaImagePipeline.shared.image(raw: post.cardPreviewURL, pixels: 1024)
-                }
+        guard let key, let index = store.posts.firstIndex(where: { $0.stableID == key }) else { return }
+        // Home previews are the cheap look-ahead path. Creating/prerolling an
+        // offscreen AVPlayer downloaded multiple videos while the user swiped,
+        // fighting the visible player and the UI compositor for bandwidth.
+        store.players.retain([key])
+        // Decode modest previews before they enter the viewport. Video CDN
+        // resolution remains exclusive to the visible player.
+        for next in store.posts.dropFirst(index + 1).prefix(2) {
+            guard !Task.isCancelled else { return }
+            for candidate in next.previewImageURLs {
+                guard !Task.isCancelled else { return }
+                if (try? await MediaImagePipeline.shared.image(raw: candidate, pixels: 1024)) != nil { break }
             }
         }
     }
@@ -331,7 +781,279 @@ struct HomeFeedView: View {
     }
 }
 
+private struct HomeTopOffsetPreference: PreferenceKey {
+    // nil means the top header is not mounted/visible in this lazy list.
+    // Previously 0 was the default, so a drag begun halfway down the feed
+    // could be mistaken for a valid top-origin pull-to-refresh gesture.
+    static let defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = nextValue() ?? value
+    }
+}
+
 struct HomeVisibleFrames: PreferenceKey {
     static let defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, next in next }) }
+}
+
+struct HomeThemeSuggestion: Identifiable, Equatable {
+    let term: String
+    let label: String
+    let imageURL: String
+    var kind: String = "tag"
+    var id: String { kind + ":" + term }
+}
+
+enum SuggestedThemeMode: String, CaseIterable, Identifiable {
+    static let storageKey = "quicktick-suggested-r34-mode-v1"
+    case tags, franchises, balanced
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .tags: "Tags"
+        case .franchises: "Franchises"
+        case .balanced: "Mix"
+        }
+    }
+}
+
+enum HomeThemeSuggestions {
+    private static let generic: Set<String> = ["hentai", "porn", "nsfw", "english", "translated",
+        "uncensored", "video", "image", "animated", "manga", "full_color", "high_quality"]
+
+    static func make(provider: Provider, learned: [String], chosen: [String],
+                     visual: [String], favorites: [Post], posts: [Post], popular: [Post] = [],
+                     excluded: [String], limit: Int = 8, rotation: Int = 0,
+                     mode: SuggestedThemeMode = .tags) -> [HomeThemeSuggestion] {
+        if provider == .hanime {
+            return hanimeTags(learned: learned, chosen: chosen, favorites: favorites,
+                              posts: posts, excluded: excluded, limit: limit, rotation: rotation)
+        }
+        // Bound this to nearby evidence: Home's body is refreshed by scroll
+        // state, so image-chip ranking must never scan a huge saved library.
+        let liked = Array(favorites.lazy.filter { $0.providerKey == provider }.prefix(96))
+            .sorted { $0.stableID < $1.stableID }
+        let visible = Array(posts.lazy.filter { $0.providerKey == provider }.prefix(80))
+        let evidence = liked + visible.filter { candidate in
+            !liked.contains { $0.stableID == candidate.stableID }
+        }
+        let banned = Set(excluded.map(normalize))
+        var scores: [String: Int] = [:]
+        func add(_ tags: [String], weight: Int) {
+            for token in Set(tags.map(normalize)) {
+                guard TasteTagSuggestions.isUseful(token), !generic.contains(token),
+                      !banned.contains(token), !token.contains(":"), !token.contains("/") else { continue }
+                scores[token, default: 0] += weight
+            }
+        }
+        add(learned, weight: 18)
+        add(chosen, weight: 20)
+        add(visual, weight: 17)
+        // Favorites are an explicit signal even before the learned profile
+        // snapshot has been saved by the idle persistence worker.
+        for favorite in liked { add(favorite.tags, weight: 5) }
+        let ranked = scores.keys.sorted {
+            scores[$0, default: 0] == scores[$1, default: 0]
+                ? $0 < $1 : scores[$0, default: 0] > scores[$1, default: 0]
+        }
+        // Rotate only among high-confidence, taste-backed terms. Never invent
+        // categories just to make a refresh look different.
+        let leading = Array(ranked.prefix(max(limit, 12)))
+        let offset = leading.isEmpty ? 0 : (rotation % leading.count + leading.count) % leading.count
+        let rotated = Array(leading.dropFirst(offset)) + Array(leading.prefix(offset))
+        let ordered = rotated + Array(ranked.dropFirst(leading.count))
+        var usedImages = Set<String>()
+        var result: [HomeThemeSuggestion] = []
+        for term in ordered.prefix(32) {
+            let matches = evidence.filter { post in
+                let captionTokens = "_" + normalize(post.caption ?? "")
+                    .map { $0.isLetter || $0.isNumber ? String($0) : "_" }.joined() + "_"
+                return post.tags.contains(where: { normalize($0) == term }) ||
+                captionTokens.contains("_" + term + "_")
+            }
+            let imageOffset = matches.isEmpty ? 0 : (rotation % matches.count + matches.count) % matches.count
+            let rotatedMatches = Array(matches.dropFirst(imageOffset)) + Array(matches.prefix(imageOffset))
+            guard let sample = rotatedMatches.first(where: {
+                !$0.cardPreviewURL.isEmpty && !usedImages.contains($0.cardPreviewURL)
+                    && URL(string: $0.cardPreviewURL)?.scheme == "https"
+            }) ?? rotatedMatches.first(where: {
+                !$0.cardPreviewURL.isEmpty && URL(string: $0.cardPreviewURL)?.scheme == "https"
+            }) else { continue }
+            usedImages.insert(sample.cardPreviewURL)
+            let query = provider == .rule34 ? term : term.replacingOccurrences(of: "_", with: " ")
+            result.append(HomeThemeSuggestion(term: query,
+                label: term.replacingOccurrences(of: "_", with: " ").capitalized,
+                imageURL: sample.cardPreviewURL))
+            if result.count >= limit { break }
+        }
+        guard provider == .rule34, mode != .tags else { return result }
+        let validFranchiseEvidence = evidence.filter {
+            !RecommendationTagRules.rejects($0, exclusions: excluded)
+        }
+        let franchises = FranchiseThemeSuggestions.make(evidence: validFranchiseEvidence,
+            favorites: Set(liked.map(\.stableID)), learned: learned,
+            chosen: chosen, visual: visual, excluded: excluded,
+            limit: limit, rotation: rotation, popular: popular)
+        if mode == .franchises { return franchises }
+        // Discovery mixes popular, actually observed franchises with familiar
+        // tags. Alternate categories to prevent a single liked character or
+        // an overrepresented franchise from owning the entire chip row.
+        var diverse: [HomeThemeSuggestion] = []
+        var seenImages = Set<String>()
+        for index in 0..<max(result.count, franchises.count) {
+            let candidates = index.isMultiple(of: 2)
+                ? [franchises[safe: index], result[safe: index]]
+                : [result[safe: index], franchises[safe: index]]
+            for suggestion in candidates.compactMap({ $0 }) {
+                guard diverse.count < limit,
+                      !diverse.contains(where: { $0.term == suggestion.term }),
+                      seenImages.insert(suggestion.imageURL).inserted else { continue }
+                diverse.append(suggestion)
+            }
+            if diverse.count == limit { break }
+        }
+        return diverse
+    }
+
+    private static func normalize(_ term: String) -> String {
+        term.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "_")
+    }
+
+    /// Hanime discovery is keyword/tag-based, unlike the former Haven sections.
+    /// Cards may omit art until matching accessible posts have loaded.
+    private static func hanimeTags(learned: [String], chosen: [String], favorites: [Post],
+                                   posts: [Post], excluded: [String], limit: Int,
+                                   rotation: Int) -> [HomeThemeSuggestion] {
+        let fallback = ["dark skin", "fantasy", "ahegao", "monster girl", "elf",
+                        "cosplay", "romance", "magic", "demon", "adventure"]
+        let evidence = Array((favorites + posts).filter { $0.providerKey == .hanime }.prefix(120))
+        let discovered = evidence.flatMap(\.tags).filter { TasteTagSuggestions.isUseful(normalize($0)) }
+        let preferred = chosen + learned.filter { discovered.map(normalize).contains(normalize($0)) }
+        var terms: [String] = []
+        var seen = Set<String>()
+        let blocked = Set(excluded.map(normalize))
+        for raw in preferred + discovered + fallback {
+            let normalized = normalize(raw)
+            guard !normalized.isEmpty, !blocked.contains(normalized),
+                  !generic.contains(normalized), seen.insert(normalized).inserted else { continue }
+            terms.append(normalized)
+        }
+        let lead = Array(terms.prefix(max(limit, 10)))
+        let shift = lead.isEmpty ? 0 : (rotation % lead.count + lead.count) % lead.count
+        let ordered = Array(lead.dropFirst(shift)) + Array(lead.prefix(shift))
+        return Array(ordered.prefix(limit)).map { tag in
+            let sample = evidence.first { post in
+                post.tags.contains(where: { normalize($0) == tag }) &&
+                    URL(string: post.cardPreviewURL)?.scheme == "https"
+            }
+            return HomeThemeSuggestion(term: tag.replacingOccurrences(of: "_", with: " "),
+                                       label: tag.replacingOccurrences(of: "_", with: " ").capitalized,
+                                       imageURL: sample?.cardPreviewURL ?? "")
+        }
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+/// Small reviewed franchise dictionary. A chip appears only when it has a
+/// real preview from this provider; these names never manufacture a result.
+enum FranchiseThemeSuggestions {
+    static let names: [String: String] = [
+        "street_fighter": "Street Fighter", "brawl_stars": "Brawl Stars",
+        "fortnite": "Fortnite", "sonic_the_hedgehog": "Sonic",
+        "final_fantasy": "Final Fantasy", "metroid": "Metroid",
+        "tomb_raider": "Tomb Raider", "super_mario_bros": "Super Mario",
+        "god_of_war": "God of War", "pokemon": "Pokémon",
+        "genshin_impact": "Genshin Impact", "honkai_star_rail": "Honkai: Star Rail",
+        "overwatch": "Overwatch", "league_of_legends": "League of Legends",
+        "the_legend_of_zelda": "Zelda", "one_piece": "One Piece",
+        "naruto": "Naruto", "dragon_ball": "Dragon Ball",
+        "my_hero_academia": "My Hero Academia", "demon_slayer": "Demon Slayer",
+        "jujutsu_kaisen": "Jujutsu Kaisen", "chainsaw_man": "Chainsaw Man",
+        "resident_evil": "Resident Evil", "nier_automata": "NieR: Automata",
+        "mortal_kombat": "Mortal Kombat", "apex_legends": "Apex Legends"
+    ]
+    private static let aliases: [String: String] = [
+        "pokemon_(series)": "pokemon", "pocket_monsters": "pokemon",
+        "overwatch_(game)": "overwatch", "zelda": "the_legend_of_zelda",
+        "legend_of_zelda": "the_legend_of_zelda",
+        "super_mario": "super_mario_bros", "mario": "super_mario_bros",
+        "nier:_automata": "nier_automata", "kimetsu_no_yaiba": "demon_slayer",
+        "boku_no_hero_academia": "my_hero_academia",
+        "jjk": "jujutsu_kaisen", "honkai:_star_rail": "honkai_star_rail"
+    ]
+    private static func canonical(_ raw: String) -> String {
+        let cleaned = raw.hasPrefix("franchise:") ? String(raw.dropFirst("franchise:".count)) : raw
+        let base = TasteConcepts.canonical(cleaned)
+        return aliases[base] ?? base
+    }
+    static func identified(in post: Post) -> Set<String> {
+        let direct = Set(post.tags.prefix(128).map(canonical))
+        let reviewed = TasteConcepts.resolve(post.tags).franchises
+        return Set(direct.union(reviewed).filter { names[$0] != nil })
+    }
+    static func make(evidence: [Post], favorites: Set<String>,
+                     learned: [String], chosen: [String], visual: [String],
+                     excluded: [String], limit: Int, rotation: Int,
+                     popular: [Post] = []) -> [HomeThemeSuggestion] {
+        let banned = Set(excluded.map(canonical))
+        let affinity = Set((learned + chosen + visual).map(canonical))
+        let likedFranchises = Set(evidence.lazy.filter { favorites.contains($0.stableID) }
+            .flatMap { identified(in: $0) })
+        // Popular's own sort:score catalog is the primary source of franchise
+        // topics, independently of likes. Known franchises are allowed but
+        // strongly downweighted so discovery does not loop the same series.
+        let freshPopular = Array(popular.lazy.filter {
+            $0.providerKey == .rule34 && !RecommendationTagRules.rejects($0, exclusions: excluded)
+        }.prefix(240))
+        let catalog = freshPopular.isEmpty ? evidence : freshPopular
+        var scores: [String: Double] = [:]
+        var examples: [String: [Post]] = [:]
+        for post in catalog {
+            let popularity = log2(max(0, post.score) + 2)
+            for franchise in identified(in: post) where !banned.contains(franchise) {
+                let discovery = !freshPopular.isEmpty
+                let familiar = likedFranchises.contains(franchise)
+                scores[franchise, default: 0] += discovery
+                    ? (familiar ? 0.2 : 1) * (4 + min(10, popularity) * 0.65)
+                    : (favorites.contains(post.stableID) ? 10 : 3)
+                        + min(10, popularity) * 0.65 + (affinity.contains(franchise) ? 14 : 0)
+                examples[franchise, default: []].append(post)
+            }
+        }
+        let ranked = scores.keys.sorted {
+            // Put new, public-catalog franchises ahead of previously liked
+            // ones even when one familiar franchise dominates top-scored posts.
+            if !freshPopular.isEmpty, likedFranchises.contains($0) != likedFranchises.contains($1) {
+                return !likedFranchises.contains($0)
+            }
+            return scores[$0, default: 0] == scores[$1, default: 0]
+                ? $0 < $1 : scores[$0, default: 0] > scores[$1, default: 0]
+        }
+        let pool = Array(ranked.prefix(max(limit, 14)))
+        let shift = pool.isEmpty ? 0 : (rotation % pool.count + pool.count) % pool.count
+        let ordered = Array(pool.dropFirst(shift)) + Array(pool.prefix(shift))
+            + Array(ranked.dropFirst(pool.count))
+        var seen = Set<String>(), result: [HomeThemeSuggestion] = []
+        for franchise in ordered {
+            let choices = examples[franchise] ?? []
+            let index = choices.isEmpty ? 0 : rotation % choices.count
+            let rotated = Array(choices.dropFirst(index)) + Array(choices.prefix(index))
+            guard let sample = rotated.first(where: {
+                !$0.cardPreviewURL.isEmpty && URL(string: $0.cardPreviewURL)?.scheme == "https"
+                    && !seen.contains($0.cardPreviewURL)
+            }) else { continue }
+            seen.insert(sample.cardPreviewURL)
+            // Search the *actual* booru tag spelling when the alias database
+            // maps it to a canonical franchise name.
+            let searchTag = sample.tags.first(where: { canonical($0) == franchise }) ?? franchise
+            result.append(HomeThemeSuggestion(term: searchTag,
+                label: names[franchise] ?? franchise, imageURL: sample.cardPreviewURL, kind: "franchise"))
+            if result.count >= limit { break }
+        }
+        return result
+    }
 }

@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "provider": "hhaven",
+      "type": "video",
+      "key": "hhaven:fixture",
+      "tags": ["example"],
+      "id": "fixture"
+    }
+  ],
+  "hasMore": true
+}

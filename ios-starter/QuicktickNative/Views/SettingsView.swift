@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PhotosUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
@@ -8,15 +9,20 @@ struct SettingsView: View {
     // updates the visible tabs even before the Settings sheet dismisses.
     @Binding var showAITab: Bool
     @AppStorage("quicktick-modern-ui-v1") private var modernUI = true
+    @AppStorage("quicktick-suggested-themes-v1") private var suggestedThemesEnabled = true
+    @AppStorage(SuggestedThemeMode.storageKey) private var suggestedThemesMode = SuggestedThemeMode.balanced.rawValue
     @AppStorage("quicktick-accent-palette-v1") private var accentPalette = "violet"
+    @AppStorage(AppTheme.automaticSeasonalKey) private var automaticSeasonalThemes = true
+    @AppStorage("quicktick-ipad-side-navigation-v1") private var ipadSidebarEnabled = false
+    @AppStorage(BackgroundArtworkStore.enabledKey) private var customBackgroundEnabled = false
+    @AppStorage(BackgroundArtworkStore.revisionKey) private var customBackgroundRevision = 0
+    @State private var selectedBackgroundPhoto: PhotosPickerItem?
+    @State private var backgroundImporting = false
+    @State private var backgroundError: String?
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
-    @AppStorage("quicktick-rhythm-finish-text-v1") private var rhythmFinishText = "Beautiful rhythm. Session complete."
-    @AppStorage("quicktick-rhythm-finish-style-v1") private var rhythmFinishStyle = "Glow"
-    @AppStorage("quicktick-rhythm-finish-animation-v1") private var rhythmFinishAnimation = "Scale"
-    @AppStorage("quicktick-rhythm-mode-v1") private var rhythmMode = "adaptive"
-    @AppStorage("quicktick-rhythm-metronome-v1") private var rhythmClicks = false
-    @AppStorage("quicktick-rhythm-haptics-v1") private var rhythmHaptics = true
+    @AppStorage(HanimeGeneratedAPI.settingKey) private var hanimeAPIURL = ""
+    @AppStorage(EromeGeneratedAPI.settingKey) private var eromeAPIURL = ""
     @State private var status = ""
     @State private var user = ""
     @State private var key = ""
@@ -24,6 +30,9 @@ struct SettingsView: View {
     @State private var username = ""
     @State private var remember = true
     @State private var onboarding = false
+    @State private var viewedProvider: Provider = .rule34
+    @State private var providerProfiles: [String: RecommendationProfile] = [:]
+    @State private var visualInterests: [String: [String]] = [:]
     @State private var sharedProfile: RecommendationTransfer?
     @State private var exportProfileFile: RecommendationProfileFile?
     @State private var exportingProfileFile = false
@@ -32,10 +41,102 @@ struct SettingsView: View {
     @State private var activeSection: SettingsDestination = .appearance
     @State private var mobileCLIPInstalled = MobileCLIPRealLifeEncoder.isInstalled()
     @State private var mobileCLIPInstalling = false
+    @State private var mobileCLIP2Installed = MobileCLIP2RealLifeEncoder.isInstalled()
+    @State private var mobileCLIP2Installing = false
+    @State private var mobileCLIP2PackageURL = ""
+    @State private var importingMobileCLIP2 = false
     @State private var mobileCLIPError: String?
+    @State private var showingTasteWrapped = false
 
     var body: some View {
         settingsPage
+    }
+
+    private var swipeableProviderProfiles: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Provider profiles").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("Swipe left or right")
+                    .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+            }
+            TabView(selection: $viewedProvider) {
+                ForEach(Provider.allCases) { provider in
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack(spacing: 10) {
+                            ProviderLogoView(provider: provider)
+                                .frame(width: 38, height: 38)
+                                .background(AppTheme.elevatedSurface,
+                                            in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(provider.displayName).font(.headline)
+                                Text(provider == store.selectedProvider ?
+                                     "Current feed" : "Separate learned profile")
+                                    .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                            }
+                            Spacer()
+                            if provider == store.selectedProvider {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(AppTheme.accent)
+                            }
+                        }
+                        let terms = providerProfiles[provider.rawValue]?.terms ?? [:]
+                        let learned = terms.filter { $0.value > 0 }
+                            .sorted { $0.value > $1.value }.prefix(8).map(\.key)
+                        let chosen = store.tasteSetup.sources[provider.rawValue]?.into ?? []
+                        let visuals = visualInterests[provider.rawValue] ?? []
+                        let visible = Array(Set(learned + chosen + visuals))
+                            .filter(TasteTagSuggestions.isUseful).sorted().prefix(9)
+                        if visible.isEmpty {
+                            Text("No interests yet. Like posts to build this profile.")
+                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        } else {
+                            Text(visible.map {
+                                $0.replacingOccurrences(of: "_", with: " ")
+                            }.joined(separator: " · "))
+                                .font(.caption).lineLimit(3)
+                        }
+                        HStack {
+                            Text("\(learned.count) learned interests")
+                                .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                            Spacer()
+                            if provider != store.selectedProvider {
+                                Button("Use \(provider.displayName)") {
+                                    store.selectedProvider = provider
+                                    Task { await store.refresh() }
+                                }
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.accent)
+                            }
+                        }
+                    }
+                    .padding(13).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                    .overlay(RoundedRectangle(cornerRadius: 17).stroke(AppTheme.border))
+                    .tag(provider)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(height: 182)
+            HStack(spacing: 5) {
+                ForEach(Provider.allCases) { provider in
+                    Capsule()
+                        .fill(provider == viewedProvider ? AppTheme.accent : AppTheme.elevatedSurface)
+                        .frame(width: provider == viewedProvider ? 19 : 6, height: 6)
+                }
+            }
+            .accessibilityLabel("Provider profile pages")
+        }
+        .task {
+            viewedProvider = store.selectedProvider
+            let snapshot = await store.recommendations.snapshot()
+            providerProfiles = snapshot.profiles
+            var visualProfiles: [String: [String]] = [:]
+            for provider in Provider.allCases {
+                visualProfiles[provider.rawValue] = await store.visual.discoveryTerms(provider: provider)
+            }
+            visualInterests = visualProfiles
+        }
     }
 
     private var settingsPage: some View {
@@ -46,6 +147,13 @@ struct SettingsView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 9) {
                         ForEach(SettingsDestination.allCases) { destination in
+                            if destination.startsGroup {
+                                Text(destination.groupTitle)
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                                    .foregroundStyle(AppTheme.secondaryLabel)
+                                    .padding(.leading, destination == .navigation ? 0 : 9)
+                                    .accessibilityHidden(true)
+                            }
                             Button {
                                 activeSection = destination
                                 withAnimation(.smooth(duration: 0.36)) { scroll.scrollTo(destination.rawValue, anchor: .top) }
@@ -55,8 +163,10 @@ struct SettingsView: View {
                                     .foregroundStyle(activeSection == destination ? .white : .white.opacity(0.76))
                                     .padding(.horizontal, 14)
                                     .frame(height: 37)
-                                    .background(activeSection == destination ? AppTheme.gradient : LinearGradient(colors: [AppTheme.elevatedSurface, AppTheme.elevatedSurface], startPoint: .leading, endPoint: .trailing), in: Capsule())
-                                    .overlay(Capsule().stroke(.white.opacity(activeSection == destination ? 0.28 : 0.10)))
+                                    .background(activeSection == destination
+                                        ? (AppTheme.isDeSlopified ? AnyShapeStyle(AppTheme.surface) : AnyShapeStyle(AppTheme.gradient))
+                                        : AnyShapeStyle(AppTheme.elevatedSurface), in: Capsule())
+                                    .overlay(Capsule().stroke(activeSection == destination ? AppTheme.border.opacity(1) : AppTheme.border.opacity(0.55)))
                             }
                             .buttonStyle(QuicktickPressStyle())
                         }
@@ -78,20 +188,77 @@ struct SettingsView: View {
                         .accessibilityIdentifier("show-ai-tab-toggle")
                         .frame(minWidth: 52, minHeight: 44)
                 }
+                .modifier(SettingsControlRow())
                 Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
                     .font(.footnote).foregroundStyle(.secondary)
+                Toggle("Use a wider iPad sidebar", isOn: $ipadSidebarEnabled)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("ipad-sidebar-toggle")
+                Text("Moves the Home bar to a larger vertical rail on the left across every iPad feed. On iPhone the bottom bar stays unchanged.")
+                    .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
             }.id(SettingsDestination.navigation.rawValue)
             SettingsGroup(title: "Appearance", icon: "paintbrush.pointed") {
                 Toggle("Modern interface", isOn: $modernUI)
+                    .modifier(SettingsControlRow())
                     .accessibilityIdentifier("modern-ui-toggle")
                 Text(modernUI ? "Rounded surfaces, compact chips and animated navigation." : "Previous QuickTick interface restored.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Label("Color theme", systemImage: "paintpalette.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
                 SettingsPaletteSelector(selected: $accentPalette)
-                Text("Cosmic themes also color surfaces, borders and navigation—not just the buttons.")
+                Toggle("Automatic seasonal themes", isOn: $automaticSeasonalThemes)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("automatic-seasonal-theme-toggle")
+                if automaticSeasonalThemes,
+                   let seasonal = SeasonalThemeSchedule.palette(for: .now) {
+                    Label("\(seasonal.name) is active for this season", systemImage: "calendar.badge.clock")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.accent)
+                }
+                Text("Seasonal appearances activate on their calendar dates (Easter, summer, Halloween, Christmas and snow). Your chosen color is preserved and returns between seasons or when you turn this off.")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                Text("De-slopified uses flat neutral surfaces, consistent spacing and restrained colour. Other themes retain their original appearance.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                HStack(spacing: 10) {
+                    Image(systemName: "photo.artframe")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(AppTheme.accent)
+                        .frame(width: 45, height: 45)
+                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Blurred photo background").font(.subheadline.weight(.semibold))
+                        Text("Your image stays on this device. Blur is created only once on import.")
+                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                    Spacer(minLength: 0)
+                }
+                Toggle("Show custom background", isOn: $customBackgroundEnabled)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("custom-background-toggle")
+                PhotosPicker(selection: $selectedBackgroundPhoto, matching: .images) {
+                    Label(backgroundImporting ? "Preparing background…" : "Choose background image", systemImage: "photo.on.rectangle.angled")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .disabled(backgroundImporting)
+                .accessibilityIdentifier("choose-background-photo")
+                if customBackgroundEnabled {
+                    Button(role: .destructive) {
+                        customBackgroundEnabled = false
+                    } label: {
+                        Label("Use theme background instead", systemImage: "paintpalette")
+                            .font(.caption.weight(.medium))
+                    }
+                }
+                if let backgroundError { Text(backgroundError).font(.caption).foregroundStyle(.orange) }
             }.id(SettingsDestination.appearance.rawValue)
+            SettingsGroup(title: "Your name & birthday", icon: "gift") {
+                BirthdayProfileEditor()
+                Text("A private birthday animation appears once a year. Your profile is optional and stays on this device.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.secondaryLabel)
+            }
             SettingsGroup(title: "Provider access", icon: "lock.shield") {
                 TextField("Rule34 user ID", text: $user).textInputAutocapitalization(.never)
                     .modifier(SettingsTextFieldSurface())
@@ -107,15 +274,93 @@ struct SettingsView: View {
                     .modifier(SettingsTextFieldSurface())
                     .accessibilityIdentifier("pornhub-session-input").accessibilityLabel("Supported Pornhub session")
                 Button("Save access settings") { Task { await store.saveCredentials(user: user, key: key, session: session, remember: remember, username: username); await store.refresh() } }
+                TextField("Erome API URL (optional)", text: $eromeAPIURL)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL).modifier(SettingsTextFieldSurface())
+                TextField("Hanime API URL (optional)", text: $hanimeAPIURL)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL).modifier(SettingsTextFieldSurface())
+                Text("Both providers work directly where public access is allowed. If a website denies app requests, you can run the supplied API packages under your own reachable HTTPS address and enter it here. These packages are not hosted by QuickTick. Access restrictions still apply.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             }.disabled(store.isSyncing).id(SettingsDestination.access.rawValue)
+            SettingsGroup(title: "Suggested topics", icon: "square.grid.2x2.fill") {
+                Toggle("Suggested topics on Home", isOn: $suggestedThemesEnabled)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("suggested-themes-toggle")
+                Text("Image-backed topics follow your likes and learned interests. The row changes on every Home refresh.")
+                    .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
+                Text("Rule34 discovery style")
+                    .font(.subheadline.weight(.semibold))
+                HStack(spacing: 8) {
+                    ForEach(SuggestedThemeMode.allCases) { mode in
+                        let selected = suggestedThemesMode == mode.rawValue
+                        Button { suggestedThemesMode = mode.rawValue } label: {
+                            Text(mode.label)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(selected ? .white : AppTheme.secondaryLabel)
+                                .frame(maxWidth: .infinity, minHeight: 42)
+                                .background(selected ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface), in: Capsule())
+                                .overlay(Capsule().stroke(selected ? AppTheme.accent : AppTheme.border))
+                        }
+                        .buttonStyle(QuicktickPressStyle())
+                        .accessibilityIdentifier("suggested-mode-\(mode.rawValue)")
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
+                }
+                Text("Tags follows your favorite attributes. Franchises recommends popular series detected in Rule34 posts using a curated name database. Mix alternates both for discovery. Other providers continue using their own tags and categories.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            }.id(SettingsDestination.suggestions.rawValue)
             SettingsGroup(title: "Learned interests · \(store.selectedProvider.displayName)", icon: "sparkles") {
+                Button { showingTasteWrapped = true } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "chart.bar.xaxis")
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 14))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Your Taste Wrapped").font(.subheadline.weight(.semibold))
+                            Text("Your favorite sources, creators, characters and styles across all providers")
+                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        }
+                        Spacer(minLength: 4)
+                        Image(systemName: "arrow.up.right").foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                    .padding(10)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 15))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityIdentifier("taste-wrapped-button")
+                swipeableProviderProfiles
+                Button { onboarding = true } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 46, height: 46)
+                            .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: 15))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Make QuickTick yours")
+                                .font(.system(.headline, design: .rounded))
+                                .foregroundStyle(.white)
+                            Text("Edit interests and dislikes with live tag suggestions")
+                                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                    .padding(12)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 20))
+                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(AppTheme.accent.opacity(0.25)))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityIdentifier("personalize-feed")
                 LabeledContent("Engine", value: store.recommendationMode)
                 if store.learnedInterests.isEmpty {
                     Text("Interact with posts or search to learn interests.")
                         .foregroundStyle(AppTheme.secondaryLabel)
                 } else {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 115), spacing: 7)], spacing: 7) {
-                        ForEach(Array(store.learnedInterests.prefix(24)), id: \.self) { interest in
+                        ForEach(Array(store.learnedInterests.filter(TasteTagSuggestions.isUseful).prefix(24)), id: \.self) { interest in
                             Text(interest.replacingOccurrences(of: "_", with: " "))
                                 .font(.caption.weight(.medium))
                                 .lineLimit(1)
@@ -126,14 +371,7 @@ struct SettingsView: View {
                         }
                     }
                 }
-                Button("Edit Into / Not Into") { onboarding = true }
-                Button {
-                    Task { await store.rebuildRecommended() }
-                } label: {
-                    Label("Rescan Recommended", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .accessibilityIdentifier("rescan-recommended")
-                Text("Ranking upgrades automatically rebuild the discovery queue. Rescan now to start fresh without losing favorites, dislikes, blocked tags or viewing history.")
+                Text("Use “Refresh latest posts & profile” in Visual recommendations below to rebuild discovery and rescan your saved taste together. Favorites, dislikes, blocks and history are preserved.")
                     .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
                 if let status = store.recommendationRescanStatus { Text(status).font(.caption).foregroundStyle(AppTheme.accent) }
                 Button("Reset learned history", role: .destructive) { Task { await store.resetRecommendations() } }
@@ -164,6 +402,7 @@ struct SettingsView: View {
             }
             SettingsGroup(title: "Visual intelligence", icon: "eye") {
                 Toggle("Learn visual taste while browsing", isOn: $store.visualAnalysisEnabled)
+                    .modifier(SettingsControlRow())
                 Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
                 Button {
                     guard !mobileCLIPInstalling, !mobileCLIPInstalled else { return }
@@ -190,57 +429,118 @@ struct SettingsView: View {
                 .accessibilityIdentifier("install-mobileclip-button")
                 Text("Optional Apple on-device model for real-life visual similarity. Keeps anime and photo tastes separate; existing tags still determine specific themes. Runs during idle visual analysis, never during video playback.")
                     .font(.footnote).foregroundStyle(.secondary)
+                TextField("HTTPS URL of converted .mlpackage folder", text: $mobileCLIP2PackageURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .textContentType(.URL)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("mobileclip2-package-url")
+                    .disabled(mobileCLIP2Installing || mobileCLIP2Installed)
+                Button {
+                    let text = mobileCLIP2PackageURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard let url = URL(string: text),
+                          MobileCLIP2RealLifeEncoder.packageFileURLs(from: url) != nil else {
+                        mobileCLIPError = "Enter the HTTPS address of a converted Core ML .mlpackage directory."
+                        return
+                    }
+                    mobileCLIP2Installing = true; mobileCLIPError = nil
+                    Task {
+                        do {
+                            try await MobileCLIP2RealLifeEncoder.shared.install(fromRemotePackage: url)
+                            mobileCLIP2Installed = true
+                            store.visualModelDidInstall()
+                        } catch { mobileCLIPError = error.localizedDescription }
+                        mobileCLIP2Installing = false
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        if mobileCLIP2Installing { InfinityLoader(size: 22) }
+                        else { Image(systemName: mobileCLIP2Installed ? "checkmark.circle.fill" : "arrow.down.circle") }
+                        Text(mobileCLIP2Installed ? "MobileCLIP2-S0 ready" :
+                             (mobileCLIP2Installing ? "Downloading / compiling MobileCLIP2…" : "Download MobileCLIP2-S0 Core ML"))
+                        Spacer()
+                    }
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .disabled(mobileCLIP2Installing || mobileCLIP2Installed || mobileCLIP2PackageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("download-mobileclip2-button")
+                Button {
+                    importingMobileCLIP2 = true
+                } label: {
+                    HStack(spacing: 10) {
+                        if mobileCLIP2Installing { InfinityLoader(size: 22) }
+                        else { Image(systemName: mobileCLIP2Installed ? "checkmark.circle.fill" : "square.and.arrow.down") }
+                        Text(mobileCLIP2Installed ? "MobileCLIP2-S0 ready" : (mobileCLIP2Installing ? "Importing MobileCLIP2…" : "Import MobileCLIP2-S0 Core ML"))
+                        Spacer()
+                    }
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .disabled(mobileCLIP2Installing || mobileCLIP2Installed)
+                .accessibilityIdentifier("import-mobileclip2-button")
+                Text("Apple releases MobileCLIP2-S0 as a research-only PyTorch checkpoint, not a downloadable Core ML model. For permitted research use, enter the HTTPS folder URL of a separately converted 256×256 Core ML .mlpackage, or import one from Files. QuickTick validates it and uses it for idle analysis; no MobileCLIP2 weights are bundled. MobileCLIP-S0 and Vision remain available.")
+                    .font(.footnote).foregroundStyle(.secondary)
                 if let mobileCLIPError {
-                    Text("MobileCLIP installation failed: \(mobileCLIPError)")
+                    Text("Visual model installation failed: \(mobileCLIPError)")
                         .font(.footnote).foregroundStyle(.orange)
                 }
                 ManualVisualRefreshPanel(manager: store.downloads)
             }
             SettingsGroup(title: "Playback", icon: "play.rectangle") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
+                    .modifier(SettingsControlRow())
                 Toggle("Mute", isOn: $store.muted)
+                    .modifier(SettingsControlRow())
                 Toggle("Autoplay in Home & cards", isOn: $autoplayVideos)
+                    .modifier(SettingsControlRow())
                     .accessibilityIdentifier("autoplay-videos-toggle")
                 Text("When off, videos in Home and other card views stay on previews until you tap Play. Immersive always autoplays as you swipe.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
+                    .modifier(SettingsControlRow())
                     .accessibilityIdentifier("skip-video-intros-toggle")
-                Text("For Pornhub videos longer than 12 seconds, the preview stays visible while the 0:10 position loads, then playback starts. Other sources begin at 0:00.")
+                Text("When enabled, the 10-second intro skip is used for Pornhub videos longer than 12 seconds. Old saved Haven posts retain their previous preference.")
                     .font(.footnote).foregroundStyle(.secondary)
             }.id(SettingsDestination.playback.rawValue)
             SettingsGroup(title: "Rhythm & floating player", icon: "waveform.path") {
-                Picker("Default rhythm", selection: $rhythmMode) {
-                    ForEach(RhythmPattern.allCases) { mode in Text(mode.title).tag(mode.rawValue) }
-                }
-                Toggle("Metronome sounds", isOn: $rhythmClicks)
-                Toggle("Beat haptics", isOn: $rhythmHaptics)
-                TextField("Completion message", text: $rhythmFinishText, axis: .vertical)
-                    .lineLimit(2...4)
-                    .modifier(SettingsTextFieldSurface())
-                Picker("Completion appearance", selection: $rhythmFinishStyle) {
-                    ForEach(["Glow", "Glass", "Minimal"], id: \.self) { Text($0) }
-                }
-                Picker("Completion animation", selection: $rhythmFinishAnimation) {
-                    ForEach(["Scale", "Slide", "Fade"], id: \.self) { Text($0) }
-                }
-                Toggle("Mute feed audio during floating video", isOn: $store.pipMuteFeed)
-                Text("Otherwise feed audio is reduced to 15% while a floating video plays. Normal audio returns when it closes.")
-                    .font(.caption).foregroundStyle(.secondary)
+                RhythmSettingsControls(pipMuteFeed: $store.pipMuteFeed)
             }
             }
             .frame(maxWidth: 780)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 18)
+            .padding(.horizontal, AppTheme.contentMargin)
             .padding(.bottom, 44)
         }
         }
         .scrollDismissesKeyboard(.interactively)
-        .background(AppTheme.canvas)
+        .background(ThemeBackdrop())
+        .onChange(of: selectedBackgroundPhoto) { _, item in
+            guard let item else { return }
+            backgroundImporting = true
+            backgroundError = nil
+            Task {
+                defer { backgroundImporting = false }
+                do {
+                    guard let data = try await item.loadTransferable(type: Data.self) else {
+                        throw APIError.server("Could not read the selected photo.")
+                    }
+                    try await BackgroundArtworkStore.install(data)
+                    customBackgroundRevision &+= 1
+                    customBackgroundEnabled = true
+                } catch { backgroundError = error.localizedDescription }
+            }
+        }
         .navigationTitle("Settings")
         .toolbarBackground(AppTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .preferredColorScheme(.dark)
         .tint(AppTheme.accent)
+            .fullScreenCover(isPresented: $showingTasteWrapped) {
+                TasteWrappedView(onClose: { showingTasteWrapped = false })
+                    .environmentObject(store)
+            }
             .sheet(isPresented: $onboarding) { TasteOnboardingView() }
             .sheet(item: $sharedProfile) { profile in
                 NavigationStack {
@@ -260,6 +560,25 @@ struct SettingsView: View {
                 case .failure(let error): store.profileTransferError = error.localizedDescription
                 }
             }
+            .fileImporter(isPresented: $importingMobileCLIP2, allowedContentTypes: [
+                UTType(filenameExtension: "mlpackage", conformingTo: .package) ?? .package,
+                UTType(filenameExtension: "mlmodelc", conformingTo: .package) ?? .package
+            ]) { result in
+                switch result {
+                case .success(let url):
+                    mobileCLIP2Installing = true
+                    mobileCLIPError = nil
+                    Task {
+                        do {
+                            try await MobileCLIP2RealLifeEncoder.shared.install(from: url)
+                            mobileCLIP2Installed = true
+                            store.visualModelDidInstall()
+                        } catch { mobileCLIPError = error.localizedDescription }
+                        mobileCLIP2Installing = false
+                    }
+                case .failure(let error): mobileCLIPError = error.localizedDescription
+                }
+            }
             .fileExporter(isPresented: $exportingProfileFile, document: exportProfileFile,
                           contentType: .quicktickProfile, defaultFilename: "QuickTick-Recommendations") { result in
                 if case .failure(let error) = result { store.profileTransferError = error.localizedDescription }
@@ -269,7 +588,25 @@ struct SettingsView: View {
             .onDisappear { store.cancelManualVisualRefresh() }
     }
 
-    private var settingsHero: some View {
+    @ViewBuilder private var settingsHero: some View {
+        if AppTheme.isDeSlopified {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Settings")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("Your appearance, preferences and playback.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.secondaryLabel)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 15)
+            .padding(.bottom, 7)
+        } else {
+            legacySettingsHero
+        }
+    }
+
+    private var legacySettingsHero: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("YOUR QUICKTICK")
@@ -314,20 +651,36 @@ struct SettingsView: View {
 }
 
 private enum SettingsDestination: String, CaseIterable, Identifiable {
-    case appearance, navigation, recommendations, playback, access
+    case navigation, appearance, access, suggestions, recommendations, playback
     var id: String { rawValue }
     var title: String {
         switch self {
         case .appearance: "Appearance"
+        case .suggestions: "Topics"
         case .navigation: "Navigation"
         case .recommendations: "For you"
         case .playback: "Playback"
         case .access: "Access"
         }
     }
+    var startsGroup: Bool {
+        switch self {
+        case .navigation, .access, .suggestions, .playback: true
+        default: false
+        }
+    }
+    var groupTitle: String {
+        switch self {
+        case .navigation, .appearance: "LOOK & FEEL"
+        case .access: "PROVIDERS"
+        case .suggestions, .recommendations: "DISCOVERY"
+        case .playback: "MEDIA"
+        }
+    }
     var symbol: String {
         switch self {
         case .appearance: "paintpalette"
+        case .suggestions: "square.grid.2x2.fill"
         case .navigation: "square.grid.2x2"
         case .recommendations: "sparkles"
         case .playback: "play.rectangle"
@@ -343,26 +696,36 @@ private struct SettingsPaletteSelector: View {
         if showingAll { return AppTheme.AccentPalette.allCases }
         let current = AppTheme.AccentPalette(rawValue: selected) ?? .violet
         var featured: [AppTheme.AccentPalette] = []
-        for palette in [current, .galaxy, .darkCosmos, .violet] where !featured.contains(palette) {
+        for palette in [current, .deSlopified, .oledBlack, .galaxy, .darkCosmos] where !featured.contains(palette) {
             featured.append(palette)
         }
         return Array(featured.prefix(3))
     }
     var body: some View {
-        VStack(spacing: 11) {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+        VStack(alignment: .leading, spacing: 11) {
+        // Adaptive columns maintain one 10pt gutter without squeezing theme
+        // names into 90pt cells on narrow iPhones.
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 128, maximum: 180), spacing: 10)], spacing: 10) {
             ForEach(visiblePalettes) { palette in
                 let chosen = selected == palette.rawValue
+                let swatchColors = palette == .deSlopified
+                    ? [Color(red: 0.067, green: 0.067, blue: 0.067), Color(red: 0.15, green: 0.15, blue: 0.15)]
+                    : palette.gradientColors
                 Button {
                     withAnimation(.smooth(duration: 0.26)) { selected = palette.rawValue }
                 } label: {
                     VStack(spacing: 7) {
                         RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .fill(LinearGradient(colors: palette.gradientColors,
+                            .fill(LinearGradient(colors: swatchColors,
                                                  startPoint: .topLeading, endPoint: .bottomTrailing))
                             .frame(height: 49)
+                            .overlay(alignment: .bottomLeading) {
+                                if palette == .deSlopified {
+                                    Capsule().fill(palette.primary).frame(width: 44, height: 4).padding(10)
+                                }
+                            }
                             .overlay {
-                                if [.galaxy, .darkCosmos, .auroraNight, .solarEclipse].contains(palette) {
+                                if [.galaxy, .darkCosmos, .auroraNight, .solarEclipse, .oledBlack, .graphite, .midnightBlue, .emeraldNoir, .crimsonNoir, .nebulaDrift, .obsidianGold, .polarNight].contains(palette) {
                                     HStack(alignment: .top) {
                                         Image(systemName: "sparkle").font(.system(size: 13, weight: .light))
                                         Spacer()
@@ -387,6 +750,7 @@ private struct SettingsPaletteSelector: View {
                             .foregroundStyle(chosen ? .white : AppTheme.secondaryLabel)
                             .lineLimit(1)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(5)
                     .background(chosen ? AppTheme.accent.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 16))
                 }
@@ -419,8 +783,8 @@ private struct SettingsTextFieldSurface: ViewModifier {
             .font(.subheadline)
             .padding(.horizontal, 14)
             .frame(minHeight: 44)
-            .background(AppTheme.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13).stroke(AppTheme.border))
+            .background(AppTheme.background.opacity(0.65), in: RoundedRectangle(cornerRadius: AppTheme.controlRadius))
+            .overlay(RoundedRectangle(cornerRadius: AppTheme.controlRadius).stroke(AppTheme.border))
     }
 }
 
@@ -538,9 +902,11 @@ private struct SettingsGroup<Content: View>: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(AppTheme.accent)
                     .frame(width: 36, height: 36)
-                    .background(AppTheme.accent.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
+                    .background(AppTheme.isDeSlopified ? Color.clear : AppTheme.accent.opacity(0.13),
+                                in: RoundedRectangle(cornerRadius: 12))
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .font(.system(size: 16, weight: .semibold,
+                                  design: AppTheme.isDeSlopified ? .default : .rounded))
                     .foregroundStyle(.white)
                 Spacer(minLength: 0)
             }
@@ -553,10 +919,94 @@ private struct SettingsGroup<Content: View>: View {
             .tint(AppTheme.accent)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(18)
+        .padding(AppTheme.isDeSlopified ? AppTheme.contentMargin : 18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+    }
+}
+
+/// The same interactive row surface is shared by Settings switches across
+/// appearance, personalization, media and rhythm preferences.
+private struct SettingsControlRow: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 12)
+            .frame(minHeight: 50)
+            // Settings already have a bordered group surface. Avoid a second
+            // translucent stroke on every scrolling row (and the overdraw it
+            // caused on older iPhones).
+            .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous))
+    }
+}
+
+/// Own lightweight preferences locally so frequent player/feed publications
+/// do not reconstruct the rhythm pickers while Settings is being scrolled.
+private struct RhythmSettingsControls: View {
+    @AppStorage("quicktick-rhythm-finish-text-v1") private var finishText = "Beautiful rhythm. Session complete."
+    @AppStorage("quicktick-rhythm-finish-style-v1") private var finishStyle = "Glow"
+    @AppStorage("quicktick-rhythm-finish-animation-v1") private var finishAnimation = "Scale"
+    @AppStorage("quicktick-rhythm-mode-v1") private var rhythmMode = "adaptive"
+    @AppStorage("quicktick-rhythm-metronome-v1") private var rhythmClicks = false
+    @AppStorage("quicktick-rhythm-haptics-v1") private var rhythmHaptics = true
+    @Binding var pipMuteFeed: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Label("Default rhythm", systemImage: "waveform.path")
+                    .font(.subheadline.weight(.medium))
+                Spacer(minLength: 8)
+                Picker("Default rhythm", selection: $rhythmMode) {
+                    ForEach(RhythmPattern.allCases) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize(horizontal: true, vertical: false)
+            }
+            .modifier(SettingsControlRow())
+
+            Toggle("Metronome sounds", isOn: $rhythmClicks)
+                .modifier(SettingsControlRow())
+            Toggle("Beat haptics", isOn: $rhythmHaptics)
+                .modifier(SettingsControlRow())
+
+            Text("Session completion")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.secondaryLabel)
+                .padding(.top, 4)
+            TextField("Completion message", text: $finishText)
+                .textInputAutocapitalization(.sentences)
+                .modifier(SettingsTextFieldSurface())
+                .accessibilityIdentifier("rhythm-completion-message")
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Appearance")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                Picker("Completion appearance", selection: $finishStyle) {
+                    ForEach(["Glow", "Glass", "Minimal"], id: \.self) { Text($0).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("rhythm-finish-style")
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Animation")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                Picker("Completion animation", selection: $finishAnimation) {
+                    ForEach(["Scale", "Slide", "Fade"], id: \.self) { Text($0).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("rhythm-finish-animation")
+            }
+
+            Toggle("Mute feed audio during floating video", isOn: $pipMuteFeed)
+                .modifier(SettingsControlRow())
+            Text("When off, feed audio ducks to 15% during floating playback and returns afterward.")
+                .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -564,36 +1014,45 @@ private struct ManualVisualRefreshPanel: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var manager: DownloadManager
-    @State private var previewURL: URL?
-    @State private var previewReady = false
     @State private var carouselURLs: [String] = []
     @State private var carouselIndex = 0
+    @State private var carouselSlide = 0.0
     var body: some View {
         Group {
-            Button { store.startManualVisualRefresh() } label: {
-                Label("Update visual taste now", systemImage: "sparkles")
-            }.disabled(store.isManualVisualScanRunning).accessibilityIdentifier("force-visual-refresh")
-            Text("Checks every favorite, reuses valid scans and updates recommendations. Playback pauses during this manual update. Unavailable previews can be retried later.")
+            Button { store.refreshRecommendationsAndProfile() } label: {
+                Label("Refresh latest posts & profile", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(store.isUnifiedRecommendationRefreshRunning || store.isManualVisualScanRunning)
+            .accessibilityIdentifier("force-visual-refresh")
+            Text("Fetches fresh recommendations, scans up to 12 new posts plus your saved favorites, then updates visual taste. Existing likes and scans are preserved; playback pauses during analysis.")
                 .font(.caption).foregroundStyle(.secondary)
+            if let status = store.recommendationRescanStatus {
+                Text(status).font(.caption).foregroundStyle(AppTheme.accent)
+            }
+            if store.isUnifiedRecommendationRefreshRunning {
+                ProgressView("Refreshing latest posts…")
+                    .accessibilityIdentifier("unified-refresh-loading")
+            }
             if let progress = store.manualVisualProgress {
                 ProgressView(value: progress.fraction) {
                     Text(progress.status).accessibilityIdentifier("manual-visual-status")
                 }.accessibilityIdentifier("manual-visual-progress")
-                    .accessibilityValue("\(progress.completed) of \(progress.total) new posts analyzed")
+                    .accessibilityValue("\(progress.completed) of \(progress.total) posts checked")
                 if !carouselURLs.isEmpty {
                     GeometryReader { area in
                         ZStack {
                             ForEach(-2...2, id: \.self) { slot in
                                 let offset = (carouselIndex + slot + carouselURLs.count * 4) % carouselURLs.count
+                                let position = Double(slot) + carouselSlide
                                 CachedMediaImage(url: carouselURLs[offset], pixels: 400, fill: true)
                                     .frame(width: min(174, area.size.width * 0.54), height: 154)
                                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(slot == 0 ? 0.38 : 0.10)))
-                                    .scaleEffect(slot == 0 ? 1 : (abs(slot) == 1 ? 0.83 : 0.66))
-                                    .rotation3DEffect(.degrees(Double(slot) * -12), axis: (x: 0, y: 1, z: 0))
-                                    .offset(x: CGFloat(slot) * min(130, area.size.width * 0.34))
-                                    .opacity(abs(slot) == 2 ? 0.40 : 1)
-                                    .zIndex(Double(3 - abs(slot)))
+                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(abs(position) < 0.5 ? 0.38 : 0.10)))
+                                    .scaleEffect(max(0.66, 1 - abs(position) * 0.17))
+                                    .rotation3DEffect(.degrees(position * -12), axis: (x: 0, y: 1, z: 0))
+                                    .offset(x: CGFloat(position) * min(130, area.size.width * 0.34))
+                                    .opacity(max(0.35, 1 - abs(position) * 0.29))
+                                    .zIndex(3 - abs(position))
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -606,40 +1065,41 @@ private struct ManualVisualRefreshPanel: View {
                     .accessibilityValue("Scanning \(progress.completed) of \(progress.total)")
                     .accessibilityIdentifier("visual-refresh-carousel")
                 }
-                if let previewURL {
-                    AnimatedGIFSurface(url: previewURL,
-                        playing: store.isForeground && !reduceMotion && !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState.rawValue < 2,
-                        pixels: 120, frameLimit: 24) { _ in previewReady = true }
-                        .frame(maxWidth: .infinity).frame(height: 56).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous)).allowsHitTesting(false)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityValue(previewReady ? "Looping" : "Loading")
-                        .accessibilityLabel("Looping downloaded GIF").accessibilityIdentifier("visual-refresh-gif")
-                }
                 if progress.running {
                     Button("Stop update", role: .cancel) { store.cancelManualVisualRefresh() }
                         .accessibilityIdentifier("cancel-visual-refresh")
                 }
             }
         }.task(id: manager.records.count) {
-            // Local downloads only; never fetch or decode a video for decoration.
-            let record = manager.records.first { record in
-                record.state == .complete && (record.mediaType?.lowercased() == "gif" || URL(fileURLWithPath: record.localMediaPath ?? "").pathExtension.lowercased() == "gif")
-                    && (record.fileSize ?? 0) <= 8 * 1024 * 1024
-            }
-            previewReady = false; previewURL = record?.exportURL
+            // Thumbnails only: the old animated-GIF strip decoded media
+            // concurrently with Core ML and made manual scans stutter.
             carouselURLs = manager.records.filter { $0.state == .complete }
                 .compactMap { item in item.thumbnailLocalPath.map { URL(fileURLWithPath: $0).absoluteString }
                     ?? (item.offlinePost?.type.lowercased() == "image" ? item.exportURL?.absoluteString : nil) }
                 .shuffled()
-            carouselIndex = 0
+            carouselIndex = 0; carouselSlide = 0
         }
         .task(id: store.isManualVisualScanRunning) {
             guard store.isManualVisualScanRunning else { return }
             while !Task.isCancelled && store.isManualVisualScanRunning {
-                do { try await Task.sleep(for: .milliseconds(850)) } catch { return }
-                guard !carouselURLs.isEmpty else { continue }
-                if reduceMotion { carouselIndex = (carouselIndex + 1) % carouselURLs.count }
-                else { withAnimation(.smooth(duration: 0.57)) { carouselIndex = (carouselIndex + 1) % carouselURLs.count } }
+                guard carouselURLs.count > 1 else {
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    continue
+                }
+                if reduceMotion {
+                    carouselIndex = (carouselIndex + 1) % carouselURLs.count
+                    do { try await Task.sleep(for: .seconds(1.15)) } catch { return }
+                } else {
+                    // Animate the *positions* first, then rotate the image
+                    // indices with animations disabled at the invisible seam.
+                    withAnimation(.smooth(duration: 0.72)) { carouselSlide = -1 }
+                    do { try await Task.sleep(for: .milliseconds(760)) } catch { return }
+                    withTransaction(Transaction(animation: nil)) {
+                        carouselIndex = (carouselIndex + 1) % carouselURLs.count
+                        carouselSlide = 0
+                    }
+                    do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+                }
             }
         }
     }

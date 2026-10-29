@@ -50,7 +50,7 @@ actor WDAnimeTagger {
         return result
     }
     func analyze(_ image: DecodedMediaImage, domain: VisualDomain) -> Result? {
-        guard domain == .anime, !unavailable, cooldown < .now, !Task.isCancelled,
+        guard (domain == .anime || domain == .uncertain), !unavailable, cooldown < .now, !Task.isCancelled,
               !ProcessInfo.processInfo.isLowPowerModeEnabled, ProcessInfo.processInfo.thermalState.rawValue < 2 else { return nil }
         defer { release() }
         do {

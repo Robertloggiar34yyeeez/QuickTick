@@ -12,7 +12,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(nativeShare.isHittable)
         let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Native recommendation profile sharing"; capture.lifetime = .keepAlways; add(capture)
     }
-    @MainActor func testManualVisualRefreshShowsProgressAndLoopsDownloadedGIF() {
+    @MainActor func testCombinedRecommendationRefreshShowsProgressWithoutCompetingGIF() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-testing-download-images", "--ui-testing-download-gif"]
         app.launch()
@@ -25,14 +25,13 @@ final class NavigationTests: XCTestCase {
         for _ in 0..<12 { if refresh.isHittable { break }; app.swipeUp() }
         XCTAssertTrue(refresh.isHittable); refresh.tap()
         let progress = app.descendants(matching: .any).matching(identifier: "manual-visual-progress").firstMatch
-        XCTAssertTrue(progress.waitForExistence(timeout: 10))
-        let gif = app.descendants(matching: .any).matching(identifier: "visual-refresh-gif").firstMatch
-        for _ in 0..<3 { if gif.isHittable { break }; app.swipeUp() }
-        XCTAssertTrue(gif.waitForExistence(timeout: 10))
-        expectation(for: NSPredicate(format: "value == %@", "Looping"), evaluatedWith: gif)
-        waitForExpectations(timeout: 15)
+        XCTAssertTrue(progress.waitForExistence(timeout: 45),
+                      "One refresh action must fetch new posts and then begin the visual profile scan")
+        let carousel = app.descendants(matching: .any).matching(identifier: "visual-refresh-carousel").firstMatch
+        XCTAssertTrue(carousel.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "visual-refresh-gif").firstMatch.exists)
         let capture = XCTAttachment(screenshot: app.screenshot())
-        capture.name = "Manual visual refresh progress and local GIF loop"; capture.lifetime = .keepAlways; add(capture)
+        capture.name = "Manual visual refresh progress and lightweight carousel"; capture.lifetime = .keepAlways; add(capture)
     }
     @MainActor func testActiveLearningKeepsPlaybackAndDislikeResponsive() {
         let app = XCUIApplication()
@@ -94,6 +93,21 @@ final class NavigationTests: XCTestCase {
         export.tap()
         XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 10) || app.buttons["Save to Files"].exists || app.otherElements["ActivityListView"].exists)
     }
+    @MainActor func testDownloadsShuffleAndOriginalOrderMenu() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]
+        app.launch()
+        app.buttons["tab-Downloads"].tap()
+        let shuffle = app.buttons["downloads-shuffle"]
+        XCTAssertTrue(shuffle.waitForExistence(timeout: 10))
+        XCTAssertEqual(shuffle.value as? String, "Original order")
+        shuffle.tap()
+        app.buttons["Shuffle downloads"].tap()
+        XCTAssertEqual(shuffle.value as? String, "Shuffled")
+        shuffle.tap()
+        app.buttons["Original order"].tap()
+        XCTAssertEqual(shuffle.value as? String, "Original order")
+    }
     override func setUp() async throws {
         continueAfterFailure = false
         await MainActor.run { XCUIDevice.shared.orientation = .portrait }
@@ -111,8 +125,15 @@ final class NavigationTests: XCTestCase {
             XCTAssertTrue(surface.waitForExistence(timeout: 15))
             expectation(for: NSPredicate(format: "value == %@", "Ready"), evaluatedWith: surface)
             waitForExpectations(timeout: 15)
-            XCTAssertGreaterThan(surface.frame.width, app.frame.width * 0.85)
-            XCTAssertEqual(surface.frame.width / surface.frame.height, 16.0 / 9, accuracy: 0.05)
+            let window = app.windows.firstMatch.frame
+            XCTAssertLessThanOrEqual(surface.frame.width, window.width + 2)
+            XCTAssertLessThanOrEqual(surface.frame.height, window.height + 2)
+            XCTAssertEqual(surface.frame.midX, window.midX, accuracy: 3,
+                           "Immersive media should be centered independently of the sidebar")
+            XCTAssertEqual(surface.frame.midY, window.midY, accuracy: 3,
+                           "Immersive media should be centered on the device, not below its safe area")
+            XCTAssertEqual(surface.frame.width / surface.frame.height, 320.0 / 180, accuracy: 0.10,
+                           "The original video aspect ratio should survive rotation without center-cropping")
             let home = app.buttons["tab-Home"], immersive = app.buttons["tab-Immersive"]
             XCTAssertTrue(home.isHittable); XCTAssertTrue(immersive.isHittable)
             XCTAssertEqual(home.frame.midX, immersive.frame.midX, accuracy: 1)
@@ -121,7 +142,11 @@ final class NavigationTests: XCTestCase {
             XCTAssertTrue(like.isHittable)
             XCTAssertGreaterThan(like.frame.midX, app.frame.width * 0.9)
             XCTAssertTrue(app.buttons["open-settings"].isHittable)
-            XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "immersive-progress").count, 1)
+            let progress = app.descendants(matching: .any).matching(identifier: "immersive-progress")
+            XCTAssertEqual(progress.count, 1)
+            XCTAssertTrue(progress.firstMatch.isHittable,
+                          "The timeline must stay tappable above the iPad home indicator")
+            XCTAssertLessThanOrEqual(progress.firstMatch.frame.maxY, window.maxY - 20)
             XCTAssertEqual(app.tabBars.count, 0)
             let capture = XCTAttachment(screenshot: app.screenshot()); capture.name = "Immersive iPad full canvas \(orientation.rawValue)"; capture.lifetime = .keepAlways; add(capture)
         }
@@ -130,6 +155,8 @@ final class NavigationTests: XCTestCase {
         let restoredMedia = app.otherElements["post-media-test:video"]
         XCTAssertTrue(restoredMedia.waitForExistence(timeout: 10))
         XCTAssertTrue(restoredMedia.isHittable)
+        XCTAssertEqual(restoredMedia.frame.midX, app.frame.midX, accuracy: 2,
+                       "The pinned iPad sidebar must overlay the feed, not shift posts off center")
         app.buttons["home-scroll-top"].tap()
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
     }
@@ -159,6 +186,23 @@ final class NavigationTests: XCTestCase {
         app.buttons["open-settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()
+        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+    }
+
+    @MainActor func testIconOnlyFeedActionsAndIdleScrollShortcutOnLeft() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        let dislike = app.buttons["dislike-test:video"]
+        XCTAssertTrue(dislike.waitForExistence(timeout: 10))
+        XCTAssertFalse(dislike.staticTexts["Less"].exists)
+        let download = app.buttons["card-download-test:video"]
+        XCTAssertTrue(download.exists)
+        XCTAssertFalse(download.staticTexts["Download"].exists)
+
+        app.swipeUp()
+        let scrollTop = app.buttons["home-scroll-top"]
+        XCTAssertTrue(scrollTop.waitForExistence(timeout: 5))
+        XCTAssertLessThan(scrollTop.frame.midX, app.frame.width / 2)
+        scrollTop.tap()
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
     }
     @MainActor func testCreateStudioFirstRunAndReturnToFeed() {
@@ -263,8 +307,15 @@ final class NavigationTests: XCTestCase {
     }
     @MainActor func testDownloadedImagesUseNormalFeedAndCloseFullComic() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]; app.launch()
+        let homeCard = app.otherElements["post-media-test:video"]
+        XCTAssertTrue(homeCard.waitForExistence(timeout: 10))
+        let homeWidth = homeCard.frame.width
         app.buttons["tab-Downloads"].tap()
         XCTAssertTrue(app.navigationBars["Downloads"].waitForExistence(timeout: 10))
+        let offlineCard = app.otherElements["post-media-test:video"]
+        XCTAssertTrue(offlineCard.waitForExistence(timeout: 10))
+        XCTAssertEqual(offlineCard.frame.width, homeWidth, accuracy: 2,
+                       "Downloaded media cards must use the same edge-to-edge width as Home")
         let full = app.buttons["View full image"].firstMatch
         for _ in 0..<5 { if full.isHittable { break }; app.swipeUp() }
         XCTAssertTrue(full.isHittable); full.tap()
@@ -294,6 +345,14 @@ final class NavigationTests: XCTestCase {
         XCTAssertLessThanOrEqual(dock.frame.maxY, screen.maxY + 1)
         XCTAssertGreaterThanOrEqual(dock.frame.maxY, screen.maxY - 50,
                                     "Dock should sit directly above the system home indicator")
+        if screen.width < 600 {
+            app.buttons["tab-Immersive"].tap()
+            XCTAssertTrue(dock.waitForExistence(timeout: 8))
+            XCTAssertGreaterThan(dock.frame.width, screen.width * 0.95,
+                                 "Immersive on iPhone must retain the edge-attached navigation bar")
+            XCTAssertGreaterThanOrEqual(dock.frame.maxY, screen.maxY - 50,
+                                        "Immersive navigation must not float above the home indicator")
+        }
     }
 
     @MainActor func testFullscreenVideoSwipeDownDismissesOnlyStandardViewer() {
@@ -471,7 +530,8 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(progressElements.count, 1)
         let progress = progressElements.firstMatch
         XCTAssertTrue(progress.isHittable)
-        XCTAssertLessThanOrEqual(progress.frame.maxY, app.buttons["tab-Home"].frame.minY)
+        XCTAssertLessThanOrEqual(progress.frame.maxY + 8, app.buttons["tab-Home"].frame.minY,
+                                 "The timeline must clear the bottom tab dock with room to seek")
         XCTAssertGreaterThanOrEqual(progress.frame.height, 44)
         XCTAssertTrue(progress.exists)
         let before = like.frame
@@ -533,6 +593,10 @@ final class NavigationTests: XCTestCase {
         let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Gradient home"; screenshot.lifetime = .keepAlways; add(screenshot)
         app.buttons["View tags"].firstMatch.tap()
         XCTAssertTrue(app.buttons["#test_tag"].waitForExistence(timeout: 5))
+        app.buttons["#test_tag"].tap()
+        XCTAssertTrue(app.buttons["Copy tag"].waitForExistence(timeout: 5))
+        app.buttons["Copy tag"].tap()
+        XCTAssertTrue(app.staticTexts["Copied test_tag"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()
         app.buttons["tab-Immersive"].tap()
         XCTAssertTrue(app.staticTexts["Immersive"].waitForExistence(timeout: 5))
@@ -551,21 +615,38 @@ final class NavigationTests: XCTestCase {
         waitForExpectations(timeout: 10)
         app.buttons["feed-recommended"].tap()
         XCTAssertTrue(app.buttons["feed-recommended"].isSelected)
-        app.buttons["personalize-feed"].tap()
+        XCTAssertFalse(app.buttons["personalize-feed"].exists)
+        app.buttons["open-settings"].tap()
+        let personalize = app.buttons["personalize-feed"]
+        for _ in 0..<8 { if personalize.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(personalize.isHittable)
+        personalize.tap()
         let input = app.textFields["positive-interest-input"]
         XCTAssertTrue(input.waitForExistence(timeout: 10)); input.tap()
-        let intro = app.buttons["Continue"]
-        if intro.waitForExistence(timeout: 2) { intro.tap() }
         input.typeText("engineering")
         expectation(for: NSPredicate(format: "value == %@", "engineering"), evaluatedWith: input)
         waitForExpectations(timeout: 10)
-        if intro.exists { intro.tap() }
-        app.buttons["Add interests"].tap()
+        app.buttons["Add interest"].tap()
         XCTAssertTrue(app.staticTexts["engineering"].exists)
-        app.buttons["Done"].tap()
-        app.buttons["personalize-feed"].tap()
+        app.buttons["save-taste"].tap()
+        personalize.tap()
         XCTAssertTrue(app.staticTexts["engineering"].waitForExistence(timeout: 10))
-        app.buttons["Done"].tap()
+        app.buttons["save-taste"].tap()
+    }
+
+    @MainActor func testIPadHomeSideGuttersDoubleTapToLike() throws {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        guard app.frame.width > 850 else { throw XCTSkip("iPad side-gutter gestures need a wide layout") }
+        let like = app.buttons["Like"].firstMatch
+        XCTAssertTrue(like.waitForExistence(timeout: 10))
+        let left = app.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.58))
+        left.doubleTap()
+        XCTAssertTrue(like.isSelected)
+        like.tap()
+        XCTAssertFalse(like.isSelected)
+        let right = app.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.58))
+        right.doubleTap()
+        XCTAssertTrue(like.isSelected)
     }
 
     @MainActor func testHomeImmersiveHomeAndDownloads() async {

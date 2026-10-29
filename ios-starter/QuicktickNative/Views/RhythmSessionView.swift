@@ -49,6 +49,14 @@ struct RhythmPhraseSequencer {
         ticksRemaining = max(2, quarterBeats) * current.rawValue
     }
 
+    mutating func beginRecovery(quarterBeats: Int) {
+        // A regular pulse gives a real rest from dense Triple/Quad events.
+        // Resume the full mixed sequence after this recovery phrase.
+        current = .regular
+        upcoming = [.duo, .triple, .quad]
+        ticksRemaining = max(4, quarterBeats)
+    }
+
     /// Return true only when the next phrase begins. Duration is measured in
     /// quarter notes so a triple phrase isn't three times shorter than regular.
     mutating func tick(mixed: Bool, quarterBeats: Int, shuffle: Bool = true) -> Bool {
@@ -69,6 +77,95 @@ struct RhythmPhraseSequencer {
     }
 }
 
+/// A tempo *arc* is more engaging than independent random BPM jumps: build,
+/// peak, recover, and start the next phrase. Targets change at musical bar
+/// boundaries and the actual tempo glides towards them on each subdivision.
+/// This is deterministic for tests when randomUnit is provided.
+struct RhythmTempoPlanner {
+    static let maximumTapsPerSecond = 3.0
+    static let maximumBPM = 112.0
+    private(set) var currentBPM = 96.0
+    private(set) var targetBPM = 96.0
+    private(set) var section = 0
+    private(set) var isRecovering = false
+    private var quarterNotes = 0.0
+
+    mutating func reset(baseBPM: Int) {
+        currentBPM = Double(max(40, min(Int(Self.maximumBPM), baseBPM)))
+        targetBPM = currentBPM
+        section = 0
+        isRecovering = false
+        quarterNotes = 0
+    }
+
+    mutating func tick(division: RhythmDivision, mode: RhythmPattern, baseBPM: Int,
+                       intensity: Double, randomness: Double, bars: Int,
+                       randomUnit: Double = Double.random(in: 0...1)) {
+        let subdivisions = Double(division.rawValue)
+        quarterNotes += 1 / subdivisions
+        if quarterNotes >= Double(max(2, min(8, bars)) * 4) {
+            quarterNotes = 0
+            section += 1
+            targetBPM = Self.target(mode: mode, baseBPM: baseBPM, section: section,
+                                    intensity: intensity, randomness: randomness, randomUnit: randomUnit)
+            isRecovering = Self.isRecoverySection(mode: mode, section: section)
+        }
+        // Ramp up gently, but relax noticeably faster after peaks. Dense
+        // subdivisions cannot multiply the acceleration per quarter note.
+        let building = 0.12 + max(0, min(1, intensity)) * 0.13
+        let rate = (targetBPM < currentBPM ? 0.42 : building) / subdivisions
+        currentBPM = max(40.0, min(Self.maximumBPM,
+            currentBPM + (targetBPM - currentBPM) * rate))
+    }
+
+    static func interval(bpm: Double, division: RhythmDivision) -> Double {
+        // BPM alone is misleading with Triple and Quad. Cap the actual
+        // audible/visible/haptic events, regardless of subdivision or mode.
+        max(1 / maximumTapsPerSecond, 60 / max(40, bpm) / Double(division.rawValue))
+    }
+
+    private static func stages(for mode: RhythmPattern) -> [Double] {
+        switch mode {
+        case .chill: return [0.80, 0.72, 0.83, 0.91, 0.70, 0.79]
+        case .fast: return [0.90, 1.14, 0.66, 0.75, 1.09, 0.65]
+        case .spam: return [0.92, 1.18, 0.63, 0.73, 1.13, 0.62]
+        case .chaos: return [0.78, 1.13, 0.64, 0.76, 1.11, 0.66]
+        case .progressive: return [0.86, 0.98, 1.09, 1.16, 0.65, 0.72, 0.94, 1.05, 0.66]
+        // The default mode does NOT climb predictably from a warmup: slower
+        // valleys outnumber brief fast bursts, with guaranteed recoveries.
+        case .adaptive: return [0.71, 0.84, 1.02, 1.12, 0.64, 0.73, 0.90, 1.08, 0.65, 0.80, 1.03, 0.64]
+        case .custom: return [1]
+        default: return [0.84, 1.05, 0.72, 0.92]
+        }
+    }
+
+    static func isRecoverySection(mode: RhythmPattern, section: Int) -> Bool {
+        guard mode != .chill, mode != .custom else { return false }
+        let cycle = stages(for: mode)
+        return cycle[max(0, section) % cycle.count] <= 0.75
+    }
+
+    static func target(mode: RhythmPattern, baseBPM: Int, section: Int,
+                       intensity: Double, randomness: Double, randomUnit: Double = 0.5) -> Double {
+        let cycle = stages(for: mode)
+        let amount = max(0, min(1, intensity))
+        let stage = cycle[max(0, section) % cycle.count]
+        // Adaptive evolves through musical stages but varies each stage with
+        // bounded random phrasing, avoiding an identical repeating ramp.
+        let randomIndex = min(cycle.count - 1, Int(max(0, min(0.9999, randomUnit)) * Double(cycle.count)))
+        let shape = mode == .adaptive ? stage * 0.75 + cycle[randomIndex] * 0.25 : stage
+        let range = mode == .custom ? 0 : (0.4 + amount * 0.9)
+        let jitterAmount = mode == .chaos ? 0.19 : (mode == .adaptive ? 0.16 : 0.045)
+        let jitter = (mode == .custom ? 0 : (max(0, min(1, randomUnit)) - 0.5)) * max(0, min(1, randomness)) * jitterAmount
+        // Keep Swift type inference bounded and arithmetic consistently Double.
+        let boundedBase = Double(max(40, min(Int(Self.maximumBPM), baseBPM)))
+        let deviation = (shape - 1.0) * range
+        let multiplier = 1.0 + deviation + jitter
+        let requestedBPM = boundedBase * multiplier
+        return max(40.0, min(Self.maximumBPM, requestedBPM))
+    }
+}
+
 /// A short synthesized, high-presence click mixed through the app's audio
 /// session. System sound 1104 was barely audible and has no per-click gain.
 @MainActor
@@ -77,8 +174,8 @@ final class RhythmClickSound: ObservableObject {
     private let soft: AVAudioPlayer?
 
     init() {
-        strong = try? AVAudioPlayer(data: Self.wave(pitch: 1_900))
-        soft = try? AVAudioPlayer(data: Self.wave(pitch: 1_400))
+        strong = try? AVAudioPlayer(data: Self.wave(pitch: 940))
+        soft = try? AVAudioPlayer(data: Self.wave(pitch: 680))
         strong?.prepareToPlay()
         soft?.prepareToPlay()
     }
@@ -95,7 +192,7 @@ final class RhythmClickSound: ObservableObject {
 
     private static func wave(pitch: Double) -> Data {
         let sampleRate = 44_100
-        let frames = Int(Double(sampleRate) * 0.095)
+        let frames = Int(Double(sampleRate) * 0.078)
         var wav = Data()
         func bytes(_ s: String) { wav.append(contentsOf: s.utf8) }
         func word(_ number: UInt16) {
@@ -112,10 +209,10 @@ final class RhythmClickSound: ObservableObject {
         bytes("data"); dword(UInt32(frames * 2))
         for frame in 0..<frames {
             let seconds = Double(frame) / Double(sampleRate)
-            let envelope = exp(-seconds * 47) * min(1, seconds * 16_000)
-            let tone = sin(2 * .pi * pitch * seconds) * 0.77
-                + sin(2 * .pi * pitch * 1.91 * seconds) * 0.23
-            let sample = Int16((max(-1, min(1, tone * envelope * 1.85)) * Double(Int16.max)).rounded())
+            let envelope = exp(-seconds * 62) * min(1, seconds * 16_000)
+            let tone = sin(2 * .pi * pitch * seconds) * 0.75
+                + sin(2 * .pi * pitch * 1.52 * seconds) * 0.25
+            let sample = Int16((max(-1, min(1, tone * envelope * 1.2)) * Double(Int16.max)).rounded())
             word(UInt16(bitPattern: sample))
         }
         return wav
@@ -132,12 +229,12 @@ struct RhythmSessionView: View {
     let offline: Bool
 
     @AppStorage("quicktick-rhythm-mode-v1") private var pattern = "adaptive"
-    @AppStorage("quicktick-rhythm-bpm-v1") private var bpm = 112
+    @AppStorage("quicktick-rhythm-bpm-v1") private var bpm = 96
     @AppStorage("quicktick-rhythm-randomness-v1") private var randomness = 0.65
     @AppStorage("quicktick-rhythm-acceleration-v1") private var acceleration = 0.25
     @AppStorage("quicktick-rhythm-transition-v1") private var transitionSpeed = 0.25
     @AppStorage("quicktick-rhythm-metronome-v1") private var metronome = false
-    @AppStorage("quicktick-rhythm-click-volume-v1") private var clickVolume = 1.0
+    @AppStorage("quicktick-rhythm-click-volume-v1") private var clickVolume = 0.8
     @AppStorage("quicktick-rhythm-bars-per-phrase-v1") private var barsPerPhrase = 4
     @AppStorage("quicktick-rhythm-haptics-v1") private var haptics = true
     @AppStorage("quicktick-rhythm-manual-v1") private var manual = false
@@ -153,6 +250,7 @@ struct RhythmSessionView: View {
     @State private var index = 0
     @State private var beat = 0
     @State private var phraseSequencer = RhythmPhraseSequencer()
+    @State private var tempoPlanner = RhythmTempoPlanner()
     @State private var switches = 0
     @State private var started = false
     @State private var running = false
@@ -166,7 +264,7 @@ struct RhythmSessionView: View {
 
     private var mode: RhythmPattern { RhythmPattern(rawValue: pattern) ?? .adaptive }
     private var current: Post? { deck.indices.contains(index) ? deck[index] : nil }
-    private var beatInterval: Double { 60 / Double(max(40, min(260, bpm))) / Double(phraseSequencer.current.rawValue) }
+    private var beatInterval: Double { RhythmTempoPlanner.interval(bpm: tempoPlanner.currentBPM, division: phraseSequencer.current) }
     private var phraseLength: Int {
         // Four bars at 112 BPM last ~8.6 seconds; several images/videos
         // should pass before a subdivision changes. Not every post is a phrase.
@@ -232,6 +330,7 @@ struct RhythmSessionView: View {
         .onAppear {
             guard !started else { return }
             started = true
+            if bpm > Int(RhythmTempoPlanner.maximumBPM) { bpm = Int(RhythmTempoPlanner.maximumBPM) }
             deck = posts.shuffled()
             running = !deck.isEmpty
             resetPhrases()
@@ -240,17 +339,28 @@ struct RhythmSessionView: View {
         .onDisappear { running = false; player?.pause(); player = nil }
         .onChange(of: pattern) { _, _ in resetPhrases() }
         .onChange(of: mixSubdivisions) { _, _ in resetPhrases() }
+        .onChange(of: bpm) { _, value in tempoPlanner.reset(baseBPM: value) }
         .task(id: "\(running):\(bpm):\(pattern):\(manual):\(mixSubdivisions)") {
             guard running else { return }
             while !Task.isCancelled && running {
-                beat = (beat + 1) % 8
-                if phraseSequencer.tick(mixed: mixSubdivisions, quarterBeats: nextPhraseLength()) {
-                    beat = 0
-                }
-                if metronome { clickSound.play(accented: beat == 0, gain: clickVolume) }
-                if haptics { UIImpactFeedbackGenerator(style: beat == 0 ? .medium : .light).impactOccurred() }
+                let division = phraseSequencer.current
+                let downbeat = beat % (division.rawValue * 4) == 0
+                if metronome { clickSound.play(accented: downbeat, gain: clickVolume) }
+                if haptics { UIImpactFeedbackGenerator(style: downbeat ? .medium : .light).impactOccurred() }
                 if !manual && Date() >= nextSwitch { advance() }
-                do { try await Task.sleep(for: .seconds(max(0.075, beatInterval))) }
+                let interval = beatInterval
+                let previousSection = tempoPlanner.section
+                tempoPlanner.tick(division: division, mode: mode, baseBPM: bpm,
+                                  intensity: acceleration, randomness: randomness, bars: barsPerPhrase)
+                if mixSubdivisions && tempoPlanner.section != previousSection && tempoPlanner.isRecovering {
+                    phraseSequencer.beginRecovery(quarterBeats: phraseLength)
+                    beat = 0
+                } else if phraseSequencer.tick(mixed: mixSubdivisions, quarterBeats: nextPhraseLength()) {
+                    beat = 0
+                } else {
+                    beat = (beat + 1) % (division.rawValue * 4)
+                }
+                do { try await Task.sleep(for: .seconds(interval)) }
                 catch { return }
             }
         }
@@ -263,12 +373,12 @@ struct RhythmSessionView: View {
                 Text("\(phraseSequencer.current.title.uppercased())  ·  \(barsPerPhrase) BARS")
                     .font(.caption2.weight(.bold)).tracking(1.2)
                 Spacer()
-                Text("\(switches + 1)  ·  \(bpm) BPM")
+                Text("\(switches + 1)  ·  \(Int(tempoPlanner.currentBPM.rounded())) BPM")
                     .font(.caption.monospacedDigit().weight(.semibold))
             }
             .foregroundStyle(.white.opacity(0.86))
             HStack(spacing: 7) {
-                ForEach(0..<8, id: \.self) { bar in
+                ForEach(0..<(phraseSequencer.current.rawValue * 4), id: \.self) { bar in
                     Capsule()
                         .fill(bar == beat ? AppTheme.accent : .white.opacity(0.24))
                         .frame(maxWidth: .infinity)
@@ -277,7 +387,7 @@ struct RhythmSessionView: View {
                 }
             }
             .frame(height: 27)
-            .accessibilityLabel("\(phraseSequencer.current.title), beat \(beat + 1) of 8")
+            .accessibilityLabel("\(phraseSequencer.current.title), beat \(beat + 1) of \(phraseSequencer.current.rawValue * 4)")
             HStack(spacing: 8) {
                 Menu {
                     Picker("Rhythm", selection: $pattern) {
@@ -289,6 +399,16 @@ struct RhythmSessionView: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .accessibilityIdentifier("rhythm-current-division")
+                Button { bpm = max(40, bpm - 10) } label: {
+                    Image(systemName: "minus").frame(width: 38, height: 44)
+                }
+                .accessibilityLabel("Slow rhythm by 10 BPM")
+                .accessibilityIdentifier("rhythm-slower")
+                Button { bpm = min(Int(RhythmTempoPlanner.maximumBPM), bpm + 10) } label: {
+                    Image(systemName: "plus").frame(width: 38, height: 44)
+                }
+                .accessibilityLabel("Speed rhythm up by 10 BPM")
+                .accessibilityIdentifier("rhythm-faster")
                 Button {
                     manual.toggle()
                     nextSwitch = .now.addingTimeInterval(dwellTime())
@@ -317,9 +437,12 @@ struct RhythmSessionView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    labeledSlider("BPM", value: Binding(get: { Double(bpm) }, set: { bpm = Int($0) }), range: 40...260)
+                    labeledSlider("Base BPM", value: Binding(get: { Double(bpm) }, set: { bpm = Int($0) }),
+                                  range: 40...RhythmTempoPlanner.maximumBPM)
                     labeledSlider("Randomness", value: $randomness, range: 0...1)
                     labeledSlider("Acceleration", value: $acceleration, range: 0...1)
+                    Text("After fast bursts, Rhythm returns to a slower regular pulse for recovery. All modes are capped at 3 taps per second, including Quad. +/− adjusts your base tempo.")
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     labeledSlider("Transitions", value: $transitionSpeed, range: 0.08...0.65)
                     labeledSlider("Bars per rhythm", value: Binding(get: { Double(barsPerPhrase) }, set: { barsPerPhrase = Int($0) }), range: 2...8)
                     Text("\(barsPerPhrase) bars per phrase. Posts continue switching at their own pace.")
@@ -427,6 +550,7 @@ struct RhythmSessionView: View {
 
     private func resetPhrases() {
         phraseSequencer.reset(mode: mode, mixed: mixSubdivisions, quarterBeats: phraseLength)
+        tempoPlanner.reset(baseBPM: bpm)
         beat = 0
     }
 
@@ -451,7 +575,8 @@ struct RhythmSessionView: View {
         var seconds = Double.random(in: max(bounds.lowerBound, center - spread / 2)...min(bounds.upperBound, center + spread / 2))
         if mode == .progressive { seconds *= max(0.55, 1 - Double(switches) * acceleration * 0.012) }
         if mode == .custom { seconds *= (112 / Double(max(40, bpm))) }
-        return max(0.25, seconds)
+        if mode != .custom { seconds *= sqrt(Double(max(40, bpm)) / tempoPlanner.currentBPM) }
+        return max(0.75, seconds)
     }
 
     private func advance() {

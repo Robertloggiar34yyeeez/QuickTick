@@ -1805,12 +1805,14 @@ struct ImageStudioView: View {
             return StudioLoRA(file: file, strength: Float(strength))
         }
         let progress = renderStatus
+        let progressLimiter = StudioProgressLimiter()
         renderTask = Task {
             defer { busy = false; renderTask = nil }
             do {
                 await store.prepareForImageGeneration()
                 try Task.checkCancellation()
                 let callback: @Sendable (Int, Int) -> Void = { finished, total in
+                    guard progressLimiter.shouldPublish(finished: finished, total: total) else { return }
                     Task { @MainActor in
                         guard renderPhase == .rendering else { return }
                         let exactSteps = total == steps
@@ -1861,7 +1863,11 @@ struct ImageStudioView: View {
                     longestEdge: longestEdge)
                 try? await LocalImageStudio.shared.saveGenerationMetadata(metadata, for: result.url)
                 savedPromptMetadata[result.url.lastPathComponent] = metadata
-                savedImages = await LocalImageStudio.shared.savedImages()
+                // The gallery already knows about its new file. Scanning and
+                // sorting a potentially large downloads directory on every
+                // render delays the final animation for no user-visible gain.
+                savedImages.removeAll { $0 == result.url }
+                savedImages.insert(result.url, at: 0)
                 renderStatus.fraction = 1
                 if let warning = result.enhancementWarning {
                     renderPhase = .enhancementFailed
@@ -2085,6 +2091,23 @@ private struct StudioPromptCrawl: View {
 
 @MainActor private final class StudioRenderProgress: ObservableObject {
     @Published var fraction = 0.0
+}
+
+/// The native engine can emit hundreds of substep callbacks per second. UI
+/// updates are capped without altering sampler steps or final progress.
+private final class StudioProgressLimiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastUpdate: TimeInterval = 0
+
+    func shouldPublish(finished: Int, total: Int) -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        defer { lock.unlock() }
+        guard total > 0, finished < total else { lastUpdate = now; return true }
+        guard now - lastUpdate >= 0.10 else { return false }
+        lastUpdate = now
+        return true
+    }
 }
 
 private enum StudioCatalogKind: String, CaseIterable, Identifiable {

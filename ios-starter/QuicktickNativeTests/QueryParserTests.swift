@@ -16,7 +16,7 @@ final class QueryParserTests: XCTestCase {
         XCTAssertEqual(QueryParser.parse(QueryParser.formatted(terms)), terms)
         XCTAssertEqual(QueryParser.formatted(terms), "chun_li \"red hair\" -\"long hair\" -watermark")
     }
-    func testVideoIntroPolicyOnlySkipsLongPornhubVideos() {
+    func testVideoIntroPolicySkipsOnlyEnabledPornhubAndHavenIntros() {
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "pornhub"), 10)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "PornHub"), 10)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "rule34"), 0)
@@ -24,6 +24,11 @@ final class QueryParserTests: XCTestCase {
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true, provider: "pornhub"), 0)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: false, provider: "pornhub"), 0)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: .nan, enabled: true, provider: "pornhub"), 0)
+        XCTAssertTrue(VideoIntroPolicy.enabled(provider: "hhaven", pornhub: false, haven: true))
+        XCTAssertFalse(VideoIntroPolicy.enabled(provider: "hhaven", pornhub: true, haven: false))
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "hhaven"), 10)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true, provider: "hhaven"), 0)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: false, provider: "hhaven"), 0)
     }
 
     func testPornhubIntroMustHaveBufferedFramesAfterTenSeconds() {
@@ -89,6 +94,32 @@ final class QueryParserTests: XCTestCase {
         XCTAssertTrue(query.contains("sort:score:desc")); XCTAssertTrue(query.contains("score:>=50"))
         XCTAssertEqual(filters.query(tags: "long_hair -jacket", provider: .redgifs), "long_hair -jacket")
         XCTAssertEqual(SearchFilters.split(query).filters, filters)
+    }
+    func testPornhubFiltersRoundTripWithoutLeakingIntoOtherSearches() {
+        let filters = PornhubSearchFilters(order: .topRated, production: .homemade,
+                                           minimumMinutes: 5, maximumMinutes: 30,
+                                           includedCategory: "Cosplay", excludedCategories: ["Vintage", "Anal"])
+        let query = filters.encodedQuery("portrait -intro")
+        let parsed = QueryParser.parse(query)
+        XCTAssertEqual(parsed.included, ["portrait"])
+        XCTAssertEqual(parsed.excluded, ["intro"])
+        XCTAssertEqual(parsed.pornhub, filters)
+        XCTAssertEqual(PornhubSearchFilters.decode(query), filters)
+        XCTAssertEqual(SearchFilters.split(query).tags, "portrait -intro")
+        XCTAssertEqual(SearchFilters().query(tags: SearchFilters.split(query).tags, provider: .redgifs), "portrait -intro")
+        XCTAssertEqual(PornhubSearchFilters().encodedQuery("portrait"), "portrait")
+    }
+
+    func testPornhubFilterLimitsAndCorruptMetadata() {
+        let query = PornhubSearchFilters(minimumMinutes: -5, maximumMinutes: 100,
+                                         includedCategory: "Cosplay", excludedCategories:
+                                            Array(repeating: "Cosplay", count: 12) + (0..<12).map { "genre-\($0)" })
+        let decoded = PornhubSearchFilters.decode(query.encodedQuery("scene"))
+        XCTAssertEqual(decoded.minimumMinutes, 0)
+        XCTAssertEqual(decoded.maximumMinutes, 40)
+        XCTAssertEqual(decoded.excludedCategories.count, 10)
+        XCTAssertFalse(decoded.excludedCategories.contains("Cosplay"))
+        XCTAssertEqual(PornhubSearchFilters.decode("qtph:broken"), PornhubSearchFilters())
     }
     func testWatchTimeExcludesLoadingPausesAndSeeks() {
         var exposure = PlaybackExposure()

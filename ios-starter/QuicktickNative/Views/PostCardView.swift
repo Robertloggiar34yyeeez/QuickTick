@@ -8,40 +8,51 @@ struct PostCardView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
+    @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
     let post: Post
     var available = CGSize(width: 400, height: 800)
     var playbackTab = 0
     var offline = false
     var onDelete: (() -> Void)?
-    @State private var nativeSize: CGSize?
     @State private var comments = false
+    @State private var resumeAfterComments = false
     @State private var tags = false
+    @State private var havenBrowser = false
+    @State private var creditedArtists: [String] = []
     @State private var fullImage = false
+    @State private var readingManga = false
     @State private var pendingVideoFullscreen = false
     @State private var player: AVPlayer?
     @State private var gifURL: URL?
     @State private var ready = false
+    private var shouldSkipIntro: Bool {
+        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros, haven: skipHavenIntros)
+    }
     @State private var introReady = true
     @State private var manualPlaybackRequested = false
     @State private var playing = false
     @State private var preparing = false
-    @State private var mediaAspect: CGFloat = 4 / 3
     @State private var playbackError: String?
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
     @State private var showLikeHeart = false
     @State private var likeHeartSequence = 0
     private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
-    private var fullBleed: Bool { playbackTab == 0 && !offline }
-    private var cardRadius: CGFloat { fullBleed ? 0 : 22 }
+    private var fullBleed: Bool { (playbackTab == 0 && !offline) || (playbackTab == 3 && offline) }
+    private var isWebsitePost: Bool { post.providerKey == .hhaven && post.type.lowercased() == "web" }
+    private var cardRadius: CGFloat { fullBleed && !AppTheme.isDeSlopified ? 0 : AppTheme.cardRadius }
     private var mediaSize: CGSize {
+        // Reserve the final card bounds from stable post metadata. Delayed
+        // thumbnail/GIF/video dimensions must not resize a visible feed row.
+        let kind = post.type.lowercased()
+        let defaultAspect: CGFloat = kind == "video" || kind == "web" ? 16 / 9 : (kind == "gif" ? 1 : 4 / 3)
         let aspect = (post.nativeSize.map {
-            post.type.lowercased() == "image" && $0.height > $0.width * 4
+            kind == "image" && $0.height > $0.width * 4
                 ? CGFloat(2) / 3 : $0.width / $0.height
-        }) ?? mediaAspect
-        return fullBleed
+        }) ?? defaultAspect
+        return fullBleed || (offline && playbackTab == 3)
             ? MediaSizing.feedCard(aspect: aspect, available: available)
-            : MediaSizing.size(native: nativeSize ?? post.nativeSize, aspect: aspect, available: available)
+            : MediaSizing.size(native: post.nativeSize, aspect: aspect, available: available)
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -55,7 +66,22 @@ struct PostCardView: View {
                 }
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("post-media-\(post.stableID)")
-            if let playbackError { Text(playbackError).font(.caption).foregroundStyle(.orange).padding(8) }
+            if let playbackError {
+                VStack(spacing: 8) {
+                    Text(playbackError).font(.caption).foregroundStyle(.orange)
+                    if post.providerKey == .hhaven,
+                       let url = URL(string: post.pageUrl),
+                       url.scheme == "https",
+                       ["hentaihaven.xxx", "www.hentaihaven.xxx"].contains(url.host?.lowercased() ?? "") {
+                        Button { havenBrowser = true } label: {
+                            Label("Watch in QuickTick browser", systemImage: "play.rectangle.on.rectangle")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 14).frame(minHeight: 38)
+                                .background(AppTheme.elevatedSurface, in: Capsule())
+                        }
+                    }
+                }.padding(8)
+            }
             VStack(spacing: 6) {
                 HStack(spacing: 8) {
                     Circle().fill(AppTheme.accent).frame(width: 6, height: 6)
@@ -63,7 +89,7 @@ struct PostCardView: View {
                         .font(.system(size: 11, weight: .bold, design: .rounded))
                         .tracking(1.4).foregroundStyle(.white.opacity(0.85))
                     Text("·").foregroundStyle(AppTheme.secondaryLabel)
-                    Text(post.isImmersiveMedia ? "Motion" : "Image")
+                    Text(post.isAudio ? "Audio" : (post.isImmersiveMedia ? "Motion" : "Image"))
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
                     Button { tags = true } label: {
@@ -84,7 +110,7 @@ struct PostCardView: View {
                     ActionIcon(title: "Like", symbol: store.favorites[post.stableID] == nil ? "heart" : "heart.fill", selected: store.favorites[post.stableID] != nil) { store.toggleFavorite(post) }
                     ActionIcon(title: "Less", symbol: "hand.thumbsdown") { store.less(post) }
                         .accessibilityIdentifier("dislike-\(post.stableID)")
-                    FeedDownloadControl(manager: store.downloads, post: post)
+                    if post.providerKey != .nhentai { FeedDownloadControl(manager: store.downloads, post: post) }
                     ActionIcon(title: "Comments", symbol: "bubble.left") { comments = true }
                     }
                 }
@@ -94,11 +120,35 @@ struct PostCardView: View {
         }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: cardRadius))
             .clipShape(RoundedRectangle(cornerRadius: cardRadius))
             .overlay(RoundedRectangle(cornerRadius: cardRadius).stroke(.white.opacity(0.07), lineWidth: 1))
+            .contextMenu {
+                ForEach(creditedArtists.prefix(3), id: \.self) { artist in
+                    Button {
+                        store.preferArtist(artist, from: post)
+                    } label: {
+                        Label("More from \(artist.replacingOccurrences(of: "_", with: " "))", systemImage: "paintbrush.pointed.fill")
+                    }
+                }
+            }
+            .task(id: "artists:\(post.stableID)") {
+                guard post.providerKey == .rule34 else {
+                    creditedArtists = ArtistAttribution.credited(in: post)
+                    return
+                }
+                let taxonomy = await store.visual.metadataTaxonomy()
+                guard !Task.isCancelled else { return }
+                creditedArtists = ArtistAttribution.credited(in: post, taxonomy: taxonomy)
+            }
             .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
             .sheet(isPresented: $comments) { CommentsView(post: post) }
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
+            .sheet(isPresented: $havenBrowser) {
+                if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
+            }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
                 previewURL: post.cardPreviewURL) }
+            .fullScreenCover(isPresented: $readingManga) {
+                MangaReaderView(post: post).environmentObject(store)
+            }
             .fullScreenCover(isPresented: Binding(
                 get: { store.fullScreenPlaybackID == post.stableID },
                 set: { if !$0 { store.fullScreenPlaybackID = nil } }
@@ -107,12 +157,35 @@ struct PostCardView: View {
                    store.pausedPlaybackID != post.stableID,
                    (autoplayVideos || manualPlaybackRequested) { player?.play() }
             }) {
-                if let player { FullScreenVideoView(player: player, postID: post.stableID) { store.fullScreenPlaybackID = nil } }
+                if let player {
+                    FullScreenVideoView(player: player, postID: post.stableID,
+                                        exportURL: offline ? DownloadExporter.localFileURL(post.mediaUrl) : nil) {
+                        store.fullScreenPlaybackID = nil
+                    }
+                }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(manualPlaybackRequested)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(manualPlaybackRequested)") {
+                // Images, comics and audio cards have no inline
+                // video player to reconcile on each global playback change.
                 guard !Task.isCancelled else { return }
+                guard post.isImmersiveMedia else { stopPlayback(); return }
                 guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
                 guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
+                // Erome Home shows unresolved album summaries. Autoplaying
+                // them performs an album HTML fetch (and sometimes WebKit)
+                // every time the user scrolls past. Explicit Play still works.
+                guard !post.isUnresolvedEromePreview || manualPlaybackRequested else {
+                    stopPlayback(); return
+                }
+                // Autoplay is optional during a fast Home swipe. Wait for a
+                // stable candidate before opening a stream; explicit Play and
+                // Immersive playback remain immediate.
+                if playbackTab == 0 && !manualPlaybackRequested {
+                    do { try await Task.sleep(for: .milliseconds(230)) } catch { return }
+                    guard !Task.isCancelled, store.inlinePlaybackID == post.stableID,
+                          store.activeTab == playbackTab, store.isForeground,
+                          !store.isManualVisualScanRunning else { return }
+                }
                 await preparePlayback()
             }
             .onDisappear {
@@ -121,11 +194,28 @@ struct PostCardView: View {
                 if store.fullScreenPlaybackID != post.stableID,
                    playbackTab != 0 || store.activeTab != playbackTab || store.inlinePlaybackID != post.stableID { stopPlayback() }
             }
-            .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Just(AVPlayer.TimeControlStatus.paused).eraseToAnyPublisher()) { if player != nil { playing = $0 == .playing } }
-            .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Just(AVPlayerItem.Status.unknown).eraseToAnyPublisher()) { status in
+            // An inactive card has no player and must not receive synthetic
+            // Just() emissions whenever its parent recomputes during scroll.
+            .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Empty<AVPlayer.TimeControlStatus, Never>(completeImmediately: false).eraseToAnyPublisher()) { playing = $0 == .playing }
+            .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Empty<AVPlayerItem.Status, Never>(completeImmediately: false).eraseToAnyPublisher()) { status in
                 if status == .failed { playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."; playing = false; store.players.release(post.stableID) }
             }
-            .onChange(of: comments) { _, shown in if shown { store.pausedPlaybackID = post.stableID; store.players.pause(post.stableID) } }
+            .onChange(of: comments) { _, shown in
+                if shown {
+                    resumeAfterComments = store.pausedPlaybackID != post.stableID &&
+                        (autoplayVideos || manualPlaybackRequested)
+                    store.pausedPlaybackID = post.stableID
+                    store.players.pause(post.stableID)
+                } else {
+                    if resumeAfterComments, store.pausedPlaybackID == post.stableID,
+                       store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab,
+                       store.isForeground {
+                        store.pausedPlaybackID = nil
+                        player?.play()
+                    }
+                    resumeAfterComments = false
+                }
+            }
             .onChange(of: fullImage) { _, shown in if shown { store.players.pauseAll() } }
             .onChange(of: player != nil && introReady) { _, isPlayable in
                 guard isPlayable, pendingVideoFullscreen, store.activeTab == playbackTab else { return }
@@ -139,7 +229,7 @@ struct PostCardView: View {
                 if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground {
                     store.recordComplete(post); store.recordReplay(post)
                     let length = player?.currentItem?.duration.seconds ?? 0
-                    let start = VideoIntroPolicy.startTime(duration: length, enabled: skipVideoIntros, provider: post.provider)
+                    let start = VideoIntroPolicy.startTime(duration: length, enabled: shouldSkipIntro, provider: post.provider)
                     player?.seek(to: CMTime(seconds: start, preferredTimescale: 600))
                     if store.pausedPlaybackID != post.stableID,
                        (autoplayVideos || manualPlaybackRequested) { player?.play() }
@@ -149,26 +239,52 @@ struct PostCardView: View {
 
     @ViewBuilder private var media: some View {
         Group {
-            if let player, store.fullScreenPlaybackID != post.stableID {
+            if post.isAudio {
                 ZStack {
-                    PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
+                    AppTheme.gradient.opacity(0.20)
+                    VStack(spacing: 10) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 44, weight: .light))
+                            .foregroundStyle(AppTheme.accent)
+                        Text(post.caption?.isEmpty == false ? (post.caption ?? "Audio") : "Audio")
+                            .font(.headline).foregroundStyle(.white)
+                            .lineLimit(2).multilineTextAlignment(.center)
+                        Text(post.creator ?? post.provider)
+                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                            .lineLimit(1)
+                    }.padding()
+                }
+            } else if let player, store.fullScreenPlaybackID != post.stableID {
+                ZStack {
+                    PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
+                    // Size the player to the card, then let AVPlayerLayer fit
+                    // the stream *inside* it without cropping the video.
                     NativePlayerSurface(player: player, fill: false, ready: $ready)
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready && introReady ? 1 : 0)
-                }.aspectRatio(mediaSize.width / max(1,mediaSize.height), contentMode: .fit)
+                }.frame(width: mediaSize.width, height: mediaSize.height).clipped()
             } else if let gifURL {
-                AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true, onSize: { nativeSize = $0; mediaAspect = $0.width / max(1,$0.height) })
+                AnimatedGIFSurface(url: gifURL, playing: playing, naturalAspect: true)
             } else if post.type.lowercased() == "image" {
-                CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl, pixels: Int(mediaSize.width * 3), comic: true, fill: true) { decoded in
-                    nativeSize = decoded.nativeSize; mediaAspect = CGFloat(decoded.image.width) / CGFloat(decoded.image.height)
+                // The source image remains available for full-screen viewing.
+                // A 3x card decode produced ~16 MB textures on iPad and
+                // evicted adjacent previews from the shared 32 MB cache.
+                CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl,
+                                 pixels: min(1280, Int(mediaSize.width * 2)), comic: true, fill: true) { decoded in
                     store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
                 }
-            } else { PosterView(url: post.cardPreviewURL) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
+            } else { PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
         }
         .frame(width: mediaSize.width, height: mediaSize.height)
         .allowsHitTesting(false)
         .overlay {
-            if fullBleed {
+            if post.isAudio {
+                Button { store.audio.toggle(post) } label: {
+                    Color.clear.contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Play or pause audio")
+            } else if fullBleed {
                 // Keep the full-bleed media discoverable as an actual button
                 // for VoiceOver and UI automation. The exclusive gesture keeps
                 // double-tap Like distinct from single-tap fullscreen.
@@ -195,7 +311,7 @@ struct PostCardView: View {
                     .accessibilityLabel("Open full screen \(post.type.lowercased() == "video" ? "video" : "image")")
                     .accessibilityHint("Double tap the media to like")
                     .accessibilityIdentifier("fullscreen-\(post.stableID)")
-            } else if post.type.lowercased() == "video" {
+            } else if post.type.lowercased() == "video" || isWebsitePost {
                 Button {
                     openMediaFullscreen()
                 } label: {
@@ -205,7 +321,7 @@ struct PostCardView: View {
                 .accessibilityLabel("Open full screen video")
                 .accessibilityIdentifier("fullscreen-\(post.stableID)")
             } else if !post.isImmersiveMedia {
-                Color.clear.contentShape(Rectangle()).onTapGesture { fullImage = true }
+                Color.clear.contentShape(Rectangle()).onTapGesture { openMediaFullscreen() }
             }
         }
         .overlay {
@@ -235,7 +351,10 @@ struct PostCardView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            if post.isImmersiveMedia {
+            if post.isAudio {
+                AudioPostPlayButton(audio: store.audio, post: post)
+                    .padding(10)
+            } else if post.isImmersiveMedia {
                 Button {
                     if !autoplayVideos && !manualPlaybackRequested {
                         manualPlaybackRequested = true
@@ -254,8 +373,8 @@ struct PostCardView: View {
                     .accessibilityLabel(playing ? "Pause media" : "Play media")
                     .accessibilityValue(playing ? "Playing" : "Paused")
             } else {
-                Button { fullImage = true } label: {
-                    Label("View full", systemImage: "arrow.up.left.and.arrow.down.right")
+                Button { openMediaFullscreen() } label: {
+                    Label(post.providerKey == .nhentai ? "Read manga" : "View full", systemImage: post.providerKey == .nhentai ? "book.fill" : "arrow.up.left.and.arrow.down.right")
                         .font(.caption.weight(.semibold)).padding(12).background(.ultraThinMaterial, in: Capsule())
                 }.buttonStyle(.plain).padding(10).accessibilityLabel("View full image")
             }
@@ -263,7 +382,8 @@ struct PostCardView: View {
     }
 
     private func openMediaFullscreen() {
-        if post.type.lowercased() == "video" {
+        if post.providerKey == .nhentai { readingManga = true; return }
+        if post.type.lowercased() == "video" || isWebsitePost {
             if player != nil && introReady { store.fullScreenPlaybackID = post.stableID }
             else {
                 pendingVideoFullscreen = true
@@ -299,18 +419,14 @@ struct PostCardView: View {
                 p = store.players.player(for: post.stableID, url: url); p.pause()
                 introReady = true
             } else {
-                introReady = !(post.provider.lowercased() == "pornhub" && skipVideoIntros)
+                introReady = !shouldSkipIntro
                 p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) {
                     introReady = true
                 }
             }
             player = p; preparing = false
-            // Start playback first; size discovery adjusts the card independently.
-            if let asset = p.currentItem?.asset, let track = try? await asset.loadTracks(withMediaType: .video).first,
-               let size = try? await track.load(.naturalSize), let transform = try? await track.load(.preferredTransform) {
-                let display = size.applying(transform)
-                if !Task.isCancelled, store.inlinePlaybackID == post.stableID, abs(display.height) > 0 { nativeSize = CGSize(width: abs(display.width), height: abs(display.height)); mediaAspect = abs(display.width / display.height) }
-            }
+            // Playback metadata may arrive seconds later; card geometry stays
+            // fixed so the LazyVStack never jumps while a video starts.
             if store.pausedPlaybackID != post.stableID, store.activeTab == 0 { store.recordImpression(post) }
             while !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
@@ -328,6 +444,8 @@ struct PostCardView: View {
         watchSeconds = 0
     }
     private func stopPlayback() {
+        guard player != nil || gifURL != nil || ready || !introReady || playing || manualPlaybackRequested
+                || store.players.activeKey == post.stableID else { return }
         store.players.pause(post.stableID, owner: playbackOwner)
         player = nil; gifURL = nil; ready = false; introReady = true; playing = false
         manualPlaybackRequested = false
@@ -353,21 +471,20 @@ private struct FeedDownloadControl: View {
             else if let record, failed { manager.retry(record) }
             else if !working && !saved { manager.download(post) }
         } label: {
-            VStack(spacing: 3) {
-                Group {
-                    if working { InfinityLoader(size: 22) }
-                    else {
-                        Image(systemName: saved ? "checkmark.circle.fill" : failed ? "arrow.clockwise.circle" : "arrow.down.to.line")
-                            .font(.system(size: 19, weight: .semibold))
-                            .symbolEffect(.bounce, value: taps)
-                    }
+            Group {
+                if working { InfinityLoader(size: 22) }
+                else {
+                    Image(systemName: saved ? "checkmark" : failed ? "arrow.clockwise" : "arrow.down.to.line")
+                        .font(.system(size: 20, weight: .semibold))
+                        .symbolEffect(.bounce, value: taps)
+                        .accessibilityHidden(true)
                 }
-                .frame(height: 22)
-                Text(working ? "Saving" : saved ? "Saved" : failed ? "Retry" : "Download")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
             }
-            .foregroundStyle(saved ? AppTheme.accent : .white.opacity(0.83))
-            .frame(maxWidth: .infinity, minHeight: 48)
+            .foregroundStyle(saved ? AppTheme.accent : .white.opacity(0.9))
+            .frame(width: 42, height: 42)
+            .background(saved ? AppTheme.accent.opacity(0.16) : .white.opacity(0.065), in: Circle())
+            .overlay(Circle().strokeBorder(saved ? AppTheme.accent.opacity(0.42) : .white.opacity(0.11), lineWidth: 1))
+            .frame(maxWidth: .infinity, minHeight: 50)
             .contentShape(Rectangle())
         }
         .buttonStyle(QuicktickPressStyle())
@@ -384,6 +501,7 @@ private struct FullScreenVideoView: View {
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     let player: AVPlayer
     let postID: String
+    let exportURL: URL?
     let onClose: () -> Void
     var body: some View {
         FullScreenPlayerController(player: player, onSwipeDown: {
@@ -391,13 +509,24 @@ private struct FullScreenVideoView: View {
             onClose()
         }).ignoresSafeArea()
             .overlay(alignment: .topTrailing) {
-                Button {
-                    store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
-                    onClose()
-                } label: {
-                    Image(systemName: "xmark").font(.system(size: 20, weight: .bold))
-                        .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
-                }.buttonStyle(.plain).foregroundStyle(.white).padding(12).accessibilityLabel("Close full screen video")
+                HStack(spacing: 10) {
+                    if let exportURL {
+                        Button { DownloadExporter.share([exportURL]) } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 19, weight: .semibold))
+                                .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
+                        }
+                        .accessibilityLabel("Share downloaded video")
+                        .accessibilityIdentifier("fullscreen-download-share")
+                    }
+                    Button {
+                        store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
+                        onClose()
+                    } label: {
+                        Image(systemName: "xmark").font(.system(size: 20, weight: .bold))
+                            .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
+                    }.accessibilityLabel("Close full screen video")
+                }.buttonStyle(.plain).foregroundStyle(.white).padding(12)
             }
             .background(.black)
             .quicktickEdgeBack {
@@ -512,6 +641,7 @@ private struct FullComicView: View {
             } else if let preview {
                 Image(uiImage: preview).resizable().scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityHidden(true) // The scroll surface describes the image once it is ready.
                     .overlay(alignment: .bottom) {
                         HStack(spacing: 7) { InfinityLoader(size: 25); Text("Loading full resolution").font(.caption) }
                             .padding(10).background(.black.opacity(0.65), in: Capsule())
@@ -520,10 +650,26 @@ private struct FullComicView: View {
             } else if let error { Text(error).foregroundStyle(.white).padding() }
             else { VStack(spacing: 8) { InfinityLoader(size: 50); Text("Loading full image").font(.caption) }.foregroundStyle(.white) }
         }.overlay(alignment: .topTrailing) {
-            Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.system(size: 20, weight: .bold)).frame(width: 48, height: 48)
-                    .background(.ultraThinMaterial, in: Circle())
-            }.buttonStyle(.plain).padding(12).accessibilityLabel("Close full image")
+            HStack(spacing: 10) {
+                if let local = DownloadExporter.localFileURL(url) {
+                    Button { DownloadExporter.share([local]) } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 19, weight: .semibold))
+                            .frame(width: 48, height: 48)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .accessibilityLabel("Share downloaded image")
+                    .accessibilityIdentifier("fullscreen-download-share")
+                }
+                Button { dismiss() } label: {
+                    // Keep the explicit accessible label; the iPad simulator
+                    // cannot reliably resolve the implicit symbol label here.
+                    Text("×").font(.system(size: 30, weight: .medium, design: .rounded))
+                        .frame(width: 48, height: 48)
+                        .accessibilityHidden(true)
+                        .background(.ultraThinMaterial, in: Circle())
+                }.accessibilityLabel("Close full image")
+            }.buttonStyle(.plain).padding(12)
         }
         .quicktickEdgeBack { dismiss() }
         // Reuse the card's bounded decoded thumbnail from MediaImagePipeline.
@@ -581,6 +727,7 @@ private final class ComicScrollView: UIScrollView, UIScrollViewDelegate {
         imageView.frame = CGRect(origin: .zero, size: image.size); addSubview(imageView)
         contentSize = image.size; bouncesZoom = true
         accessibilityIdentifier = "full-comic-zoom"
+        accessibilityLabel = "Full image"
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layoutSubviews() {
@@ -614,6 +761,11 @@ private final class ComicTileView: UIView {
             tiled.levelsOfDetail = 8; tiled.levelsOfDetailBias = 3
         }
         isOpaque = true; backgroundColor = .black
+        // CATiledLayer's image tiles are visual content, not individual
+        // accessibility nodes. Exposing them can cause repeated AX snapshots
+        // while the tile workers are still painting.
+        isAccessibilityElement = false
+        accessibilityElementsHidden = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     nonisolated override func draw(_ rect: CGRect) {
@@ -631,4 +783,117 @@ private struct ComicTileImage: @unchecked Sendable {
     let image: CGImage?
     let size: CGSize
     let scale: CGFloat
+}
+
+/// A book is a collection of pages, not a single cover image. Keep the reader
+/// independent from Home's scroll/playback lifecycle, and decode only pages
+/// that SwiftUI has brought into view.
+struct MangaReaderView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let post: Post
+    @State private var pages: [URL] = []
+    @State private var index = 0
+    @State private var loading = true
+    @State private var error: String?
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if loading {
+                    VStack(spacing: 12) {
+                        ProgressView().tint(AppTheme.accent)
+                        Text("Opening manga…").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else if let error {
+                    ContentUnavailableView {
+                        Label("Could not open manga", systemImage: "book.closed")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        Button("Retry") { Task { await loadPages() } }
+                    }
+                } else {
+                    TabView(selection: $index) {
+                        ForEach(pages.indices, id: \.self) { page in
+                            MangaReaderPage(url: pages[page], size: geometry.size)
+                                .tag(page)
+                                .accessibilityLabel("Page \(page + 1) of \(pages.count)")
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .accessibilityIdentifier("manga-page-reader")
+                }
+            }
+            .overlay(alignment: .top) {
+                HStack(spacing: 10) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .bold))
+                            .frame(width: 44, height: 44)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close manga")
+                    Spacer()
+                    Text(post.caption ?? "Manga")
+                        .font(.caption.weight(.semibold)).lineLimit(1)
+                    Spacer()
+                    Text(pages.isEmpty ? "–" : "\(index + 1)/\(pages.count)")
+                        .font(.caption.monospacedDigit()).frame(minWidth: 48)
+                }
+                .padding(.horizontal, 16).padding(.top, 8)
+            }
+        }
+        .preferredColorScheme(.dark)
+        .task(id: post.id) { await loadPages() }
+    }
+
+    private func loadPages() async {
+        loading = true; error = nil
+        do {
+            let result = try await store.api.mangaPages(bookID: post.id)
+            guard !Task.isCancelled else { return }
+            pages = result; index = 0
+        } catch {
+            if !Task.isCancelled { self.error = error.localizedDescription }
+        }
+        loading = false
+    }
+}
+
+private struct MangaReaderPage: View {
+    let url: URL
+    let size: CGSize
+    @State private var image: UIImage?
+    @State private var failure: String?
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if let image {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .frame(width: size.width, height: size.height)
+            } else if let failure {
+                VStack(spacing: 10) {
+                    Image(systemName: "photo.badge.exclamationmark")
+                    Text(failure).font(.caption).multilineTextAlignment(.center)
+                    Button("Try page again") { Task { await fetch() } }
+                }.foregroundStyle(.white).padding(24)
+            } else { ProgressView().tint(AppTheme.accent) }
+        }
+        .task(id: url) { await fetch() }
+        .onDisappear { image = nil }
+    }
+
+    private func fetch() async {
+        failure = nil
+        do {
+            let decoded = try await MediaImagePipeline.shared.fullImage(url: url)
+            if !Task.isCancelled { image = UIImage(cgImage: decoded.image) }
+        } catch {
+            if !Task.isCancelled { failure = "Page unavailable. Swipe to continue or retry." }
+        }
+    }
 }

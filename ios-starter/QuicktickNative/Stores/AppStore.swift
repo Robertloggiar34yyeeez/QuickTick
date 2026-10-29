@@ -11,13 +11,52 @@ struct VisualRefreshProgress: Equatable, Sendable {
     var fraction: Double { total == 0 ? (running ? 0 : 1) : Double(completed) / Double(total) }
 }
 
+/// Prevent a large focused page (especially an archive post with many files)
+/// from filling the ranker's first 384 slots before broad discovery is seen.
+/// Keep both streams in their original provider order for stable pagination.
+enum CandidatePoolMix {
+    static func interleave(_ focused: [Post], _ broad: [Post]) -> [Post] {
+        var mixed: [Post] = []
+        mixed.reserveCapacity(focused.count + broad.count)
+        for index in 0..<max(focused.count, broad.count) {
+            if index < focused.count { mixed.append(focused[index]) }
+            if index < broad.count { mixed.append(broad[index]) }
+        }
+        return mixed
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published var selectedProvider: Provider = .rule34 {
         didSet {
+            // Keep saved Haven items but migrate the old picker selection to Hanime.
+            if selectedProvider == .hhaven { selectedProvider = .hanime }
             guard oldValue != selectedProvider else { return }
             savedFeeds.removeAll()
-            if selectedProvider != .rule34 {
+            // Home category chips are scoped to one provider. Never carry a
+            // category route into another provider's keyword search.
+            let previousQuery = QueryParser.parse(queryText)
+            let retainedTerms = previousQuery.included.filter {
+                !ProviderSearchCategories.valid($0, provider: oldValue)
+            }
+            if retainedTerms.count != previousQuery.included.count {
+                queryText = QueryParser.formatted(ParsedQuery(included: retainedTerms,
+                                                              excluded: previousQuery.excluded))
+                return // queryText's didSet invalidates this feed once.
+            }
+            // Creator references are scoped to one archive's service/user
+            // index. Carrying them into a different provider silently builds
+            // invalid routes and can surface as HTTP 404 on a tab switch.
+            if QueryParser.parse(queryText).included.contains(where: {
+                NativeProviderAPI.archiveCreatorRoute($0) != nil
+            }) {
+                queryText = ""
+                return // queryText's didSet invalidates this feed once.
+            }
+            // An opaque Pornhub filter token must never become part of a
+            // Rule34 tag query or another provider's keyword search.
+            if selectedProvider != .rule34 || oldValue == .pornhub {
                 let plainQuery = SearchFilters.split(queryText).tags
                 if plainQuery != queryText { queryText = plainQuery; return }
             }
@@ -29,7 +68,23 @@ final class AppStore: ObservableObject {
     }
     private var postsByID: [String: Post] = [:]
     func postForID(_ id: String) -> Post? { postsByID[id] }
-    @Published var activeTab = 0 { didSet { if oldValue != activeTab { idleTask?.cancel(); fullScreenPlaybackID = nil; protectedHomePostIDs = []; inlinePlaybackID = nil; pausedPlaybackID = nil; players.pauseAll() } } }
+    @Published var activeTab = 0 { didSet {
+        guard oldValue != activeTab else { return }
+        // Capture Home's last visible video before resetting the outgoing
+        // tab. SwiftUI can mount the returning feed before its geometry
+        // preferences arrive, so relying on Home.onAppear alone to restore
+        // playback leaves a paused player after rapid tab switches.
+        let returningHomeID = activeTab == 0 ? retainedHomePlaybackID : nil
+        idleTask?.cancel()
+        fullScreenPlaybackID = nil
+        protectedHomePostIDs = []
+        inlinePlaybackID = nil
+        pausedPlaybackID = nil
+        players.pauseAll()
+        if let returningHomeID, postsByID[returningHomeID]?.isImmersiveMedia == true {
+            inlinePlaybackID = returningHomeID
+        }
+    } }
     @Published var isForeground = true { didSet {
         guard oldValue != isForeground else { return }
         if !isForeground { idleTask?.cancel(); stopActiveLearning(); cancelManualVisualRefresh(); players.suspendActivePlayback() }
@@ -109,12 +164,36 @@ final class AppStore: ObservableObject {
             // updates. Neither model inference nor network work blocks taps.
             favoriteSyncTask?.cancel()
             let snapshot = Array(favorites.values)
+            let likedAt = local.snapshot.favoriteMeta.mapValues(\.updatedAt)
             favoriteSyncTask = Task(priority: .utility) { [weak self] in
                 guard let self, !Task.isCancelled else { return }
-                await self.recommendations.configureFavorites(snapshot)
+                await self.recommendations.configureFavorites(snapshot, likedAt: likedAt)
                 guard !Task.isCancelled else { return }
                 await self.visual.reconcileFavorites(snapshot)
             }
+        }
+    }
+    /// Favorites represent the order the user liked them, not the provider's
+    /// post IDs or publish dates. Older imported profiles can lack metadata;
+    /// those entries are stable at the end until liked again.
+    var newestFavorites: [Post] {
+        Self.sortFavoritesNewestFirst(favorites, metadata: local.snapshot.favoriteMeta)
+    }
+    /// The weekly recap uses the time the user liked a post, not the date
+    /// an artist uploaded it. Imported favorites with no timestamp remain in
+    /// the all-time profile instead of being presented as this week's likes.
+    var wrappedWeeklyFavorites: [Post] {
+        guard let weekStart = Calendar(identifier: .iso8601)
+            .dateInterval(of: .weekOfYear, for: .now)?.start else { return [] }
+        let millis = Int64(weekStart.timeIntervalSince1970 * 1_000)
+        return newestFavorites.filter { (local.snapshot.favoriteMeta[$0.stableID]?.updatedAt ?? 0) >= millis }
+    }
+    static func sortFavoritesNewestFirst(_ favorites: [String: Post],
+                                         metadata: [String: FavoriteMeta]) -> [Post] {
+        favorites.values.sorted { lhs, rhs in
+            let left = metadata[lhs.stableID]?.updatedAt ?? 0
+            let right = metadata[rhs.stableID]?.updatedAt ?? 0
+            return left == right ? lhs.stableID < rhs.stableID : left > right
         }
     }
     private var favoriteSyncTask: Task<Void, Never>?
@@ -133,6 +212,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var cloudSyncEnabled = false
     @Published private(set) var recommendationMode = "On-device recommendations"
     @Published private(set) var recommendationRescanStatus: String?
+    @Published private(set) var isUnifiedRecommendationRefreshRunning = false
+    private var unifiedRecommendationRefreshTask: Task<Void, Never>?
+    private var unifiedRecommendationRefreshID = UUID()
     @Published private(set) var isLoading = false
     @Published private(set) var hasMore = true
     @Published var learnedInterests: [String] = []
@@ -182,6 +264,8 @@ final class AppStore: ObservableObject {
     private var pageFlight: Task<Void, Never>?
     private var local = LocalAppState()
     private let localStorage: LocalStateStore
+    private let feedPreviewPersistence: FeedPreviewPersistence
+    private var warmFeedRestored = false
     @Published private(set) var syncStatus = "Not yet synced"
     @Published private(set) var syncFailed = false
     @Published private(set) var isSyncing = false
@@ -195,6 +279,7 @@ final class AppStore: ObservableObject {
     let api: QuicktickAPIClient
     let recommendations = RecommendationEngine()
     let players = PlayerPool()
+    let audio = BackgroundAudioPlayer()
     let recommendationPersistence = RecommendationPersistence()
     lazy var resolver = MediaResolver(api: api)
     lazy var downloads = DownloadManager(resolver: resolver)
@@ -202,6 +287,7 @@ final class AppStore: ObservableObject {
 
     init(api: QuicktickAPIClient = QuicktickAPIClient(), localStorage: LocalStateStore = LocalStateStore()) {
         self.localStorage = localStorage
+        self.feedPreviewPersistence = FeedPreviewPersistence(directory: localStorage.url.deletingLastPathComponent())
         self.api = api
         players.onPlaybackStart = { [weak self] in
             self?.idleTask?.cancel()
@@ -257,7 +343,8 @@ final class AppStore: ObservableObject {
                 await recommendationPersistence.save(migrated)
             }
         }
-        await recommendations.configureFavorites(Array(favorites.values))
+        await recommendations.configureFavorites(Array(favorites.values),
+            likedAt: local.snapshot.favoriteMeta.mapValues(\.updatedAt))
         await visual.reconcileFavorites(Array(favorites.values))
         let recommendationWarning = await recommendationPersistence.lastError
         if let recommendationWarning { storageWarning = recommendationWarning }
@@ -270,6 +357,19 @@ final class AppStore: ObservableObject {
         local.snapshot.pornhub.auth.session = credentials.pornhubSession
         await api.setCredentials(credentials)
         downloads.onCompleted = { [weak self] post in Task { await self?.record(.download, post: post) } }
+        if let previousProvider = await feedPreviewPersistence.recentProvider() {
+            selectedProvider = previousProvider
+        }
+        let cached = await feedPreviewPersistence.load(provider: selectedProvider, query: queryText,
+                                                       sort: feedSort, mediaOnly: false)
+        if !cached.isEmpty {
+            let banned = exclusions + QueryParser.parse(queryText).excluded + tasteChoice(for: selectedProvider).notInto
+            let visible = cached.filter { !RecommendationTagRules.rejects($0, exclusions: banned) }
+            if !visible.isEmpty {
+                posts = visible; encountered = Set(visible.map(\.stableID))
+                warmFeedRestored = true
+            }
+        }
         bootstrapped = true
         visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil
         await refresh()
@@ -388,14 +488,25 @@ final class AppStore: ObservableObject {
         var hasMore: Bool
         var context: String?
         var protected: Set<String>
+        var topic: String?
     }
     private var savedFeeds: [Int: SavedFeed] = [:]
     private var committingSearch = false
+    private(set) var selectedTopicTerm: String?
     var searchDrafts: [Int: SearchDraft] = [:]
     func commitSearch(query: String, sort: String) {
+        if query != queryText { selectedTopicTerm = nil }
         committingSearch = true
         queryText = query; feedSort = sort
         committingSearch = false
+    }
+    /// The topic chip is a curated recommendation filter, distinct from the
+    /// user's free-form Search. Popular always keeps the provider's native
+    /// ordering; Recommended additionally checks learned affinities.
+    func commitSuggestedTopic(_ term: String?, excluded: [String]) {
+        let parsed = ParsedQuery(included: term.map { [$0] } ?? [], excluded: excluded)
+        commitSearch(query: QueryParser.formatted(parsed), sort: feedSort)
+        selectedTopicTerm = term
     }
     func selectFeedTab(_ tab: Int) async {
         if beginFeedTabSelection(tab) { await refresh(immersive: tab == 1) }
@@ -416,7 +527,7 @@ final class AppStore: ObservableObject {
         if activeTab < 2 {
             savedFeeds[activeTab] = SavedFeed(provider: selectedProvider, query: queryText, sort: feedSort, publishedQuery: publishedQuery, publishedSort: publishedSort,
                 posts: posts, encountered: Set(posts.map(\.stableID)), nextPage: publishedNextPage, hasMore: hasMore,
-                context: candidateContext, protected: protectedImmersiveIDs)
+                context: candidateContext, protected: protectedImmersiveIDs, topic: selectedTopicTerm)
         }
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel()
         generation = UUID(); feedRevision = generation; isLoading = false
@@ -425,6 +536,7 @@ final class AppStore: ObservableObject {
         feedMediaOnly = tab == 1
         if let saved = savedFeeds[tab], saved.provider == selectedProvider {
             commitSearch(query: saved.query, sort: saved.sort)
+            selectedTopicTerm = saved.topic
             let blocked = Set((exclusions + QueryParser.parse(saved.query).excluded + tasteChoice(for: selectedProvider).notInto).map { $0.lowercased() })
             posts = saved.posts.filter { !RecommendationTagRules.rejects($0, exclusions: Array(blocked)) }; encountered = saved.encountered; nextPage = saved.nextPage
             publishedNextPage = nextPage; publishedQuery = saved.publishedQuery; publishedSort = saved.publishedSort
@@ -439,6 +551,8 @@ final class AppStore: ObservableObject {
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
         let previousVisible = posts
+        let keepWarmFeed = warmFeedRestored && !previousVisible.isEmpty && activeTab == 0
+        warmFeedRestored = false
         let mediaOnly = immersive || activeTab == 1
         feedMediaOnly = mediaOnly
         protectedImmersiveIDs = []; immersivePlaybackID = nil
@@ -460,6 +574,9 @@ final class AppStore: ObservableObject {
         let feedStarted = Date()
         let requestedQuery = queryText
         let provider = selectedProvider
+        // A refresh starts with a new feed, but that does not mean the user
+        // wants the same character/artist cluster as the previous screen.
+        let recentProviderPosts = Array(previousVisible.filter { $0.providerKey == provider }.suffix(12))
         isLoading = true
         var releasedLoading = false
         defer { if generation == token && !releasedLoading { isLoading = false } }
@@ -470,25 +587,47 @@ final class AppStore: ObservableObject {
                 Task(priority: .utility) { await recordSearch(provider: provider, query: search) }
             }
             let personalized = requestedSort == "recommended" && parsed.included.isEmpty
+            let topicPersonalized = requestedSort == "recommended" &&
+                selectedTopicTerm.map { parsed.included.contains($0) } == true
+            let tasteRanked = personalized || topicPersonalized
+            // Hentai Haven has a small finite catalog; NHentai's public v2 API
+            // permits only 15 anonymous catalog calls/minute. Fetch one real
+            // page and rank locally rather than racing focused+broad requests.
+            // Erome's album pages have real video URLs but very little tag
+            // metadata. A focused, two-lane recommendation search can miss
+            // every video and wait for dozens of album fetches. Start with
+            // the public video catalog and rank the resulting clips locally.
+            let directCatalog = personalized && (provider == .hhaven || provider == .nhentai ||
+                                                 (provider == .erome && mediaOnly))
             let banned = Set((exclusions + parsed.excluded + tasteChoice(for: provider).notInto).map(RecommendationTagRules.canonical))
             let context = provider.rawValue + "|batch40|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
-            candidateContext = personalized ? context : nil
+            candidateContext = personalized && !directCatalog ? context : nil
             var requestedPage = 1
             guard generation == token, !Task.isCancelled else { return }
             encountered = []
             var filtered: [Post] = []
+            var havenExploration: [Post] = []
+            var havenSafeCatalog: [Post] = []
+            var nhentaiDiscovery: [Post] = []
+            var epornerDiscovery: [Post] = []
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
             var broaden = false
             // Keep an interactive refresh bounded; users can explicitly load
             // more after three sparse/filtered pages without a long spinner.
-            for _ in 0..<3 {
+            for _ in 0..<(provider == .nhentai && directCatalog ? 1 : 3) {
                 guard generation == token, !Task.isCancelled else { return }
-                let response = personalized && !broaden
-                    ? try await fetchBlendedCandidates(provider: provider, parsed: parsed,
+                let response: (page: PostPage, request: RecommendationEngine.CandidateRequest?)
+                if directCatalog {
+                    response = try await fetchCandidates(provider: provider, parsed: parsed,
+                        context: nil, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly)
+                } else if personalized && !broaden {
+                    response = try await fetchBlendedCandidates(provider: provider, parsed: parsed,
                         context: context, page: requestedPage, sort: requestedSort, mediaOnly: mediaOnly)
-                    : try await fetchCandidates(provider: provider, parsed: parsed,
+                } else {
+                    response = try await fetchCandidates(provider: provider, parsed: parsed,
                         context: personalized ? context : nil, page: requestedPage,
                         sort: requestedSort, mediaOnly: mediaOnly, forceBroad: broaden)
+                }
                 let acquisition = response.request
                 let page = response.page
                 requestedPage = acquisition?.page ?? requestedPage
@@ -499,22 +638,104 @@ final class AppStore: ObservableObject {
                     encountered.insert(post.stableID).inserted && (!mediaOnly || post.isImmersiveMedia)
                         && !RecommendationTagRules.rejects(post, exclusions: Array(banned))
                 }
+                if personalized, provider == .hhaven, havenSafeCatalog.count < 48 {
+                    havenSafeCatalog.append(contentsOf: incoming.prefix(48 - havenSafeCatalog.count))
+                }
+                if personalized, provider == .eporner, epornerDiscovery.count < 120 {
+                    // The Eporner browse API can repeatedly return the same
+                    // top pages. Record safe candidates before novelty drops
+                    // previously offered (but never watched) videos.
+                    epornerDiscovery.append(contentsOf: incoming.prefix(120 - epornerDiscovery.count))
+                }
+                let visibleBeforeNovelty = incoming
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
-                incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: personalized, favoriteIDs: favoriteExclusionIDs)
-                if personalized {
+                incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: tasteRanked, favoriteIDs: favoriteExclusionIDs)
+                if incoming.isEmpty, provider == .erome, mediaOnly {
+                    // Revisit public clips when everything has already been
+                    // offered. Otherwise Erome can permanently say "No videos"
+                    // even while its albums contain playable media.
+                    incoming = feedExclusions.filter(visibleBeforeNovelty,
+                        favorites: Array(favorites.values), recommended: false)
+                }
+                if personalized, provider == .nhentai {
+                    nhentaiDiscovery.append(contentsOf: incoming.prefix(max(0, 40 - nhentaiDiscovery.count)))
+                }
+                if personalized, provider == .hhaven, havenExploration.count < 32 {
+                    // Haven's title index is sparse and has no WD tags until
+                    // the idle visual worker has inspected a poster. Retain a
+                    // bounded, already-exclusion-checked discovery pool.
+                    havenExploration.append(contentsOf: incoming.prefix(32 - havenExploration.count))
+                }
+                if tasteRanked {
                     // Metadata and cached appearance vectors only: no model
                     // loading, network requests or pixel decoding on first paint.
                     let cachedAppearance = await visual.scores(incoming)
                     filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
-                        recent: [], visualScores: cachedAppearance, strict: true)
+                        recent: recentProviderPosts, visualScores: cachedAppearance,
+                        strict: provider != .erome && (!topicPersonalized || (favorites.count >= 5 &&
+                            provider != .hhaven && provider != .nhentai)))
                 } else { filtered = incoming }
-                if filtered.isEmpty, let acquisition, acquisition.focused {
+                let focusedMiss = filtered.isEmpty && acquisition?.focused == true
+                if focusedMiss, let acquisition {
                     broaden = true
                     if page.hasMore == false { Task { await recommendations.markCandidateDrained(context: acquisition.context) } }
                 }
-                if !filtered.isEmpty || !hasMore { break }
+                // Even if a focused title search says "no more pages", one
+                // broad catalog request must run before an empty-screen error.
+                if !filtered.isEmpty || (directCatalog && !havenSafeCatalog.isEmpty) || (!hasMore && !focusedMiss) { break }
             }
             var immediate = filtered
+            if immediate.isEmpty, personalized, provider == .hhaven, !havenExploration.isEmpty {
+                // A handful of clearly provisional discoveries is preferable
+                // to an empty Recommended page while WD poster evidence warms.
+                // Hard dislikes and exclusions remain enforced by rankFast.
+                let visualEvidence = await visual.scores(havenExploration)
+                immediate = Array((await recommendations.rankFast(havenExploration,
+                    taste: tasteChoice(for: provider), recent: recentProviderPosts,
+                    visualScores: visualEvidence, strict: false)).prefix(12))
+            }
+            if immediate.isEmpty, personalized, provider == .hhaven, !havenSafeCatalog.isEmpty {
+                // Haven has a small catalog and sparse title metadata. Once
+                // every post has been offered, novelty filtering previously
+                // produced a permanent empty Home screen. Revisit diversified
+                // safe entries only after exhausting truly fresh candidates.
+                // Explicit dislikes, favorites and hard exclusions still apply.
+                let eligible = feedExclusions.filter(havenSafeCatalog.shuffled(),
+                    favorites: Array(favorites.values), recommended: false,
+                    favoriteIDs: favoriteExclusionIDs)
+                let visualEvidence = await visual.scores(eligible)
+                immediate = Array((await recommendations.rankFast(eligible,
+                    taste: tasteChoice(for: provider), recent: recentProviderPosts,
+                    visualScores: visualEvidence, strict: false)).prefix(12))
+            }
+            if immediate.isEmpty, personalized, provider == .nhentai {
+                // V2 list responses contain titles and numeric tag IDs, not
+                // human-readable tags. Don't mistake missing WD evidence for
+                // a dislike and throw away an otherwise healthy catalog.
+                let eligible = feedExclusions.filter(nhentaiDiscovery,
+                    favorites: Array(favorites.values), recommended: false,
+                    favoriteIDs: favoriteExclusionIDs)
+                if !eligible.isEmpty {
+                    let visualEvidence = await visual.scores(eligible)
+                    immediate = Array((await recommendations.rankFast(eligible,
+                        taste: tasteChoice(for: provider), recent: recentProviderPosts,
+                        visualScores: visualEvidence, strict: false)).prefix(12))
+                }
+            }
+            if immediate.isEmpty, personalized, provider == .eporner, !epornerDiscovery.isEmpty {
+                // Recover a useful Home page when the API repeats already
+                // offered catalog entries. Still exclude actual impressions,
+                // Favorites, hard dislikes and explicit interest mismatches.
+                let eligible = feedExclusions.filter(epornerDiscovery,
+                    favorites: Array(favorites.values), recommended: true,
+                    favoriteIDs: favoriteExclusionIDs)
+                if !eligible.isEmpty {
+                    let appearance = await visual.scores(eligible)
+                    immediate = Array((await recommendations.rankFast(eligible,
+                        taste: tasteChoice(for: provider), recent: recentProviderPosts,
+                        visualScores: appearance, strict: true)).prefix(24))
+                }
+            }
             if immediate.isEmpty, provider != .rule34,
                !parsed.included.isEmpty || !parsed.excluded.isEmpty {
                 // Some video providers search titles but omit searchable
@@ -528,8 +749,16 @@ final class AppStore: ObservableObject {
                     favoriteIDs: favoriteExclusionIDs)
             }
             guard generation == token, !Task.isCancelled else { return }
-            posts = immediate
-            if personalized {
+            posts = immediate.isEmpty && keepWarmFeed ? previousVisible : immediate
+            if !immediate.isEmpty {
+                let snapshot = immediate
+                let persistence = feedPreviewPersistence
+                Task(priority: .utility) {
+                    await persistence.save(snapshot, provider: provider, query: requestedQuery,
+                                           sort: requestedSort, mediaOnly: mediaOnly)
+                }
+            }
+            if tasteRanked {
                 await recommendations.recordOffered(immediate)
                 scheduleRecommendationPersistence()
             }
@@ -540,14 +769,26 @@ final class AppStore: ObservableObject {
             recommendationMode = "On-device recommendations"
             scheduleIdleIntelligence()
             if generation == token, !restoreFailed {
-                if immediate.isEmpty {
-                    lastError = personalized
-                        ? "No fresh matches yet. Try Load more, another source, or refine your interests."
-                        : "No matches for these tags. Remove a keyword or exclusion to broaden your search."
+                if immediate.isEmpty && keepWarmFeed {
+                    lastError = nil // Keep a usable, filtered offline-first screen.
+                } else if immediate.isEmpty {
+                    if ProviderSearchCategories.split(parsed, provider: provider).category != nil {
+                        lastError = "No posts found in this category. Choose a different Home category or clear the filter."
+                    } else if directCatalog && provider == .hhaven {
+                        lastError = havenSafeCatalog.isEmpty
+                            ? "Hentai Haven returned no catalog items. Try again when its catalog is available."
+                            : "The available Hentai Haven posts were removed by saved favorites or explicit dislikes."
+                    } else if provider == .eporner, parsed.included.isEmpty, parsed.excluded.isEmpty {
+                        lastError = "Eporner has no available videos after your saved filters. Try Popular, adjust your interests, or refresh."
+                    } else {
+                        lastError = personalized
+                            ? "No fresh matches yet. Try Load more, another source, or refine your interests."
+                            : "No matches for these tags. Remove a keyword or exclusion to broaden your search."
+                    }
                 } else { lastError = nil }
             }
         } catch {
-            if generation == token, !Task.isCancelled { recordFeedError(error, provider: provider) }
+            if generation == token, !Task.isCancelled, !keepWarmFeed { recordFeedError(error, provider: provider) }
         }
     }
 
@@ -571,6 +812,12 @@ final class AppStore: ObservableObject {
         do {
             let parsed = QueryParser.parse(queryText)
             lastError = nil
+            let directCatalog = (provider == .hhaven || provider == .nhentai ||
+                                 (provider == .erome && feedMediaOnly)) &&
+                feedSort == "recommended" && parsed.included.isEmpty
+            let topicPersonalized = feedSort == "recommended" &&
+                selectedTopicTerm.map { parsed.included.contains($0) } == true
+            let personalizedPage = candidateContext != nil || directCatalog || topicPersonalized
             // Skip sparse, duplicate and fully filtered pages without waiting for
             // a last-card onAppear that will never fire again.
             var broaden = false
@@ -592,14 +839,25 @@ final class AppStore: ObservableObject {
                 encountered.insert($0.stableID).inserted && (!feedMediaOnly || $0.isImmersiveMedia)
                     && !RecommendationTagRules.rejects($0, exclusions: Array(banned))
             }
+            let visibleBeforeNovelty = candidates
             if candidateContext != nil { candidates = await recommendations.unseenRecommendations(candidates) }
             candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
-                recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
+                recommended: personalizedPage, favoriteIDs: favoriteExclusionIDs)
+            if candidates.isEmpty, provider == .erome, feedMediaOnly {
+                candidates = feedExclusions.filter(visibleBeforeNovelty,
+                    favorites: Array(favorites.values), existing: posts, recommended: false)
+            }
             let ranked: [Post]
-            if candidateContext != nil {
+            if personalizedPage {
                 let cachedAppearance = await visual.scores(candidates)
-                ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
-                    recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: true)
+                let strict = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
+                    recent: Array(posts.suffix(10)), visualScores: cachedAppearance,
+                    strict: provider != .erome && (!topicPersonalized || (favorites.count >= 5 &&
+                        provider != .hhaven && provider != .nhentai)))
+                if strict.isEmpty && directCatalog {
+                    ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
+                        recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: false)
+                } else { ranked = strict }
             } else { ranked = candidates }
             guard generation == token, !Task.isCancelled else { return }
             if ranked.isEmpty, let acquisition, acquisition.focused {
@@ -608,7 +866,15 @@ final class AppStore: ObservableObject {
                 guard generation == token, !Task.isCancelled else { return }
             }
             posts.append(contentsOf: ranked)
-            if candidateContext != nil {
+            if !ranked.isEmpty {
+                let snapshot = Array(posts.prefix(48)), persistence = feedPreviewPersistence
+                let query = queryText, sort = feedSort, mediaOnly = feedMediaOnly
+                Task(priority: .utility) {
+                    await persistence.save(snapshot, provider: provider, query: query,
+                                           sort: sort, mediaOnly: mediaOnly)
+                }
+            }
+            if personalizedPage {
                 await recommendations.recordOffered(ranked)
                 scheduleRecommendationPersistence()
             }
@@ -634,8 +900,13 @@ final class AppStore: ObservableObject {
         let exclusions = self.exclusions + parsed.excluded
         let first = await recommendations.candidateRequest(
             context: context, provider: provider, taste: taste, excluded: exclusions)
+        // Every batch includes a broad discovery lane. Previously two focused
+        // calls could both fetch the same character, leaving the ranker no
+        // alternative subjects to choose from, no matter how strong its
+        // diversity penalty was.
         var second = await recommendations.candidateRequest(
-            context: context, provider: provider, taste: taste, excluded: exclusions)
+            context: context, provider: provider, taste: taste, excluded: exclusions,
+            forceBroad: true)
         if first.context == second.context {
             let broadKey = context + "|query:"
             let broadCursor: Int
@@ -674,10 +945,11 @@ final class AppStore: ObservableObject {
         let secondaryQuery = b.query
         let secondaryPageNumber = b.page
         let requestedGeneration = generation
-        // The first useful candidate page should not wait up to 15 seconds
-        // for a stalled secondary provider request. Allow a brief grace period
-        // for the other pool (to preserve ranking diversity), then cancel it.
-        // Sparse first pages still wait for the second pool.
+        // Provider requests are independent: an archive cache miss can keep
+        // fetching after its waiter is cancelled. A structured task group
+        // *still waits for that child* before returning, defeating its grace
+        // deadline. Use an async completion stream so the first usable page
+        // can paint while a late archive request warms the provider cache.
         enum CandidateBatch: Sendable {
             case first(PostPage?)
             case second(PostPage?)
@@ -685,22 +957,27 @@ final class AppStore: ObservableObject {
         }
         let client = api
         let fetchStarted = Date()
-        let (firstPage, secondPage) = await withTaskGroup(
-            of: CandidateBatch.self, returning: (PostPage?, PostPage?).self
-        ) { group in
-            group.addTask {
-                .first(try? await client.posts(provider: provider, query: primaryQuery,
-                                              page: primaryPageNumber, sort: sort, immersive: mediaOnly))
-            }
-            group.addTask {
-                .second(try? await client.posts(provider: provider, query: secondaryQuery,
-                                               page: secondaryPageNumber, sort: sort, immersive: mediaOnly))
-            }
+        let (batches, emitter) = AsyncStream.makeStream(
+            of: CandidateBatch.self, bufferingPolicy: .bufferingNewest(4))
+        let primaryFlight = Task(priority: .userInitiated) {
+            let response = try? await client.posts(provider: provider, query: primaryQuery,
+                                                   page: primaryPageNumber, sort: sort, immersive: mediaOnly)
+            emitter.yield(.first(response))
+        }
+        // Immersive's second lane supplies the next distinct clip. Scheduling
+        // it as background utility work often loses the grace race while
+        // 100 duplicate fixture/source rows parse on the primary lane.
+        let secondaryFlight = Task(priority: mediaOnly ? .userInitiated : .utility) {
+            let response = try? await client.posts(provider: provider, query: secondaryQuery,
+                                                   page: secondaryPageNumber, sort: sort, immersive: mediaOnly)
+            emitter.yield(.second(response))
+        }
+        let (firstPage, secondPage) = await withTaskCancellationHandler {
             var primary: PostPage?
             var secondary: PostPage?
             var completed = 0
-            var graceStarted = false
-            while let result = await group.next() {
+            var deadline: Task<Void, Never>?
+            for await result in batches {
                 switch result {
                 case .first(let page): primary = page; completed += 1
                 case .second(let page): secondary = page; completed += 1
@@ -709,16 +986,36 @@ final class AppStore: ObservableObject {
                 if completed == 2 { break }
                 if case .graceExpired = result { break }
                 let available = (primary?.items.count ?? 0) + (secondary?.items.count ?? 0)
-                if available >= 20 && !graceStarted {
-                    graceStarted = true
-                    group.addTask {
-                        try? await Task.sleep(for: .milliseconds(300))
-                        return .graceExpired
+                let unique = Set((primary?.items ?? []).map(\.stableID)
+                               + (secondary?.items ?? []).map(\.stableID)).count
+                // The old unconditional 120 ms deadline discarded the broad
+                // lane on almost every focused response. Give it a bounded
+                // chance to contribute, especially for sparse pages, without
+                // blocking first paint on an indefinitely slow provider.
+                if available > 0 && deadline == nil {
+                    // Huge archive/booru pages can consist of repeated IDs.
+                    // Their raw row count is not a useful measure of whether
+                    // the first response contains enough to scroll through.
+                    let grace = unique < 3 ? 720 : (unique < 10 ? 420 : 260)
+                    deadline = Task {
+                        do { try await Task.sleep(for: .milliseconds(grace)) } catch { return }
+                        emitter.yield(.graceExpired)
                     }
                 }
             }
-            group.cancelAll()
+            deadline?.cancel()
+            emitter.finish()
+            // Cancellation of an archive waiter does not kill its existing
+            // cache-fill task. For other providers stop unused network work.
+            if provider != .coomer && provider != .kemono {
+                if primary == nil { primaryFlight.cancel() }
+                if secondary == nil { secondaryFlight.cancel() }
+            }
             return (primary, secondary)
+        } onCancel: {
+            emitter.finish()
+            primaryFlight.cancel()
+            secondaryFlight.cancel()
         }
         FeedPerformance.emit("candidate_fetch", started: fetchStarted,
                              count: (firstPage?.items.count ?? 0) + (secondPage?.items.count ?? 0))
@@ -739,8 +1036,25 @@ final class AppStore: ObservableObject {
             }
         }
         let combined = PostPage(
-            items: (firstPage?.items ?? []) + (secondPage?.items ?? []),
+            items: CandidatePoolMix.interleave(firstPage?.items ?? [], secondPage?.items ?? []),
             hasMore: (firstPage?.hasMore ?? false) || (secondPage?.hasMore ?? false))
+        if provider == .eporner, parsed.included.isEmpty, combined.items.isEmpty,
+           a.page > 1 || b.page > 1, generation == requestedGeneration {
+            // A persisted recommendation cursor can run past Eporner's
+            // changing total_pages. Recover from its first public browse page
+            // instead of leaving Home blank forever after repeated refreshes.
+            let broadKey = context + "|query:"
+            let broadQuery = ParsedQuery(included: [], excluded: RecommendationTagRules.queryExclusions(
+                exclusions + taste.notInto))
+            if let recovered = try? await client.posts(provider: .eporner,
+                    query: broadQuery, page: 1, sort: sort, immersive: mediaOnly),
+               !recovered.items.isEmpty, generation == requestedGeneration, !Task.isCancelled {
+                candidateCursors[broadKey] = 2
+                await recommendations.advanceCandidatePage(context: broadKey, nextPage: 2)
+                return (recovered, RecommendationEngine.CandidateRequest(
+                    context: broadKey, query: broadQuery, page: 1, focused: false))
+            }
+        }
         let used = firstPage != nil ? first : second
         let usedPage = firstPage != nil ? a.page : b.page
         return (combined, RecommendationEngine.CandidateRequest(
@@ -793,7 +1107,10 @@ final class AppStore: ObservableObject {
 
     func toggleFavorite(_ post: Post) {
         let event: RecommendationEvent
-        if favorites[post.stableID] != nil {
+        let wasLiked = favorites[post.stableID] != nil
+        // Update timestamps before @Published fires its background model sync.
+        local.snapshot.favoriteMeta[post.stableID] = FavoriteMeta(liked: !wasLiked, updatedAt: timestamp())
+        if wasLiked {
             favorites.removeValue(forKey: post.stableID)
             event = .unlike
         } else {
@@ -801,7 +1118,6 @@ final class AppStore: ObservableObject {
             event = .like
         }
         Task(priority: .utility) { await record(event, post: post) }
-        local.snapshot.favoriteMeta[post.stableID] = FavoriteMeta(liked: favorites[post.stableID] != nil, updatedAt: timestamp())
         persistLocal(); queueSync()
     }
 
@@ -840,6 +1156,15 @@ final class AppStore: ObservableObject {
                 _ = await recommendations.neutralizeReversibleSkip(key)
             }
             scheduleRecommendationPersistence()
+            // Use the new passive feedback for the unseen tail on this visit.
+            // Preserve the visible cards and let the tail's generation guard
+            // reject a stale republish after further scrolling.
+            let token = generation
+            tailRankTask?.cancel()
+            tailRankTask = Task(priority: .utility) { [weak self] in
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                await self?.adaptRecommendationTail(token: token)
+            }
         }
     }
     func neutralizeQuickSkip(_ post: Post) {
@@ -918,7 +1243,8 @@ final class AppStore: ObservableObject {
         let tail = tab == 1 && candidateContext == nil ? unseen
             : feedExclusions.filter(unseen, favorites: Array(favorites.values), existing: prefix,
                                     recommended: candidateContext != nil, favoriteIDs: favoriteExclusionIDs)
-        let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider), recent: prefix, visualScores: visualScores)
+        let ranked = await recommendations.rank(tail, taste: tasteChoice(for: selectedProvider),
+            recent: prefix, visualScores: visualScores, strict: candidateContext != nil)
         let stillProtected = tab == 1 ? protectedImmersiveIDs : protectedHomePostIDs
         guard !Task.isCancelled, generation == token, activeTab == tab, feedSort == "recommended",
               posts.map(\.stableID) == source.map(\.stableID),
@@ -1076,7 +1402,7 @@ final class AppStore: ObservableObject {
                     let heavy = players.activeKey == nil && inlinePlaybackID == nil && activeTab != 1
                         && fullScreenPlaybackID == nil && Date().timeIntervalSince(lastFeedMotion) >= 1.5
                     let token = generation
-                    if await visual.processNext(heavy: heavy), !Task.isCancelled {
+                    if await visual.processNext(heavy: heavy, resolver: resolver), !Task.isCancelled {
                         let scores = await visual.scores(Array(posts.prefix(128)))
                         let fingerprints = await visual.fingerprints()
                         guard !Task.isCancelled else { return }
@@ -1151,7 +1477,10 @@ final class AppStore: ObservableObject {
                         || activeTab == 1 || fullScreenPlaybackID != nil || !isForeground,
                     loading: isLoading)
                 if idle {
-                    for post in posts.prefix(4) {
+                    // Haven recommendations need visual evidence from poster
+                    // images even when the corresponding video was not opened.
+                    // Enqueue only; all network/model work remains idle-only.
+                    for post in posts.prefix(selectedProvider == .hhaven ? 8 : 4) {
                         guard !Task.isCancelled, generation == token else { return }
                         _ = await visual.enqueue(post, priority: 1)
                     }
@@ -1201,11 +1530,16 @@ final class AppStore: ObservableObject {
 
     /// Explicit user action, independent of the automatic idle-learning toggle.
     /// Existing scans are reused; like ledgers are never reset or counted twice.
-    func startManualVisualRefresh() {
+    func startManualVisualRefresh(includeRecentPosts: Bool = false) {
         guard !isManualVisualScanRunning else { return }
         idleTask?.cancel(); stopActiveLearning()
         let id = UUID(); manualVisualID = id
         manualVisualProgress = VisualRefreshProgress(completed: 0, total: 0, status: "Checking for new posts…", running: true)
+        // An explicit scan must not wait forever for the very feed/player
+        // state it was supposed to pause. The automatic worker still uses
+        // the strict idle-only resource policy.
+        inlinePlaybackID = nil
+        fullScreenPlaybackID = nil
         players.pauseAll()
         manualVisualTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }
@@ -1213,28 +1547,55 @@ final class AppStore: ObservableObject {
             // Drain a cancelled text prediction before starting a visual pass.
             await recommendations.releaseSemanticModel()
             await visual.waitForWorker()
-            let history = await visual.historicalQueue(Array(favorites.values))
+            let favoritesSnapshot = Array(favorites.values)
+            let favoriteIDs = Set(favoritesSnapshot.map(\.stableID))
+            // A full refresh also inspects a bounded set of freshly fetched
+            // posts. Unliked posts are analyzed for relevance, never recorded
+            // as likes or used to train the user's favorite profile.
+            let recent = includeRecentPosts ? Array(posts.prefix(12).filter { !favoriteIDs.contains($0.stableID) }) : []
+            let candidates = favoritesSnapshot + recent
+            let history = await visual.historicalQueue(candidates)
             guard !Task.isCancelled, manualVisualID == id else { return }
-            manualVisualProgress = VisualRefreshProgress(completed: 0, total: history.count, status: "Scanning new posts…", running: true)
+            manualVisualProgress = VisualRefreshProgress(completed: 0, total: history.count,
+                status: includeRecentPosts ? "Scanning new posts and favorites…" : "Scanning favorites…", running: true)
             var checked = 0
             var lastProgress = Date.distantPast
             for post in history {
                 guard !Task.isCancelled, manualVisualID == id else { return }
-                while !VisualAnalysisService.resourcesAllowAnalysis(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
-                    thermal: ProcessInfo.processInfo.thermalState.rawValue,
-                    playback: players.activeKey != nil || !isForeground, loading: isLoading) {
+                if ProcessInfo.processInfo.isLowPowerModeEnabled || ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
+                    manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
+                        status: ProcessInfo.processInfo.isLowPowerModeEnabled
+                            ? "Turn off Low Power Mode, then tap Update visual taste again"
+                            : "Device is too warm. Retry when it cools down", running: false)
+                    return
+                }
+                while !isForeground {
                     let paused = VisualRefreshProgress(completed: checked, total: history.count,
-                        status: "Paused for playback, loading or power conditions", running: true)
+                        status: "Return to QuickTick to continue scanning", running: true)
                     if manualVisualProgress != paused { manualVisualProgress = paused }
                     do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
                     guard !Task.isCancelled, manualVisualID == id else { return }
                 }
-                await visual.analyzeFavorite(post, useVision: true)
+                // A feed request finishing in the background does not consume
+                // visual inference resources, and must not deadlock this user
+                // initiated operation. The player was paused above.
+                if favoriteIDs.contains(post.stableID) {
+                    await visual.analyzeFavorite(post, useVision: true, resolver: resolver)
+                } else {
+                    // Only an explicit, user-initiated full refresh fetches
+                    // these small previews. The passive feed stays network-
+                    // and model-free while the user scrolls.
+                    for imageURL in post.previewImageURLs.prefix(2) {
+                        guard !Task.isCancelled else { return }
+                        if (try? await MediaImagePipeline.shared.image(raw: imageURL, pixels: 512)) != nil { break }
+                    }
+                    await visual.analyzeCachedPost(post, useVision: true)
+                }
                 guard !Task.isCancelled, manualVisualID == id else { return }
                 checked += 1
                 if Date().timeIntervalSince(lastProgress) >= 0.2 || checked == history.count {
                     manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
-                        status: "Checking favorites · \(checked)/\(history.count)", running: true)
+                        status: "Scanning posts & favorites · \(checked)/\(history.count)", running: true)
                     lastProgress = .now
                 }
                 await Task.yield()
@@ -1246,17 +1607,21 @@ final class AppStore: ObservableObject {
             feedExclusions.setFingerprints(fingerprints); visualScores = scores
             await adaptRecommendationTail(token: feedRevision)
             guard !Task.isCancelled, manualVisualID == id else { return }
-            let remaining = await visual.historicalQueue(Array(favorites.values))
+            let remaining = await visual.historicalQueue(candidates)
             manualVisualProgress = VisualRefreshProgress(completed: checked, total: history.count,
-                status: history.isEmpty ? "All favorite previews already analyzed" :
+                status: history.isEmpty ? "All selected previews already analyzed" :
                     (remaining.isEmpty ? "Visual taste updated: \(checked) posts checked" :
-                    "Checked \(checked) favorites; \(remaining.count) previews unavailable or pending retry"),
+                    "Checked \(checked) posts; \(remaining.count) previews unavailable or pending retry"),
                 running: false)
             visualScanStatus = nil
             scheduleIdleIntelligence()
         }
     }
     func cancelManualVisualRefresh() {
+        unifiedRecommendationRefreshID = UUID()
+        unifiedRecommendationRefreshTask?.cancel()
+        unifiedRecommendationRefreshTask = nil
+        isUnifiedRecommendationRefreshRunning = false
         guard isManualVisualScanRunning else { return }
         manualVisualID = UUID(); manualVisualTask?.cancel(); manualVisualTask = nil
         if var progress = manualVisualProgress {
@@ -1286,17 +1651,40 @@ final class AppStore: ObservableObject {
         if generation == token, selectedProvider == provider, learnedInterests != interests { learnedInterests = interests }
     }
 
-    func setTaste(into: [String], notInto: [String], characterTags: [String: [String]]? = nil) {
+    func setTaste(into: [String], notInto: [String], characterTags: [String: [String]]? = nil,
+                  artists: [String]? = nil) {
         let negative = TasteChoice.normalized(notInto)
         let positive = TasteChoice.normalized(into).filter { !negative.contains($0) }
         let existing = tasteChoice(for: selectedProvider).characterTags
         let contextual = characterTags ?? existing
+        let artistChoices = TasteChoice.normalized(artists ?? tasteChoice(for: selectedProvider).artists)
+            .map(TasteConcepts.canonical).filter { !$0.isEmpty }
         let sanitized = contextual.filter { positive.contains(RecommendationTagRules.canonical($0.key)) }
             .mapValues { TasteChoice.normalized($0).filter { !negative.contains($0) } }
         tasteSetup.sources[selectedProvider.rawValue] = TasteChoice(
-            done: true, into: positive, notInto: negative, characterTags: sanitized)
+            done: true, into: positive, notInto: negative, characterTags: sanitized, artists: artistChoices)
         local.snapshot.preferences.updatedAt = timestamp()
         persistLocal(); queueSync(); Task { await refresh() }
+    }
+
+    func preferArtist(_ artist: String, from post: Post) {
+        let name = TasteConcepts.canonical(artist)
+        let explicitCredit = ArtistAttribution.credited(in: post).contains(name)
+        // The tags sheet recognizes artists using the offline typed Rule34
+        // taxonomy. Accept an exact tag from that post even when the actor's
+        // taxonomy has not yet been loaded in this synchronous store method.
+        let exactProviderTag = post.tags.contains {
+            let term = TasteConcepts.canonical($0)
+            return term == name || term == "artist:" + name
+        }
+        guard let provider = post.providerKey, explicitCredit || exactProviderTag else { return }
+        var choice = tasteChoice(for: provider)
+        choice.artists = TasteChoice.normalized(choice.artists + [name])
+        choice.done = true
+        tasteSetup.sources[provider.rawValue] = choice
+        local.snapshot.preferences.updatedAt = timestamp()
+        persistLocal(); queueSync()
+        if selectedProvider == provider { Task { await refresh(immersive: activeTab == 1) } }
     }
 
     func setExclusions(_ tags: [String]) {
@@ -1304,15 +1692,41 @@ final class AppStore: ObservableObject {
         persistLocal(); queueSync()
     }
 
+    /// One user action refreshes the newest discovery candidates and then
+    /// reconciles/scans the saved visual profile. Do not launch overlapping
+    /// feed requests or Core ML scans after repeated button taps.
+    func refreshRecommendationsAndProfile() {
+        guard !isUnifiedRecommendationRefreshRunning, !isManualVisualScanRunning else { return }
+        let id = UUID(); unifiedRecommendationRefreshID = id
+        isUnifiedRecommendationRefreshRunning = true
+        unifiedRecommendationRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if unifiedRecommendationRefreshID == id {
+                    isUnifiedRecommendationRefreshRunning = false
+                    unifiedRecommendationRefreshTask = nil
+                }
+            }
+            await rebuildRecommended()
+            guard !Task.isCancelled, unifiedRecommendationRefreshID == id else { return }
+            recommendationRescanStatus = "Latest posts refreshed. Updating visual profile…"
+            startManualVisualRefresh(includeRecentPosts: true)
+        }
+    }
+
     func rebuildRecommended() async {
         recommendationRescanStatus = "Refreshing candidate pool…"
         await recommendations.rebuildCandidateAcquisition()
+        guard !Task.isCancelled else { return }
         candidateCursors = [:]
         plannedAcquisition = nil
         savedFeeds.removeAll()
         await visual.reconcileFavorites(Array(favorites.values))
+        guard !Task.isCancelled else { return }
         await persistRecommendations()
+        guard !Task.isCancelled else { return }
         await refresh(immersive: activeTab == 1)
+        guard !Task.isCancelled else { return }
         if visualAnalysisEnabled { scheduleIdleIntelligence() }
         recommendationRescanStatus = lastError == nil
             ? "Rebuilt using your saved likes, dislikes and exclusions."

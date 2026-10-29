@@ -14,7 +14,17 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
     var type: String = ""
     var embedUrl: String? = nil
 
-    var isImmersiveMedia: Bool { ["video", "gif"].contains(type.lowercased()) }
+    var isImmersiveMedia: Bool {
+        ["video", "gif"].contains(type.lowercased()) ||
+            (providerKey == .hhaven && type.lowercased() == "web")
+    }
+    /// Erome's Home listing contains album thumbnails, not video file URLs.
+    /// Resolve these on explicit Play only; otherwise each scroll impression
+    /// launches another album request and stalls the moving feed.
+    var isUnresolvedEromePreview: Bool {
+        providerKey == .erome && mediaUrl.isEmpty && isImmersiveMedia
+    }
+    var isAudio: Bool { type.lowercased() == "audio" }
     var cardPreviewURL: String {
         if type.lowercased() == "image" {
             // Prefer the provider's bounded preview in scrolling feeds;
@@ -26,6 +36,20 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
             let ext = URL(string: url)?.pathExtension.lowercased() ?? ""
             return !["mp4", "webm", "mov", "m3u8", "gif"].contains(ext)
         }) ?? thumbUrl
+    }
+
+    /// Preserve every genuine image candidate from the provider. A video can
+    /// have a broken large preview but a working small thumbnail; the UI must
+    /// try both without accidentally downloading a movie as an image.
+    var previewImageURLs: [String] {
+        let candidates = [cardPreviewURL, thumbUrl, previewUrl]
+            + (type.lowercased() == "image" ? [mediaUrl] : [])
+        var seen = Set<String>()
+        return candidates.filter { raw in
+            guard !raw.isEmpty, seen.insert(raw).inserted,
+                  let url = URL(string: raw), ["https", "file"].contains(url.scheme?.lowercased() ?? "") else { return false }
+            return !["mp4", "webm", "mov", "m4v", "m3u8", "mp3", "m4a", "wav"].contains(url.pathExtension.lowercased())
+        }
     }
 
     var width: Double?

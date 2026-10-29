@@ -3,6 +3,13 @@ import Foundation
 enum VisualDomain: String, Codable, Sendable {
     case anime, threeD, realLife, mixed, uncertain
     static func classify(_ post: Post) -> Self? {
+        if !post.isAudio {
+            // Both sources are IRL catalogs. Treat their often sparse/loose
+            // tags as description, not evidence to switch the visual model.
+            if post.providerKey == .coomer || post.providerKey == .erome { return .realLife }
+            // Hanime's animated catalog always uses the anime WD Tagger path.
+            if post.providerKey == .hanime { return .anime }
+        }
         let tags = Set((post.tags + [post.category].compactMap { $0 }).map { $0.lowercased().replacingOccurrences(of: " ", with: "_") })
         let normalized = Set(tags.map(RecommendationTagRules.canonical))
         let flat = !normalized.isDisjoint(with: ["2d", "2d_art", "illustration", "drawing", "manga", "2d_animation", "medium:2d"])
@@ -11,7 +18,20 @@ enum VisualDomain: String, Codable, Sendable {
         if normalized.contains("mixed_media") || [flat, rendered, photographic].filter({ $0 }).count > 1 { return .mixed }
         if rendered { return .threeD }
         if photographic { return .realLife }
-        if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"]) { return .anime }
+        // A provider's usual medium is a fallback, never stronger evidence
+        // than a post explicitly tagged as anime/illustration. A real-life
+        // catalog can occasionally host 2D clips and animated uploads.
+        if flat || !normalized.isDisjoint(with: ["anime", "hentai", "watercolor", "sketch", "pixel_art"]) {
+            return .anime
+        }
+        // Public IRL video APIs rarely send a reliable `photo` tag at all;
+        // treating them as "uncertain" suppressed every learned scene/camera
+        // match. Explicit 2D/3D tags above always take precedence.
+        if post.providerKey.map({ [Provider.pornhub, .eporner, .redgifs].contains($0) }) == true { return .realLife }
+        // Hentai Haven's older saved posts can lack the synthetic `hentai`
+        // tag. The provider is animated content even when its title supplies
+        // no descriptive tags. Explicit photo/3D/mixed evidence above wins.
+        if !post.isAudio && (post.providerKey == .hhaven || post.providerKey == .nhentai) { return .anime }
         return .uncertain
     }
 }
@@ -32,6 +52,8 @@ struct VisualFeatures: Codable, Sendable, Equatable {
     var conceptEvidence: [String: ConceptEvidence]? = nil
     var creators: [String]? = nil
     var embedding: [Float] = []
+    // Only added by deferred real-life video sampling, legacy saves decode as nil.
+    var sampledVideoFrames: Int? = nil
     var fingerprint: UInt64?
     var pixelsAnalyzed = false
     var version = "metadata-vision-v1"
@@ -67,6 +89,11 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             // An unspecified action stays unknown, not negative evidence.
             result.attributes[facet] = 0.95
         }
+        for facet in RealLifePresentation.tags(post) {
+            // A title can establish a *claimed* setting or camera style, but
+            // does not identify a performer or prove an activity occurred.
+            result.attributes[facet] = 0.8
+        }
         for raw in post.tags.prefix(128) {
             let tag = raw.lowercased().replacingOccurrences(of: " ", with: "_")
             for (axis, known) in vocabulary where known.contains(tag) { result.attributes[axis + ":" + tag] = 0.9 }
@@ -101,8 +128,35 @@ struct VisualFeatures: Codable, Sendable, Equatable {
             }
         }
         result.subjects = Array(Set(result.subjects)).sorted()
+        // Archives and comics expose an explicit credited creator, even when
+        // their posts have no booru-style artist: tag. This is attribution,
+        // never an artist guess from WD appearance labels or a face.
+        if domain != .realLife && domain != .mixed {
+            result.artists = (result.artists ?? []) + ArtistAttribution.credited(in: post, taxonomy: taxonomy)
+        }
         if let artists = result.artists { result.artists = Array(Set(artists)).sorted() }
         return result
+    }
+}
+
+enum ArtistAttribution {
+    static func credited(in post: Post, taxonomy: VisualTagTaxonomy? = nil) -> [String] {
+        var artists = Set<String>()
+        for tag in post.tags.prefix(128) {
+            let term = TasteConcepts.canonical(tag)
+            if term.hasPrefix("artist:") {
+                let name = String(term.dropFirst(7))
+                if !name.isEmpty { artists.insert(name) }
+            } else if post.providerKey == .rule34 && taxonomy?.kind(of: term) == .artist {
+                artists.insert(term)
+            }
+        }
+        if let provider = post.providerKey, [.kemono, .nhentai, .coomer].contains(provider),
+           let name = post.creator?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty, name.count <= 80 {
+            artists.insert(TasteConcepts.canonical(name))
+        }
+        return artists.sorted()
     }
 }
 
@@ -168,7 +222,9 @@ struct VisualProfile: Codable, Sendable, Equatable {
     }
 
     static func space(for features: VisualFeatures) -> String {
-        features.version.hasPrefix("mobileclip-s0-image-") ? "mobileclip-s0-image" : "vision-featureprint"
+        if features.version.hasPrefix("mobileclip2-s0-image-") { return "mobileclip2-s0-image" }
+        if features.version.hasPrefix("mobileclip-s0-image-") { return "mobileclip-s0-image" }
+        return "vision-featureprint"
     }
     mutating func record(_ event: RecommendationEvent, features: VisualFeatures, identityEvidence: Bool = true) {
         let positive: Double, negative: Double, exposure: Double
@@ -226,7 +282,8 @@ struct VisualProfile: Codable, Sendable, Equatable {
                 let noLegacyVectors = clusters.isEmpty && negativeClusters.isEmpty && exposureClusters.isEmpty && negativeContextClusters.isEmpty
                 embeddingSpace = noLegacyVectors ? incoming : "vision-featureprint"
             }
-            if incoming == "mobileclip-s0-image", embeddingSpace != incoming {
+            if incoming != "vision-featureprint", embeddingSpace != incoming,
+               !(embeddingSpace == "mobileclip2-s0-image" && incoming == "mobileclip-s0-image") {
                 // Migrate only the visual clusters; preserve all explicit
                 // metadata, context evidence, and dislikes learned before.
                 clusters = []; negativeClusters = []; negativeContextClusters = [:]; exposureClusters = []
@@ -298,7 +355,8 @@ struct VisualProfile: Codable, Sendable, Equatable {
             .map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0) : 0
         // Similarity lowers rank but is never a hard blacklist.
         let visual = similarity * 3 + max(-0.5, similarity - baseline) * 2
-            - max(0, avoidance - 0.78) * 14 - max(0, contextual - 0.84) * 17
+            - max(0, avoidance - max(0.73, similarity - 0.02)) * 20
+            - max(0, contextual - max(0.79, similarity)) * 20
         // Keep a bounded contribution without flattening different outfits or
         // presentations into the same saturated score for a liked subject.
         return 4 * tanh((attributesScore + identity + context + artistAffinity + artistContext + franchiseAffinity + franchiseContext + visual) / 4)

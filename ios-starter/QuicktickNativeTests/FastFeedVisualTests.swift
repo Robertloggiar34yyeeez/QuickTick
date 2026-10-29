@@ -63,6 +63,16 @@ final class FastFeedVisualTests: XCTestCase {
         store.startManualVisualRefresh(); store.handleMemoryPressure()
         XCTAssertFalse(store.isManualVisualScanRunning)
     }
+    @MainActor func testCombinedRecommendationRefreshRejectsDuplicateTapsAndCanBeStopped() {
+        let store = AppStore()
+        store.refreshRecommendationsAndProfile()
+        XCTAssertTrue(store.isUnifiedRecommendationRefreshRunning)
+        store.refreshRecommendationsAndProfile()
+        XCTAssertTrue(store.isUnifiedRecommendationRefreshRunning)
+        store.cancelManualVisualRefresh()
+        XCTAssertFalse(store.isUnifiedRecommendationRefreshRunning)
+        XCTAssertFalse(store.isManualVisualScanRunning)
+    }
     @MainActor func testManualVisualRefreshProgressReusesLikeLedgerAndCanBeCancelled() async {
         let store = AppStore(), suffix = UUID().uuidString
         let a = post("manual-a-" + suffix, tags: ["long_hair"])
@@ -111,12 +121,20 @@ final class FastFeedVisualTests: XCTestCase {
     func testConservativeDomainClassificationAndExplicitIdentity() {
         XCTAssertEqual(VisualDomain.classify(post("a")), .uncertain)
         for provider in ["pornhub", "eporner", "redgifs"] {
-            XCTAssertEqual(VisualDomain.classify(post("b", provider: provider)), .uncertain)
+            XCTAssertEqual(VisualDomain.classify(post("b", provider: provider)), .realLife)
             XCTAssertEqual(VisualDomain.classify(post("b", provider: provider, tags: ["anime"])), .anime)
         }
         XCTAssertEqual(VisualDomain.classify(post("c", tags: ["photo"])), .realLife)
-        XCTAssertEqual(VisualDomain.classify(post("d", provider: "hanime")), .uncertain)
+        XCTAssertEqual(VisualDomain.classify(post("d", provider: "hanime")), .anime)
         XCTAssertTrue(VisualFeatures.metadata(post("e", provider: "redgifs", tags: ["blonde_hair"]))!.subjects.isEmpty)
+    }
+    func testHanimeSuggestedTopicsAreSearchableTagsWithoutInventedImages() {
+        let chips = HomeThemeSuggestions.make(provider: .hanime, learned: [], chosen: [], visual: [],
+                                              favorites: [], posts: [], excluded: [], limit: 5)
+        XCTAssertEqual(chips.map(\.term), ["dark skin", "fantasy", "ahegao", "monster girl", "elf"])
+        XCTAssertTrue(chips.allSatisfy { $0.imageURL.isEmpty })
+        let selected = QueryParser.formatted(ParsedQuery(included: [chips[0].term], excluded: []))
+        XCTAssertEqual(QueryParser.parse(selected).included, ["dark skin"])
     }
     func testDislikedChunLiPresentationPreservesIdentityAndContext() {
         let liked = VisualFeatures.metadata(post("liked", tags: ["chun_li", "qipao", "watercolor"]))!

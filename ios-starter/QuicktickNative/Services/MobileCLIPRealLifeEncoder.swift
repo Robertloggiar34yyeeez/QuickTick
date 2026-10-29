@@ -129,3 +129,148 @@ actor MobileCLIPRealLifeEncoder {
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
+
+/// Apple's MobileCLIP2-S0 checkpoint is PyTorch-only. Users may import a
+/// converted Core ML image encoder or download its .mlpackage directory from
+/// an HTTPS repository they trust. QuickTick never silently ships or fetches
+/// Apple's research-only weights. Inference remains off the scroll path.
+actor MobileCLIP2RealLifeEncoder {
+    static let shared = MobileCLIP2RealLifeEncoder()
+    static let version = "mobileclip2-s0-image-apple-converted-v1"
+
+    private static var installationURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("QuicktickModels", isDirectory: true)
+            .appendingPathComponent("MobileCLIP2-S0-image.mlmodelc", isDirectory: true)
+    }
+
+    static func isInstalled() -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: installationURL.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private let context = CIContext(options: [.cacheIntermediates: false])
+    private var model: MLModel?
+    private var installing = false
+
+    // A Core ML ML Program has a small manifest and program alongside the
+    // weight blob. Download the package's three files directly, so no ZIP
+    // extraction library or PyTorch runtime is required on the phone.
+    private static let packageFiles: [(path: String, maxBytes: Int64)] = [
+        ("Manifest.json", 65_536),
+        ("Data/com.apple.CoreML/model.mlmodel", 4_194_304),
+        ("Data/com.apple.CoreML/weights/weight.bin", 268_435_456)
+    ]
+
+    static func packageFileURLs(from directory: URL) -> [URL]? {
+        guard directory.scheme?.lowercased() == "https", directory.host?.isEmpty == false,
+              directory.user == nil, directory.password == nil,
+              directory.query == nil, directory.fragment == nil else { return nil }
+        let prefix = directory.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard prefix.lowercased().hasSuffix(".mlpackage") else { return nil }
+        return packageFiles.compactMap { URL(string: prefix + "/" + $0.path) }
+    }
+
+    func release() { model = nil }
+
+    func install(fromRemotePackage directory: URL) async throws {
+        guard let urls = Self.packageFileURLs(from: directory), urls.count == Self.packageFiles.count
+        else { throw URLError(.badURL) }
+        guard !Self.isInstalled() else { return }
+        guard !installing else { throw CocoaError(.fileWriteFileExists) }
+        installing = true
+        defer { installing = false }
+
+        let manager = FileManager.default
+        let scratch = manager.temporaryDirectory
+            .appendingPathComponent("quicktick-mobileclip2-\(UUID().uuidString)", isDirectory: true)
+        let package = scratch.appendingPathComponent("MobileCLIP2-S0-image.mlpackage", isDirectory: true)
+        try manager.createDirectory(at: package, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: scratch) }
+
+        for (index, file) in Self.packageFiles.enumerated() {
+            try Task.checkCancellation()
+            let (temporary, response) = try await URLSession.shared.download(from: urls[index])
+            defer { try? manager.removeItem(at: temporary) }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  http.url?.scheme?.lowercased() == "https" else { throw URLError(.badServerResponse) }
+            let bytes = (try manager.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.int64Value ?? 0
+            guard (1...file.maxBytes).contains(bytes) else { throw CocoaError(.fileReadCorruptFile) }
+            let target = package.appendingPathComponent(file.path)
+            try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try manager.moveItem(at: temporary, to: target)
+        }
+        try Task.checkCancellation()
+        let compiled = try await MLModel.compileModel(at: package)
+        try Task.checkCancellation()
+        try installCompiled(compiled)
+    }
+
+    func install(from source: URL) async throws {
+        guard !Self.isInstalled() else { return }
+        guard !installing else { throw CocoaError(.fileWriteFileExists) }
+        installing = true
+        defer { installing = false }
+
+        let secured = source.startAccessingSecurityScopedResource()
+        defer { if secured { source.stopAccessingSecurityScopedResource() } }
+        let ext = source.pathExtension.lowercased()
+        guard ext == "mlpackage" || ext == "mlmodelc" else { throw CocoaError(.fileReadUnsupportedScheme) }
+        let compiled = ext == "mlmodelc" ? source : try await MLModel.compileModel(at: source)
+        try Task.checkCancellation()
+
+        try installCompiled(compiled)
+    }
+
+    private func installCompiled(_ compiled: URL) throws {
+        let verified = try MLModel(contentsOf: compiled)
+        guard verified.modelDescription.inputDescriptionsByName["image"]?.type == .image,
+              verified.modelDescription.outputDescriptionsByName["final_emb_1"]?.type == .multiArray,
+              verified.modelDescription.inputDescriptionsByName["image"]?.imageConstraint?.pixelsWide == 256,
+              verified.modelDescription.inputDescriptionsByName["image"]?.imageConstraint?.pixelsHigh == 256
+        else { throw CocoaError(.fileReadCorruptFile) }
+
+        let manager = FileManager.default
+        let destination = Self.installationURL
+        try manager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard !Self.isInstalled() else { return }
+        // Copy validated files from the document picker. Never move a file out
+        // of the user's Files app or write directly to a partly installed path.
+        let staged = destination.deletingLastPathComponent()
+            .appendingPathComponent("mobileclip2-staged-\(UUID().uuidString).mlmodelc", isDirectory: true)
+        try manager.copyItem(at: compiled, to: staged)
+        do { try manager.moveItem(at: staged, to: destination) }
+        catch { try? manager.removeItem(at: staged); throw error }
+    }
+
+    func embedding(_ image: DecodedMediaImage) throws -> [Float] {
+        try Task.checkCancellation()
+        guard Self.isInstalled() else { throw CocoaError(.fileNoSuchFile) }
+        if model == nil {
+            let configuration = MLModelConfiguration()
+            configuration.computeUnits = .cpuAndNeuralEngine
+            model = try MLModel(contentsOf: Self.installationURL, configuration: configuration)
+        }
+        let input = CIImage(cgImage: image.image)
+        let side = min(input.extent.width, input.extent.height)
+        guard side > 0 else { throw CocoaError(.coderInvalidValue) }
+        let crop = CGRect(x: input.extent.midX - side / 2, y: input.extent.midY - side / 2,
+                          width: side, height: side)
+        let prepared = input.cropped(to: crop)
+            .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
+            .transformed(by: CGAffineTransform(scaleX: 256 / side, y: 256 / side))
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(kCFAllocatorDefault, 256, 256, kCVPixelFormatType_32ARGB, nil, &pixelBuffer)
+        guard status == kCVReturnSuccess, let pixelBuffer else { throw CocoaError(.coderInvalidValue) }
+        context.render(prepared, to: pixelBuffer)
+        try Task.checkCancellation()
+        let provider = try MLDictionaryFeatureProvider(dictionary: ["image": MLFeatureValue(pixelBuffer: pixelBuffer)])
+        guard let output = try model?.prediction(from: provider).featureValue(for: "final_emb_1")?.multiArrayValue,
+              (64...2048).contains(output.count) else { throw CocoaError(.coderInvalidValue) }
+        let vector = (0..<output.count).map { output[$0].floatValue }
+        guard vector.allSatisfy(\.isFinite) else { throw CocoaError(.coderInvalidValue) }
+        let magnitude = sqrt(vector.reduce(Float(0)) { $0 + $1 * $1 })
+        guard magnitude.isFinite, magnitude > 0 else { throw CocoaError(.coderInvalidValue) }
+        return vector.map { $0 / magnitude }
+    }
+}

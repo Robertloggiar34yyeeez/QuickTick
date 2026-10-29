@@ -8,6 +8,16 @@ import StableDiffusion
 import Mirage
 import Darwin
 
+/// Core ML can save model swap time by keeping its resources resident, but
+/// that costs a substantial amount of memory. Opt into the faster route only
+/// when both installed and currently available RAM have room for it.
+enum StudioCoreMLPerformance {
+    static func useFastPath(physicalBytes: UInt64, availableBytes: UInt64) -> Bool {
+        physicalBytes >= 8 * 1_024 * 1_024 * 1_024 &&
+            availableBytes >= 4 * 1_024 * 1_024 * 1_024
+    }
+}
+
 enum StudioError: LocalizedError {
     case unsupportedModel, invalidArchive, invalidResponse, unavailableModel, noImage, imageFiltered, invalidFile, downloadBusy, renderBusy
     case insufficientMemory(required: Int64, available: Int64)
@@ -794,12 +804,17 @@ actor LocalImageStudio {
                               aspect: StudioAspectRatio, scheduler: StudioScheduler,
                               safetyCheck: Bool,
                               onProgress: @Sendable (Int, Int) -> Void) throws -> CGImage {
+        let start = ProcessInfo.processInfo.systemUptime
+        let fastPath = StudioCoreMLPerformance.useFastPath(
+            physicalBytes: ProcessInfo.processInfo.physicalMemory,
+            availableBytes: UInt64(os_proc_available_memory()))
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = .cpuAndNeuralEngine
+        configuration.computeUnits = fastPath ? .all : .cpuAndNeuralEngine
         let pipeline = try StableDiffusionPipeline(resourcesAt: resources, controlNet: [],
-            configuration: configuration, disableSafety: !safetyCheck, reduceMemory: true)
+            configuration: configuration, disableSafety: !safetyCheck, reduceMemory: !fastPath)
         try pipeline.loadResources()
         defer { pipeline.unloadResources() }
+        let loaded = ProcessInfo.processInfo.systemUptime
         var options = PipelineConfiguration(prompt: String(prompt.prefix(1200)))
         options.negativePrompt = String(negative.prefix(1200))
         options.stepCount = max(4, min(40, steps))
@@ -811,6 +826,10 @@ actor LocalImageStudio {
             onProgress(progress.step + 1, progress.stepCount)
             return !withUnsafeCurrentTask { $0?.isCancelled ?? false }
         }
+        NSLog("[QuickTick Studio] backend=coreml fast=%@ load=%.1fs generation=%.1fs total=%.1fs",
+              fastPath ? "yes" : "no", loaded - start,
+              ProcessInfo.processInfo.systemUptime - loaded,
+              ProcessInfo.processInfo.systemUptime - start)
         try Task.checkCancellation()
         guard let output = images.compactMap({ $0 }).first else { throw StudioError.imageFiltered }
         return aspect.crop(output)

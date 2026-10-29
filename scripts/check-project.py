@@ -26,6 +26,13 @@ for path in (root/'ios-starter').rglob('*'):
     if not path.is_file() or path.suffix not in ['.swift','.xcconfig','.json','.pbxproj']: continue
     text=path.read_text(encoding='utf-8-sig')
     for sync_id in re.findall(r'QT6-[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}',text): assert sync_id==vector and 'Tests' in path.as_posix(), f'Unexpected Sync ID: {path}'
-    assert 'WKWebView' not in text
+    if 'WKWebView(' in text:
+        # The limited public Hentai Haven catalog fallback is intentionally
+        # WebKit-backed. Keep browser usage isolated to the first-party
+        # provider networking layer, never arbitrary views or sync transports.
+        assert path.name == 'NativeProviderAPI.swift', path
     assert not re.search(r'(?:GORSE_API_KEY|GORSE_ENDPOINT)\s*=\s*[^\s]',text)
-print(f'PASS: independently parsed Xcode project; all {len(sources)} Swift files referenced; app/unit/UI targets and shared scheme resolve; 5 provider fixtures valid; no WebView or live secret literals found.')
+products={obj.get('productName') for obj in objects.values() if obj['isa']=='XCSwiftPackageProductDependency'}
+assert {'StableDiffusion','Mirage','_MediaGenerationKit'} <= products, products
+assert 'ZIPFoundation' not in products, 'The DrawThings package already includes ZIPFoundation'
+print(f'PASS: independently parsed Xcode project; all {len(sources)} Swift files referenced; app/unit/UI targets and shared scheme resolve; first-party WebKit scoped to provider API; no live secret literals found.')

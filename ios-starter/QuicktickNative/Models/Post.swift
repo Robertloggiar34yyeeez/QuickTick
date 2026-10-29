@@ -18,6 +18,12 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
         ["video", "gif"].contains(type.lowercased()) ||
             (providerKey == .hhaven && type.lowercased() == "web")
     }
+    /// Erome's Home listing contains album thumbnails, not video file URLs.
+    /// Resolve these on explicit Play only; otherwise each scroll impression
+    /// launches another album request and stalls the moving feed.
+    var isUnresolvedEromePreview: Bool {
+        providerKey == .erome && mediaUrl.isEmpty && isImmersiveMedia
+    }
     var isAudio: Bool { type.lowercased() == "audio" }
     var cardPreviewURL: String {
         if type.lowercased() == "image" {

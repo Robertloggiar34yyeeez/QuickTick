@@ -83,6 +83,8 @@ actor QuicktickAPIClient {
     private var nhentaiPageTasks: [String: Task<PostPage, Error>] = [:]
     private var eromePages: [String: (page: PostPage, expiry: Date)] = [:]
     private var eromePageTasks: [String: Task<PostPage, Error>] = [:]
+    private var hanimePages: [String: (page: PostPage, expiry: Date)] = [:]
+    private var hanimePageTasks: [String: Task<PostPage, Error>] = [:]
     private var archivePages: [String: (page: PostPage, expiry: Date)] = [:]
     private var archivePageTasks: [String: Task<PostPage, Error>] = [:]
     private var archiveCreators: [Provider: [ArchiveCreator]] = [:]
@@ -163,8 +165,7 @@ actor QuicktickAPIClient {
                 return try await HanimeGeneratedAPI.posts(session: session, base: base,
                                                           query: query, page: page, sort: sort, immersive: immersive)
             }
-            return try await NativeProviderAPI.hanime(session: session, query: query,
-                                                      page: page, sort: sort, immersive: immersive)
+            return try await cachedHanimePosts(query: query, page: page, sort: sort, immersive: immersive)
         case .hhaven:
             return try await cachedHavenPosts(query: query, page: page, sort: sort, immersive: immersive)
         case .redgifs:
@@ -198,6 +199,39 @@ actor QuicktickAPIClient {
         eromePages[key] = (result, .now.addingTimeInterval(90))
         if eromePages.count > 20 { eromePages = eromePages.filter { $0.value.expiry > .now } }
         return result
+    }
+
+    private func cachedHanimePosts(query: ParsedQuery, page: Int, sort: String,
+                                   immersive: Bool) async throws -> PostPage {
+        let key = "\(page)|\(sort)|\(immersive)|\(QueryParser.formatted(query))"
+        if let saved = hanimePages[key], saved.expiry > .now { return saved.page }
+        if let pending = hanimePageTasks[key] { return try await pending.value }
+        let clientSession = session
+        let request = Task<PostPage, Error> {
+            try await NativeProviderAPI.hanime(session: clientSession, query: query,
+                                               page: page, sort: sort, immersive: immersive)
+        }
+        hanimePageTasks[key] = request
+        defer { hanimePageTasks[key] = nil }
+        do {
+            let result = try await request.value
+            // Avoid turning a transient empty first page into a cached result.
+            if !result.items.isEmpty || page > 1 {
+                hanimePages[key] = (result, .now.addingTimeInterval(120))
+            }
+            if hanimePages.count > 24 {
+                hanimePages = hanimePages.filter { $0.value.expiry > .now.addingTimeInterval(-15 * 60) }
+            }
+            return result
+        } catch {
+            // Temporary browser verification or provider outages should not
+            // wipe a previously loaded catalog while the user is browsing.
+            if !Task.isCancelled, let saved = hanimePages[key],
+               saved.expiry > .now.addingTimeInterval(-15 * 60) {
+                return saved.page
+            }
+            throw error
+        }
     }
 
     private func cachedNHentaiPosts(query: ParsedQuery, page: Int, sort: String,

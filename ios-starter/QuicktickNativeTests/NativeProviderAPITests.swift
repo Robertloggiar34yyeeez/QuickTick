@@ -60,6 +60,11 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "auth.hanime.tv", path == "/api/v11/search_hvs" {
             payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
         }
+        else if host == "hanime.tv", path == "/api/v8/video" {
+            // Hanime's catalog may be public even when its stream URL has
+            // been removed from the unauthenticated video response.
+            payload = #"{"videos_manifest":{"servers":[{"streams":[]}]}}"#
+        }
         else if host == "api.rule34.xxx", path == "/autocomplete.php" { payload = #"[{"value":"engineering","label":"engineering (12)","count":12}]"# }
         else if host == "api.rule34.xxx" {
             let comments = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "s" && $0.value == "comment" } == true
@@ -254,6 +259,8 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(summaries.first?.stableID, "erome:ABC123")
         XCTAssertEqual(summaries.first?.type, "video")
         XCTAssertEqual(summaries.first?.mediaUrl, "")
+        XCTAssertTrue(summaries.first?.isUnresolvedEromePreview == true,
+                      "Scrolling past an Erome album summary must not begin video resolution")
         XCTAssertEqual(summaries.first?.caption, "City portrait")
         XCTAssertEqual(summaries.first?.creator, "Creator")
     }
@@ -272,6 +279,8 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(playable.items.map(\.id), ["ABC123:clip_720p.mp4"])
         XCTAssertEqual(playable.items.first?.mediaUrl,
                        "https://v12.erome.com/123/ABC123/clip_720p.mp4")
+        XCTAssertFalse(playable.items.first?.isUnresolvedEromePreview == true,
+                       "Immersive playback must keep auto-playing fully resolved videos")
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
     }
 
@@ -300,6 +309,31 @@ final class NativeProviderAPITests: XCTestCase {
         let filtered = try await api.posts(provider: .hanime,
             query: ParsedQuery(included: ["fantasy"], excluded: ["dark skin"]), page: 1)
         XCTAssertTrue(filtered.items.isEmpty)
+    }
+
+    func testHanimeCatalogReusesRecentResultsWithoutRepeatingNetworkRequest() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let query = ParsedQuery(included: ["fantasy"], excluded: [])
+        let first = try await api.posts(provider: .hanime, query: query, page: 1)
+        let second = try await api.posts(provider: .hanime, query: query, page: 1)
+        XCTAssertEqual(first.items, second.items)
+        XCTAssertEqual(first.hasMore, second.hasMore)
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
+            $0.url?.host == "auth.hanime.tv" && $0.url?.path == "/api/v11/search_hvs"
+        }.count, 1, "Switching back to Hanime should reuse the existing catalog")
+    }
+
+    func testHanimeMissingPublicStreamSuggestsSupportedPlaybackOptions() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "hanime:sample", id: "sample", provider: "Hanime", type: "video")
+        do {
+            _ = try await api.resolveMedia(post)
+            XCTFail("Expected a clear error when Hanime omits unauthenticated playback URLs")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Browse inside QuickTick"))
+            XCTAssertTrue(error.localizedDescription.contains("Hanime API"))
+        }
     }
 
     func testGeneratedProviderAPIsValidateURLsAndQueryExclusions() throws {
@@ -884,18 +918,19 @@ final class NativeProviderAPITests: XCTestCase {
             "A valid response from the provider's first-party API host should avoid scraping its browse HTML")
     }
 
-    @MainActor func testHavenRecommendedKeepsSafeCatalogDiscoveryWhileWDTasteWarms() async throws {
+    @MainActor func testMigratedHavenSelectionLoadsHanimePublicCatalog() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
         await store.bootstrap()
         store.selectedProvider = .hhaven
-        store.tasteSetup.sources[Provider.hhaven.rawValue] = TasteChoice(done: true, into: ["unmatched-interest"])
+        XCTAssertEqual(store.selectedProvider, .hanime)
+        store.tasteSetup.sources[Provider.hanime.rawValue] = TasteChoice(done: true, into: ["fantasy"])
         await store.recommendations.load(RecommendationState())
         await store.refresh()
-        XCTAssertEqual(store.posts.map(\.stableID), ["hhaven:12"],
-            "A focused title miss must not erase an available public catalog page")
+        XCTAssertEqual(store.posts.map(\.stableID), ["hanime:sample"],
+            "Migrating a saved Haven selection must use Hanime's available catalog")
         XCTAssertNil(store.lastError)
     }
 

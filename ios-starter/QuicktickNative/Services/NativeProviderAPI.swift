@@ -87,9 +87,16 @@ enum HavenBrowserCatalog {
 /// (not Safari's); it never fabricates verification or bypasses access controls.
 @MainActor
 enum EromeBrowserCatalog {
+    private static var unavailableUntil = Date.distantPast
+
     static func html(url: URL) async throws -> String {
         guard url.scheme == "https", url.host == "www.erome.com" else {
             throw APIError.invalidResponse
+        }
+        // After a verification wall, do not create a new hidden WKWebView for
+        // every album in the current immersive batch. Retry after cooldown.
+        guard unavailableUntil <= .now else {
+            throw APIError.server("Erome's public browser view is temporarily unavailable.")
         }
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
@@ -112,6 +119,7 @@ enum EromeBrowserCatalog {
             if finishedTicks >= 8 { break }
             try await Task.sleep(for: .milliseconds(250))
         }
+        unavailableUntil = .now.addingTimeInterval(60)
         throw APIError.server("Erome's in-app browser could not read public media. Open Erome inside QuickTick to check access.")
     }
 
@@ -1303,10 +1311,19 @@ extension NativeProviderAPI {
             }
             throw APIError.server("Eporner returned no playable public stream.")
         case .hanime:
-            let response = try object(await data(session: session, url: url("https://hanime.tv/api/v8/video", [.init(name: "id", value: post.id)]), provider: provider))
+            let response: [String: Any]
+            do {
+                response = try object(await data(session: session,
+                    url: url("https://hanime.tv/api/v8/video", [.init(name: "id", value: post.id)]),
+                    provider: provider))
+            } catch APIError.providerStatus(.hanime, 403) {
+                throw APIError.server("Hanime requires browser verification for this video. Use Browse inside QuickTick or configure a Hanime API in Settings.")
+            }
             let manifest = response["videos_manifest"] as? [String: Any] ?? [:]
             let streams = rows(manifest["servers"]).flatMap { rows($0["streams"]) }.sorted { number($0["height"]) > number($1["height"]) }
-            guard let media = streams.compactMap({ mediaURL(text($0["url"]), provider: provider) }).first else { throw APIError.server("Hanime returned no public stream.") }
+            guard let media = streams.compactMap({ mediaURL(text($0["url"]), provider: provider) }).first else {
+                throw APIError.server("Hanime no longer provides a public playback URL for this video. Use Browse inside QuickTick or configure a Hanime API in Settings.")
+            }
             return ResolvedMedia(mediaUrl: media.absoluteString, type: media.pathExtension == "m3u8" ? "hls" : "video")
         case .pornhub:
             let canonical = mediaURL(post.pageUrl, provider: provider)
@@ -1377,11 +1394,13 @@ enum EromePublicCatalog {
         // Summaries are thumbnail-only, and not every album-link has a
         // matching summary (or even a thumbnail). In particular, choosing
         // only summaries can silently discard the page's video albums.
-        // Prefer known video albums, then merge in every public album link.
-        let prioritized = summaries.filter { $0.type == "video" } +
-            summaries.filter { $0.type != "video" }
+        // Prefer known video albums, then the listing's explicit album links,
+        // then image-only summaries. This also finds clips when a listing has
+        // dozens of picture albums before its first video.
+        let prioritized = summaries.filter { $0.type == "video" }
         var seenAlbumURLs = Set<String>()
-        let albums = (prioritized.compactMap { URL(string: $0.pageUrl) } + albumLinks(html))
+        let albums = (prioritized.compactMap { URL(string: $0.pageUrl) } + albumLinks(html) +
+                      summaries.filter { $0.type != "video" }.compactMap { URL(string: $0.pageUrl) })
             .filter { seenAlbumURLs.insert($0.absoluteString).inserted }
         if albums.isEmpty {
             if page == 1, !html.lowercased().contains("id=\"albums\"") &&
@@ -1391,19 +1410,23 @@ enum EromePublicCatalog {
             return PostPage(items: [], hasMore: false)
         }
 
-        // Never request every album at once; the page's media links are read
-        // off the main thread in small groups with the shared host rate gate.
-        let selected = Array(albums.prefix(32))
+        // Hydrate only a small first deck. Requesting 32 albums (often 32
+        // HTML pages plus 32 hidden browser fallbacks) made Erome painfully
+        // slow to open, especially on iPad. Users can page for more clips.
+        let selected = Array(albums.prefix(immersive ? 16 : 8))
         var items: [Post] = []
         var albumFailure: String?
         var successfulAlbums = 0
-        for start in stride(from: 0, to: selected.count, by: 4) {
+        for start in stride(from: 0, to: selected.count, by: 3) {
             try Task.checkCancellation()
-            let batch = Array(selected[start..<min(start + 4, selected.count)])
+            let batch = Array(selected[start..<min(start + 3, selected.count)])
             let fetched = await withTaskGroup(of: (Int, [Post], String?).self) { group in
                 for (index, album) in batch.enumerated() {
                     group.addTask {
-                        do { return (index, try await albumPosts(session: session, url: album), nil) }
+                        do {
+                            let posts = try await albumPosts(session: session, url: album)
+                            return (index, immersive ? posts.filter(\.isImmersiveMedia) : posts, nil)
+                        }
                         catch { return (index, [], error.localizedDescription) }
                     }
                 }
@@ -1416,7 +1439,7 @@ enum EromePublicCatalog {
             if albumFailure == nil { albumFailure = fetched.compactMap { $0.2 }.first }
             // An immersive page needs playable media, not every image in a
             // large album. Stop after a useful initial deck to save data.
-            if immersive && items.filter(\.isImmersiveMedia).count >= 12 { break }
+            if immersive && items.count >= 6 { break }
         }
         try Task.checkCancellation()
         if successfulAlbums == 0, let albumFailure {

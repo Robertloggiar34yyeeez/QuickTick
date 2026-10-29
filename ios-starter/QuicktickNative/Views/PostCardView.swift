@@ -171,6 +171,12 @@ struct PostCardView: View {
                 guard post.isImmersiveMedia else { stopPlayback(); return }
                 guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
                 guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
+                // Erome Home shows unresolved album summaries. Autoplaying
+                // them performs an album HTML fetch (and sometimes WebKit)
+                // every time the user scrolls past. Explicit Play still works.
+                guard !post.isUnresolvedEromePreview || manualPlaybackRequested else {
+                    stopPlayback(); return
+                }
                 // Autoplay is optional during a fast Home swipe. Wait for a
                 // stable candidate before opening a stream; explicit Play and
                 // Immersive playback remain immediate.

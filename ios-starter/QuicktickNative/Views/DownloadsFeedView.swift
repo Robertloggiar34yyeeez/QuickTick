@@ -51,6 +51,22 @@ enum CollectionSearch {
     }
 }
 
+/// Stable collection grouping across canonical IDs and older imported source names.
+enum CollectionProviderOrder {
+    static func key(_ raw: String) -> String {
+        Provider.identify(raw)?.rawValue ?? raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    static func name(_ key: String) -> String {
+        Provider.identify(key)?.displayName ?? key.capitalized
+    }
+
+    static func available(_ sources: [String]) -> [String] {
+        Array(Set(sources.map(key))).sorted { name($0).localizedStandardCompare(name($1)) == .orderedAscending }
+    }
+
+}
+
 struct CollectionSearchField: View {
     @Binding var text: String
     let placeholder: String
@@ -184,12 +200,17 @@ private struct DownloadSearchIdentity: Equatable {
 
 struct DownloadsFeedView: View {
     @EnvironmentObject private var store: AppStore
+    var scrollToTopRevision = 0
     var onImmersiveChange: (Bool) -> Void = { _ in }
-    var body: some View { DownloadContent(manager: store.downloads, onImmersiveChange: onImmersiveChange) }
+    var body: some View {
+        DownloadContent(manager: store.downloads, scrollToTopRevision: scrollToTopRevision,
+                        onImmersiveChange: onImmersiveChange)
+    }
 }
 
 private struct DownloadContent: View {
     @ObservedObject var manager: DownloadManager
+    var scrollToTopRevision = 0
     var onImmersiveChange: (Bool) -> Void = { _ in }
     @State private var immersive = false
     @State private var rhythm = false
@@ -198,6 +219,8 @@ private struct DownloadContent: View {
     @State private var selectedKeys: Set<String> = []
     @State private var confirmDelete = false
     @State private var downloadOrder = DownloadShuffleOrder()
+    @State private var selectedProviderID: String?
+    @State private var sortByProvider = false
     @State private var searchText = ""
     @State private var matchingKeys: Set<String> = []
     @State private var offlinePostCache: [String: Post] = [:]
@@ -209,8 +232,20 @@ private struct DownloadContent: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var cacheTask: Task<Void, Never>?
     private var cardInset: CGFloat { AppTheme.isDeSlopified ? AppTheme.contentMargin : 0 }
+    private var availableProviders: [String] { CollectionProviderOrder.available(manager.records.map(\.provider)) }
     private var filteredRecords: [DownloadRecord] {
-        let records = downloadOrder.ordered(manager.records)
+        var records = downloadOrder.ordered(manager.records)
+        if let selectedProviderID {
+            records = records.filter { CollectionProviderOrder.key($0.provider) == selectedProviderID }
+        }
+        if sortByProvider {
+            records = records.enumerated().sorted { lhs, rhs in
+                let a = CollectionProviderOrder.name(CollectionProviderOrder.key(lhs.element.provider))
+                let b = CollectionProviderOrder.name(CollectionProviderOrder.key(rhs.element.provider))
+                let comparison = a.localizedStandardCompare(b)
+                return comparison == .orderedSame ? lhs.offset < rhs.offset : comparison == .orderedAscending
+            }.map { $0.element }
+        }
         guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return records }
         // A Set lookup is cheap enough during progress publishes and scrolling;
         // the expensive tag/title matching runs only when search inputs change.
@@ -218,7 +253,7 @@ private struct DownloadContent: View {
     }
     private var collectionSubtitle: String {
         if searching { return "Searching your downloads…" }
-        if searchText.isEmpty { return "\(manager.records.count) downloads, always with you" }
+        if searchText.isEmpty && selectedProviderID == nil { return "\(manager.records.count) downloads, always with you" }
         return "\(filteredRecords.count) of \(manager.records.count) downloads"
     }
     private var exportURLs: [URL] {
@@ -271,6 +306,7 @@ private struct DownloadContent: View {
     var body: some View {
         ZStack {
                 GeometryReader { geometry in
+                ScrollViewReader { scrollProxy in
                 ScrollView {
                 LazyVStack(spacing: 18) {
                     HStack(spacing: 12) {
@@ -295,9 +331,38 @@ private struct DownloadContent: View {
                     }
                     .padding(.top, 2)
                     .padding(.horizontal, AppTheme.contentMargin)
+                    .id("downloads-feed-top")
                     CollectionSearchField(text: $searchText, placeholder: "Search downloads",
                                           identifier: "downloads-search", isSearching: searching)
                         .padding(.horizontal, AppTheme.contentMargin)
+                    HStack(spacing: 10) {
+                        Menu {
+                            Button("All providers", systemImage: selectedProviderID == nil ? "checkmark" : "square.grid.2x2") {
+                                selectedProviderID = nil
+                                immersivePostID = nil
+                            }
+                            ForEach(availableProviders, id: \.self) { id in
+                                Button(CollectionProviderOrder.name(id),
+                                       systemImage: selectedProviderID == id ? "checkmark" : "square.grid.2x2") {
+                                    selectedProviderID = id
+                                    immersivePostID = nil
+                                }
+                            }
+                        } label: {
+                            Label(selectedProviderID.map(CollectionProviderOrder.name) ?? "All providers",
+                                  systemImage: "line.3.horizontal.decrease")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12).padding(.vertical, 9)
+                                .background(AppTheme.elevatedSurface, in: Capsule())
+                                .overlay(Capsule().stroke(AppTheme.border))
+                        }
+                        .accessibilityIdentifier("downloads-provider-filter")
+                        Spacer()
+                        if sortByProvider {
+                            Text("Provider A–Z").font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        }
+                    }
+                    .padding(.horizontal, AppTheme.contentMargin)
                     if selecting { selectionControls.padding(.horizontal, AppTheme.contentMargin) }
                     if let error = manager.storageError {
                         Text(error).foregroundStyle(.orange)
@@ -367,6 +432,14 @@ private struct DownloadContent: View {
                 .padding(.vertical, AppTheme.contentMargin)
                 .frame(maxWidth: .infinity)
                 }
+                .onChange(of: scrollToTopRevision) { _, _ in
+                    immersive = false
+                    immersivePostID = nil
+                    withAnimation(.easeOut(duration: 0.22)) {
+                        scrollProxy.scrollTo("downloads-feed-top", anchor: .top)
+                    }
+                }
+                }
                 }
                 .opacity(immersive ? 0 : 1)
                 .allowsHitTesting(!immersive)
@@ -383,21 +456,31 @@ private struct DownloadContent: View {
                         .accessibilityIdentifier("downloads-rhythm")
                     Menu {
                         Button("Shuffle downloads", systemImage: "shuffle") {
+                            sortByProvider = false
                             downloadOrder.shuffle(records: manager.records)
                             immersivePostID = nil
                         }
                         Button("Original order", systemImage: "list.bullet") {
+                            sortByProvider = false
                             downloadOrder.restoreOriginalOrder()
                             immersivePostID = nil
                         }
-                        .disabled(!downloadOrder.isShuffled)
+                        .disabled(!downloadOrder.isShuffled && !sortByProvider)
+                        Button("Provider A–Z", systemImage: "square.grid.2x2") {
+                            downloadOrder.restoreOriginalOrder()
+                            sortByProvider = true
+                            immersivePostID = nil
+                        }
+                        .disabled(sortByProvider)
                     } label: {
-                        Image(systemName: downloadOrder.isShuffled ? "shuffle.circle.fill" : "shuffle")
+                        Image(systemName: sortByProvider ? "line.3.horizontal.decrease.circle.fill" :
+                                            (downloadOrder.isShuffled ? "shuffle.circle.fill" : "shuffle"))
                             .frame(minWidth: 44, minHeight: 44)
                     }
                     .disabled(manager.records.isEmpty)
                     .accessibilityLabel("Browse downloads randomly")
-                    .accessibilityValue(downloadOrder.isShuffled ? "Shuffled" : "Original order")
+                    .accessibilityValue(sortByProvider ? "Provider A–Z" :
+                                        (downloadOrder.isShuffled ? "Shuffled" : "Original order"))
                     .accessibilityIdentifier("downloads-shuffle")
                     Button(immersive ? "Feed" : "Offline Immersive") { immersive.toggle() }
                         .disabled(!immersive && !localPosts.contains(where: \.isImmersiveMedia))
@@ -515,10 +598,6 @@ private struct DownloadCachedCardRow: View, Equatable {
     var body: some View {
         VStack(spacing: 8) {
             if let post = offlinePost {
-                PostCardView(post: post, available: available, playbackTab: 3, offline: true,
-                             onDelete: { manager.delete(record) })
-                    .frame(maxWidth: .infinity)
-                    .overlay { if selecting { selectionOverlay } }
                 HStack {
                     Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         .accessibilityIdentifier("download-size-\(record.key)")
@@ -526,10 +605,20 @@ private struct DownloadCachedCardRow: View, Equatable {
                     if !selecting, let url = record.exportURL {
                         Button { DownloadExporter.share([url]) } label: {
                             Label("Export", systemImage: "square.and.arrow.up")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 13).padding(.vertical, 9)
+                                .background(AppTheme.elevatedSurface, in: Capsule())
+                                .overlay(Capsule().stroke(AppTheme.border))
                         }
-                            .accessibilityIdentifier("export-download-\(record.key)")
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("export-download-\(record.key)")
                     }
                 }
+                .padding(.horizontal, AppTheme.contentMargin)
+                PostCardView(post: post, available: available, playbackTab: 3, offline: true,
+                             onDelete: { manager.delete(record) })
+                    .frame(maxWidth: .infinity)
+                    .overlay { if selecting { selectionOverlay } }
             } else if !cacheReady {
                 ProgressView("Preparing offline preview…")
                     .frame(maxWidth: .infinity, minHeight: 150)

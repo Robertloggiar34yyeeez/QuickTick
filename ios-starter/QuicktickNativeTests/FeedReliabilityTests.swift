@@ -85,6 +85,15 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertTrue(CollectionSearch.matchingDownloadKeys([download], query: "cooking").isEmpty)
     }
 
+    func testCollectionProviderFilterNormalizesRestoredSourceNames() {
+        XCTAssertEqual(CollectionProviderOrder.key("Erome"), "erome")
+        XCTAssertEqual(CollectionProviderOrder.key("www.erome.com"), "erome")
+        XCTAssertEqual(CollectionProviderOrder.key("hentaihaven.xxx"), "hhaven")
+        XCTAssertEqual(CollectionProviderOrder.name("hhaven"), "Hentai Haven")
+        XCTAssertEqual(CollectionProviderOrder.available(["erome", "Rule34", "Erome", "hanime.tv"]),
+                       ["erome", "hanime", "rule34"])
+    }
+
     func testDownloadResponseRejectsPornhubHTMLAndPreservesBinaryMedia() {
         let url = URL(string: "https://cdn.pornhub.com/video.mp4")!
         let htmlResponse = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,

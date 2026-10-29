@@ -1323,13 +1323,18 @@ enum EromePublicCatalog {
         let address = try NativeProviderAPI.url(origin.absoluteString + route, parameters)
         let html = try await pageHTML(session: session, url: address)
         let summaries = albumSummaries(html)
-        if !summaries.isEmpty {
+        if !immersive && !summaries.isEmpty {
             // Preserve the supplied adapter's listing-first behavior. Loading
             // dozens of albums on every page is slow and may trigger rate limits.
             return NativeProviderAPI.page(summaries, hasMore: hasNextPage(html) || summaries.count >= 24,
                                           query: query, immersive: immersive)
         }
-        let albums = albumLinks(html)
+        // Listing cards are lightweight album summaries: they have no mediaUrl.
+        // Immersive playback must hydrate the real video/GIF items from each
+        // public album instead of treating the preview as a playable video.
+        let albums = !summaries.isEmpty
+            ? summaries.compactMap { URL(string: $0.pageUrl) }
+            : albumLinks(html)
         if albums.isEmpty {
             if page == 1, !html.lowercased().contains("id=\"albums\"") &&
                 !html.lowercased().contains("id='albums'") {
@@ -1342,23 +1347,30 @@ enum EromePublicCatalog {
         // off the main thread in small groups with the shared host rate gate.
         let selected = Array(albums.prefix(24))
         var items: [Post] = []
+        var albumFailure: String?
+        var successfulAlbums = 0
         for start in stride(from: 0, to: selected.count, by: 4) {
             try Task.checkCancellation()
             let batch = Array(selected[start..<min(start + 4, selected.count)])
-            let fetched = await withTaskGroup(of: (Int, [Post]).self) { group in
+            let fetched = await withTaskGroup(of: (Int, [Post], String?).self) { group in
                 for (index, album) in batch.enumerated() {
                     group.addTask {
-                        let media = (try? await albumPosts(session: session, url: album)) ?? []
-                        return (index, media)
+                        do { return (index, try await albumPosts(session: session, url: album), nil) }
+                        catch { return (index, [], error.localizedDescription) }
                     }
                 }
-                var results: [(Int, [Post])] = []
+                var results: [(Int, [Post], String?)] = []
                 for await result in group { results.append(result) }
-                return results.sorted { $0.0 < $1.0 }.flatMap { $0.1 }
+                return results.sorted { $0.0 < $1.0 }
             }
-            items.append(contentsOf: fetched)
+            items.append(contentsOf: fetched.flatMap { $0.1 })
+            successfulAlbums += fetched.filter { $0.2 == nil }.count
+            if albumFailure == nil { albumFailure = fetched.compactMap { $0.2 }.first }
         }
         try Task.checkCancellation()
+        if successfulAlbums == 0, let albumFailure {
+            throw APIError.server("Could not load Erome's public albums: \(albumFailure)")
+        }
         guard !items.isEmpty else {
             throw APIError.server("Erome's public albums did not expose playable media. Try again later or check access in Safari.")
         }

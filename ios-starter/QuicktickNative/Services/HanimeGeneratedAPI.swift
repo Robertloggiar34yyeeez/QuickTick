@@ -7,10 +7,20 @@ enum HanimeGeneratedAPI {
 
     static func mediaHeaders(for url: URL) -> [String: String] {
         guard url.scheme == "https" else { return [:] }
-        let isStream = url.host == "hanime.tv" && url.path.hasPrefix("/hls/")
+        let isStream = permittedStreamURL(url)
         let isPoster = url.host == "cdn.hanime.tv" &&
             ["jpg", "jpeg", "png", "webp", "avif"].contains(url.pathExtension.lowercased())
         return isStream || isPoster ? ["Referer": "https://hanime.tv/"] : [:]
+    }
+
+    /// Self-hosted adapters may return either Hanime's HLS path or a signed
+    /// playlist/file on its official media CDN. Both are first-party hosts;
+    /// do not accept arbitrary third-party download URLs from an adapter.
+    static func permittedStreamURL(_ url: URL) -> Bool {
+        guard url.scheme == "https", url.user == nil, url.password == nil else { return false }
+        if url.host == "hanime.tv", url.path.hasPrefix("/hls/") { return true }
+        return url.host == "cdn.hanime.tv" &&
+            ["m3u8", "mp4", "m4v"].contains(url.pathExtension.lowercased())
     }
 
     static var configuredURL: URL? {
@@ -55,8 +65,7 @@ enum HanimeGeneratedAPI {
         let bytes = try await fetch(session: session,
                                     url: base.appendingPathComponent("v1/resolve").appendingPathComponent(post.id))
         let media = try JSONDecoder().decode(ResolvedMedia.self, from: bytes)
-        guard let url = URL(string: media.mediaUrl), url.scheme == "https",
-              url.host == "hanime.tv", url.path.hasPrefix("/hls/") else {
+        guard let url = URL(string: media.mediaUrl), permittedStreamURL(url) else {
             throw APIError.server("Hanime did not provide a permitted HLS stream.")
         }
         return media

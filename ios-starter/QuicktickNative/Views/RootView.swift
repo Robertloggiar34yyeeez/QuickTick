@@ -4,17 +4,20 @@ import UIKit
 /// Directional swipes belong to the navigation controls only. Media and the
 /// rest of the screen keep their own horizontal/vertical gestures.
 enum TabSwipePolicy {
-    /// Scrub at actual button spacing, including the Create gap. Translation
-    /// moves the active indicator one point per point of finger movement;
-    /// velocity never predicts an extra page and cannot skip to an edge.
+    /// Accelerated dock scrubbing: a short, deliberate thumb movement can
+    /// traverse the entire dock, including the Create gap. Media gestures
+    /// still belong to their own surfaces outside the navigation controls.
+    private static let scrubGain: CGFloat = 2.65
+    private static let minimumTravel: CGFloat = 12
+
     static func scrubDestination(current: Int, translation: CGSize, vertical: Bool,
                                  axisLength: CGFloat, visibleIndices: [Int]) -> Int? {
         guard let layout = layout(current: current, axisLength: axisLength,
                                   visibleIndices: visibleIndices, vertical: vertical) else { return nil }
         let primary = vertical ? translation.height : translation.width
         let cross = vertical ? translation.width : translation.height
-        guard abs(primary) >= 16, abs(primary) > abs(cross) * 1.5 else { return nil }
-        let position = min(layout.last, max(layout.first, layout.start + primary))
+        guard abs(primary) >= minimumTravel, abs(primary) > abs(cross) * 1.5 else { return nil }
+        let position = min(layout.last, max(layout.first, layout.start + primary * scrubGain))
         let best = layout.feeds.min { lhs, rhs in
             let lhsDistance = abs(lhs.center - position) - (lhs.id == current ? 8 : 0)
             let rhsDistance = abs(rhs.center - position) - (rhs.id == current ? 8 : 0)
@@ -25,7 +28,7 @@ enum TabSwipePolicy {
     }
 
     /// One continuous pill lives behind the whole dock. Moving it by absolute
-    /// finger distance avoids a visual jump while crossing the Create gap.
+    /// scaled finger distance keeps preview and final selection synchronized.
     static func indicatorPosition(current: Int, translation: CGSize,
                                   vertical: Bool, axisLength: CGFloat,
                                   visibleIndices: [Int]) -> CGFloat {
@@ -33,8 +36,8 @@ enum TabSwipePolicy {
                                   visibleIndices: visibleIndices, vertical: vertical) else { return 0 }
         let primary = vertical ? translation.height : translation.width
         let cross = vertical ? translation.width : translation.height
-        guard abs(primary) >= 16, abs(primary) > abs(cross) * 1.5 else { return layout.start }
-        return min(layout.last, max(layout.first, layout.start + primary))
+        guard abs(primary) >= minimumTravel, abs(primary) > abs(cross) * 1.5 else { return layout.start }
+        return min(layout.last, max(layout.first, layout.start + primary * scrubGain))
     }
 
     private struct Layout {
@@ -95,6 +98,8 @@ struct RootView: View {
     @AppStorage(BirthdayProfile.greetedYearKey) private var birthdayGreetedYear = 0
     @State private var tabEntranceOpacity = 1.0
     @State private var collectionImmersive = false
+    @State private var favoritesScrollToTop = 0
+    @State private var downloadsScrollToTop = 0
     @AppStorage("quicktick-wrapped-last-week-v1") private var wrappedLastShownWeek = ""
     @State private var homeAnchor: String?
     @State private var immersiveAnchor: String?
@@ -282,13 +287,15 @@ struct RootView: View {
             }
         case 2:
             NavigationStack {
-                FavoritesView(onImmersiveChange: { collectionImmersive = $0 }).toolbar {
+                FavoritesView(scrollToTopRevision: favoritesScrollToTop,
+                              onImmersiveChange: { collectionImmersive = $0 }).toolbar {
                     ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) }
                 }
             }
         case 3:
             NavigationStack {
-                DownloadsFeedView(onImmersiveChange: { collectionImmersive = $0 }).toolbar {
+                DownloadsFeedView(scrollToTopRevision: downloadsScrollToTop,
+                                  onImmersiveChange: { collectionImmersive = $0 }).toolbar {
                     ToolbarItem(placement: .topBarTrailing) { SettingsLauncher(isPresented: $showSettings) }
                 }
             }
@@ -353,7 +360,7 @@ struct RootView: View {
     }
 
     private func dockDrag(vertical: Bool, axisLength: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 16)
+        DragGesture(minimumDistance: 12)
             .updating($navigationDrag) { value, state, _ in state = value.translation }
             .onEnded { swipeTabs($0.translation, vertical: vertical, axisLength: axisLength) }
     }
@@ -590,6 +597,8 @@ struct RootView: View {
 
     private func selectTab(_ tabID: Int) {
         let previous = store.activeTab
+        if tabID == 2 { favoritesScrollToTop &+= 1 }
+        if tabID == 3 { downloadsScrollToTop &+= 1 }
         let isRefresh = tabID < 2 && previous == tabID
         tabSelectionTask?.cancel()
         if previous != tabID, !reduceMotion {

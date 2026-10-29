@@ -238,6 +238,11 @@ struct HomeFeedView: View {
                         if [.nhentai, .kemono, .coomer, .erome, .hanime, .pornhub].contains(store.selectedProvider) {
                             Button("Browse inside QuickTick") { showProviderWebsite = true }
                         }
+                        if store.selectedProvider == .hanime,
+                           let website = URL(string: "https://hanime.tv/") {
+                            Link("Verify Hanime in Safari", destination: website)
+                            Button("Configure Hanime API") { showSettings = true }
+                        }
                     }
                 } else if store.posts.isEmpty && !store.isLoading && store.bootstrapped {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))

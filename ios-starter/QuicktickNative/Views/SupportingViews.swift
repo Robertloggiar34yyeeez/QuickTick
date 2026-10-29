@@ -1124,11 +1124,14 @@ private final class CollectionScrollSampling {
 
 struct FavoritesView: View {
     @EnvironmentObject private var store: AppStore
+    var scrollToTopRevision = 0
     var onImmersiveChange: (Bool) -> Void = { _ in }
     @State private var immersive = false
     @State private var rhythm = false
     @State private var activeID: String?
     @State private var shuffleLikes = false
+    @State private var selectedProviderID: String?
+    @State private var sortByProvider = false
     @State private var randomizedIDs: [String] = []
     @State private var searchText = ""
     @State private var orderedLikes: [Post] = []
@@ -1138,19 +1141,32 @@ struct FavoritesView: View {
     @State private var searchRevision = 0
     @State private var searchTask: Task<Void, Never>?
     @State private var scrollSampling = CollectionScrollSampling()
+    private var availableProviders: [String] {
+        CollectionProviderOrder.available(orderedLikes.map(\.provider))
+    }
     private var collectionSubtitle: String {
         if searching { return "Searching your likes…" }
-        if searchText.isEmpty { return "\(saved.count) posts you love" }
+        if searchText.isEmpty && selectedProviderID == nil { return "\(saved.count) posts you love" }
         return "\(matchingLikes.count) of \(saved.count) liked posts"
     }
     private func refreshSavedLikes() {
         orderedLikes = store.newestFavorites
+        let providerLikes = selectedProviderID.map { providerID in
+            orderedLikes.filter { CollectionProviderOrder.key($0.provider) == providerID }
+        } ?? orderedLikes
         if shuffleLikes {
-            let byID = Dictionary(uniqueKeysWithValues: orderedLikes.map { ($0.stableID, $0) })
+            let byID = Dictionary(uniqueKeysWithValues: providerLikes.map { ($0.stableID, $0) })
             let alreadyShuffled = Set(randomizedIDs)
             saved = randomizedIDs.compactMap { byID[$0] }
-                + orderedLikes.filter { !alreadyShuffled.contains($0.stableID) }
-        } else { saved = orderedLikes }
+                + providerLikes.filter { !alreadyShuffled.contains($0.stableID) }
+        } else if sortByProvider {
+            saved = providerLikes.enumerated().sorted { lhs, rhs in
+                let a = CollectionProviderOrder.name(CollectionProviderOrder.key(lhs.element.provider))
+                let b = CollectionProviderOrder.name(CollectionProviderOrder.key(rhs.element.provider))
+                let comparison = a.localizedStandardCompare(b)
+                return comparison == .orderedSame ? lhs.offset < rhs.offset : comparison == .orderedAscending
+            }.map { $0.element }
+        } else { saved = providerLikes }
         scheduleSearch()
     }
     private func scheduleSearch() {
@@ -1178,12 +1194,14 @@ struct FavoritesView: View {
     private func shuffleFavorites() {
         randomizedIDs = orderedLikes.map(\.stableID).shuffled()
         shuffleLikes = true
+        sortByProvider = false
         activeID = nil
         refreshSavedLikes()
     }
     var body: some View {
         ZStack {
                 GeometryReader { geometry in
+                    ScrollViewReader { scrollProxy in
                     ScrollView {
                         LazyVStack(spacing: 18) {
                             HStack(spacing: 12) {
@@ -1203,10 +1221,41 @@ struct FavoritesView: View {
                             }
                             .padding(.horizontal, 16)
                             .padding(.top, 14)
+                            .id("favorites-feed-top")
                             CollectionSearchField(text: $searchText, placeholder: "Search likes",
                                                   identifier: "favorites-search", isSearching: searching)
                                 .padding(.horizontal, 16)
-                            if saved.isEmpty {
+                            HStack(spacing: 10) {
+                                Menu {
+                                    Button("All providers", systemImage: selectedProviderID == nil ? "checkmark" : "square.grid.2x2") {
+                                        selectedProviderID = nil
+                                        activeID = nil
+                                        refreshSavedLikes()
+                                    }
+                                    ForEach(availableProviders, id: \.self) { id in
+                                        Button(CollectionProviderOrder.name(id),
+                                               systemImage: selectedProviderID == id ? "checkmark" : "square.grid.2x2") {
+                                            selectedProviderID = id
+                                            activeID = nil
+                                            refreshSavedLikes()
+                                        }
+                                    }
+                                } label: {
+                                    Label(selectedProviderID.map(CollectionProviderOrder.name) ?? "All providers",
+                                          systemImage: "line.3.horizontal.decrease")
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 12).padding(.vertical, 9)
+                                        .background(AppTheme.elevatedSurface, in: Capsule())
+                                        .overlay(Capsule().stroke(AppTheme.border))
+                                }
+                                .accessibilityIdentifier("favorites-provider-filter")
+                                Spacer()
+                                if sortByProvider {
+                                    Text("Provider A–Z").font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            if orderedLikes.isEmpty {
                                 ContentUnavailableView("Save what you love", systemImage: "heart", description:
                                     Text("Your liked posts will stay here and help personalize Recommended and Create."))
                             } else if matchingLikes.isEmpty && !searching {
@@ -1242,6 +1291,14 @@ struct FavoritesView: View {
                                 if key != store.inlinePlaybackID { store.inlinePlaybackID = key }
                             }
                         }
+                        .onChange(of: scrollToTopRevision) { _, _ in
+                            immersive = false
+                            activeID = nil
+                            withAnimation(.easeOut(duration: 0.22)) {
+                                scrollProxy.scrollTo("favorites-feed-top", anchor: .top)
+                            }
+                        }
+                    }
                 }
                 .opacity(immersive ? 0 : 1)
                 .allowsHitTesting(!immersive)
@@ -1263,12 +1320,21 @@ struct FavoritesView: View {
                     Button("Shuffle likes", systemImage: "shuffle") { shuffleFavorites() }
                     Button("Original order", systemImage: "list.bullet") {
                         shuffleLikes = false
+                        sortByProvider = false
                         activeID = nil
                         refreshSavedLikes()
                     }
-                    .disabled(!shuffleLikes)
+                    .disabled(!shuffleLikes && !sortByProvider)
+                    Button("Provider A–Z", systemImage: "square.grid.2x2") {
+                        shuffleLikes = false
+                        sortByProvider = true
+                        activeID = nil
+                        refreshSavedLikes()
+                    }
+                    .disabled(sortByProvider)
                 } label: {
-                    Image(systemName: shuffleLikes ? "shuffle.circle.fill" : "shuffle")
+                    Image(systemName: sortByProvider ? "line.3.horizontal.decrease.circle.fill" :
+                                            (shuffleLikes ? "shuffle.circle.fill" : "shuffle"))
                         .frame(minWidth: 44, minHeight: 44)
                 }
                 .disabled(orderedLikes.isEmpty)

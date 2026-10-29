@@ -43,7 +43,11 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
         else if host == "www.erome.com", ["/explore", "/explore/new", "/search"].contains(path) {
-            payload = #"<html><div id="albums"><a class="album-link" href="/a/ABC123">Album</a><a href="https://evil.invalid/a/FAKE" class="album-link">Do not read</a><a class="album-link" href="/a/ABC123">Duplicate</a></div></html>"#
+            let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "q" })?.value
+            payload = search == "summary-video"
+                ? #"<html><div id="albums"><div class="album"><a class="album-title" href="/a/ABC123">City portrait</a><img class="album-thumbnail" src="https://s7.erome.com/123/ABC123/poster.jpg"><span class="album-videos">1</span></div></div></html>"#
+                : #"<html><div id="albums"><a class="album-link" href="/a/ABC123">Album</a><a href="https://evil.invalid/a/FAKE" class="album-link">Do not read</a><a class="album-link" href="/a/ABC123">Duplicate</a></div></html>"#
         }
         else if host == "www.erome.com", path == "/a/ABC123" {
             payload = #"<html><head><title>City portrait - Erome</title><meta property="og:image" content="https://s7.erome.com/123/ABC123/poster.jpg"></head><body><video data-setup='{&quot;poster&quot;:&quot;https://s7.erome.com/123/ABC123/poster.jpg&quot;}'><source src="https://v12.erome.com/123/ABC123/clip_720p.mp4" type="video/mp4"></video><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div><div class="img"><img data-src="https://evil.invalid/malicious.jpg"></div></body></html>"#
@@ -249,6 +253,23 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(summaries.first?.creator, "Creator")
     }
 
+    func testEromeImmersiveHydratesPlayablesFromAlbumSummaries() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let query = ParsedQuery(included: ["summary-video"], excluded: [])
+        let preview = try await api.posts(provider: .erome, query: query, page: 1)
+        XCTAssertEqual(preview.items.map(\.id), ["ABC123"])
+        XCTAssertEqual(preview.items.first?.mediaUrl, "")
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
+
+        NativeProviderProtocol.log.reset()
+        let playable = try await api.posts(provider: .erome, query: query, page: 1, immersive: true)
+        XCTAssertEqual(playable.items.map(\.id), ["ABC123:clip_720p.mp4"])
+        XCTAssertEqual(playable.items.first?.mediaUrl,
+                       "https://v12.erome.com/123/ABC123/clip_720p.mp4")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
+    }
+
     func testHanimeV11CatalogSearchesTagsAndKeepsSiteHeaders() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
@@ -270,6 +291,10 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertNotNil(HanimeGeneratedAPI.validatedURL("https://api.example.com"))
         XCTAssertNil(HanimeGeneratedAPI.validatedURL("http://api.example.com"))
         XCTAssertNil(HanimeGeneratedAPI.validatedURL("https://name:secret@api.example.com"))
+        XCTAssertTrue(HanimeGeneratedAPI.permittedStreamURL(URL(string: "https://hanime.tv/hls/valid.m3u8")!))
+        XCTAssertTrue(HanimeGeneratedAPI.permittedStreamURL(URL(string: "https://cdn.hanime.tv/videos/valid.m3u8?token=1")!))
+        XCTAssertFalse(HanimeGeneratedAPI.permittedStreamURL(URL(string: "https://cdn.hanime.tv.evil.invalid/valid.m3u8")!))
+        XCTAssertFalse(HanimeGeneratedAPI.permittedStreamURL(URL(string: "https://cdn.hanime.tv/watch.html")!))
         let base = URL(string: "https://api.example.com")!
         let query = ParsedQuery(included: ["dark skin"], excluded: ["blocked_tag"])
         let hanime = try HanimeGeneratedAPI.listingURL(base: base, query: query, page: 2, sort: "recent")

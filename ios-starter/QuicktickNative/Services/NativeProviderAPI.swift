@@ -515,7 +515,7 @@ enum NativeProviderAPI {
         let claim = String(Int(Date().timeIntervalSince1970))
         let headers = ["Accept": "application/json", "Origin": "https://hanime.tv",
                        "Referer": "https://hanime.tv/", "x-signature-version": "app2",
-                       "x-claim": claim, "x-signature": hanimeSignature(claim), "x-session-token": ""]
+                       "x-claim": claim, "x-signature": hanimeSignature(claim: claim), "x-session-token": ""]
         let bytes: Data
         do {
             bytes = try await data(session: session,

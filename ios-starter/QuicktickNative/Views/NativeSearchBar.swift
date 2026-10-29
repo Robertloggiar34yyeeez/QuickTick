@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct NativeSearchBar: View {
     @EnvironmentObject private var store: AppStore
@@ -291,6 +292,11 @@ struct NativeSearchBar: View {
             .foregroundStyle(tag.excluded ? Color.orange : Color.white)
             .background(tag.excluded ? Color.orange.opacity(0.15) : AppTheme.elevatedSurface, in: Capsule())
             .overlay(Capsule().stroke(tag.excluded ? Color.orange.opacity(0.6) : .white.opacity(0.15)))
+            .contextMenu {
+                Button { UIPasteboard.general.string = tag.name } label: {
+                    Label("Copy tag", systemImage: "doc.on.doc")
+                }
+            }
     }
     private func filterLabel(_ title: String, icon: String) -> some View {
         Label(title, systemImage: icon).font(.subheadline).padding(.horizontal, 12).frame(height: 40)

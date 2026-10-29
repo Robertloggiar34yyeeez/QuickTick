@@ -560,6 +560,7 @@ struct PostTagsView: View {
     let post: Post
     @Environment(\.dismiss) private var dismiss
     @State private var creditedArtists: [String] = []
+    @State private var copiedTag: String?
     private var remainingTags: [String] {
         let credits = Set(creditedArtists.map(RecommendationTagRules.canonical))
         return Array(Set(post.tags)).filter { tag in
@@ -581,6 +582,27 @@ struct PostTagsView: View {
         store.setExclusions(Array(Set(store.exclusions + [key])).sorted())
         Task { await store.refresh(immersive: store.activeTab == 1) }
     }
+    private func copyTag(_ tag: String) {
+        // Copy the original provider tag, including underscores or artist:
+        // prefixes, so it can be pasted into another search unchanged.
+        UIPasteboard.general.string = tag
+        copiedTag = tag
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            if copiedTag == tag { copiedTag = nil }
+        }
+    }
+    @ViewBuilder private var copyConfirmation: some View {
+        if let copiedTag {
+            Label("Copied \(copiedTag)", systemImage: "checkmark.circle.fill")
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .background(AppTheme.elevatedSurface, in: Capsule())
+                .overlay(Capsule().stroke(AppTheme.accent))
+                .padding(.bottom, 14)
+                .accessibilityIdentifier("copied-tag-confirmation")
+        }
+    }
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -592,6 +614,7 @@ struct PostTagsView: View {
                             .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                         ForEach(creditedArtists, id: \.self) { artist in
                             Menu {
+                                Button { copyTag(artist) } label: { Label("Copy tag", systemImage: "doc.on.doc") }
                                 Button { searchArtist(artist) } label: { Label("Search this artist", systemImage: "magnifyingglass") }
                                 Button { store.preferArtist(artist, from: post) } label: { Label("More from this artist", systemImage: "heart") }
                                 Button(role: .destructive) { blockArtist(artist) } label: { Label("Block this artist", systemImage: "nosign") }
@@ -631,6 +654,7 @@ struct PostTagsView: View {
                         let blocked = store.exclusions.map(RecommendationTagRules.canonical)
                             .contains(RecommendationTagRules.canonical(tag))
                         Menu {
+                            Button { copyTag(tag) } label: { Label("Copy tag", systemImage: "doc.on.doc") }
                             Button("Add to search") { store.includeTag(tag) }
                             Button("Exclude from search") { store.excludeTag(tag) }
                             if FurryTagAliases.explicit.contains(RecommendationTagRules.canonical(tag))
@@ -668,6 +692,7 @@ struct PostTagsView: View {
                 }.padding()
                 if post.tags.isEmpty { Text("No tags available").foregroundStyle(.secondary).padding() }
             }.background(AppTheme.canvas).navigationTitle("Tags")
+                .overlay(alignment: .bottom) { copyConfirmation }
                 .toolbar { Button("Done") { dismiss() } }
                 .task(id: post.stableID) {
                     let taxonomy = await store.visual.metadataTaxonomy()

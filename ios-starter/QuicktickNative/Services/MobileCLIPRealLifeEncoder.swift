@@ -130,10 +130,10 @@ actor MobileCLIPRealLifeEncoder {
     }
 }
 
-/// The MobileCLIP2-S0 checkpoint released by Apple is PyTorch, not a ready to
-/// install Core ML model. Users may import their own *converted* image encoder;
-/// QuickTick verifies its Core ML feature contract before selecting it over
-/// the original MobileCLIP-S0. This never runs during scrolling or playback.
+/// Apple's MobileCLIP2-S0 checkpoint is PyTorch-only. Users may import a
+/// converted Core ML image encoder or download its .mlpackage directory from
+/// an HTTPS repository they trust. QuickTick never silently ships or fetches
+/// Apple's research-only weights. Inference remains off the scroll path.
 actor MobileCLIP2RealLifeEncoder {
     static let shared = MobileCLIP2RealLifeEncoder()
     static let version = "mobileclip2-s0-image-apple-converted-v1"
@@ -153,7 +153,58 @@ actor MobileCLIP2RealLifeEncoder {
     private var model: MLModel?
     private var installing = false
 
+    // A Core ML ML Program has a small manifest and program alongside the
+    // weight blob. Download the package's three files directly, so no ZIP
+    // extraction library or PyTorch runtime is required on the phone.
+    private static let packageFiles: [(path: String, maxBytes: Int64)] = [
+        ("Manifest.json", 65_536),
+        ("Data/com.apple.CoreML/model.mlmodel", 4_194_304),
+        ("Data/com.apple.CoreML/weights/weight.bin", 268_435_456)
+    ]
+
+    static func packageFileURLs(from directory: URL) -> [URL]? {
+        guard directory.scheme?.lowercased() == "https", directory.host?.isEmpty == false,
+              directory.user == nil, directory.password == nil,
+              directory.query == nil, directory.fragment == nil else { return nil }
+        let prefix = directory.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard prefix.lowercased().hasSuffix(".mlpackage") else { return nil }
+        return packageFiles.compactMap { URL(string: prefix + "/" + $0.path) }
+    }
+
     func release() { model = nil }
+
+    func install(fromRemotePackage directory: URL) async throws {
+        guard let urls = Self.packageFileURLs(from: directory), urls.count == Self.packageFiles.count
+        else { throw URLError(.badURL) }
+        guard !Self.isInstalled() else { return }
+        guard !installing else { throw CocoaError(.fileWriteFileExists) }
+        installing = true
+        defer { installing = false }
+
+        let manager = FileManager.default
+        let scratch = manager.temporaryDirectory
+            .appendingPathComponent("quicktick-mobileclip2-\(UUID().uuidString)", isDirectory: true)
+        let package = scratch.appendingPathComponent("MobileCLIP2-S0-image.mlpackage", isDirectory: true)
+        try manager.createDirectory(at: package, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: scratch) }
+
+        for (index, file) in Self.packageFiles.enumerated() {
+            try Task.checkCancellation()
+            let (temporary, response) = try await URLSession.shared.download(from: urls[index])
+            defer { try? manager.removeItem(at: temporary) }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  http.url?.scheme?.lowercased() == "https" else { throw URLError(.badServerResponse) }
+            let bytes = (try manager.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.int64Value ?? 0
+            guard (1...file.maxBytes).contains(bytes) else { throw CocoaError(.fileReadCorruptFile) }
+            let target = package.appendingPathComponent(file.path)
+            try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try manager.moveItem(at: temporary, to: target)
+        }
+        try Task.checkCancellation()
+        let compiled = try await MLModel.compileModel(at: package)
+        try Task.checkCancellation()
+        try installCompiled(compiled)
+    }
 
     func install(from source: URL) async throws {
         guard !Self.isInstalled() else { return }
@@ -168,6 +219,10 @@ actor MobileCLIP2RealLifeEncoder {
         let compiled = ext == "mlmodelc" ? source : try await MLModel.compileModel(at: source)
         try Task.checkCancellation()
 
+        try installCompiled(compiled)
+    }
+
+    private func installCompiled(_ compiled: URL) throws {
         let verified = try MLModel(contentsOf: compiled)
         guard verified.modelDescription.inputDescriptionsByName["image"]?.type == .image,
               verified.modelDescription.outputDescriptionsByName["final_emb_1"]?.type == .multiArray,

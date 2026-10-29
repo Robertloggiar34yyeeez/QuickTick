@@ -43,6 +43,7 @@ struct SettingsView: View {
     @State private var mobileCLIPInstalling = false
     @State private var mobileCLIP2Installed = MobileCLIP2RealLifeEncoder.isInstalled()
     @State private var mobileCLIP2Installing = false
+    @State private var mobileCLIP2PackageURL = ""
     @State private var importingMobileCLIP2 = false
     @State private var mobileCLIPError: String?
     @State private var showingTasteWrapped = false
@@ -428,6 +429,43 @@ struct SettingsView: View {
                 .accessibilityIdentifier("install-mobileclip-button")
                 Text("Optional Apple on-device model for real-life visual similarity. Keeps anime and photo tastes separate; existing tags still determine specific themes. Runs during idle visual analysis, never during video playback.")
                     .font(.footnote).foregroundStyle(.secondary)
+                TextField("HTTPS URL of converted .mlpackage folder", text: $mobileCLIP2PackageURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .textContentType(.URL)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("mobileclip2-package-url")
+                    .disabled(mobileCLIP2Installing || mobileCLIP2Installed)
+                Button {
+                    let text = mobileCLIP2PackageURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard let url = URL(string: text),
+                          MobileCLIP2RealLifeEncoder.packageFileURLs(from: url) != nil else {
+                        mobileCLIPError = "Enter the HTTPS address of a converted Core ML .mlpackage directory."
+                        return
+                    }
+                    mobileCLIP2Installing = true; mobileCLIPError = nil
+                    Task {
+                        do {
+                            try await MobileCLIP2RealLifeEncoder.shared.install(fromRemotePackage: url)
+                            mobileCLIP2Installed = true
+                            store.visualModelDidInstall()
+                        } catch { mobileCLIPError = error.localizedDescription }
+                        mobileCLIP2Installing = false
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        if mobileCLIP2Installing { InfinityLoader(size: 22) }
+                        else { Image(systemName: mobileCLIP2Installed ? "checkmark.circle.fill" : "arrow.down.circle") }
+                        Text(mobileCLIP2Installed ? "MobileCLIP2-S0 ready" :
+                             (mobileCLIP2Installing ? "Downloading / compiling MobileCLIP2…" : "Download MobileCLIP2-S0 Core ML"))
+                        Spacer()
+                    }
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .disabled(mobileCLIP2Installing || mobileCLIP2Installed || mobileCLIP2PackageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("download-mobileclip2-button")
                 Button {
                     importingMobileCLIP2 = true
                 } label: {
@@ -442,7 +480,7 @@ struct SettingsView: View {
                 .buttonStyle(QuicktickPressStyle())
                 .disabled(mobileCLIP2Installing || mobileCLIP2Installed)
                 .accessibilityIdentifier("import-mobileclip2-button")
-                Text("Newer real-life taste encoder. Apple's MobileCLIP2-S0 release is a PyTorch checkpoint: select a separately converted 256×256 Core ML image model (.mlpackage or .mlmodelc). QuickTick validates it, then prefers it during idle analysis; otherwise it safely keeps MobileCLIP-S0 or Vision.")
+                Text("Apple releases MobileCLIP2-S0 as a research-only PyTorch checkpoint, not a downloadable Core ML model. For permitted research use, enter the HTTPS folder URL of a separately converted 256×256 Core ML .mlpackage, or import one from Files. QuickTick validates it and uses it for idle analysis; no MobileCLIP2 weights are bundled. MobileCLIP-S0 and Vision remain available.")
                     .font(.footnote).foregroundStyle(.secondary)
                 if let mobileCLIPError {
                     Text("Visual model installation failed: \(mobileCLIPError)")

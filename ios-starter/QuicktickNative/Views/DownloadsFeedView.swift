@@ -208,6 +208,7 @@ private struct DownloadContent: View {
     @State private var searching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var cacheTask: Task<Void, Never>?
+    private var cardInset: CGFloat { AppTheme.isDeSlopified ? AppTheme.contentMargin : 0 }
     private var filteredRecords: [DownloadRecord] {
         let records = downloadOrder.ordered(manager.records)
         guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return records }
@@ -293,13 +294,22 @@ private struct DownloadContent: View {
                         }
                     }
                     .padding(.top, 2)
+                    .padding(.horizontal, AppTheme.contentMargin)
                     CollectionSearchField(text: $searchText, placeholder: "Search downloads",
                                           identifier: "downloads-search", isSearching: searching)
-                    if selecting { selectionControls }
-                    if let error = manager.storageError { Text(error).foregroundStyle(.orange) }
-                    if manager.records.isEmpty { ContentUnavailableView("No downloads yet", systemImage: "arrow.down.to.line", description: Text("Save posts to view them offline here.")) }
+                        .padding(.horizontal, AppTheme.contentMargin)
+                    if selecting { selectionControls.padding(.horizontal, AppTheme.contentMargin) }
+                    if let error = manager.storageError {
+                        Text(error).foregroundStyle(.orange)
+                            .padding(.horizontal, AppTheme.contentMargin)
+                    }
+                    if manager.records.isEmpty {
+                        ContentUnavailableView("No downloads yet", systemImage: "arrow.down.to.line", description: Text("Save posts to view them offline here."))
+                            .padding(.horizontal, AppTheme.contentMargin)
+                    }
                     else if filteredRecords.isEmpty && !searching {
                         ContentUnavailableView("No matching downloads", systemImage: "magnifyingglass", description: Text("Try another title, tag, or provider."))
+                            .padding(.horizontal, AppTheme.contentMargin)
                     }
                     ForEach(filteredRecords) { record in
                         if record.state == .complete {
@@ -309,12 +319,14 @@ private struct DownloadContent: View {
                             DownloadCachedCardRow(record: record,
                                                   offlinePost: offlinePostCache[record.key],
                                                   cacheReady: offlineCacheReady,
-                                                  available: CGSize(width: min(AppTheme.feedWidth, geometry.size.width - 32), height: geometry.size.height),
+                                                  available: CGSize(width: max(1, min(AppTheme.feedWidth, geometry.size.width) - cardInset * 2), height: geometry.size.height),
                                                   manager: manager, selecting: selecting,
                                                   selected: selectedKeys.contains(record.key)) {
                                 toggleSelection(record.key)
                             }
                             .equatable()
+                            .padding(.horizontal, cardInset)
+                            .frame(maxWidth: .infinity)
                         } else {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
@@ -345,13 +357,13 @@ private struct DownloadContent: View {
                         .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
                         .overlay(RoundedRectangle(cornerRadius: 18).stroke(AppTheme.border))
                         .overlay { if selecting { selectionOverlay(for: record) } }
+                        .padding(.horizontal, AppTheme.contentMargin)
                         }
                     }
                 }
-                // Share the Home feed's centred 680pt content column on iPad.
-                // Title, actions, cards and export rows now use one left edge.
+                // Match Home: controls retain a readable gutter, while cards
+                // occupy the full feed column (up to 680pt on iPad).
                 .frame(maxWidth: AppTheme.feedWidth)
-                .padding(.horizontal, AppTheme.contentMargin)
                 .padding(.vertical, AppTheme.contentMargin)
                 .frame(maxWidth: .infinity)
                 }

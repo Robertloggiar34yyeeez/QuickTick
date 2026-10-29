@@ -3,6 +3,26 @@ import CoreGraphics
 @testable import QuicktickNative
 
 final class VisualTasteTests: XCTestCase {
+    func testMobileCLIP2RemotePackageAcceptsOnlyHTTPSCoreMLDirectories() throws {
+        let directory = try XCTUnwrap(URL(string: "https://huggingface.co/research/project/resolve/abc123/mobileclip2_s0_image.mlpackage/"))
+        let files = try XCTUnwrap(MobileCLIP2RealLifeEncoder.packageFileURLs(from: directory))
+        XCTAssertEqual(files.map(\.absoluteString), [
+            "https://huggingface.co/research/project/resolve/abc123/mobileclip2_s0_image.mlpackage/Manifest.json",
+            "https://huggingface.co/research/project/resolve/abc123/mobileclip2_s0_image.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "https://huggingface.co/research/project/resolve/abc123/mobileclip2_s0_image.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+        ])
+        for invalid in [
+            "http://example.com/model.mlpackage",
+            "https://example.com/model.pt",
+            "https://example.com/model.mlmodelc",
+            "https://example.com/model.mlpackage?token=secret",
+            "https://name:password@example.com/model.mlpackage",
+            "https://example.com/model.mlpackage#fragment"
+        ] {
+            XCTAssertNil(MobileCLIP2RealLifeEncoder.packageFileURLs(from: try XCTUnwrap(URL(string: invalid))), invalid)
+        }
+    }
+
     func testGalaxyPaletteIsSelectableAndHasDistinctNebulaGradient() {
         XCTAssertTrue(AppTheme.AccentPalette.allCases.contains(.galaxy))
         XCTAssertEqual(AppTheme.AccentPalette(rawValue: "galaxy"), .galaxy)

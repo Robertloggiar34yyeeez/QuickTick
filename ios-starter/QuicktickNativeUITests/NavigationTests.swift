@@ -307,8 +307,15 @@ final class NavigationTests: XCTestCase {
     }
     @MainActor func testDownloadedImagesUseNormalFeedAndCloseFullComic() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]; app.launch()
+        let homeCard = app.otherElements["post-media-test:video"]
+        XCTAssertTrue(homeCard.waitForExistence(timeout: 10))
+        let homeWidth = homeCard.frame.width
         app.buttons["tab-Downloads"].tap()
         XCTAssertTrue(app.navigationBars["Downloads"].waitForExistence(timeout: 10))
+        let offlineCard = app.otherElements["post-media-test:video"]
+        XCTAssertTrue(offlineCard.waitForExistence(timeout: 10))
+        XCTAssertEqual(offlineCard.frame.width, homeWidth, accuracy: 2,
+                       "Downloaded media cards must use the same edge-to-edge width as Home")
         let full = app.buttons["View full image"].firstMatch
         for _ in 0..<5 { if full.isHittable { break }; app.swipeUp() }
         XCTAssertTrue(full.isHittable); full.tap()

@@ -38,7 +38,7 @@ struct PostCardView: View {
     @State private var showLikeHeart = false
     @State private var likeHeartSequence = 0
     private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
-    private var fullBleed: Bool { playbackTab == 0 && !offline }
+    private var fullBleed: Bool { (playbackTab == 0 && !offline) || (playbackTab == 3 && offline) }
     private var isWebsitePost: Bool { post.providerKey == .hhaven && post.type.lowercased() == "web" }
     private var cardRadius: CGFloat { fullBleed && !AppTheme.isDeSlopified ? 0 : AppTheme.cardRadius }
     private var mediaSize: CGSize {

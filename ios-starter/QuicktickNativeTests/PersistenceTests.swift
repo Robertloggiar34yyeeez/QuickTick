@@ -45,6 +45,44 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(manager.records.map(\.key), [newest.key, middle.key, oldest.key])
     }
 
+    func testDownloadShuffleKeepsItsDeckThroughProgressAndCatalogUpdates() {
+        let records = (1...4).reversed().map { id in
+            DownloadRecord(key: "rule34:\(id)", provider: "Rule34", postID: "\(id)",
+                title: "Saved \(id)", tags: [], thumbnailRemoteURL: "",
+                kind: .file, state: .complete, progress: 1,
+                createdAt: Date(timeIntervalSince1970: Double(id)))
+        }
+        var order = DownloadShuffleOrder()
+        XCTAssertEqual(order.ordered(records).map(\.key), records.map(\.key))
+
+        order.shuffle(records: records)
+        let shuffled = order.ordered(records).map(\.key)
+        XCTAssertTrue(order.isShuffled)
+        XCTAssertEqual(Set(shuffled), Set(records.map(\.key)))
+
+        var progressUpdate = records
+        progressUpdate[0].progress = 0.75
+        XCTAssertEqual(order.ordered(progressUpdate).map(\.key), shuffled,
+                       "Background download progress must never reshuffle saved posts")
+
+        let addition = DownloadRecord(key: "erome:new", provider: "Erome", postID: "new",
+            title: "New download", tags: [], thumbnailRemoteURL: "", kind: .file,
+            state: .complete, progress: 1, createdAt: .now)
+        let expanded = [addition] + records
+        order.reconcile(records: expanded)
+        XCTAssertEqual(order.ordered(expanded).map(\.key), shuffled + [addition.key],
+                       "New downloads should join the end of an existing shuffled deck")
+
+        let removed = expanded.filter { $0.key != shuffled[1] }
+        order.reconcile(records: removed)
+        XCTAssertEqual(order.ordered(removed).map(\.key),
+                       (shuffled + [addition.key]).filter { $0 != shuffled[1] })
+
+        order.restoreOriginalOrder()
+        XCTAssertFalse(order.isShuffled)
+        XCTAssertEqual(order.ordered(removed).map(\.key), removed.map(\.key))
+    }
+
     func testLocalStateRoundTripAndUnknownVersionIsPreserved() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -88,7 +88,7 @@ enum NativeProviderAPI {
     static let userAgent = "QuickTickNative/1.0"
     // nHentai requests specifically ask clients for an identifying UA; keep
     // the project URL rather than impersonating a browser or official app.
-    static let nhentaiHeaders = ["User-Agent": "QuickTick/0.9.9 (https://github.com/Robertloggiar34yyeeez/QuickTick)"]
+    static let nhentaiHeaders = ["User-Agent": "QuickTick/1.0 (https://github.com/Robertloggiar34yyeeez/QuickTick)"]
     static let quicktickHost = "quick-tick-webb.vercel.app"
 
     static func origin(_ provider: Provider) -> URL {

@@ -129,6 +129,38 @@ enum DownloadExporter {
     }
 }
 
+/// Keep the same stable, opt-in shuffle behavior as Favorites. A progress
+/// publish changes the record data, never its position in the shuffled deck.
+struct DownloadShuffleOrder {
+    private(set) var isShuffled = false
+    private(set) var keys: [String] = []
+
+    mutating func shuffle(records: [DownloadRecord]) {
+        keys = records.map(\.key).shuffled()
+        isShuffled = true
+    }
+
+    mutating func restoreOriginalOrder() {
+        keys = []
+        isShuffled = false
+    }
+
+    mutating func reconcile(records: [DownloadRecord]) {
+        guard isShuffled else { return }
+        let current = Set(records.map(\.key))
+        keys.removeAll { !current.contains($0) }
+        let existing = Set(keys)
+        keys += records.map(\.key).filter { !existing.contains($0) }
+    }
+
+    func ordered(_ records: [DownloadRecord]) -> [DownloadRecord] {
+        guard isShuffled else { return records }
+        let byKey = Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) })
+        let known = Set(keys)
+        return keys.compactMap { byKey[$0] } + records.filter { !known.contains($0.key) }
+    }
+}
+
 /// Search terms and local paths change only when the catalog changes, not
 /// when the download manager publishes a new progress fraction.
 private struct DownloadSearchIdentity: Equatable {
@@ -165,6 +197,7 @@ private struct DownloadContent: View {
     @State private var selecting = false
     @State private var selectedKeys: Set<String> = []
     @State private var confirmDelete = false
+    @State private var downloadOrder = DownloadShuffleOrder()
     @State private var searchText = ""
     @State private var matchingKeys: Set<String> = []
     @State private var offlinePostCache: [String: Post] = [:]
@@ -176,10 +209,11 @@ private struct DownloadContent: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var cacheTask: Task<Void, Never>?
     private var filteredRecords: [DownloadRecord] {
-        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return manager.records }
+        let records = downloadOrder.ordered(manager.records)
+        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return records }
         // A Set lookup is cheap enough during progress publishes and scrolling;
         // the expensive tag/title matching runs only when search inputs change.
-        return manager.records.filter { matchingKeys.contains($0.key) }
+        return records.filter { matchingKeys.contains($0.key) }
     }
     private var collectionSubtitle: String {
         if searching { return "Searching your downloads…" }
@@ -193,6 +227,7 @@ private struct DownloadContent: View {
         let next = records.map(DownloadSearchIdentity.init)
         guard next != recordIdentity else { return }
         recordIdentity = next
+        downloadOrder.reconcile(records: records)
         offlineCacheReady = false
         recordRevision &+= 1
         let revision = recordRevision
@@ -334,6 +369,24 @@ private struct DownloadContent: View {
                     Button { rhythm = true } label: { Label("Rhythm", systemImage: "waveform.path") }
                         .disabled(localPosts.isEmpty)
                         .accessibilityIdentifier("downloads-rhythm")
+                    Menu {
+                        Button("Shuffle downloads", systemImage: "shuffle") {
+                            downloadOrder.shuffle(records: manager.records)
+                            immersivePostID = nil
+                        }
+                        Button("Original order", systemImage: "list.bullet") {
+                            downloadOrder.restoreOriginalOrder()
+                            immersivePostID = nil
+                        }
+                        .disabled(!downloadOrder.isShuffled)
+                    } label: {
+                        Image(systemName: downloadOrder.isShuffled ? "shuffle.circle.fill" : "shuffle")
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .disabled(manager.records.isEmpty)
+                    .accessibilityLabel("Browse downloads randomly")
+                    .accessibilityValue(downloadOrder.isShuffled ? "Shuffled" : "Original order")
+                    .accessibilityIdentifier("downloads-shuffle")
                     Button(immersive ? "Feed" : "Offline Immersive") { immersive.toggle() }
                         .disabled(!immersive && !localPosts.contains(where: \.isImmersiveMedia))
                     Button(selecting ? "Done" : "Select") {

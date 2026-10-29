@@ -621,7 +621,7 @@ final class NativeProviderAPITests: XCTestCase {
         let recentRequest = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first {
             $0.url?.path == "/api/v2/galleries"
         })
-        XCTAssertTrue(recentRequest.value(forHTTPHeaderField: "User-Agent")?.contains("QuickTick/0.9.9") == true)
+        XCTAssertTrue(recentRequest.value(forHTTPHeaderField: "User-Agent")?.contains("QuickTick/1.0") == true)
         XCTAssertEqual(NativeProviderAPI.nhentaiImageURL(path: "2.png", mediaID: "321", thumbnail: false)?.absoluteString,
                        "https://i1.nhentai.net/galleries/321/2.png")
         XCTAssertNil(NativeProviderAPI.nhentaiImageURL(path: "https://example.invalid/page.jpg", mediaID: "321", thumbnail: false))

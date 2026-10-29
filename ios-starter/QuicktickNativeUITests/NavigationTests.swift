@@ -93,6 +93,21 @@ final class NavigationTests: XCTestCase {
         export.tap()
         XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 10) || app.buttons["Save to Files"].exists || app.otherElements["ActivityListView"].exists)
     }
+    @MainActor func testDownloadsShuffleAndOriginalOrderMenu() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-download-images"]
+        app.launch()
+        app.buttons["tab-Downloads"].tap()
+        let shuffle = app.buttons["downloads-shuffle"]
+        XCTAssertTrue(shuffle.waitForExistence(timeout: 10))
+        XCTAssertEqual(shuffle.value as? String, "Original order")
+        shuffle.tap()
+        app.buttons["Shuffle downloads"].tap()
+        XCTAssertEqual(shuffle.value as? String, "Shuffled")
+        shuffle.tap()
+        app.buttons["Original order"].tap()
+        XCTAssertEqual(shuffle.value as? String, "Original order")
+    }
     override func setUp() async throws {
         continueAfterFailure = false
         await MainActor.run { XCUIDevice.shared.orientation = .portrait }

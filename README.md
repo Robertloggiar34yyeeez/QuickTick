@@ -2,9 +2,9 @@
 
 **Native media discovery for iPhone and iPad.** Browse, discover, save and revisit media with a customizable SwiftUI interface, an immersive player, on-device recommendations and an optional local image studio.
 
-![Version](https://img.shields.io/badge/version-0.9.9-8b5cf6) ![iOS](https://img.shields.io/badge/iOS-17%2B-2563eb) ![Build](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/workflows/ios.yml/badge.svg?branch=main)
+![Version](https://img.shields.io/badge/version-1.0-8b5cf6) ![iOS](https://img.shields.io/badge/iOS-17%2B-2563eb) ![Build](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/workflows/ios.yml/badge.svg?branch=main)
 
-**Latest verified source:** v0.9.9 (build 29), merged into `main` on October 25, 2026. The [successful iOS workflow](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/runs/40188749487) built an unsigned IPA and completed its automated iPhone/iPad tests. Real-device performance, model compatibility and external content availability vary and are not guaranteed by CI.
+**Current development version:** v1.0 (build 30). The previously verified v0.9.9 (build 29) source was merged into `main` on October 25, 2026. Its [successful iOS workflow](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/runs/40188749487) built an unsigned IPA and completed its automated iPhone/iPad tests. Real-device performance, model compatibility and external content availability vary and are not guaranteed by CI.
 
 ## Screenshots
 
@@ -27,7 +27,7 @@ These are **actual iOS Simulator screenshots** exported from the successful UI-t
 ## Install an IPA
 
 1. Open [GitHub Actions → Native iOS build and IPA](https://github.com/Robertloggiar34yyeeez/QuickTick/actions/workflows/ios.yml) and choose a **successful** run for `main`.
-2. Under **Artifacts**, download `QuickTick-0.9.9-unsigned-IPA` (while retained by GitHub Actions).
+2. Under **Artifacts**, download `QuickTick-1.0-unsigned-IPA` from a v1.0 run (while retained by GitHub Actions).
 3. Extract the archive and sign/sideload the included `.ipa` using a compatible installation method. The IPA is **unsigned**; it will not install directly like an App Store app.
 
 GitHub Actions artifacts are temporary (currently retained for 14 days). This repository does not promise a permanent binary download or App Store distribution. To build from source, open `ios-starter/QuicktickNative.xcodeproj` with a compatible Xcode release on macOS; see [the iOS workflow](.github/workflows/ios.yml) for the exact build pipeline.

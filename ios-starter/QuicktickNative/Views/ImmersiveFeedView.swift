@@ -502,6 +502,7 @@ private struct ImmersiveItemView: View {
     @State private var scrubbing = false
     @State private var error: String?
     @State private var mediaRetry = 0
+    @State private var browseHanime = false
     @State private var showComments = false
     @State private var showTags = false
     @State private var gifURL: URL?
@@ -514,6 +515,12 @@ private struct ImmersiveItemView: View {
     @State private var likePulse = false
     private var shouldSkipIntro: Bool {
         VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros, haven: skipHavenIntros)
+    }
+    private var hanimePage: URL? {
+        guard post.providerKey == .hanime,
+              let url = URL(string: post.pageUrl), url.scheme == "https",
+              ["hanime.tv", "www.hanime.tv"].contains(url.host ?? "") else { return nil }
+        return url
     }
 
     var body: some View {
@@ -654,6 +661,10 @@ private struct ImmersiveItemView: View {
                             store.players.release(post.stableID); player = nil; ready = false; self.error = nil
                             mediaRetry += 1
                         }.frame(minHeight: 44)
+                        if hanimePage != nil {
+                            Button("Open on Hanime inside QuickTick") { browseHanime = true }
+                                .frame(minHeight: 44)
+                        }
                     }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
                 }
                 if active, !offline, !collection, let message = store.lastError {
@@ -676,6 +687,9 @@ private struct ImmersiveItemView: View {
         }
         .sheet(isPresented: $showComments) { CommentsView(post: post) }
         .sheet(isPresented: $showTags) { PostTagsView(post: post) }
+        .sheet(isPresented: $browseHanime) {
+            if let url = hanimePage { SourceWebsiteView(url: url).ignoresSafeArea() }
+        }
         .task(id: likePulse) {
             guard likePulse else { return }
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
@@ -981,20 +995,25 @@ struct PosterView: View {
     let alternatives: [String]
     let title: String
     let provider: String
+    let decodePixels: Int
     var onDecoded: ((DecodedMediaImage) -> Void)?
 
     init(url: String, onDecoded: ((DecodedMediaImage) -> Void)? = nil) {
-        self.url = url; alternatives = []; title = ""; provider = ""; self.onDecoded = onDecoded
+        self.url = url; alternatives = []; title = ""; provider = ""; decodePixels = 1024; self.onDecoded = onDecoded
     }
     init(post: Post, onDecoded: ((DecodedMediaImage) -> Void)? = nil) {
         url = post.cardPreviewURL
         alternatives = post.previewImageURLs.filter { $0 != post.cardPreviewURL }
         title = post.caption ?? ""
         provider = post.provider
+        // Erome album listings are thumbnail-centric. Their 1024px decoded
+        // textures cost noticeably more memory than needed in a fast card
+        // feed; keep other providers' preview quality untouched.
+        decodePixels = post.providerKey == .erome ? 800 : 1024
         self.onDecoded = onDecoded
     }
     var body: some View {
-        CachedMediaImage(url: url, alternatives: alternatives, pixels: 1024,
+        CachedMediaImage(url: url, alternatives: alternatives, pixels: decodePixels,
                          placeholderTitle: title, placeholderProvider: provider, onDecoded: onDecoded)
     }
 }

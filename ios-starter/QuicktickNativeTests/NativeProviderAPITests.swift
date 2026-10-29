@@ -284,6 +284,22 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
     }
 
+    func testEromeAlbumMediaIsReusedAcrossImmersiveAndPlaybackResolution() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let query = ParsedQuery(included: ["summary-video"], excluded: [])
+        let page = try await api.posts(provider: .erome, query: query, page: 1, immersive: true)
+        let clip = try XCTUnwrap(page.items.first)
+        let unresolved = Post(key: "erome:ABC123", id: "ABC123", provider: "Erome", type: "video")
+        async let first = api.resolveMedia(unresolved)
+        async let second = api.resolveMedia(unresolved)
+        let (one, two) = try await (first, second)
+        XCTAssertEqual(one.mediaUrl, clip.mediaUrl)
+        XCTAssertEqual(two.mediaUrl, clip.mediaUrl)
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/a/ABC123" }.count, 1,
+                       "Replaying an Erome album should not repeat its expensive HTML/WebKit load")
+    }
+
     func testEromeImmersiveDoesNotLoseVideoLinksBesideImageSummaries() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
@@ -1283,7 +1299,9 @@ final class NativeProviderAPITests: XCTestCase {
     }
     func testDirectResolversPreferHighQualityAndCommentsDecodeXML() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
-        for (provider, expected) in [(Provider.eporner, "https://cdn.eporner.com/full.mp4"), (.hanime, "https://cdn.hanime.tv/full.m3u8"), (.pornhub, "https://cdn.pornhub.com/full.mp4")] {
+        // Hanime's public catalog no longer guarantees a playback stream.
+        // Its missing-stream behavior is covered by a separate regression test.
+        for (provider, expected) in [(Provider.eporner, "https://cdn.eporner.com/full.mp4"), (.pornhub, "https://cdn.pornhub.com/full.mp4")] {
             let post = Post(key: "fixture", id: "sample", provider: provider.displayName, type: "video")
             let media = try await api.resolveMedia(post); XCTAssertEqual(media.mediaUrl, expected)
         }

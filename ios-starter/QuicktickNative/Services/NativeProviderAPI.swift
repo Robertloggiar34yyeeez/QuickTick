@@ -1374,6 +1374,63 @@ enum EromePublicCatalog {
         "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.7",
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
     ]
+    private static let albums = AlbumMediaCache()
+
+    /// Album HTML is shared by Home's Play action, Immersive hydration and
+    /// subsequent visits. Coalesce identical requests and keep decoded media
+    /// links briefly so a return swipe doesn't hit Erome/WebKit again.
+    private actor AlbumMediaCache {
+        private final class SessionIdentity {
+            weak var session: URLSession?
+            let number: Int
+            init(session: URLSession, number: Int) {
+                self.session = session; self.number = number
+            }
+        }
+        private var sessionIdentities: [ObjectIdentifier: SessionIdentity] = [:]
+        private var nextSessionNumber = 0
+        private var completed: [String: (posts: [Post], expiry: Date)] = [:]
+        private var pending: [String: Task<[Post], Error>] = [:]
+
+        func posts(session: URLSession, url: URL) async throws -> [Post] {
+            // Separate session transports, including deterministic test
+            // sessions and distinct cookie stores, must never share results.
+            let sessionID = ObjectIdentifier(session)
+            let number: Int
+            if let current = sessionIdentities[sessionID], current.session === session {
+                number = current.number
+            } else {
+                nextSessionNumber += 1
+                number = nextSessionNumber
+                sessionIdentities[sessionID] = SessionIdentity(session: session, number: number)
+                if sessionIdentities.count > 48 {
+                    sessionIdentities = sessionIdentities.filter { $0.value.session != nil }
+                }
+            }
+            let key = "\(number)|\(url.absoluteString)"
+            if let cached = completed[key], cached.expiry > .now { return cached.posts }
+            if let request = pending[key] { return try await request.value }
+            let request = Task<[Post], Error> {
+                let html = try await EromePublicCatalog.pageHTML(session: session, url: url)
+                return EromePublicCatalog.albumMedia(html, albumURL: url)
+            }
+            pending[key] = request
+            defer { pending[key] = nil }
+            let found = try await request.value
+            // A blank verification/interstitial page must remain retryable.
+            if !found.isEmpty {
+                completed[key] = (found, .now.addingTimeInterval(7 * 60))
+            }
+            if completed.count > 48 {
+                completed = completed.filter { $0.value.expiry > .now }
+                if completed.count > 48,
+                   let oldest = completed.min(by: { $0.value.expiry < $1.value.expiry })?.key {
+                    completed.removeValue(forKey: oldest)
+                }
+            }
+            return found
+        }
+    }
 
     static func posts(session: URLSession, query: ParsedQuery, page: Int,
                       sort: String, immersive: Bool) async throws -> PostPage {
@@ -1394,13 +1451,15 @@ enum EromePublicCatalog {
         // Summaries are thumbnail-only, and not every album-link has a
         // matching summary (or even a thumbnail). In particular, choosing
         // only summaries can silently discard the page's video albums.
-        // Prefer known video albums, then the listing's explicit album links,
-        // then image-only summaries. This also finds clips when a listing has
-        // dozens of picture albums before its first video.
-        let prioritized = summaries.filter { $0.type == "video" }
+        // Prefer known video albums and links not identified as photo-only;
+        // keep photo summaries as a last-resort fallback because some older
+        // listings omit their video-count badge entirely.
+        let videoLinks = summaries.filter { $0.type == "video" }.compactMap { URL(string: $0.pageUrl) }
+        let photoLinks = summaries.filter { $0.type != "video" }.compactMap { URL(string: $0.pageUrl) }
+        let photoURLs = Set(photoLinks.map(\.absoluteString))
+        let unknownLinks = albumLinks(html).filter { !photoURLs.contains($0.absoluteString) }
         var seenAlbumURLs = Set<String>()
-        let albums = (prioritized.compactMap { URL(string: $0.pageUrl) } + albumLinks(html) +
-                      summaries.filter { $0.type != "video" }.compactMap { URL(string: $0.pageUrl) })
+        let albums = (videoLinks + unknownLinks + photoLinks)
             .filter { seenAlbumURLs.insert($0.absoluteString).inserted }
         if albums.isEmpty {
             if page == 1, !html.lowercased().contains("id=\"albums\"") &&
@@ -1439,7 +1498,7 @@ enum EromePublicCatalog {
             if albumFailure == nil { albumFailure = fetched.compactMap { $0.2 }.first }
             // An immersive page needs playable media, not every image in a
             // large album. Stop after a useful initial deck to save data.
-            if immersive && items.count >= 6 { break }
+            if immersive && items.count >= 3 { break }
         }
         try Task.checkCancellation()
         if successfulAlbums == 0, let albumFailure {
@@ -1573,7 +1632,7 @@ enum EromePublicCatalog {
     }
 
     private static func albumPosts(session: URLSession, url: URL) async throws -> [Post] {
-        albumMedia(try await pageHTML(session: session, url: url), albumURL: url)
+        try await albums.posts(session: session, url: url)
     }
 
     private static func pageHTML(session: URLSession, url: URL) async throws -> String {

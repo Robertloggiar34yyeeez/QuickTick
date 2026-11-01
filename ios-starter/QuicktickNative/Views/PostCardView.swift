@@ -23,6 +23,7 @@ struct PostCardView: View {
     @State private var readingManga = false
     @State private var pendingVideoFullscreen = false
     @State private var player: AVPlayer?
+    @GestureState private var videoHoldActive = false
     @State private var gifURL: URL?
     @State private var ready = false
     private var shouldSkipIntro: Bool {
@@ -335,6 +336,22 @@ struct PostCardView: View {
             }
         }
         .contentShape(Rectangle())
+        // A held finger temporarily speeds up playing video; GestureState
+        // resets on release/cancellation, even when a drag leaves the card.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.35)
+                .updating($videoHoldActive) { pressed, state, _ in
+                    if post.type.lowercased() == "video" { state = pressed }
+                }
+        )
+        .onChange(of: videoHoldActive) { _, held in
+            guard post.type.lowercased() == "video", let player else { return }
+            if held {
+                if player.timeControlStatus == .playing { player.rate = 2 }
+            } else if player.rate > 1 {
+                player.rate = 1
+            }
+        }
         .overlay(alignment: .topTrailing) {
             if post.type.lowercased() == "video", let player,
                store.activeTab == playbackTab, store.pipPostID != post.stableID {

@@ -50,7 +50,8 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
             switch media.pathExtension.lowercased() {
             case "jpg", "jpeg", "png", "webp", "heic", "avif", "bmp", "tiff": type = "image"
             case "gif": type = "gif"
-            case "mp4", "mov", "m4v", "webm", "m3u8", "mkv", "avi", "wmv", "mpeg", "mpg", "3gp", "ogv", "ts", "mts", "m2ts", "flv": type = "video"\n            case "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg", "opus", "wma", "caf", "alac", "amr", "mid", "midi": type = "audio"
+            case "mp4", "mov", "m4v", "webm", "m3u8", "mkv", "avi", "wmv", "mpeg", "mpg", "3gp", "ogv", "ts", "mts", "m2ts", "flv": type = "video"
+            case "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg", "opus", "wma", "caf", "alac", "amr", "mid", "midi": type = "audio"
             default: return nil
             }
         }

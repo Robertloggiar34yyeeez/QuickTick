@@ -110,7 +110,7 @@ struct RootView: View {
     private let tabs = [("Home", "house.fill"), ("Immersive", "play.fill"),
                         ("Create", "plus"), ("Favorites", "heart"), ("Downloads", "arrow.down.to.line")]
     private var aiTabVisible: Bool { aiTabSessionOverride ?? showAITab }
-    private var fastDockEnabled: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+    private var fastDockEnabled: Bool { true }
     private var visibleTabIndices: [Int] { aiTabVisible ? [0, 1, 2, 3, 4] : [0, 1, 3, 4] }
 
     var body: some View { presentedRoot }
@@ -363,7 +363,7 @@ struct RootView: View {
     }
 
     private func dockDrag(vertical: Bool, axisLength: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: fastDockEnabled ? 12 : 16)
+        DragGesture(minimumDistance: 12)
             .updating($navigationDrag) { value, state, _ in state = value.translation }
             .onEnded { swipeTabs($0.translation, vertical: vertical, axisLength: axisLength) }
     }

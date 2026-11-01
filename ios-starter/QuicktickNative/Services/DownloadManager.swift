@@ -87,6 +87,41 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             }
         }
     }
+    /// Copy security-scoped Files media into the app-owned offline library.
+    /// Preserve the original extension; AVFoundation determines playback support.
+    func importLocalMedia(_ urls: [URL]) -> [String] {
+        let audio: Set<String> = ["mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg", "opus", "wma", "caf", "alac", "amr", "mid", "midi"]
+        let video: Set<String> = ["mp4", "mov", "m4v", "mkv", "avi", "webm", "wmv", "flv", "mpeg", "mpg", "ts", "mts", "m2ts", "3gp", "ogv"]
+        var errors: [String] = []
+        for url in urls {
+            let ext = url.pathExtension.lowercased()
+            guard audio.contains(ext) || video.contains(ext) else {
+                errors.append("\(url.lastPathComponent): not a recognized audio/video file")
+                continue
+            }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let id = UUID().uuidString
+                let folder = root.appendingPathComponent("import-" + id, isDirectory: true)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let destination = folder.appendingPathComponent("media." + ext)
+                do { try FileManager.default.copyItem(at: url, to: destination) }
+                catch { try? FileManager.default.removeItem(at: folder); throw error }
+                var record = DownloadRecord(key: "local:" + id, provider: "Imported", postID: id,
+                    title: url.deletingPathExtension().lastPathComponent, tags: [],
+                    thumbnailRemoteURL: "", localMediaPath: destination.path,
+                    kind: .file, state: .complete, progress: 1, createdAt: .now)
+                record.mediaType = audio.contains(ext) ? "audio" : "video"
+                record.fileSize = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value
+                upsert(record)
+            } catch {
+                errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        return errors
+    }
+
     func restoreTasks() async {
         let files = await directSession.allTasks
         let packages = await hlsSession.allTasks

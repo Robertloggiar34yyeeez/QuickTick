@@ -212,7 +212,7 @@ private struct DownloadContent: View {
     @ObservedObject var manager: DownloadManager
     var scrollToTopRevision = 0
     var onImmersiveChange: (Bool) -> Void = { _ in }
-    @State private var immersive = false
+    @State private var showFileImporter = false\n    @State private var importError: String?\n    @State private var immersive = false
     @State private var rhythm = false
     @State private var immersivePostID: String?
     @State private var selecting = false
@@ -450,7 +450,7 @@ private struct DownloadContent: View {
             }
         }.scrollContentBackground(.hidden).background(ThemeBackdrop()).navigationTitle("Downloads")
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {\n                    Button { showFileImporter = true } label: { Label("Import from Files", systemImage: "square.and.arrow.down") }\n                        .accessibilityIdentifier("downloads-import-files")
                     Button { rhythm = true } label: { Label("Rhythm", systemImage: "waveform.path") }
                         .disabled(localPosts.isEmpty)
                         .accessibilityIdentifier("downloads-rhythm")

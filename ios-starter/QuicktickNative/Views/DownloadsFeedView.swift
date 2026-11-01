@@ -451,7 +451,7 @@ private struct DownloadContent: View {
                     .transition(.move(edge: .trailing))
             }
         }.scrollContentBackground(.hidden).background(ThemeBackdrop()).navigationTitle("Downloads")
-            .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.audio, .movie, .video, .audiovisualContent, .data], allowsMultipleSelection: true) { result in
+            .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.image, .gif, .audio, .movie, .video, .audiovisualContent, .data], allowsMultipleSelection: true) { result in
                 switch result {
                 case .success(let urls):
                     let errors = manager.importLocalMedia(urls)

@@ -212,7 +212,9 @@ private struct DownloadContent: View {
     @ObservedObject var manager: DownloadManager
     var scrollToTopRevision = 0
     var onImmersiveChange: (Bool) -> Void = { _ in }
-    @State private var showFileImporter = false\n    @State private var importError: String?\n    @State private var immersive = false
+    @State private var showFileImporter = false
+    @State private var importError: String?
+    @State private var immersive = false
     @State private var rhythm = false
     @State private var immersivePostID: String?
     @State private var selecting = false
@@ -449,8 +451,21 @@ private struct DownloadContent: View {
                     .transition(.move(edge: .trailing))
             }
         }.scrollContentBackground(.hidden).background(ThemeBackdrop()).navigationTitle("Downloads")
+            .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.audio, .movie, .video, .audiovisualContent, .data], allowsMultipleSelection: true) { result in
+                switch result {
+                case .success(let urls):
+                    let errors = manager.importLocalMedia(urls)
+                    importError = errors.isEmpty ? nil : errors.joined(separator: "\n")
+                case .failure(let error): importError = error.localizedDescription
+                }
+            }
+            .alert("Import issue", isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })) {
+                Button("OK", role: .cancel) { importError = nil }
+            } message: { Text(importError ?? "") }
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {\n                    Button { showFileImporter = true } label: { Label("Import from Files", systemImage: "square.and.arrow.down") }\n                        .accessibilityIdentifier("downloads-import-files")
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { showFileImporter = true } label: { Label("Import from Files", systemImage: "square.and.arrow.down") }
+                        .accessibilityIdentifier("downloads-import-files")
                     Button { rhythm = true } label: { Label("Rhythm", systemImage: "waveform.path") }
                         .disabled(localPosts.isEmpty)
                         .accessibilityIdentifier("downloads-rhythm")

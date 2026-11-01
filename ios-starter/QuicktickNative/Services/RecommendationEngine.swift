@@ -12,9 +12,9 @@ struct RecommendationQualityModel: Sendable {
 
     static func combined(metadata: Double, visual: Double?) -> Double {
         guard let visual, visual.isFinite else { return metadata }
-        // Stronger negative evidence than positive evidence. The visual
-        // pipeline's bounded [-4,4] scale must not drown out explicit likes.
-        let appearance = visual < 0 ? max(-12, visual * 2.7) : min(6, visual * 1.5)
+        // A confident visual mismatch should not be rescued by generic tags.
+        // Preserve the existing explicit exclusion gate in the serving pipeline.
+        let appearance = visual < 0 ? max(-16, visual * 3.5) : min(8, visual * 2.0)
         return metadata + appearance
     }
 }

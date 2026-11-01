@@ -339,9 +339,11 @@ struct PostCardView: View {
         // A held finger temporarily speeds up playing video; GestureState
         // resets on release/cancellation, even when a drag leaves the card.
         .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.35)
-                .updating($videoHoldActive) { pressed, state, _ in
-                    if post.type.lowercased() == "video" { state = pressed }
+            LongPressGesture(minimumDuration: 0.35, maximumDistance: 10)
+                .sequenced(before: DragGesture(minimumDistance: 0))
+                .updating($videoHoldActive) { phase, state, _ in
+                    guard post.type.lowercased() == "video" else { return }
+                    if case .second(true, _) = phase { state = true }
                 }
         )
         .onChange(of: videoHoldActive) { _, held in

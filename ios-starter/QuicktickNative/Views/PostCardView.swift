@@ -23,7 +23,8 @@ struct PostCardView: View {
     @State private var readingManga = false
     @State private var pendingVideoFullscreen = false
     @State private var player: AVPlayer?
-    @GestureState private var videoHoldActive = false
+    @State private var videoHoldActive = false
+    @State private var holdGeneration = 0
     @State private var gifURL: URL?
     @State private var ready = false
     private var shouldSkipIntro: Bool {
@@ -329,24 +330,25 @@ struct PostCardView: View {
             }
         }
         .contentShape(Rectangle())
-        // A held finger temporarily speeds up playing video; GestureState
-        // resets on release/cancellation, even when a drag leaves the card.
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.35, maximumDistance: 10)
-                .sequenced(before: DragGesture(minimumDistance: 0))
-                .updating($videoHoldActive) { phase, state, _ in
-                    guard post.type.lowercased() == "video" else { return }
-                    if case .second(true, _) = phase { state = true }
+        // Keep the scroll view in charge of vertical drags. A stationary
+        // press starts a cancellable delay; lifting or scrolling cancels it.
+        .onLongPressGesture(minimumDuration: 0.35, maximumDistance: 10, pressing: { pressing in
+            guard post.type.lowercased() == "video" else { return }
+            holdGeneration &+= 1
+            let generation = holdGeneration
+            if pressing {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard generation == holdGeneration, let player,
+                          player.timeControlStatus == .playing else { return }
+                    videoHoldActive = true
+                    player.rate = 2
                 }
-        )
-        .onChange(of: videoHoldActive) { _, held in
-            guard post.type.lowercased() == "video", let player else { return }
-            if held {
-                if player.timeControlStatus == .playing { player.rate = 2 }
-            } else if player.rate > 1 {
-                player.rate = 1
+            } else {
+                videoHoldActive = false
+                if let player, player.rate > 1 { player.rate = 1 }
             }
-        }
+        }, perform: {})
         .overlay(alignment: .topTrailing) {
             if post.type.lowercased() == "video", let player,
                store.activeTab == playbackTab, store.pipPostID != post.stableID {

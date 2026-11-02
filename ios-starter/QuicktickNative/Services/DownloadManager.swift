@@ -1,5 +1,7 @@
 import Foundation
 import AVFoundation
+import ImageIO
+import UIKit
 import Combine
 
 /// URLSession delegate callbacks can arrive dozens of times per second.
@@ -87,6 +89,73 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             }
         }
     }
+    /// Copy security-scoped Files media into the app-owned offline library.
+    /// Preserve the original extension; AVFoundation determines playback support.
+    func importLocalMedia(_ urls: [URL]) -> [String] {
+        let audio: Set<String> = ["mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg", "opus", "wma", "caf", "alac", "amr", "mid", "midi"]
+        let video: Set<String> = ["mp4", "mov", "m4v", "mkv", "avi", "webm", "wmv", "flv", "mpeg", "mpg", "ts", "mts", "m2ts", "3gp", "ogv"]
+        let images: Set<String> = ["jpg", "jpeg", "png", "webp", "heic", "heif", "avif", "bmp", "tiff", "tif"]
+        let gifs: Set<String> = ["gif"]
+        var errors: [String] = []
+        for url in urls {
+            let ext = url.pathExtension.lowercased()
+            guard audio.contains(ext) || video.contains(ext) || images.contains(ext) || gifs.contains(ext) else {
+                errors.append("\(url.lastPathComponent): not a recognized media file")
+                continue
+            }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let id = UUID().uuidString
+                let folder = root.appendingPathComponent("import-" + id, isDirectory: true)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let destination = folder.appendingPathComponent("media." + ext)
+                do { try FileManager.default.copyItem(at: url, to: destination) }
+                catch { try? FileManager.default.removeItem(at: folder); throw error }
+                var record = DownloadRecord(key: "local:" + id, provider: "Imported", postID: id,
+                    title: url.deletingPathExtension().lastPathComponent, tags: [],
+                    thumbnailRemoteURL: "", localMediaPath: destination.path,
+                    kind: .file, state: .complete, progress: 1, createdAt: .now)
+                record.mediaType = gifs.contains(ext) ? "gif" : (images.contains(ext) ? "image" : (audio.contains(ext) ? "audio" : "video"))
+                if let preview = makeImportedPreview(for: destination, type: record.mediaType ?? "") {
+                    record.thumbnailLocalPath = preview.path
+                }
+                record.fileSize = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value
+                upsert(record)
+            } catch {
+                errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        return errors
+    }
+
+    /// Generate a small static cover while retaining the untouched original,
+    /// including animation frames for GIFs. Video frames are best effort.
+    private func makeImportedPreview(for url: URL, type: String) -> URL? {
+        let output = url.deletingLastPathComponent().appendingPathComponent("preview.jpg")
+        var image: UIImage?
+        if type == "image" || type == "gif" {
+            if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+               let frame = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                   kCGImageSourceCreateThumbnailFromImageAlways: true,
+                   kCGImageSourceCreateThumbnailWithTransform: true,
+                   kCGImageSourceThumbnailMaxPixelSize: 480
+               ] as CFDictionary) {
+                image = UIImage(cgImage: frame)
+            }
+        } else if type == "video" {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 480, height: 480)
+            if let frame = try? generator.copyCGImage(at: CMTime(seconds: 0.5, preferredTimescale: 600), actualTime: nil) {
+                image = UIImage(cgImage: frame)
+            }
+        }
+        guard let data = image?.jpegData(compressionQuality: 0.78) else { return nil }
+        do { try data.write(to: output, options: .atomic); return output }
+        catch { return nil }
+    }
+
     func restoreTasks() async {
         let files = await directSession.allTasks
         let packages = await hlsSession.allTasks

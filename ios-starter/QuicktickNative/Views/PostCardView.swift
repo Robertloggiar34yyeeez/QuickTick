@@ -23,6 +23,8 @@ struct PostCardView: View {
     @State private var readingManga = false
     @State private var pendingVideoFullscreen = false
     @State private var player: AVPlayer?
+    @State private var videoHoldActive = false
+    @State private var holdGeneration = 0
     @State private var gifURL: URL?
     @State private var ready = false
     private var shouldSkipIntro: Bool {
@@ -69,6 +71,17 @@ struct PostCardView: View {
             if let playbackError {
                 VStack(spacing: 8) {
                     Text(playbackError).font(.caption).foregroundStyle(.orange)
+                    if post.providerKey == .hanime,
+                       let url = URL(string: post.pageUrl),
+                       url.scheme == "https", url.host == "hanime.tv" {
+                        Button { havenBrowser = true } label: {
+                            Label("Play on Hanime in QuickTick", systemImage: "play.rectangle.on.rectangle")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 14).frame(minHeight: 44)
+                                .background(AppTheme.elevatedSurface, in: Capsule())
+                        }
+                        .accessibilityIdentifier("hanime-browser-fallback")
+                    }
                     if post.providerKey == .hhaven,
                        let url = URL(string: post.pageUrl),
                        url.scheme == "https",
@@ -288,9 +301,7 @@ struct PostCardView: View {
                 // Keep the full-bleed media discoverable as an actual button
                 // for VoiceOver and UI automation. The exclusive gesture keeps
                 // double-tap Like distinct from single-tap fullscreen.
-                Button(action: openMediaFullscreen) {
-                    Color.clear.contentShape(Rectangle())
-                }
+                Button(action: openMediaFullscreen) { Color.clear.contentShape(Rectangle()) }
                     .buttonStyle(.plain)
                     .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { result in
                         switch result {
@@ -312,11 +323,7 @@ struct PostCardView: View {
                     .accessibilityHint("Double tap the media to like")
                     .accessibilityIdentifier("fullscreen-\(post.stableID)")
             } else if post.type.lowercased() == "video" || isWebsitePost {
-                Button {
-                    openMediaFullscreen()
-                } label: {
-                    Color.clear.contentShape(Rectangle())
-                }
+                Button(action: openMediaFullscreen) { Color.clear.contentShape(Rectangle()) }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open full screen video")
                 .accessibilityIdentifier("fullscreen-\(post.stableID)")
@@ -335,6 +342,25 @@ struct PostCardView: View {
             }
         }
         .contentShape(Rectangle())
+        // Keep the scroll view in charge of vertical drags. A stationary
+        // press starts a cancellable delay; lifting or scrolling cancels it.
+        .onLongPressGesture(minimumDuration: 0.35, maximumDistance: 10, pressing: { pressing in
+            guard post.type.lowercased() == "video" else { return }
+            holdGeneration &+= 1
+            let generation = holdGeneration
+            if pressing {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard generation == holdGeneration, let player,
+                          player.timeControlStatus == .playing else { return }
+                    videoHoldActive = true
+                    player.rate = 2
+                }
+            } else {
+                videoHoldActive = false
+                if let player, player.rate > 1 { player.rate = 1 }
+            }
+        }, perform: {})
         .overlay(alignment: .topTrailing) {
             if post.type.lowercased() == "video", let player,
                store.activeTab == playbackTab, store.pipPostID != post.stableID {

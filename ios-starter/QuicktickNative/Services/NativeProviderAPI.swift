@@ -1311,20 +1311,44 @@ extension NativeProviderAPI {
             }
             throw APIError.server("Eporner returned no playable public stream.")
         case .hanime:
-            let response: [String: Any]
+            // The v11 catalog returns slugs, while the legacy v8 JSON route
+            // sometimes responds 404. Prefer native streams discovered from
+            // the canonical watch page before offering the embedded browser.
+            func stream(from payload: [String: Any]) -> ResolvedMedia? {
+                let manifest = payload["videos_manifest"] as? [String: Any] ?? payload
+                let streams = rows(manifest["servers"]).flatMap { rows($0["streams"]) }
+                    .sorted { number($0["height"]) > number($1["height"]) }
+                for entry in streams {
+                    guard let media = mediaURL(text(entry["url"] ?? entry["src"]), provider: provider),
+                          HanimeGeneratedAPI.permittedStreamURL(media) else { continue }
+                    return ResolvedMedia(mediaUrl: media.absoluteString,
+                                         type: media.pathExtension.lowercased() == "m3u8" ? "hls" : "video")
+                }
+                return nil
+            }
             do {
-                response = try object(await data(session: session,
+                let payload = try object(await data(session: session,
                     url: url("https://hanime.tv/api/v8/video", [.init(name: "id", value: post.id)]),
                     provider: provider))
+                if let playable = stream(from: payload) { return playable }
+            } catch APIError.providerStatus(.hanime, 404) {
+                // Expected on installations where the legacy route was retired.
             } catch APIError.providerStatus(.hanime, 403) {
-                throw APIError.server("Hanime requires browser verification for this video. Use Browse inside QuickTick or configure a Hanime API in Settings.")
+                throw APIError.server("Hanime requires browser verification for this video. Try the in-app browser.")
             }
-            let manifest = response["videos_manifest"] as? [String: Any] ?? [:]
-            let streams = rows(manifest["servers"]).flatMap { rows($0["streams"]) }.sorted { number($0["height"]) > number($1["height"]) }
-            guard let media = streams.compactMap({ mediaURL(text($0["url"]), provider: provider) }).first else {
-                throw APIError.server("Hanime no longer provides a public playback URL for this video. Use Browse inside QuickTick or configure a Hanime API in Settings.")
+            guard let watch = mediaURL(post.pageUrl, provider: provider),
+                  watch.host == "hanime.tv", watch.path.hasPrefix("/videos/hentai/") else {
+                throw APIError.invalidResponse
             }
-            return ResolvedMedia(mediaUrl: media.absoluteString, type: media.pathExtension == "m3u8" ? "hls" : "video")
+            let html = String(decoding: try await data(session: session, url: watch,
+                provider: provider, maxBytes: 5 * 1024 * 1024), as: UTF8.self)
+            if let bytes = jsonFragment(html, after: "videos_manifest", opening: "{"),
+               let manifest = try? object(bytes),
+               let playable = stream(from: manifest) { return playable }
+            if let bytes = jsonFragment(html, after: "video", opening: "{"),
+               let payload = try? object(bytes),
+               let playable = stream(from: payload) { return playable }
+            throw APIError.server("Hanime did not expose a playable native stream. Use the in-app browser for this post.")
         case .pornhub:
             let canonical = mediaURL(post.pageUrl, provider: provider)
             let page: URL

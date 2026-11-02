@@ -44,13 +44,14 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         guard state == .complete, let path = localMediaPath, FileManager.default.fileExists(atPath: path) else { return nil }
         let media = URL(fileURLWithPath: path)
         let type: String
-        if let mediaType, ["image", "video", "gif"].contains(mediaType.lowercased()) { type = mediaType.lowercased() }
+        if let mediaType, ["image", "video", "gif", "audio"].contains(mediaType.lowercased()) { type = mediaType.lowercased() }
         else if kind == .hlsPackage { type = "video" }
         else {
             switch media.pathExtension.lowercased() {
             case "jpg", "jpeg", "png", "webp", "heic", "avif", "bmp", "tiff": type = "image"
             case "gif": type = "gif"
-            case "mp4", "mov", "m4v", "webm", "m3u8": type = "video"
+            case "mp4", "mov", "m4v", "webm", "m3u8", "mkv", "avi", "wmv", "mpeg", "mpg", "3gp", "ogv", "ts", "mts", "m2ts", "flv": type = "video"
+            case "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg", "opus", "wma", "caf", "alac", "amr", "mid", "midi": type = "audio"
             default: return nil
             }
         }

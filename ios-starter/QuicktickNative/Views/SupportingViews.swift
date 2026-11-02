@@ -1564,7 +1564,7 @@ struct TasteWrappedView: View {
             Image(systemName: "sparkles.rectangle.stack.fill")
                 .font(.system(size: 65, weight: .light))
                 .foregroundStyle(AppTheme.accent)
-            Text(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Your taste.\\nYour story." : "\\(displayName.trimmingCharacters(in: .whitespacesAndNewlines))’s taste.\\nYour story.")
+            Text(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Your taste.\nYour story." : "\(displayName.trimmingCharacters(in: .whitespacesAndNewlines))’s taste.\nYour story.")
                 .font(.system(size: 44, weight: .bold, design: .rounded))
                 .tracking(-2)
             Text(showingWeeklyLikes

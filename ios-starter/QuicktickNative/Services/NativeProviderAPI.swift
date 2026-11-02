@@ -1318,6 +1318,11 @@ extension NativeProviderAPI {
                     provider: provider))
             } catch APIError.providerStatus(.hanime, 403) {
                 throw APIError.server("Hanime requires browser verification for this video. Use Browse inside QuickTick or configure a Hanime API in Settings.")
+            } catch APIError.providerStatus(.hanime, 404) {
+                // Search uses v11 and can still return valid posts when the
+                // older v8 playback route is unavailable. Do not report the
+                // whole post as missing or repeatedly retry a dead endpoint.
+                throw APIError.server("Hanime's older playback API is unavailable (404), although this post is in the catalog. Open the post in Browse, or configure a working Hanime API in Settings.")
             }
             let manifest = response["videos_manifest"] as? [String: Any] ?? [:]
             let streams = rows(manifest["servers"]).flatMap { rows($0["streams"]) }.sorted { number($0["height"]) > number($1["height"]) }

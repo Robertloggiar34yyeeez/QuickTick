@@ -71,6 +71,17 @@ struct PostCardView: View {
             if let playbackError {
                 VStack(spacing: 8) {
                     Text(playbackError).font(.caption).foregroundStyle(.orange)
+                    if post.providerKey == .hanime,
+                       let url = URL(string: post.pageUrl),
+                       url.scheme == "https", url.host == "hanime.tv" {
+                        Button { havenBrowser = true } label: {
+                            Label("Play on Hanime in QuickTick", systemImage: "play.rectangle.on.rectangle")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 14).frame(minHeight: 44)
+                                .background(AppTheme.elevatedSurface, in: Capsule())
+                        }
+                        .accessibilityIdentifier("hanime-browser-fallback")
+                    }
                     if post.providerKey == .hhaven,
                        let url = URL(string: post.pageUrl),
                        url.scheme == "https",

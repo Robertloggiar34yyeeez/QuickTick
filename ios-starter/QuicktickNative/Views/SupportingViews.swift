@@ -1483,6 +1483,8 @@ struct TasteWrappedView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var weekly = false
     let onClose: () -> Void
+    @AppStorage("quicktick-birthday-display-name-v1") private var displayName = ""
+    @State private var reveal = false
     @State private var page = 0
     @State private var sections: [TasteWrappedCategory] = []
     @State private var likedCount = 0
@@ -1502,6 +1504,7 @@ struct TasteWrappedView: View {
                 conclusion.tag(sections.count + 1)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            .animation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 0.83), value: page)
             VStack {
                 HStack {
                     Text("QUICKTICK / WRAPPED")
@@ -1546,6 +1549,7 @@ struct TasteWrappedView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
+            reveal = true
             let recent = weekly ? store.wrappedWeeklyFavorites : []
             showingWeeklyLikes = weekly && !recent.isEmpty
             let favorites = showingWeeklyLikes ? recent : store.newestFavorites
@@ -1560,7 +1564,7 @@ struct TasteWrappedView: View {
             Image(systemName: "sparkles.rectangle.stack.fill")
                 .font(.system(size: 65, weight: .light))
                 .foregroundStyle(AppTheme.accent)
-            Text("Your taste.\nYour story.")
+            Text(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Your taste.\\nYour story." : "\\(displayName.trimmingCharacters(in: .whitespacesAndNewlines))’s taste.\\nYour story.")
                 .font(.system(size: 44, weight: .bold, design: .rounded))
                 .tracking(-2)
             Text(showingWeeklyLikes
@@ -1571,7 +1575,13 @@ struct TasteWrappedView: View {
                 .font(.headline.monospacedDigit())
                 .padding(.horizontal, 17).padding(.vertical, 10)
                 .background(AppTheme.elevatedSurface, in: Capsule())
+            Text("\(sections.filter { !$0.moments.isEmpty }.count) taste dimensions explored")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.white.opacity(0.78))
         }
+        .opacity(reveal ? 1 : 0)
+        .offset(y: reveal ? 0 : 24)
+        .animation(reduceMotion ? nil : .spring(response: 0.65, dampingFraction: 0.8), value: reveal)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 30)
     }
@@ -1583,6 +1593,9 @@ struct TasteWrappedView: View {
                 .foregroundStyle(AppTheme.accent)
             Text(section.heading)
                 .font(.system(size: 36, weight: .bold, design: .rounded))
+            Text("\(section.moments.reduce(0) { $0 + $1.appearances }) matching likes across your top \(section.moments.count) interests")
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.7))
                 .tracking(-1.4)
             if section.moments.isEmpty {
                 Text("Keep exploring. This category will fill in as you like posts with recognized tags.")
@@ -1608,6 +1621,7 @@ struct TasteWrappedView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
                     .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 20))
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
         }

@@ -179,6 +179,17 @@ actor QuicktickAPIClient {
         }
     }
 
+    func redgifsNiches() async throws -> [RedgifsNiche] {
+        let token = try await redgifsAuth.value(session: session)
+        do {
+            return try await NativeProviderAPI.redgifsNiches(session: session, token: token)
+        } catch APIError.providerStatus(.redgifs, 401) {
+            await redgifsAuth.invalidate(expecting: token)
+            let refreshed = try await redgifsAuth.value(session: session)
+            return try await NativeProviderAPI.redgifsNiches(session: session, token: refreshed)
+        }
+    }
+
     func mangaPages(bookID: String) async throws -> [URL] {
         try await NativeProviderAPI.nhentaiPages(session: session, bookID: bookID)
     }

@@ -614,6 +614,20 @@ struct SettingsView: View {
             .padding(.horizontal, AppTheme.contentMargin)
             .padding(.bottom, 44)
         }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Menu {
+                    ForEach(SettingsDestination.allCases) { destination in
+                        Button(destination.title, systemImage: destination.symbol) {
+                            jumpTo(destination, scroll: scroll)
+                        }
+                    }
+                } label: {
+                    Label("Sections", systemImage: "square.grid.2x2")
+                }
+                .accessibilityIdentifier("settings-sections-menu")
+            }
+        }
         }
         .scrollDismissesKeyboard(.interactively)
         .background(ThemeBackdrop())

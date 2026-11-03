@@ -269,10 +269,18 @@ struct SessionPreferenceModel: Sendable {
 
     func strongInterests(provider: String, limit: Int = 8, at now: Date = .now) -> [(String, Double)] {
         let timeFade = freshness(provider: provider, at: now)
-        return (termsByProvider[provider] ?? [:]).map { ($0.key, $0.value * timeFade) }
-            .filter { $0.1 >= 1.5 }
-            .sorted { $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 > $1.1 }
-            .prefix(limit).map { ($0.0, $0.1) }
+        let weights: [String: Double] = termsByProvider[provider] ?? [:]
+        var interests: [(String, Double)] = []
+        interests.reserveCapacity(weights.count)
+        for (term, weight) in weights {
+            let fadedWeight = weight * timeFade
+            if fadedWeight >= 1.5 { interests.append((term, fadedWeight)) }
+        }
+        interests.sort { left, right in
+            if left.1 == right.1 { return left.0 < right.0 }
+            return left.1 > right.1
+        }
+        return Array(interests.prefix(max(0, limit)))
     }
 }
 

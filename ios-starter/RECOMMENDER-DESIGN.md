@@ -14,8 +14,17 @@ This document describes QuickTick's own implementation, not TikTok's private pro
 - Like, download, replay, and completion add positive evidence. Explicit Less/Unlike add negative evidence.
 - Impressions and quick skips do **not** add persistent session dislike; quick skip evidence remains separately reversible.
 - Watched progress counts only over 55% completion. Incremental progress is monotonically credited per post to avoid repeated 10-second samples multiplying one watch into many likes.
-- Each update decays previous session weights by 6%; magnitude is clipped, and the entire model lives alongside (not in place of) persisted long-term preferences.
+- Each deliberate update decays previous session weights by 6%; in addition, a 60-minute wall-clock half-life fades temporary interests even during long passive viewing sessions. Impressions and quick skips do not refresh the clock.
+- Magnitude is clipped and the entire session model remains alongside (not in place of) persisted long-term preferences; explicit Into/Not Into choices do not expire.
 - Strong recent topics help rank/retrieve likely matches; strict explicit exclusions always win.
+
+## Monolith (arXiv:2209.07663) adaptation
+- **Online feedback, no distant retraining loop:** the actor updates in-memory short-term tastes immediately from deliberate actions; scoring reads the current state. A server-scale Kafka/Flink/parameter-server architecture is intentionally unnecessary for a single-user private iOS app.
+- **Concept drift:** ephemeral interest scores age by elapsed time as well as incoming interaction count. A later action starts from the aged weight instead of reviving an old impulse.
+- **Collision-free identity:** canonical topic strings and distinct stable item identifiers are kept as dictionary keys; do not compress disparate item IDs into shared embedding buckets.
+- **Frequency and size control:** do not infer durable dislike from a single passive skip. Keep existing per-provider 80-term session caps, bounded persistent terms, novelty limits, and eviction of near-zero session weights.
+- **Safe incremental serving:** changes should affect newly ranked candidate tails without blocking media rendering or shuffling posts already visible to the user.
+- **Not yet adopted:** full online embedding training and persistent time-to-live expiration need separate offline evaluations and migration tests before any production rollout. This paper reports performance of ByteDance/Criteo workloads, not QuickTick.
 
 ## Performance invariants
 - Feed uses CDN preview images when available. Full-screen loads the original with a bounded decoded resolution and shows the already decoded preview immediately.

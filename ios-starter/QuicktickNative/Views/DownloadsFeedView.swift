@@ -363,7 +363,7 @@ private struct DownloadContent: View {
                         }
                     }
                     .padding(.horizontal, AppTheme.contentMargin)
-                    if selecting { selectionControls.padding(.horizontal, AppTheme.contentMargin) }
+                    // Selection actions stay docked below while cards scroll.
                     if let error = manager.storageError {
                         Text(error).foregroundStyle(.orange)
                             .padding(.horizontal, AppTheme.contentMargin)
@@ -449,6 +449,18 @@ private struct DownloadContent: View {
                     .transition(.move(edge: .trailing))
             }
         }.scrollContentBackground(.hidden).background(ThemeBackdrop()).navigationTitle("Downloads")
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if selecting && !immersive {
+                    selectionControls
+                        .frame(maxWidth: AppTheme.feedWidth)
+                        .padding(.horizontal, AppTheme.contentMargin)
+                        .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity)
+                        .background(.ultraThinMaterial)
+                        .overlay(alignment: .top) { Rectangle().fill(AppTheme.border).frame(height: 1) }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { rhythm = true } label: { Label("Rhythm", systemImage: "waveform.path") }

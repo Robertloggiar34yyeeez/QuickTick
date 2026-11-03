@@ -139,41 +139,125 @@ struct SettingsView: View {
         }
     }
 
+    private func jumpTo(_ destination: SettingsDestination, scroll: ScrollViewProxy) {
+        activeSection = destination
+        withAnimation(.smooth(duration: 0.32)) {
+            scroll.scrollTo(destination.rawValue, anchor: .top)
+        }
+    }
+
+    /// The actions people reach for most live above the long-form controls.
+    private func settingsQuickActions(scroll: ScrollViewProxy) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "bolt.fill").foregroundStyle(AppTheme.accent)
+                Text("Quick actions").font(.headline)
+                Spacer()
+            }
+            HStack(spacing: 10) {
+                Button {
+                    store.refreshRecommendationsAndProfile()
+                    jumpTo(.recommendations, scroll: scroll)
+                } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.title3.weight(.semibold)).foregroundStyle(AppTheme.accent)
+                        Text("Refresh For You").font(.subheadline.weight(.bold))
+                        Text("Latest posts and your visual taste")
+                            .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 93, alignment: .leading)
+                    .padding(13)
+                    .background(AppTheme.elevatedSurface,
+                                in: RoundedRectangle(cornerRadius: 17))
+                    .overlay(RoundedRectangle(cornerRadius: 17)
+                        .stroke(AppTheme.border))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .disabled(store.isUnifiedRecommendationRefreshRunning || store.isManualVisualScanRunning)
+                .accessibilityIdentifier("settings-refresh-recommended")
+                Button { jumpTo(.appearance, scroll: scroll) } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Image(systemName: "paintpalette.fill")
+                            .font(.title3.weight(.semibold)).foregroundStyle(AppTheme.accent)
+                        Text("Change theme").font(.subheadline.weight(.bold))
+                        Text("Colors, seasons and backgrounds")
+                            .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 93, alignment: .leading)
+                    .padding(13)
+                    .background(AppTheme.elevatedSurface,
+                                in: RoundedRectangle(cornerRadius: 17))
+                    .overlay(RoundedRectangle(cornerRadius: 17)
+                        .stroke(AppTheme.border))
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .accessibilityIdentifier("settings-change-theme")
+            }
+            if store.isUnifiedRecommendationRefreshRunning {
+                ProgressView("Refreshing recommendations…")
+                    .tint(AppTheme.accent)
+                    .accessibilityIdentifier("settings-recommendations-progress")
+            }
+            if let message = store.recommendationRescanStatus {
+                Text(message).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+            }
+        }
+        .accessibilityIdentifier("settings-quick-actions")
+    }
+
+    /// A compact, two-column directory makes every group discoverable without
+    /// needing to swipe through an off-screen row of category tags.
+    private func settingsNavigationGrid(scroll: ScrollViewProxy) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Browse settings").font(.headline)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 9)], spacing: 9) {
+                ForEach(SettingsDestination.allCases) { destination in
+                    Button { jumpTo(destination, scroll: scroll) } label: {
+                        HStack(alignment: .top, spacing: 9) {
+                            Image(systemName: destination.symbol)
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(activeSection == destination ? .white : AppTheme.accent)
+                                .frame(width: 27, height: 28)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(destination.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .lineLimit(1)
+                                Text(destination.detail)
+                                    .font(.caption2)
+                                    .lineLimit(2)
+                                    .foregroundStyle(activeSection == destination
+                                                     ? .white.opacity(0.78) : AppTheme.secondaryLabel)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 56, alignment: .topLeading)
+                        .padding(11)
+                        .background(activeSection == destination
+                                    ? AnyShapeStyle(AppTheme.gradient)
+                                    : AnyShapeStyle(AppTheme.surface),
+                                    in: RoundedRectangle(cornerRadius: 15))
+                        .overlay(RoundedRectangle(cornerRadius: 15)
+                            .stroke(AppTheme.border))
+                    }
+                    .buttonStyle(QuicktickPressStyle())
+                    .accessibilityIdentifier("settings-jump-\(destination.rawValue)")
+                    .accessibilityAddTraits(activeSection == destination ? .isSelected : [])
+                }
+            }
+        }
+        .accessibilityIdentifier("settings-category-chips")
+    }
+
     private var settingsPage: some View {
         ScrollViewReader { scroll in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
                 settingsHero
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 9) {
-                        ForEach(SettingsDestination.allCases) { destination in
-                            if destination.startsGroup {
-                                Text(destination.groupTitle)
-                                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                                    .foregroundStyle(AppTheme.secondaryLabel)
-                                    .padding(.leading, destination == .navigation ? 0 : 9)
-                                    .accessibilityHidden(true)
-                            }
-                            Button {
-                                activeSection = destination
-                                withAnimation(.smooth(duration: 0.36)) { scroll.scrollTo(destination.rawValue, anchor: .top) }
-                            } label: {
-                                Label(destination.title, systemImage: destination.symbol)
-                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(activeSection == destination ? .white : .white.opacity(0.76))
-                                    .padding(.horizontal, 14)
-                                    .frame(height: 37)
-                                    .background(activeSection == destination
-                                        ? (AppTheme.isDeSlopified ? AnyShapeStyle(AppTheme.surface) : AnyShapeStyle(AppTheme.gradient))
-                                        : AnyShapeStyle(AppTheme.elevatedSurface), in: Capsule())
-                                    .overlay(Capsule().stroke(activeSection == destination ? AppTheme.border.opacity(1) : AppTheme.border.opacity(0.55)))
-                            }
-                            .buttonStyle(QuicktickPressStyle())
-                        }
-                    }
-                    .padding(.vertical, 3)
-                }
-                .accessibilityIdentifier("settings-category-chips")
+                settingsQuickActions(scroll: scroll)
+                settingsNavigationGrid(scroll: scroll)
             if let storageWarning = store.storageWarning { SettingsGroup(title: "Storage needs attention", icon: "exclamationmark.triangle") { Text(storageWarning).foregroundStyle(.orange) } }
             SettingsGroup(title: "Navigation", icon: "square.grid.2x2") {
                 HStack(spacing: 12) {
@@ -355,6 +439,18 @@ struct SettingsView: View {
                 .buttonStyle(QuicktickPressStyle())
                 .accessibilityIdentifier("personalize-feed")
                 LabeledContent("Engine", value: store.recommendationMode)
+                Text("Monolith-inspired live learning gives recent actions more weight and gradually fades short-term interests. Saved favorites, Into/Not Into choices and blocks remain in control.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                Button {
+                    store.refreshRecommendationsAndProfile()
+                } label: {
+                    Label("Refresh recommended now", systemImage: "arrow.triangle.2.circlepath")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(AppTheme.accent)
+                .disabled(store.isUnifiedRecommendationRefreshRunning || store.isManualVisualScanRunning)
+                .accessibilityIdentifier("settings-refresh-for-you-section")
                 if store.learnedInterests.isEmpty {
                     Text("Interact with posts or search to learn interests.")
                         .foregroundStyle(AppTheme.secondaryLabel)
@@ -396,11 +492,11 @@ struct SettingsView: View {
                 Button("Import recommendation profile") { importingProfile = true }.accessibilityIdentifier("import-recommendation-profile")
                 Text("AirDrop or save a .quicktickprofile file, then open it on another device or use Import here. Only interests and exclusions transfer—never logins, downloads or viewing history. Treat the file as private.")
                     .font(.footnote).foregroundStyle(.secondary)
-            }
+            }.id(SettingsDestination.data.rawValue)
             SettingsGroup(title: "Persistent exclusions", icon: "line.3.horizontal.decrease.circle") {
                 PersistentExclusionEditor()
             }
-            SettingsGroup(title: "Visual intelligence", icon: "eye") {
+            SettingsGroup(title: "Visual intelligence & on-device models", icon: "eye") {
                 Toggle("Learn visual taste while browsing", isOn: $store.visualAnalysisEnabled)
                     .modifier(SettingsControlRow())
                 Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
@@ -480,6 +576,11 @@ struct SettingsView: View {
                 .buttonStyle(QuicktickPressStyle())
                 .disabled(mobileCLIP2Installing || mobileCLIP2Installed)
                 .accessibilityIdentifier("import-mobileclip2-button")
+                Link(destination: URL(string: "https://huggingface.co/apple/MobileCLIP2-S0/blob/main/mobileclip2_s0.pt")!) {
+                    Label("Apple MobileCLIP2-S0 checkpoint · 300 MB", systemImage: "arrow.down.circle")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
+                .accessibilityIdentifier("mobileclip2-official-download")
                 Text("Apple releases MobileCLIP2-S0 as a research-only PyTorch checkpoint, not a downloadable Core ML model. For permitted research use, enter the HTTPS folder URL of a separately converted 256×256 Core ML .mlpackage, or import one from Files. QuickTick validates it and uses it for idle analysis; no MobileCLIP2 weights are bundled. MobileCLIP-S0 and Vision remain available.")
                     .font(.footnote).foregroundStyle(.secondary)
                 if let mobileCLIPError {
@@ -487,7 +588,7 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.orange)
                 }
                 ManualVisualRefreshPanel(manager: store.downloads)
-            }
+            }.id(SettingsDestination.models.rawValue)
             SettingsGroup(title: "Playback", icon: "play.rectangle") {
                 Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
                     .modifier(SettingsControlRow())
@@ -651,40 +752,42 @@ struct SettingsView: View {
 }
 
 private enum SettingsDestination: String, CaseIterable, Identifiable {
-    case navigation, appearance, access, suggestions, recommendations, playback
+    case appearance, recommendations, suggestions, models, playback, access, navigation, data
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .appearance: "Appearance"
-        case .suggestions: "Topics"
-        case .navigation: "Navigation"
-        case .recommendations: "For you"
+        case .appearance: "Themes"
+        case .recommendations: "For You"
+        case .suggestions: "Discovery"
+        case .models: "AI models"
         case .playback: "Playback"
-        case .access: "Access"
+        case .access: "Providers"
+        case .navigation: "Navigation"
+        case .data: "Data & sharing"
         }
     }
-    var startsGroup: Bool {
+    var detail: String {
         switch self {
-        case .navigation, .access, .suggestions, .playback: true
-        default: false
-        }
-    }
-    var groupTitle: String {
-        switch self {
-        case .navigation, .appearance: "LOOK & FEEL"
-        case .access: "PROVIDERS"
-        case .suggestions, .recommendations: "DISCOVERY"
-        case .playback: "MEDIA"
+        case .appearance: "Colors & backgrounds"
+        case .recommendations: "Taste & refresh"
+        case .suggestions: "Suggested topics"
+        case .models: "MobileCLIP & scans"
+        case .playback: "Autoplay & sound"
+        case .access: "Account connections"
+        case .navigation: "Tabs & sidebar"
+        case .data: "Export & import"
         }
     }
     var symbol: String {
         switch self {
         case .appearance: "paintpalette"
-        case .suggestions: "square.grid.2x2.fill"
-        case .navigation: "square.grid.2x2"
         case .recommendations: "sparkles"
+        case .suggestions: "square.grid.2x2.fill"
+        case .models: "brain.head.profile"
         case .playback: "play.rectangle"
         case .access: "lock.shield"
+        case .navigation: "square.grid.2x2"
+        case .data: "square.and.arrow.up"
         }
     }
 }

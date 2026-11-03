@@ -41,6 +41,12 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if ["coomer.st", "kemono.cr"].contains(host), path.hasSuffix("/comments") {
             payload = #"[{"id":"1","author":"Visitor","content":"Amazing post","created_at":"2026-09-01"}]"#
         }
+        else if host == "api.redgifs.com", path == "/v2/niches" {
+            payload = #"{"niches":[{"id":"cosplay","name":"Cosplay","gifs":200,"thumbnail":"https://media.redgifs.com/niche.jpg"}]}"#
+        }
+        else if host == "api.redgifs.com", path == "/v2/niches/cosplay/gifs" {
+            payload = #"{"pages":2,"gifs":[{"id":"nicheclip","type":"g","tags":["cosplay"],"urls":{"hd":"https://media.redgifs.com/nicheclip.mp4","poster":"https://media.redgifs.com/nicheclip.jpg"}}]}"#
+        }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
         else if host == "www.erome.com", ["/explore", "/explore/new", "/search"].contains(path) {
             let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
@@ -61,8 +67,14 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
         }
         else if host == "hanime.tv", path == "/api/v8/video" {
-            // Hanime's catalog may be public even when its stream URL has
-            // been removed from the unauthenticated video response.
+            // Test both a removed endpoint and an empty legacy manifest.
+            let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "id" })?.value
+            if id == "missing-404" {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404,
+                    httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
             payload = #"{"videos_manifest":{"servers":[{"streams":[]}]}}"#
         }
         else if host == "api.rule34.xxx", path == "/autocomplete.php" { payload = #"[{"value":"engineering","label":"engineering (12)","count":12}]"# }
@@ -270,9 +282,13 @@ final class NativeProviderAPITests: XCTestCase {
         NativeProviderProtocol.log.reset()
         let query = ParsedQuery(included: ["summary-video"], excluded: [])
         let preview = try await api.posts(provider: .erome, query: query, page: 1)
-        XCTAssertEqual(preview.items.map(\.id), ["ABC123"])
-        XCTAssertEqual(preview.items.first?.mediaUrl, "")
-        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
+        XCTAssertEqual(preview.items.map(\.id), ["ABC123:clip_720p.mp4", "ABC123:photo.jpg"])
+        XCTAssertEqual(preview.items.first?.mediaUrl,
+                       "https://v12.erome.com/123/ABC123/clip_720p.mp4")
+        XCTAssertFalse(preview.items.first?.isUnresolvedEromePreview == true)
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
+            $0.url?.path == "/a/ABC123"
+        }.count, 1, "Home should hydrate real video once, not show album-only thumbnails")
 
         NativeProviderProtocol.log.reset()
         let playable = try await api.posts(provider: .erome, query: query, page: 1, immersive: true)
@@ -281,7 +297,8 @@ final class NativeProviderAPITests: XCTestCase {
                        "https://v12.erome.com/123/ABC123/clip_720p.mp4")
         XCTAssertFalse(playable.items.first?.isUnresolvedEromePreview == true,
                        "Immersive playback must keep auto-playing fully resolved videos")
-        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" },
+                       "Returning to an album should reuse hydrated media from Home")
     }
 
     func testEromeAlbumMediaIsReusedAcrossImmersiveAndPlaybackResolution() async throws {
@@ -308,6 +325,26 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(page.items.map(\.id), ["ABC123:clip_720p.mp4"])
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/IMGONLY" })
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/a/ABC123" })
+    }
+
+    func testRedgifsNichesUseRealPopularPreviewAndOpenVideoFeed() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let niches = try await api.redgifsNiches()
+        XCTAssertEqual(niches.map(\.id), ["cosplay"])
+        XCTAssertEqual(niches.first?.name, "Cosplay")
+        XCTAssertEqual(niches.first?.imageURL, "https://media.redgifs.com/nicheclip.jpg",
+                       "Niche icon should be the real poster from a popular post")
+        let page = try await api.posts(provider: .redgifs,
+            query: ParsedQuery(included: ["niche:cosplay"], excluded: []),
+            page: 1, sort: "popular", immersive: true)
+        XCTAssertEqual(page.items.map(\.id), ["nicheclip"])
+        XCTAssertEqual(page.items.first?.mediaUrl, "https://media.redgifs.com/nicheclip.mp4")
+        let routes = NativeProviderProtocol.log.snapshot()
+        XCTAssertTrue(routes.contains { $0.url?.path == "/v2/niches" })
+        XCTAssertTrue(routes.contains { $0.url?.path == "/v2/niches/cosplay/gifs" })
+        XCTAssertTrue(routes.filter { $0.url?.path.hasPrefix("/v2/niches/") == true }
+            .allSatisfy { $0.value(forHTTPHeaderField: "Referer") == "https://www.redgifs.com/" })
     }
 
     func testHanimeV11CatalogSearchesTagsAndKeepsSiteHeaders() async throws {
@@ -349,6 +386,39 @@ final class NativeProviderAPITests: XCTestCase {
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("Browse inside QuickTick"))
             XCTAssertTrue(error.localizedDescription.contains("Hanime API"))
+        }
+    }
+
+    func testHanimeNativePlaybackAcceptsFirstPartyCatalogStream() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let stream = NativeProviderAPI.hanimeCatalogStream([
+            "stream_url": "https://cdn.hanime.tv/videos/sample.m3u8?token=fixture",
+            "video_url": "https://untrusted.example.org/tracker.mp4"
+        ])
+        XCTAssertEqual(stream, "https://cdn.hanime.tv/videos/sample.m3u8?token=fixture")
+        XCTAssertEqual(NativeProviderAPI.hanimeCatalogStream([
+            "stream_url": "https://cdn.hanime.tv.evil.invalid/sample.m3u8"
+        ]), "")
+        let post = Post(key: "hanime:sample", id: "sample", provider: "Hanime",
+                        mediaUrl: stream, type: "video")
+        let resolved = try await api.resolveMedia(post)
+        XCTAssertEqual(resolved.mediaUrl, stream)
+        XCTAssertEqual(resolved.type, "hls")
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v8/video" },
+                       "Play native HLS immediately instead of hitting the removed v8 endpoint")
+    }
+
+    func testHanimeRemovedEndpointShowsAuthorizedPlaybackFallback() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "hanime:missing-404", id: "missing-404", provider: "Hanime", type: "video")
+        do {
+            _ = try await api.resolveMedia(post)
+            XCTFail("Expected a useful fallback when Hanime's old endpoint returns 404")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Native playback"))
+            XCTAssertTrue(error.localizedDescription.contains("Hanime API"))
+            XCTAssertFalse(error.localizedDescription.contains("HTTP 404"))
         }
     }
 

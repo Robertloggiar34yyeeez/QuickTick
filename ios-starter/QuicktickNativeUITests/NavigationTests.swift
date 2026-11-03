@@ -173,6 +173,20 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
     }
 
+    @MainActor func testSettingsDirectoryMakesThemesAndRefreshEasyToFind() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        XCTAssertTrue(app.buttons["open-settings"].waitForExistence(timeout: 8))
+        app.buttons["open-settings"].tap()
+        XCTAssertTrue(app.buttons["settings-change-theme"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["settings-refresh-recommended"].exists)
+        XCTAssertTrue(app.buttons["settings-jump-models"].exists)
+        app.buttons["settings-change-theme"].tap()
+        XCTAssertTrue(app.switches["automatic-seasonal-theme-toggle"].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
+    }
+
     @MainActor func testFiveTabsSettingsAndScrollToTop() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))

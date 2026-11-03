@@ -196,12 +196,22 @@ struct PassiveSkipPolicy {
 struct SessionPreferenceModel: Sendable {
     private var termsByProvider: [String: [String: Double]] = [:]
     private var lastWatchCredit: [String: Double] = [:]
+    private var lastEventByProvider: [String: Date] = [:]
+    // Monolith-inspired concept-drift policy: temporary interests lose half
+    // their strength after an hour even if the user merely keeps scrolling.
+    // Explicit selections and long-term favorites live outside this model.
+    private static let interestHalfLife: TimeInterval = 60 * 60
     private static let generic: Set<String> = [
         "solo", "video", "image", "photo", "highres", "2d", "3d",
         "animated", "animation", "rating:safe", "rating:explicit"
     ]
 
-    mutating func record(_ event: RecommendationEvent, post: Post, terms: [String]) {
+    private func freshness(provider: String, at now: Date) -> Double {
+        guard let last = lastEventByProvider[provider] else { return 1 }
+        return pow(0.5, max(0, now.timeIntervalSince(last)) / Self.interestHalfLife)
+    }
+
+    mutating func record(_ event: RecommendationEvent, post: Post, terms: [String], at now: Date = .now) {
         let reward: Double
         switch event {
         case .like: reward = 2.8
@@ -227,8 +237,9 @@ struct SessionPreferenceModel: Sendable {
         guard reward != 0, !topics.isEmpty else { return }
         let provider = post.provider.lowercased()
         var weights = termsByProvider[provider] ?? [:]
+        let timeFade = freshness(provider: provider, at: now)
         for key in Array(weights.keys) {
-            let faded = (weights[key] ?? 0) * 0.94
+            let faded = (weights[key] ?? 0) * 0.94 * timeFade
             if abs(faded) < 0.05 { weights.removeValue(forKey: key) }
             else { weights[key] = faded }
         }
@@ -244,19 +255,24 @@ struct SessionPreferenceModel: Sendable {
             weights = Dictionary(uniqueKeysWithValues: best.map { ($0.key, $0.value) })
         }
         termsByProvider[provider] = weights
+        // Passive impressions and fast skips return before this assignment,
+        // so just seeing content never refreshes an interest's lifetime.
+        lastEventByProvider[provider] = max(lastEventByProvider[provider] ?? now, now)
     }
 
-    func score(provider: String, terms: [String]) -> Double {
+    func score(provider: String, terms: [String], at now: Date = .now) -> Double {
         let weights = termsByProvider[provider] ?? [:]
         let sum = Set(terms.map(RecommendationTagRules.canonical))
             .reduce(0.0) { $0 + (weights[$1] ?? 0) }
-        return max(-11, min(9, sum * 1.6))
+        return max(-11, min(9, sum * 1.6 * freshness(provider: provider, at: now)))
     }
 
-    func strongInterests(provider: String, limit: Int = 8) -> [(String, Double)] {
-        (termsByProvider[provider] ?? [:]).filter { $0.value >= 1.5 }
-            .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
-            .prefix(limit).map { ($0.key, $0.value) }
+    func strongInterests(provider: String, limit: Int = 8, at now: Date = .now) -> [(String, Double)] {
+        let timeFade = freshness(provider: provider, at: now)
+        return (termsByProvider[provider] ?? [:]).map { ($0.key, $0.value * timeFade) }
+            .filter { $0.1 >= 1.5 }
+            .sorted { $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 > $1.1 }
+            .prefix(limit).map { ($0.0, $0.1) }
     }
 }
 

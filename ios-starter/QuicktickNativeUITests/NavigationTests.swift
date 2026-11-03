@@ -182,6 +182,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.buttons["settings-change-theme"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["settings-refresh-recommended"].exists)
         XCTAssertTrue(app.buttons["settings-jump-models"].exists)
+        XCTAssertTrue(app.buttons["settings-sections-menu"].exists)
         app.buttons["settings-change-theme"].tap()
         XCTAssertTrue(app.switches["automatic-seasonal-theme-toggle"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()

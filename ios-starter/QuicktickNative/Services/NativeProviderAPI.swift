@@ -137,6 +137,13 @@ enum EromeBrowserCatalog {
 
 // Provider networking lives on the API actor, never on a scrolling view. No
 // requests in this service use the optional QuickTick Sync origin.
+struct RedgifsNiche: Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let imageURL: String
+    let postCount: Int
+}
+
 enum NativeProviderAPI {
     static let userAgent = "QuickTickNative/1.0"
     // nHentai requests specifically ask clients for an identifying UA; keep
@@ -506,23 +513,108 @@ enum NativeProviderAPI {
                                            sort: sort, immersive: immersive)
     }
 
-    static func redgifs(session: URLSession, token: String, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
-        let items = [URLQueryItem(name: "order", value: sort == "recent" ? "latest" : sort == "popular" ? "top7" : "trending"),
-                     .init(name: "count", value: "40"), .init(name: "page", value: String(page))] + (query.included.isEmpty ? [] : [.init(name: "search_text", value: query.included.joined(separator: " "))])
-        var result: [String: Any]?
-        var lastError: Error = APIError.invalidResponse
-        for path in ["https://api.redgifs.com/v2/gifs/search", "https://api.redgifs.com/v2/search/gifs"] {
-            do {
-                let object = try Self.object(await data(session: session, url: url(path, items), provider: .redgifs, headers: ["Authorization": "Bearer " + token]))
-                guard object["gifs"] is [[String: Any]] else { throw APIError.invalidResponse }
-                result = object; break
-            } catch is CancellationError { throw CancellationError() } catch {
-                if (error as? APIError)?.retryAfter != nil { throw error }
-                if let failure = error as? APIError, case .providerStatus(.redgifs, 401) = failure { throw error }
-                lastError = error
-            }
+    private static func redgifsHeaders(token: String) -> [String: String] {
+        ["Authorization": "Bearer " + token, "Referer": "https://www.redgifs.com/"]
+    }
+
+    static func redgifsNicheID(_ token: String) -> String? {
+        guard token.hasPrefix("niche:") else { return nil }
+        let id = String(token.dropFirst("niche:".count))
+        guard id.count <= 70,
+              id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else { return nil }
+        return id
+    }
+
+    private static func redgifsPreview(_ raw: String) -> String {
+        guard let address = mediaURL(raw, provider: .redgifs),
+              let host = address.host?.lowercased(),
+              host == "redgifs.com" || host.hasSuffix(".redgifs.com") else { return "" }
+        return address.absoluteString
+    }
+
+    /// Genuine RedGIFs niches, with a poster from each niche's popular posts.
+    /// A missing/unavailable niche preview is omitted instead of displaying
+    /// a generic tag icon with misleading content.
+    static func redgifsNiches(session: URLSession, token: String, limit: Int = 8) async throws -> [RedgifsNiche] {
+        let response = try object(await data(session: session,
+            url: url("https://api.redgifs.com/v2/niches",
+                [.init(name: "page", value: "1"), .init(name: "count", value: String(max(1, min(limit * 2, 32))))]),
+            provider: .redgifs, headers: redgifsHeaders(token: token)))
+        let entries = rows(response["niches"] ?? response["items"])
+        var chosen: [RedgifsNiche] = [], seen = Set<String>()
+        for item in entries {
+            let slug = text(item["slug"] ?? item["id"]).lowercased()
+            guard let id = redgifsNicheID("niche:" + slug), seen.insert(id).inserted else { continue }
+            let title = text(item["name"] ?? item["title"])
+            guard !title.isEmpty else { continue }
+            let thumbnail = redgifsPreview(text(item["thumbnail"] ?? item["cover"]))
+            chosen.append(RedgifsNiche(id: id, name: title, imageURL: thumbnail,
+                                      postCount: Int(number(item["gifs"] ?? item["count"]))))
+            if chosen.count >= limit { break }
         }
-        guard let result else { throw lastError }
+        var covers: [Int: String] = [:]
+        for start in stride(from: 0, to: chosen.count, by: 4) {
+            try Task.checkCancellation()
+            let indices = Array(start..<min(start + 4, chosen.count))
+            let collected = await withTaskGroup(of: (Int, String?).self) { group in
+                for index in indices {
+                    let id = chosen[index].id
+                    group.addTask {
+                        do {
+                            let sample = try object(await data(session: session,
+                                url: url("https://api.redgifs.com/v2/niches/\(id)/gifs",
+                                    [.init(name: "order", value: "top"), .init(name: "page", value: "1"), .init(name: "count", value: "4")]),
+                                provider: .redgifs, headers: redgifsHeaders(token: token)))
+                            let image = rows(sample["gifs"]).compactMap { gif -> String? in
+                                let urls = gif["urls"] as? [String: Any] ?? [:]
+                                let value = redgifsPreview(text(urls["poster"] ?? urls["thumbnail"] ?? urls["vthumbnail"]))
+                                return value.isEmpty ? nil : value
+                            }.first
+                            return (index, image)
+                        } catch { return (index, nil) }
+                    }
+                }
+                var result: [(Int, String?)] = []
+                for await entry in group { result.append(entry) }
+                return result
+            }
+            for (index, image) in collected { if let image { covers[index] = image } }
+        }
+        return chosen.enumerated().compactMap { index, niche in
+            let image = covers[index] ?? niche.imageURL
+            guard !image.isEmpty else { return nil }
+            return RedgifsNiche(id: niche.id, name: niche.name, imageURL: image, postCount: niche.postCount)
+        }
+    }
+
+    static func redgifs(session: URLSession, token: String, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
+        let result: [String: Any]
+        if let niche = query.included.count == 1 ? redgifsNicheID(query.included[0]) : nil {
+            result = try object(await data(session: session,
+                url: url("https://api.redgifs.com/v2/niches/\(niche)/gifs",
+                    [.init(name: "order", value: sort == "recent" ? "latest" : "top"),
+                     .init(name: "count", value: "40"), .init(name: "page", value: String(page))]),
+                provider: .redgifs, headers: redgifsHeaders(token: token)))
+        } else {
+            guard !query.included.contains(where: { $0.hasPrefix("niche:") }) else { throw APIError.invalidResponse }
+            let items = [URLQueryItem(name: "order", value: sort == "recent" ? "latest" : sort == "popular" ? "top7" : "trending"),
+                         .init(name: "count", value: "40"), .init(name: "page", value: String(page))] + (query.included.isEmpty ? [] : [.init(name: "search_text", value: query.included.joined(separator: " "))])
+            var found: [String: Any]?
+            var lastError: Error = APIError.invalidResponse
+            for path in ["https://api.redgifs.com/v2/gifs/search", "https://api.redgifs.com/v2/search/gifs"] {
+                do {
+                    let object = try Self.object(await data(session: session, url: url(path, items), provider: .redgifs, headers: redgifsHeaders(token: token)))
+                    guard object["gifs"] is [[String: Any]] else { throw APIError.invalidResponse }
+                    found = object; break
+                } catch is CancellationError { throw CancellationError() } catch {
+                    if (error as? APIError)?.retryAfter != nil { throw error }
+                    if let failure = error as? APIError, case .providerStatus(.redgifs, 401) = failure { throw error }
+                    lastError = error
+                }
+            }
+            guard let found else { throw lastError }
+            result = found
+        }
         let raw = rows(result["gifs"])
         let posts = raw.map { row -> Post in
             let id = text(row["id"]), urls = row["urls"] as? [String: Any] ?? [:]
@@ -560,6 +652,21 @@ enum NativeProviderAPI {
         return list
     }
 
+    /// Prefer native AVPlayer for catalog entries that legitimately include a
+    /// first-party HLS/MP4 URL. The v11 catalog often omits streams entirely;
+    /// never interpret a watch page or external link as playable media.
+    static func hanimeCatalogStream(_ row: [String: Any]) -> String {
+        let direct = ["stream_url", "hls_url", "video_url", "media_url", "streamUrl", "videoUrl"]
+            .map { text(row[$0]) }
+        let manifest = row["videos_manifest"] as? [String: Any] ?? [:]
+        let embedded = rows(manifest["servers"])
+            .flatMap { rows($0["streams"]) }
+            .sorted { number($0["height"]) > number($1["height"]) }
+            .map { text($0["url"]) }
+        return (direct + embedded).compactMap { mediaURL($0, provider: .hanime) }
+            .first(where: HanimeGeneratedAPI.permittedStreamURL)?.absoluteString ?? ""
+    }
+
     static func hanime(session: URLSession, query: ParsedQuery, page: Int,
                        sort: String, immersive: Bool) async throws -> PostPage {
         guard (1...1000).contains(page) else { throw APIError.invalidResponse }
@@ -592,9 +699,11 @@ enum NativeProviderAPI {
             let thumb = text(row["poster_url"] ?? row["cover_url"] ?? row["thumbnail"])
             let cover = URL(string: thumb)
             let safeThumb = cover?.scheme == "https" ? thumb : ""
+            let stream = hanimeCatalogStream(row)
             var post = Post(key: "hanime:\(id)", id: id, provider: "Hanime",
                             score: number(row["views"] ?? row["views_count"]), tags: tags,
-                            thumbUrl: safeThumb, pageUrl: "https://hanime.tv/videos/hentai/\(id)", type: "video")
+                            mediaUrl: stream, thumbUrl: safeThumb,
+                            pageUrl: "https://hanime.tv/videos/hentai/\(id)", type: "video")
             post.caption = text(row["name"] ?? row["title"])
             post.creator = text((row["brand"] as? [String: Any])?["name"] ?? row["brand"])
             post.createdAt = number(row["released_at_unix"] ?? row["created_at_unix"])
@@ -1318,6 +1427,10 @@ extension NativeProviderAPI {
                     provider: provider))
             } catch APIError.providerStatus(.hanime, 403) {
                 throw APIError.server("Hanime requires browser verification for this video. Use Browse inside QuickTick or configure a Hanime API in Settings.")
+            } catch APIError.providerStatus(.hanime, 404) {
+                throw APIError.server("Hanime's legacy video endpoint is unavailable. Native playback needs an authorized HLS stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
+            } catch APIError.providerStatus(.hanime, 410) {
+                throw APIError.server("Hanime's legacy video endpoint has been removed. Native playback needs an authorized HLS stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
             }
             let manifest = response["videos_manifest"] as? [String: Any] ?? [:]
             let streams = rows(manifest["servers"]).flatMap { rows($0["streams"]) }.sorted { number($0["height"]) > number($1["height"]) }
@@ -1442,12 +1555,9 @@ enum EromePublicCatalog {
         let address = try NativeProviderAPI.url(origin.absoluteString + route, parameters)
         let html = try await pageHTML(session: session, url: address)
         let summaries = albumSummaries(html)
-        if !immersive && !summaries.isEmpty {
-            // Preserve the supplied adapter's listing-first behavior. Loading
-            // dozens of albums on every page is slow and may trigger rate limits.
-            return NativeProviderAPI.page(summaries, hasMore: hasNextPage(html) || summaries.count >= 24,
-                                          query: query, immersive: immersive)
-        }
+        // Home used to return only album posters when summaries existed,
+        // so videos were invisible until entering Immersive. Resolve a bounded
+        // set of albums in both feeds and reuse AlbumMediaCache for playback.
         // Summaries are thumbnail-only, and not every album-link has a
         // matching summary (or even a thumbnail). In particular, choosing
         // only summaries can silently discard the page's video albums.
@@ -1472,7 +1582,7 @@ enum EromePublicCatalog {
         // Hydrate only a small first deck. Requesting 32 albums (often 32
         // HTML pages plus 32 hidden browser fallbacks) made Erome painfully
         // slow to open, especially on iPad. Users can page for more clips.
-        let selected = Array(albums.prefix(immersive ? 16 : 8))
+        let selected = Array(albums.prefix(immersive ? 16 : 9))
         var items: [Post] = []
         var albumFailure: String?
         var successfulAlbums = 0
@@ -1499,6 +1609,7 @@ enum EromePublicCatalog {
             // An immersive page needs playable media, not every image in a
             // large album. Stop after a useful initial deck to save data.
             if immersive && items.count >= 3 { break }
+            if !immersive && items.filter({ $0.type == "video" }).count >= 3 { break }
         }
         try Task.checkCancellation()
         if successfulAlbums == 0, let albumFailure {
@@ -1508,7 +1619,12 @@ enum EromePublicCatalog {
             throw APIError.server("Erome's public albums did not expose playable media. Try again later or check access in Safari.")
         }
         let hasMore = hasNextPage(html) || albums.count >= 24
-        return NativeProviderAPI.page(items, hasMore: hasMore, query: query, immersive: immersive)
+        // Keep video cards ahead of photo-only albums in Home, so users see
+        // real playable clips rather than a wall of unresolved covers.
+        let ordered = immersive ? items : items.sorted { left, right in
+            (left.type == "video" ? 1 : 0) > (right.type == "video" ? 1 : 0)
+        }
+        return NativeProviderAPI.page(ordered, hasMore: hasMore, query: query, immersive: immersive)
     }
 
     static func resolve(session: URLSession, post: Post) async throws -> ResolvedMedia {

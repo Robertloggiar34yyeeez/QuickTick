@@ -71,6 +71,8 @@ struct HomeFeedView: View {
     @State private var visualThemeTerms: [String] = []
     @State private var themeSuggestions: [HomeThemeSuggestion] = []
     @State private var publicPopularFranchisePosts: [Post] = []
+    @State private var redgifsNiches: [RedgifsNiche] = []
+    @State private var openingNicheID: String?
     @State private var themeRefreshCycle = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var postSignature: String {
@@ -222,7 +224,11 @@ struct HomeFeedView: View {
                     .padding(.horizontal, 16)
                     .accessibilityIdentifier("home-active-filter")
                 }
-                if suggestedThemesEnabled && !themeSuggestions.isEmpty { suggestedThemeRow }
+                if store.selectedProvider == .redgifs {
+                    redgifsNicheRow
+                } else if suggestedThemesEnabled && !themeSuggestions.isEmpty {
+                    suggestedThemeRow
+                }
                 if store.selectedProvider == .pornhub {
                     homeCategoryRow
                 }
@@ -528,6 +534,25 @@ struct HomeFeedView: View {
                 // the main Home feed or replace its valid suggestions.
             }
         }
+        .task(id: "redgifs-niches:\(store.selectedProvider.rawValue):\(store.bootstrapped)") {
+            guard store.bootstrapped, store.selectedProvider == .redgifs else {
+                redgifsNiches = []
+                return
+            }
+            // The RedGIFs public niche list is independent from learned tags
+            // and never delays the first Home feed render.
+            do { try await Task.sleep(for: .milliseconds(800)) } catch { return }
+            guard !Task.isCancelled else { return }
+            do {
+                let discovered = try await store.api.redgifsNiches()
+                guard !Task.isCancelled, store.selectedProvider == .redgifs else { return }
+                redgifsNiches = discovered
+            } catch {
+                // Offline/provider errors preserve the normal feed without
+                // inventing niches or misleading thumbnail icons.
+                redgifsNiches = []
+            }
+        }
         .task(id: store.selectedProvider) {
             let provider = store.selectedProvider
             let discovered = await store.visual.discoveryTerms(provider: provider)
@@ -551,6 +576,8 @@ struct HomeFeedView: View {
         .onChange(of: store.selectedProvider) { _, _ in
             visualThemeTerms = []
             publicPopularFranchisePosts = []
+            redgifsNiches = []
+            openingNicheID = nil
             themeSuggestions = []
             refreshThemeSuggestions()
         }
@@ -624,6 +651,66 @@ struct HomeFeedView: View {
                     }.padding(.horizontal, 16)
                 }
             }.accessibilityIdentifier("home-suggested-themes")
+        }
+    }
+
+    /// RedGIFs' actual communities, represented by thumbnails from their
+    /// popular clips. Tapping one opens that niche's immersive vertical feed.
+    @ViewBuilder private var redgifsNicheRow: some View {
+        if !redgifsNiches.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.grid.2x2.fill").foregroundStyle(AppTheme.accent)
+                    Text("RedGIFs niches").font(.subheadline.weight(.bold))
+                    Text("Explore popular clips").font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                    Spacer()
+                }.padding(.horizontal, 16)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(redgifsNiches) { niche in
+                            Button {
+                                guard openingNicheID == nil else { return }
+                                openingNicheID = niche.id
+                                let query = "niche:" + niche.id
+                                store.commitSearch(query: query, sort: "popular")
+                                Task { @MainActor in
+                                    await store.refresh(immersive: true)
+                                    defer { openingNicheID = nil }
+                                    guard store.selectedProvider == .redgifs,
+                                          store.queryText == query,
+                                          let first = store.posts.first(where: \.isImmersiveMedia) else { return }
+                                    immersivePostID = first.stableID
+                                    immersive = true
+                                }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    CachedMediaImage(url: niche.imageURL, pixels: 320, fill: true)
+                                        .frame(width: 154, height: 184)
+                                        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                    HStack(spacing: 5) {
+                                        Text(niche.name).font(.subheadline.weight(.semibold))
+                                            .lineLimit(1)
+                                        if openingNicheID == niche.id {
+                                            ProgressView().controlSize(.mini)
+                                        }
+                                    }
+                                    .foregroundStyle(.white)
+                                }
+                                .frame(width: 154, alignment: .leading)
+                                .padding(10)
+                                .background(AppTheme.elevatedSurface,
+                                            in: RoundedRectangle(cornerRadius: 21, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 21, style: .continuous)
+                                    .stroke(AppTheme.border, lineWidth: 1.5))
+                            }
+                            .buttonStyle(QuicktickPressStyle())
+                            .disabled(openingNicheID != nil)
+                            .accessibilityLabel("Explore RedGIFs niche: \(niche.name)")
+                            .accessibilityIdentifier("redgifs-niche-\(niche.id)")
+                        }
+                    }.padding(.horizontal, 16)
+                }
+            }.accessibilityIdentifier("home-redgifs-niches")
         }
     }
 

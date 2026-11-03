@@ -3,6 +3,13 @@ import AVFoundation
 @testable import QuicktickNative
 
 final class ImmersiveMediaTests: XCTestCase {
+    func testRedgifsNicheSwipeFinishesAtAdjacentViewportWithoutExtraSnap() {
+        XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: 1, viewportHeight: 844), -844)
+        XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: -1, viewportHeight: 844), 844)
+        XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: 1, viewportHeight: 0), 0)
+        XCTAssertEqual(ImmersiveNicheSwipeMotion.duration, 0.28, accuracy: 0.0001)
+    }
+
     func testImmersivePreloadsTwoUpcomingPostsAndRetainsPreviousForReverseSwipe() {
         XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 0, count: 5), [0, 1, 2])
         XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 0, count: 5), [1, 2])

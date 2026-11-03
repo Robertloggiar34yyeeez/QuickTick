@@ -79,8 +79,43 @@ final class IntelligentRecommendationTests: XCTestCase {
         session.record(.watched(seconds: 10, completion: 0.85), post: item, terms: item.tags)
         session.record(.impression, post: item, terms: item.tags)
         session.record(.quickSkip, post: item, terms: item.tags)
-        XCTAssertEqual(session.score(provider: "rule34", terms: item.tags), credited)
+        XCTAssertEqual(session.score(provider: "rule34", terms: item.tags), credited, accuracy: 0.001)
         XCTAssertEqual(session.score(provider: "eporner", terms: item.tags), 0)
+    }
+
+    func testSessionInterestFadesWithElapsedTimeWithoutPassiveRefresh() {
+        var session = SessionPreferenceModel()
+        let item = Post(key: "rule34:clock", id: "clock", provider: "rule34", tags: ["qipao"])
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        session.record(.like, post: item, terms: item.tags, at: start)
+        let fresh = session.score(provider: "rule34", terms: item.tags, at: start)
+        XCTAssertGreaterThan(fresh, 0)
+        XCTAssertFalse(session.strongInterests(provider: "rule34", at: start).isEmpty)
+
+        let hourLater = start.addingTimeInterval(60 * 60)
+        let faded = session.score(provider: "rule34", terms: item.tags, at: hourLater)
+        XCTAssertEqual(faded, fresh * 0.5, accuracy: 0.000001)
+        XCTAssertTrue(session.strongInterests(provider: "rule34", at: hourLater).isEmpty)
+        session.record(.impression, post: item, terms: item.tags, at: hourLater)
+        session.record(.quickSkip, post: item, terms: item.tags, at: hourLater)
+        XCTAssertEqual(session.score(provider: "rule34", terms: item.tags, at: hourLater), faded, accuracy: 0.000001)
+        XCTAssertEqual(session.score(provider: "eporner", terms: item.tags, at: hourLater), 0)
+
+        let twoHoursLater = start.addingTimeInterval(2 * 60 * 60)
+        session.record(.like, post: item, terms: item.tags, at: twoHoursLater)
+        XCTAssertGreaterThan(session.score(provider: "rule34", terms: item.tags, at: twoHoursLater), faded)
+    }
+
+    func testSessionExplicitNegativeAlsoFadesInsteadOfBecomingPermanent() {
+        var session = SessionPreferenceModel()
+        let item = Post(key: "rule34:negative-clock", id: "negative-clock", provider: "rule34", tags: ["unwanted_style"])
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        session.record(.less, post: item, terms: item.tags, at: start)
+        let initial = session.score(provider: "rule34", terms: item.tags, at: start)
+        let later = session.score(provider: "rule34", terms: item.tags, at: start.addingTimeInterval(60 * 60))
+        XCTAssertLessThan(initial, 0)
+        XCTAssertEqual(later, initial * 0.5, accuracy: 0.000001)
+        // Explicit "Not Into" is enforced by a different, persistent hard filter.
     }
 
     func testSessionDeliberateLessReducesRecentSubjectAffinity() {

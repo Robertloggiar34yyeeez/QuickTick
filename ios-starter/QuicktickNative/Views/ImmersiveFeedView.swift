@@ -43,6 +43,7 @@ struct ImmersiveFeedView: View {
     @State private var horizontalCloseDrag: CGFloat = 0
     @State private var closing = false
     @State private var dragAxis: ImmersiveDragAxis?
+    @State private var settlingNicheSwipe = false
     @State private var searchVisible = false
     @State private var preferencesVisible = false
     @StateObject private var previews = ImmersivePreviewCache()
@@ -63,6 +64,10 @@ struct ImmersiveFeedView: View {
     }
     private var playbackOwner: String { offline ? "offline-immersive" : (collectionTab == 2 ? "favorites-immersive" : (onClose != nil ? "home-immersive" : "immersive")) }
     private var interactiveCloseAllowed: Bool { true }
+    private var smoothNichePaging: Bool {
+        !offline && onClose != nil && collectionTab == nil &&
+            store.selectedProvider == .redgifs && store.queryText.hasPrefix("niche:")
+    }
 
     private var adjacentPost: Post? {
         let next = activeIndex + (verticalDrag < 0 ? 1 : -1)
@@ -145,6 +150,7 @@ struct ImmersiveFeedView: View {
         .onChange(of: store.feedRevision) { _, _ in
             activeSince = .distantPast
             activeIndex = 0; activeID = mediaPosts.first?.stableID
+            settlingNicheSwipe = false; verticalDrag = 0
         }
         .onChange(of: mediaSignature) { _, _ in
             let keys = mediaPosts.map(\.stableID)
@@ -171,7 +177,10 @@ struct ImmersiveFeedView: View {
             store.protectImmersivePost(key)
             if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index }
         }
-        .onDisappear { if store.players.activeOwner == playbackOwner { store.players.releaseAll() } }
+        .onDisappear {
+            settlingNicheSwipe = false
+            if store.players.activeOwner == playbackOwner { store.players.releaseAll() }
+        }
         .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
         .sheet(isPresented: $searchVisible) { NativeSearchBar(immersive: true) }
         .quicktickEdgeBack {
@@ -228,7 +237,7 @@ struct ImmersiveFeedView: View {
     }
 
     private func updatePan(_ translation: CGSize, viewport: CGSize) {
-        guard !closing else { return }
+        guard !closing, !settlingNicheSwipe else { return }
         if dragAxis == nil {
             if interactiveCloseAllowed && translation.width > 12 &&
                 translation.width > abs(translation.height) * 1.2 {
@@ -252,6 +261,7 @@ struct ImmersiveFeedView: View {
     private func endPan(from origin: String, translation: CGSize,
                         velocity: CGSize, viewport: CGSize) {
         defer { dragAxis = nil }
+        guard !settlingNicheSwipe else { return }
         if dragAxis == .horizontal {
             let complete = horizontalCloseDrag >= viewport.width * 0.28 ||
                 (horizontalCloseDrag >= 50 && velocity.width >= 650)
@@ -277,12 +287,64 @@ struct ImmersiveFeedView: View {
             }
             return
         }
+        if smoothNichePaging {
+            smoothNichePageSwipe(from: origin, translation: translation,
+                                velocity: velocity, viewport: viewport)
+            return
+        }
         pageSwipe(from: origin, translation: translation, velocity: velocity,
                   viewportHeight: viewport.height)
         withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.88)) {
             verticalDrag = 0
         }
     }
+
+    /// Niche swipes keep the outgoing canvas attached to the finger until the
+    /// adjacent page fully occupies the viewport. Only then do we swap the
+    /// playing post without a second insertion/snap animation.
+    private func smoothNichePageSwipe(from origin: String, translation: CGSize,
+                                     velocity: CGSize, viewport: CGSize) {
+        guard presentationActive,
+              let direction = ImmersivePageSwipePolicy.direction(
+                  translation: translation, velocity: velocity,
+                  viewportHeight: viewport.height),
+              let index = mediaPosts.firstIndex(where: { $0.stableID == origin }),
+              mediaPosts.indices.contains(index + direction) else {
+            withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.88)) {
+                verticalDrag = 0
+            }
+            return
+        }
+        let next = index + direction
+        let destinationID = mediaPosts[next].stableID
+        settlingNicheSwipe = true
+        pageDirection = direction
+        withAnimation(.easeOut(duration: ImmersiveNicheSwipeMotion.duration)) {
+            verticalDrag = ImmersiveNicheSwipeMotion.destinationOffset(direction: direction,
+                                                                    viewportHeight: viewport.height)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(290))
+            guard settlingNicheSwipe else { return }
+            let stillCurrent = presentationActive && activeID == origin &&
+                mediaPosts.indices.contains(next) && mediaPosts[next].stableID == destinationID
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                if stillCurrent {
+                    activeIndex = next
+                    activeID = destinationID
+                }
+                verticalDrag = 0
+            }
+            settlingNicheSwipe = false
+            if stillCurrent && direction > 0, !offline, collectionTab == nil,
+               next >= mediaPosts.count - 8, !store.isLoading, store.hasMore {
+                Task(priority: .utility) { await store.loadMore(immersive: true) }
+            }
+        }
+    }
+
     private func pageSwipe(from origin: String, translation: CGSize,
                            velocity: CGSize, viewportHeight: CGFloat) {
         #if DEBUG
@@ -368,6 +430,16 @@ struct ImmersiveFeedView: View {
 }
 
 private enum ImmersiveDragAxis { case vertical, horizontal }
+
+/// The gesture and the newly mounted page meet at the same viewport edge.
+enum ImmersiveNicheSwipeMotion {
+    static let duration = 0.28
+
+    static func destinationOffset(direction: Int, viewportHeight: CGFloat) -> CGFloat {
+        let height = max(0, viewportHeight)
+        return direction > 0 ? -height : height
+    }
+}
 
 enum ImmersivePreloadPlan {
     static func retainedIndices(current: Int, count: Int) -> [Int] {

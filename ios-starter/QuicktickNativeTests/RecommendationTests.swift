@@ -2,6 +2,58 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
+    func testPostTitlesAppearForProvidersExceptRule34() {
+        var hanime = Post(key: "hanime:1", id: "1", provider: "Hanime", type: "video")
+        hanime.caption = "  Episode One  "
+        XCTAssertEqual(hanime.displayTitle, "Episode One")
+        var erome = Post(key: "erome:2", id: "2", provider: "Erome", type: "image")
+        erome.caption = "Gallery at sunset"
+        XCTAssertEqual(erome.displayTitle, "Gallery at sunset")
+        var redgifs = Post(key: "redgifs:3", id: "3", provider: "RedGIFs",
+                           tags: ["cosplay", "gaming"], type: "video")
+        XCTAssertEqual(redgifs.displayTitle, "Topics: cosplay · gaming")
+        redgifs.caption = "Real clip title"
+        XCTAssertEqual(redgifs.displayTitle, "Real clip title")
+        let rule34 = Post(key: "rule34:4", id: "4", provider: "Rule34",
+                          tags: ["cosplay"], type: "image")
+        XCTAssertNil(rule34.displayTitle)
+    }
+
+    func testRedgifsLikesAndNicheOverlapRecommendRelatedNewNiches() {
+        let favorite = Post(key: "redgifs:favorite", id: "favorite", provider: "RedGIFs",
+                            tags: ["cosplay"], type: "video")
+        let observed = Post(key: "redgifs:observation", id: "observation", provider: "RedGIFs",
+                            tags: ["cosplay", "gaming"], type: "video")
+        let unrelated = Post(key: "redgifs:unrelated", id: "unrelated", provider: "RedGIFs",
+                             tags: ["sports"], type: "video")
+        let model = RedgifsNicheAffinity(liked: [favorite], observed: [observed, unrelated])
+        let niches = [
+            RedgifsNiche(id: "sports", name: "Sports", imageURL: "https://example.com/sports.jpg", postCount: 10),
+            RedgifsNiche(id: "gaming", name: "Gaming", imageURL: "https://example.com/gaming.jpg", postCount: 10),
+            RedgifsNiche(id: "cosplay", name: "Cosplay", imageURL: "https://example.com/cosplay.jpg", postCount: 10)
+        ]
+        XCTAssertEqual(model.rankNiches(niches).map(\.id), ["cosplay", "gaming", "sports"])
+        XCTAssertEqual(model.rankPosts([unrelated, observed, favorite]).map(\.id),
+                       ["favorite", "observation", "unrelated"])
+        let cold = RedgifsNicheAffinity(liked: [], observed: [observed])
+        XCTAssertEqual(cold.rankNiches(niches).map(\.id), niches.map(\.id))
+        XCTAssertEqual(cold.rankPosts([unrelated, observed]).map(\.id), ["unrelated", "observation"])
+    }
+
+    func testRedgifsExplicitNicheLikeDoesNotBorrowRule34Favorites() {
+        var clicked = Post(key: "redgifs:clicked", id: "clicked", provider: "RedGIFs",
+                           type: "video")
+        clicked.category = "cosplay"
+        let anotherProvider = Post(key: "rule34:favorite", id: "favorite", provider: "Rule34",
+                                   tags: ["gaming"], type: "image")
+        let model = RedgifsNicheAffinity(liked: [clicked, anotherProvider], observed: [])
+        let posts = [
+            Post(key: "redgifs:other", id: "other", provider: "RedGIFs", tags: ["gaming"], type: "video"),
+            Post(key: "redgifs:match", id: "match", provider: "RedGIFs", tags: ["cosplay"], type: "video")
+        ]
+        XCTAssertEqual(model.rankPosts(posts).first?.id, "match")
+    }
+
     func testExplicitArtistRanksCreditedWorkWithoutTreatingPoseAsIdentity() async {
         let engine = RecommendationEngine()
         var selected = Post(key: "nhentai:1", id: "1", provider: "nhentai", tags: ["manga", "kneeling"], type: "image")

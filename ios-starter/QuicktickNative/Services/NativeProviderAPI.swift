@@ -745,7 +745,42 @@ enum NativeProviderAPI {
         guard let stream = playable.first else {
             throw APIError.server("Hanime returned no playable HLS stream for this video. Use Browse inside QuickTick or configure an authorized Hanime API in Settings.")
         }
+        // The highest advertised resolution is not always accessible. Test
+        // alternatives using normal first-party media headers before handing a
+        // signed URL to AVPlayer; a 403, 404 or HTML page is not a stream.
+        // Single-source responses retain their fast native playback path.
+        if playable.count > 1 {
+            for alternate in playable.prefix(5) {
+                try Task.checkCancellation()
+                if await hanimeHLSPlaylistAvailable(session: session, url: alternate) {
+                    return ResolvedMedia(mediaUrl: alternate.absoluteString, type: "hls")
+                }
+            }
+            throw APIError.server("Hanime returned HLS variants, but none exposed a playable playlist. Try again to request fresh streams or use Browse inside QuickTick.")
+        }
         return ResolvedMedia(mediaUrl: stream.absoluteString, type: "hls")
+    }
+
+    private static func hanimeHLSPlaylistAvailable(session: URLSession, url: URL) async -> Bool {
+        guard HanimeGeneratedAPI.permittedStreamURL(url) else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 6
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.apple.mpegurl, application/x-mpegURL, video/mp4", forHTTPHeaderField: "Accept")
+        for (header, value) in HanimeGeneratedAPI.mediaHeaders(for: url) {
+            request.setValue(value, forHTTPHeaderField: header)
+        }
+        do {
+            let (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  !data.isEmpty, data.count <= 512 * 1024 else { return false }
+            if ["mp4", "m4v"].contains(url.pathExtension.lowercased()) { return true }
+            return String(decoding: data.prefix(256), as: UTF8.self).contains("#EXTM3U")
+        } catch {
+            return false
+        }
     }
 
     /// Prefer native AVPlayer for catalog entries that legitimately include a

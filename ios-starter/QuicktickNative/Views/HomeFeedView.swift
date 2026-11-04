@@ -530,88 +530,98 @@ struct HomeFeedView: View {
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
-        let suggestionsScroll = navigableScroll
-        .task(id: "franchise-discovery:\(store.selectedProvider.rawValue):\(suggestedThemesMode):\(suggestedThemesEnabled):\(store.bootstrapped)") {
-            guard store.bootstrapped, store.selectedProvider == .rule34,
-                  suggestedThemesEnabled, suggestedThemesMode != SuggestedThemeMode.tags.rawValue else {
+        // Break the independent async discovery lanes into separate view
+        // expressions. One enormous modifier chain exhausted Swift's type
+        // checker during Release archive even though each task is valid.
+        let franchiseScroll = navigableScroll
+            .task(id: "franchise-discovery:\(store.selectedProvider.rawValue):\(suggestedThemesMode):\(suggestedThemesEnabled):\(store.bootstrapped)") {
+                await discoverPopularFranchises()
+            }
+        let nicheScroll = franchiseScroll
+            .task(id: "redgifs-niches:\(store.selectedProvider.rawValue):\(store.bootstrapped)") {
+                await discoverRedgifsNiches()
+            }
+        let visualScroll = nicheScroll
+            .task(id: store.selectedProvider) {
+                await discoverVisualThemes()
+            }
+        let postChangeScroll = visualScroll
+            .onChange(of: postSignature) { _, _ in
+                playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
+                // Do not replace topic cards during a feed pagination.
+                if themeSuggestions.isEmpty { refreshThemeSuggestions() }
+            }
+        let tasteChangeScroll = postChangeScroll
+            .onChange(of: store.favorites.count) { _, _ in refreshThemeSuggestions() }
+            .onChange(of: store.tasteChoice(for: store.selectedProvider)) { _, _ in refreshThemeSuggestions() }
+            .onChange(of: store.exclusions) { _, _ in refreshThemeSuggestions() }
+        let preferenceScroll = tasteChangeScroll
+            .onChange(of: suggestedThemesEnabled) { _, _ in refreshThemeSuggestions() }
+            .onChange(of: suggestedThemesMode) { _, _ in refreshThemeSuggestions() }
+        let finalScroll = preferenceScroll
+            .onChange(of: store.selectedProvider) { _, _ in
+                visualThemeTerms = []
                 publicPopularFranchisePosts = []
-                return
-            }
-            // Public franchise discovery is its own, broad popularity lane.
-            // It must never inherit the user's liked tags or focused query.
-            // Defer it until after Home's initial feed request starts.
-            do { try await Task.sleep(for: .milliseconds(1_400)) } catch { return }
-            guard !Task.isCancelled else { return }
-            do {
-                let page = try await store.api.posts(provider: .rule34,
-                    query: ParsedQuery(included: [], excluded: []), page: 1,
-                    sort: "popular")
-                guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
-                var discovered = page.items
-                // A second public top-scored page expands the choice of
-                // franchises without gating Home's first visible results.
-                if let next = try? await store.api.posts(provider: .rule34,
-                    query: ParsedQuery(included: [], excluded: []), page: 2,
-                    sort: "popular"), !Task.isCancelled, store.selectedProvider == .rule34 {
-                    let seen = Set(page.items.map(\.stableID))
-                    discovered += next.items.filter { !seen.contains($0.stableID) }
-                }
-                guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
-                publicPopularFranchisePosts = discovered
+                redgifsNiches = []
+                openingNicheID = nil
+                themeSuggestions = []
                 refreshThemeSuggestions()
-            } catch {
-                // A slow or unavailable popularity endpoint must never stall
-                // the main Home feed or replace its valid suggestions.
             }
-        }
-        .task(id: "redgifs-niches:\(store.selectedProvider.rawValue):\(store.bootstrapped)") {
-            guard store.bootstrapped, store.selectedProvider == .redgifs else {
-                redgifsNiches = []
-                return
-            }
-            // The RedGIFs public niche list is independent from learned tags
-            // and never delays the first Home feed render.
-            do { try await Task.sleep(for: .milliseconds(800)) } catch { return }
-            guard !Task.isCancelled else { return }
-            do {
-                let discovered = try await store.api.redgifsNiches(limit: 16)
-                guard !Task.isCancelled, store.selectedProvider == .redgifs else { return }
-                redgifsNiches = discovered
-            } catch {
-                // Offline/provider errors preserve the normal feed without
-                // inventing niches or misleading thumbnail icons.
-                redgifsNiches = []
-            }
-        }
-        .task(id: store.selectedProvider) {
-            let provider = store.selectedProvider
-            let discovered = await store.visual.discoveryTerms(provider: provider)
-            guard !Task.isCancelled, store.selectedProvider == provider else { return }
-            visualThemeTerms = discovered
-            refreshThemeSuggestions()
-        }
-        .onChange(of: postSignature) { _, _ in
-            playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
-            // Growing a feed or receiving delayed metadata must not replace
-            // topic cards while the user is reading or scrolling.
-            if themeSuggestions.isEmpty { refreshThemeSuggestions() }
-        }
-        .onChange(of: store.favorites.count) { _, _ in refreshThemeSuggestions() }
-        // Idle taste updates are not navigation events. Keep the visible topic
-        // cards stable until the next explicit refresh or preference change.
-        .onChange(of: store.tasteChoice(for: store.selectedProvider)) { _, _ in refreshThemeSuggestions() }
-        .onChange(of: store.exclusions) { _, _ in refreshThemeSuggestions() }
-        .onChange(of: suggestedThemesEnabled) { _, _ in refreshThemeSuggestions() }
-        .onChange(of: suggestedThemesMode) { _, _ in refreshThemeSuggestions() }
-        .onChange(of: store.selectedProvider) { _, _ in
-            visualThemeTerms = []
+        return finalScroll
+    }
+
+    private func discoverPopularFranchises() async {
+        guard store.bootstrapped, store.selectedProvider == .rule34,
+              suggestedThemesEnabled, suggestedThemesMode != SuggestedThemeMode.tags.rawValue else {
             publicPopularFranchisePosts = []
-            redgifsNiches = []
-            openingNicheID = nil
-            themeSuggestions = []
-            refreshThemeSuggestions()
+            return
         }
-        return suggestionsScroll
+        // This broad public popularity lane does not inherit liked tags.
+        do { try await Task.sleep(for: .milliseconds(1_400)) } catch { return }
+        guard !Task.isCancelled else { return }
+        do {
+            let page = try await store.api.posts(
+                provider: .rule34, query: ParsedQuery(included: [], excluded: []),
+                page: 1, sort: "popular")
+            guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
+            var discovered = page.items
+            if let next = try? await store.api.posts(
+                provider: .rule34, query: ParsedQuery(included: [], excluded: []),
+                page: 2, sort: "popular"),
+               !Task.isCancelled, store.selectedProvider == .rule34 {
+                let seen = Set(page.items.map(\.stableID))
+                discovered += next.items.filter { !seen.contains($0.stableID) }
+            }
+            guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
+            publicPopularFranchisePosts = discovered
+            refreshThemeSuggestions()
+        } catch {
+            // Discovery failure must not stall or replace the main feed.
+        }
+    }
+
+    private func discoverRedgifsNiches() async {
+        guard store.bootstrapped, store.selectedProvider == .redgifs else {
+            redgifsNiches = []
+            return
+        }
+        do { try await Task.sleep(for: .milliseconds(800)) } catch { return }
+        guard !Task.isCancelled else { return }
+        do {
+            let discovered = try await store.api.redgifsNiches(limit: 16)
+            guard !Task.isCancelled, store.selectedProvider == .redgifs else { return }
+            redgifsNiches = discovered
+        } catch {
+            redgifsNiches = []
+        }
+    }
+
+    private func discoverVisualThemes() async {
+        let provider = store.selectedProvider
+        let discovered = await store.visual.discoveryTerms(provider: provider)
+        guard !Task.isCancelled, store.selectedProvider == provider else { return }
+        visualThemeTerms = discovered
+        refreshThemeSuggestions()
     }
 
     private func refreshThemeSuggestions() {

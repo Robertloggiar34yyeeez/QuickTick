@@ -765,12 +765,14 @@ enum NativeProviderAPI {
             for alternate in playable.prefix(5) {
                 try Task.checkCancellation()
                 if await hanimeHLSPlaylistAvailable(session: session, url: alternate) {
-                    return ResolvedMedia(mediaUrl: alternate.absoluteString, type: "hls")
+                    return ResolvedMedia(mediaUrl: alternate.absoluteString,
+                                         type: ["mp4", "m4v"].contains(alternate.pathExtension.lowercased()) ? "video" : "hls")
                 }
             }
             throw APIError.server("Hanime returned HLS variants, but none exposed a playable playlist. Try again to request fresh streams or use Browse inside QuickTick.")
         }
-        return ResolvedMedia(mediaUrl: stream.absoluteString, type: "hls")
+        return ResolvedMedia(mediaUrl: stream.absoluteString,
+                             type: ["mp4", "m4v"].contains(stream.pathExtension.lowercased()) ? "video" : "hls")
     }
 
     private static func hanimeHLSPlaylistAvailable(session: URLSession, url: URL) async -> Bool {
@@ -1514,7 +1516,11 @@ extension NativeProviderAPI {
             let isHLS = direct.path.hasPrefix("/hls/") || direct.pathExtension.lowercased() == "m3u8"
             return ResolvedMedia(mediaUrl: direct.absoluteString, type: isHLS ? "hls" : "video")
         }
-        if let direct, directTypes.contains(direct.pathExtension.lowercased()) {
+        // Hanime catalog posters are JPEG/WebP images, not downloadable videos.
+        // Never let the generic direct-file shortcut accept those thumbnails:
+        // resolve the first-party HLS handshake for the original post instead.
+        if post.providerKey != .hanime, let direct,
+           directTypes.contains(direct.pathExtension.lowercased()) {
             return ResolvedMedia(mediaUrl: direct.absoluteString, type: direct.pathExtension.lowercased() == "m3u8" ? "hls" : post.type)
         }
         guard let provider = post.providerKey else {
@@ -1522,7 +1528,9 @@ extension NativeProviderAPI {
         }
         // Some provider CDNs use opaque signed URLs without an extension.
         // Keep supporting those only after the provider has been identified.
-        if let direct { return ResolvedMedia(mediaUrl: direct.absoluteString, type: post.type) }
+        if provider != .hanime, let direct {
+            return ResolvedMedia(mediaUrl: direct.absoluteString, type: post.type)
+        }
         switch provider {
         case .nhentai:
             throw APIError.server("Open this manga in the full-screen reader to browse its pages.")

@@ -506,6 +506,9 @@ private struct FeedDownloadControl: View {
 private struct FullScreenVideoView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
+    @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
+    @State private var seekFeedbackForward: Bool?
+    @State private var seekFeedbackSequence = 0
     let player: AVPlayer
     let postID: String
     let exportURL: URL?
@@ -514,7 +517,30 @@ private struct FullScreenVideoView: View {
         FullScreenPlayerController(player: player, onSwipeDown: {
             store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
             onClose()
+        }, onDoubleTap: { forward in
+            seekByDoubleTap(forward: forward)
         }).ignoresSafeArea()
+            .overlay {
+                if let forward = seekFeedbackForward {
+                    HStack {
+                        if forward { Spacer(minLength: 0) }
+                        VStack(spacing: 6) {
+                            Image(systemName: forward ? "goforward.10" : "gobackward.10")
+                                .font(.system(size: 36, weight: .semibold))
+                            Text("\(forward ? "+" : "−")\(doubleTapSeconds)s")
+                                .font(.headline.weight(.bold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(20)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .frame(maxWidth: .infinity)
+                        if !forward { Spacer(minLength: 0) }
+                    }
+                    .padding(.horizontal, 14)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .allowsHitTesting(false)
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 10) {
                     if let exportURL {
@@ -549,12 +575,30 @@ private struct FullScreenVideoView: View {
                 if foreground, autoplayVideos, store.pausedPlaybackID != postID { player.play() }
             }
     }
+
+    private func seekByDoubleTap(forward: Bool) {
+        let duration = player.currentItem?.duration.seconds ?? .nan
+        guard let target = FullscreenSeekPolicy.target(
+            current: player.currentTime().seconds, duration: duration,
+            forward: forward, interval: doubleTapSeconds) else { return }
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero)
+        seekFeedbackSequence += 1
+        let sequence = seekFeedbackSequence
+        withAnimation(.easeOut(duration: 0.12)) { seekFeedbackForward = forward }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(720))
+            guard seekFeedbackSequence == sequence else { return }
+            withAnimation(.easeOut(duration: 0.16)) { seekFeedbackForward = nil }
+        }
+    }
 }
 
 // Attach the gesture to the native UIKit player rather than an overlay:
 // AVPlayerViewController intercepts drags before SwiftUI's overlay sees them.
 private final class FullscreenSwipeDownHandler: NSObject, UIGestureRecognizerDelegate {
     var onExit: () -> Void
+    var onDoubleTap: ((Bool) -> Void)?
     private var didExit = false
     init(onExit: @escaping () -> Void) { self.onExit = onExit }
 
@@ -573,8 +617,19 @@ private final class FullscreenSwipeDownHandler: NSObject, UIGestureRecognizerDel
             view.addGestureRecognizer(swipe)
         }
     }
+    func installDoubleTap(on view: UIView) {
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(didDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = false
+        doubleTap.delegate = self
+        view.addGestureRecognizer(doubleTap)
+    }
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard let view = gestureRecognizer.view else { return false }
+        if let tap = gestureRecognizer as? UITapGestureRecognizer {
+            let x = tap.location(in: view).x
+            return x <= view.bounds.width * 0.44 || x >= view.bounds.width * 0.56
+        }
         if gestureRecognizer is UISwipeGestureRecognizer { return !(view is ComicScrollView) }
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
         let velocity = pan.velocity(in: view)
@@ -602,6 +657,10 @@ private final class FullscreenSwipeDownHandler: NSObject, UIGestureRecognizerDel
         guard gesture.state == .ended else { return }
         exitOnce()
     }
+    @objc private func didDoubleTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, let view = gesture.view else { return }
+        onDoubleTap?(gesture.location(in: view).x > view.bounds.midX)
+    }
     private func exitOnce() {
         guard !didExit else { return }
         didExit = true
@@ -612,6 +671,7 @@ private final class FullscreenSwipeDownHandler: NSObject, UIGestureRecognizerDel
 private struct FullScreenPlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
     let onSwipeDown: () -> Void
+    let onDoubleTap: (Bool) -> Void
     func makeCoordinator() -> FullscreenSwipeDownHandler { FullscreenSwipeDownHandler(onExit: onSwipeDown) }
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
@@ -619,12 +679,15 @@ private struct FullScreenPlayerController: UIViewControllerRepresentable {
         controller.showsPlaybackControls = true
         controller.videoGravity = .resizeAspect
         context.coordinator.install(on: controller.view, addSwipe: true)
+        context.coordinator.installDoubleTap(on: controller.view)
+        context.coordinator.onDoubleTap = onDoubleTap
         if let overlay = controller.contentOverlayView { context.coordinator.install(on: overlay, addSwipe: true) }
         return controller
     }
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== player { controller.player = player }
         context.coordinator.onExit = onSwipeDown
+        context.coordinator.onDoubleTap = onDoubleTap
     }
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: FullscreenSwipeDownHandler) {
         controller.player = nil

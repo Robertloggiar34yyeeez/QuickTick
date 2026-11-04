@@ -102,7 +102,7 @@ private final class QuicktickPrivacyCoverController: UIViewController {
         view.isOpaque = false
         view.accessibilityIdentifier = "quicktick-app-switcher-privacy"
 
-        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThickMaterialDark))
+        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemThickMaterialDark))
         blur.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(blur)
 
@@ -132,7 +132,7 @@ private final class QuicktickPrivacyCoverController: UIViewController {
             let monogram = UILabel()
             monogram.text = "Q"
             monogram.textColor = .white
-            monogram.font = .systemFont(ofSize: 59, weight: .heavy, design: .rounded)
+            monogram.font = .systemFont(ofSize: 59, weight: .heavy)
             monogram.translatesAutoresizingMaskIntoConstraints = false
             badge.addSubview(monogram)
             NSLayoutConstraint.activate([
@@ -143,7 +143,7 @@ private final class QuicktickPrivacyCoverController: UIViewController {
 
         let wordmark = UILabel()
         wordmark.text = "QuickTick"
-        wordmark.font = .systemFont(ofSize: 34, weight: .bold, design: .rounded)
+        wordmark.font = .systemFont(ofSize: 34, weight: .bold)
         wordmark.textColor = .white
         wordmark.textAlignment = .center
         wordmark.accessibilityIdentifier = "quicktick-privacy-logo"

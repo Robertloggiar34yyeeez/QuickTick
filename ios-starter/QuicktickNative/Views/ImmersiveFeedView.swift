@@ -496,7 +496,7 @@ enum ImmersivePageSwipePolicy {
 private struct ImmersiveTouchSurface: UIViewRepresentable {
     let id: String
     let onSingleTap: () -> Void
-    let onDoubleTap: () -> Void
+    let onDoubleTap: (CGFloat) -> Void
     let onPan: (CGSize, CGSize, Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -534,10 +534,10 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
 
     final class Coordinator: NSObject {
         var single: () -> Void
-        var double: () -> Void
+        var double: (CGFloat) -> Void
         var pan: (CGSize, CGSize, Bool) -> Void
 
-        init(single: @escaping () -> Void, double: @escaping () -> Void,
+        init(single: @escaping () -> Void, double: @escaping (CGFloat) -> Void,
              pan: @escaping (CGSize, CGSize, Bool) -> Void) {
             self.single = single
             self.double = double
@@ -549,7 +549,9 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
         }
 
         @objc func doubleTapped(_ recognizer: UITapGestureRecognizer) {
-            if recognizer.state == .ended { double() }
+            guard recognizer.state == .ended, let view = recognizer.view,
+                  view.bounds.width > 0 else { return }
+            double(recognizer.location(in: view).x / view.bounds.width)
         }
 
         @objc func panned(_ recognizer: UIPanGestureRecognizer) {
@@ -567,6 +569,7 @@ private struct ImmersiveItemView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
+    @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
     let post: Post
     let offline: Bool
     let active: Bool
@@ -599,6 +602,8 @@ private struct ImmersiveItemView: View {
     @State private var gifClock = 0.0
     @State private var lastGIFSample = Date()
     @State private var likePulse = false
+    @State private var seekFeedbackForward: Bool?
+    @State private var seekFeedbackSequence = 0
     private var shouldSkipIntro: Bool {
         VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros, haven: skipHavenIntros)
     }
@@ -607,6 +612,23 @@ private struct ImmersiveItemView: View {
               let url = URL(string: post.pageUrl), url.scheme == "https",
               ["hanime.tv", "www.hanime.tv"].contains(url.host ?? "") else { return nil }
         return url
+    }
+
+    private func seekImmersive(forward: Bool) {
+        guard let player, let target = FullscreenSeekPolicy.target(
+            current: player.currentTime().seconds,
+            duration: player.currentItem?.duration.seconds ?? .nan,
+            forward: forward, interval: doubleTapSeconds) else { return }
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero)
+        seekFeedbackSequence += 1
+        let sequence = seekFeedbackSequence
+        withAnimation(.easeOut(duration: 0.12)) { seekFeedbackForward = forward }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(720))
+            guard seekFeedbackSequence == sequence else { return }
+            withAnimation(.easeOut(duration: 0.16)) { seekFeedbackForward = nil }
+        }
     }
 
     var body: some View {
@@ -697,16 +719,39 @@ private struct ImmersiveItemView: View {
                 }
                 ImmersiveTouchSurface(id: post.stableID, onSingleTap: {
                     if post.isImmersiveMedia { playing.toggle(); playing ? player?.play() : player?.pause() }
-                }, onDoubleTap: {
+                }, onDoubleTap: { normalizedX in
                     interacted = true
-                    if store.favorites[post.stableID] == nil { store.toggleFavorite(post) }
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { likePulse = true }
+                    if post.type.lowercased() == "video",
+                       normalizedX <= 0.44 || normalizedX >= 0.56 {
+                        seekImmersive(forward: normalizedX >= 0.56)
+                    } else {
+                        if store.favorites[post.stableID] == nil { store.toggleFavorite(post) }
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { likePulse = true }
+                    }
                 }, onPan: onPageSwipe)
                     .frame(width: geo.size.width, height: geo.size.height)
                 if likePulse {
                     Image(systemName: "heart.fill").font(.system(size: 88)).foregroundStyle(.white)
                         .shadow(color: .pink.opacity(0.8), radius: 20).transition(.scale.combined(with: .opacity))
                         .allowsHitTesting(false)
+                }
+                if let forward = seekFeedbackForward {
+                    HStack {
+                        if forward { Spacer(minLength: 0) }
+                        VStack(spacing: 5) {
+                            Image(systemName: forward ? "goforward" : "gobackward")
+                                .font(.system(size: 32, weight: .semibold))
+                            Text("\(forward ? "+" : "−")\(doubleTapSeconds)s")
+                                .font(.headline.weight(.bold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(18)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        if !forward { Spacer(minLength: 0) }
+                    }
+                    .padding(.horizontal, 26)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .allowsHitTesting(false)
                 }
                 if !playing && !scrubbing {
                     Image(systemName: "play.fill").font(.system(size: 48)).foregroundStyle(.white.opacity(0.7))

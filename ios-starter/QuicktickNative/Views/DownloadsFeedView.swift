@@ -206,7 +206,7 @@ enum DownloadSizeOrder {
             let leftSize = lhs.element.fileSize ?? -1
             let rightSize = rhs.element.fileSize ?? -1
             return leftSize == rightSize ? lhs.offset < rhs.offset : leftSize > rightSize
-        }.map(\.element)
+        }.map { $0.element }
     }
 }
 

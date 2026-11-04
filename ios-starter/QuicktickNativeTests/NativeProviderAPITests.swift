@@ -20,6 +20,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         // fallback fixture must distinguish /search from /search/.
         let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? url.path
         let payload: String
+        var responseHeaders: [String: String] = [:]
         if path == "/v2/auth/temporary" { payload = #"{"token":"synthetic-provider-token"}"# }
         else if ["coomer.st", "kemono.cr"].contains(host), path == "/api/v1/creators" {
             payload = #"[{"id":"42","service":"fanbox","name":"Fixture Artist","favorited":42},{"id":"51","service":"patreon","name":"Other Creator","favorited":8}]"#
@@ -42,7 +43,14 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"[{"id":"1","author":"Visitor","content":"Amazing post","created_at":"2026-09-01"}]"#
         }
         else if host == "api.redgifs.com", path == "/v2/niches" {
-            payload = #"{"niches":[{"id":"cosplay","name":"Cosplay","gifs":200,"thumbnail":"https://media.redgifs.com/niche.jpg"}]}"#
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let number = query.first(where: { $0.name == "page" })?.value ?? "1"
+            payload = number == "2"
+                ? #"{"pages":2,"niches":[{"id":"gaming","name":"Gaming","gifs":54,"thumbnail":"https://media.redgifs.com/gaming.jpg"}]}"#
+                : #"{"pages":2,"niches":[{"id":"cosplay","name":"Cosplay","gifs":200,"thumbnail":"https://media.redgifs.com/niche.jpg"}]}"#
+        }
+        else if host == "api.redgifs.com", path == "/v2/niches/gaming/gifs" {
+            payload = #"{"gifs":[{"id":"gamingclip","urls":{"poster":"https://media.redgifs.com/gamingclip.jpg"}}]}"#
         }
         else if host == "api.redgifs.com", path == "/v2/niches/cosplay/gifs" {
             payload = #"{"pages":2,"gifs":[{"id":"nicheclip","type":"g","tags":["cosplay"],"urls":{"hd":"https://media.redgifs.com/nicheclip.mp4","poster":"https://media.redgifs.com/nicheclip.jpg"}}]}"#
@@ -65,6 +73,23 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         }
         else if host == "auth.hanime.tv", path == "/api/v11/search_hvs" {
             payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
+        }
+        else if host == "auth.hanime.tv", path == "/api/v11/handshake" {
+            let object = (request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
+            let token = object?["token"] as? String ?? ""
+            let clear = try? HanimeHandshakeCodec.open(token)
+            let input = clear.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+            let slug = input?["slug"] as? String ?? ""
+            if slug == "missing-404" {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404,
+                    httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
+            let result = slug == "no-stream"
+                ? #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"}]}"#
+                : #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"},{"kind":"normal","src":"/hls/42/fixture-token","height":1080,"type":"application/vnd.apple.mpegurl"}]}"#
+            responseHeaders["x-token"] = try? HanimeHandshakeCodec.seal(Data(result.utf8))
+            payload = #"{"ok":true}"#
         }
         else if host == "hanime.tv", path == "/api/v8/video" {
             // Test both a removed endpoint and an empty legacy manifest.
@@ -197,7 +222,8 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         }
         else if path == "/api/sync" { payload = #"{"exists":false,"ok":true}"# }
         else { client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL)); return }
-        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: [:])!
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                       headerFields: responseHeaders)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(payload.utf8)); client?.urlProtocolDidFinishLoading(self)
     }
@@ -347,6 +373,22 @@ final class NativeProviderAPITests: XCTestCase {
             .allSatisfy { $0.value(forHTTPHeaderField: "Referer") == "https://www.redgifs.com/" })
     }
 
+    func testRedgifsShowAllNichesPaginatesAndUsesRealPopularPosters() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let first = try await api.redgifsNichesPage(page: 1, limit: 24)
+        XCTAssertEqual(first.items.map(\.id), ["cosplay"])
+        XCTAssertTrue(first.hasMore)
+        let second = try await api.redgifsNichesPage(page: 2, limit: 24)
+        XCTAssertEqual(second.items.map(\.id), ["gaming"])
+        XCTAssertEqual(second.items.first?.imageURL, "https://media.redgifs.com/gamingclip.jpg")
+        XCTAssertFalse(second.hasMore)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { request in
+            request.url?.path == "/v2/niches" &&
+            URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .contains(where: { $0.name == "page" && $0.value == "2" }) == true
+        })
+    }
+
     func testHanimeV11CatalogSearchesTagsAndKeepsSiteHeaders() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
@@ -379,14 +421,39 @@ final class NativeProviderAPITests: XCTestCase {
 
     func testHanimeMissingPublicStreamSuggestsSupportedPlaybackOptions() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
-        let post = Post(key: "hanime:sample", id: "sample", provider: "Hanime", type: "video")
+        let post = Post(key: "hanime:no-stream", id: "no-stream", provider: "Hanime", type: "video")
         do {
             _ = try await api.resolveMedia(post)
-            XCTFail("Expected a clear error when Hanime omits unauthenticated playback URLs")
+            XCTFail("Expected a clear error when the v11 handshake returns no normal streams")
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("Browse inside QuickTick"))
             XCTAssertTrue(error.localizedDescription.contains("Hanime API"))
         }
+    }
+
+    func testHanimeNativeHLSResolvesCurrentV11Handshake() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "hanime:sample", id: "sample", provider: "Hanime", type: "video")
+        let resolved = try await api.resolveMedia(post)
+        XCTAssertEqual(resolved.mediaUrl, "https://hanime.tv/hls/42/fixture-token")
+        XCTAssertEqual(resolved.type, "hls")
+        let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first {
+            $0.url?.path == "/api/v11/handshake"
+        })
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature-version"), "web2")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature")?.count, 64)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-csrf-token"), "null")
+        XCTAssertEqual(HanimeGeneratedAPI.mediaHeaders(for: URL(string: resolved.mediaUrl)!)["Referer"],
+                       "https://player.hanime.tv/")
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v8/video" })
+    }
+
+    func testHanimeHandshakeCodecAuthenticatesEnvelope() throws {
+        let value = Data(#"{"slug":"sample","directive":"htv_player_handshake"}"#.utf8)
+        let token = try HanimeHandshakeCodec.seal(value)
+        XCTAssertEqual(try HanimeHandshakeCodec.open(token), value)
+        XCTAssertThrowsError(try HanimeHandshakeCodec.open("not-a-real-token"))
     }
 
     func testHanimeNativePlaybackAcceptsFirstPartyCatalogStream() async throws {

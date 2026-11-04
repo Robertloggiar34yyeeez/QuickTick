@@ -198,6 +198,18 @@ private struct DownloadSearchIdentity: Equatable {
     }
 }
 
+/// Stable size sorting keeps unknown/incomplete file sizes last and preserves
+/// the current order when two files have the same measured byte count.
+enum DownloadSizeOrder {
+    static func largestFirst(_ records: [DownloadRecord]) -> [DownloadRecord] {
+        records.enumerated().sorted { lhs, rhs in
+            let leftSize = lhs.element.fileSize ?? -1
+            let rightSize = rhs.element.fileSize ?? -1
+            return leftSize == rightSize ? lhs.offset < rhs.offset : leftSize > rightSize
+        }.map(\.element)
+    }
+}
+
 struct DownloadsFeedView: View {
     @EnvironmentObject private var store: AppStore
     var scrollToTopRevision = 0
@@ -221,6 +233,7 @@ private struct DownloadContent: View {
     @State private var downloadOrder = DownloadShuffleOrder()
     @State private var selectedProviderID: String?
     @State private var sortByProvider = false
+    @State private var sortBySizeDescending = false
     @State private var searchText = ""
     @State private var matchingKeys: Set<String> = []
     @State private var offlinePostCache: [String: Post] = [:]
@@ -238,7 +251,9 @@ private struct DownloadContent: View {
         if let selectedProviderID {
             records = records.filter { CollectionProviderOrder.key($0.provider) == selectedProviderID }
         }
-        if sortByProvider {
+        if sortBySizeDescending {
+            records = DownloadSizeOrder.largestFirst(records)
+        } else if sortByProvider {
             records = records.enumerated().sorted { lhs, rhs in
                 let a = CollectionProviderOrder.name(CollectionProviderOrder.key(lhs.element.provider))
                 let b = CollectionProviderOrder.name(CollectionProviderOrder.key(rhs.element.provider))
@@ -358,7 +373,9 @@ private struct DownloadContent: View {
                         }
                         .accessibilityIdentifier("downloads-provider-filter")
                         Spacer()
-                        if sortByProvider {
+                        if sortBySizeDescending {
+                            Text("Largest first").font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        } else if sortByProvider {
                             Text("Provider A–Z").font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                         }
                     }
@@ -468,31 +485,44 @@ private struct DownloadContent: View {
                         .accessibilityIdentifier("downloads-rhythm")
                     Menu {
                         Button("Shuffle downloads", systemImage: "shuffle") {
+                            sortBySizeDescending = false
                             sortByProvider = false
                             downloadOrder.shuffle(records: manager.records)
                             immersivePostID = nil
                         }
                         Button("Original order", systemImage: "list.bullet") {
+                            sortBySizeDescending = false
                             sortByProvider = false
                             downloadOrder.restoreOriginalOrder()
                             immersivePostID = nil
                         }
-                        .disabled(!downloadOrder.isShuffled && !sortByProvider)
+                        .disabled(!downloadOrder.isShuffled && !sortByProvider && !sortBySizeDescending)
                         Button("Provider A–Z", systemImage: "square.grid.2x2") {
                             downloadOrder.restoreOriginalOrder()
                             sortByProvider = true
+                            sortBySizeDescending = false
                             immersivePostID = nil
                         }
                         .disabled(sortByProvider)
+                        Button("Largest first", systemImage: "arrow.down.to.line") {
+                            downloadOrder.restoreOriginalOrder()
+                            sortByProvider = false
+                            sortBySizeDescending = true
+                            immersivePostID = nil
+                        }
+                        .disabled(sortBySizeDescending)
+                        .accessibilityIdentifier("downloads-sort-largest")
                     } label: {
-                        Image(systemName: sortByProvider ? "line.3.horizontal.decrease.circle.fill" :
-                                            (downloadOrder.isShuffled ? "shuffle.circle.fill" : "shuffle"))
+                        Image(systemName: sortBySizeDescending ? "arrow.down.circle.fill" :
+                                            (sortByProvider ? "line.3.horizontal.decrease.circle.fill" :
+                                            (downloadOrder.isShuffled ? "shuffle.circle.fill" : "shuffle")))
                             .frame(minWidth: 44, minHeight: 44)
                     }
                     .disabled(manager.records.isEmpty)
-                    .accessibilityLabel("Browse downloads randomly")
-                    .accessibilityValue(sortByProvider ? "Provider A–Z" :
-                                        (downloadOrder.isShuffled ? "Shuffled" : "Original order"))
+                    .accessibilityLabel("Sort downloads")
+                    .accessibilityValue(sortBySizeDescending ? "Largest first" :
+                                        (sortByProvider ? "Provider A–Z" :
+                                        (downloadOrder.isShuffled ? "Shuffled" : "Original order")))
                     .accessibilityIdentifier("downloads-shuffle")
                     Button(immersive ? "Feed" : "Offline Immersive") { immersive.toggle() }
                         .disabled(!immersive && !localPosts.contains(where: \.isImmersiveMedia))

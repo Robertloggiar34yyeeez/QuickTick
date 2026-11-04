@@ -612,7 +612,7 @@ struct SettingsView: View {
                 }
                 .modifier(SettingsControlRow())
                 .accessibilityIdentifier("fullscreen-seek-seconds")
-                Text("Double-tap the right side of a full-screen video to skip ahead, or the left side to rewind. Works for Hanime and other videos.")
+                Text("In full-screen and Immersive video, double-tap right to skip ahead or left to rewind. Double-tap the middle of Immersive to Like.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
                     .modifier(SettingsControlRow())

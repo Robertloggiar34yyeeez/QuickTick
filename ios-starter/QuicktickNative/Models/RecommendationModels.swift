@@ -375,6 +375,18 @@ struct RedgifsNicheAffinity {
         return result + other
     }
 
+    /// Related tags not directly liked yet. Search these as ordinary public
+    /// RedGIFs text queries; only the real niche catalog uses niche: routes.
+    func relatedSearchTerms(limit: Int = 8) -> [String] {
+        guard hasLikes, limit > 0 else { return [] }
+        return Array(overlaps.keys.filter { liked[$0] == nil && signals(for: $0).related > 0 }
+            .sorted { left, right in
+                let a = signals(for: left).related
+                let b = signals(for: right).related
+                return a == b ? left < right : a > b
+            }.prefix(limit))
+    }
+
     func rankPosts(_ posts: [Post]) -> [Post] {
         guard hasLikes else { return posts }
         let rows = posts.enumerated().map { index, post -> (index: Int, post: Post, score: Double) in

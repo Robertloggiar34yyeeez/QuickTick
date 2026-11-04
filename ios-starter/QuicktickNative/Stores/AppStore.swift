@@ -935,6 +935,31 @@ final class AppStore: ObservableObject {
                 page: first.context == broadKey ? max(broadCursor, firstCursor + 1) : broadCursor,
                 focused: false)
         }
+        if provider == .redgifs {
+            // Keep the regular broad discovery lane on alternating requests.
+            // On other rounds search a co-occurring, not-yet-liked topic to
+            // acquire genuinely new niche clips for the local reranker.
+            let nicheTaste = RedgifsNicheAffinity(liked: Array(favorites.values),
+                observed: posts + Array(favorites.values))
+            let blocked = Set(RecommendationTagRules.queryExclusions(
+                exclusions + taste.notInto).map(RecommendationTagRules.canonical))
+            let related = nicheTaste.relatedSearchTerms().filter { !blocked.contains($0) }
+            if !related.isEmpty {
+                let roundKey = context + "|redgifs-related-round"
+                let round = candidateCursors[roundKey] ?? 0
+                candidateCursors[roundKey] = round + 1
+                if round % 2 == 1 {
+                    let term = related[(round / 2) % related.count]
+                    if !first.query.included.contains(term) {
+                        let key = context + "|redgifs-related:" + term
+                        second = RecommendationEngine.CandidateRequest(
+                            context: key,
+                            query: ParsedQuery(included: [term], excluded: first.query.excluded),
+                            page: candidateCursors[key] ?? 1, focused: true)
+                    }
+                }
+            }
+        }
         func prepared(_ request: RecommendationEngine.CandidateRequest)
             -> (key: String, query: ParsedQuery, page: Int) {
             let cursor = candidateCursors[request.context] ?? request.page

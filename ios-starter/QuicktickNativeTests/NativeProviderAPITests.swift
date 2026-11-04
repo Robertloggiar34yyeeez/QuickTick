@@ -13,6 +13,27 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
     static let log = NativeRequestLog()
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    // URLSession commonly transfers POST data to httpBodyStream before
+    // URLProtocol sees the request. The Hanime fixture must decode that stream,
+    // otherwise every handshake looks like the default successful slug.
+    private static func requestBody(_ request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count < 0 { return nil }
+            if count == 0 { break }
+            data.append(contentsOf: buffer.prefix(count))
+            if data.count > 128_000 { return nil }
+        }
+        return data
+    }
+
     override func startLoading() {
         Self.log.append(request)
         let url = request.url!, host = url.host ?? ""
@@ -75,7 +96,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
         }
         else if host == "auth.hanime.tv", path == "/api/v11/handshake" {
-            let object = (request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
+            let object = (Self.requestBody(request).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
             let token = object?["token"] as? String ?? ""
             let clear = try? HanimeHandshakeCodec.open(token)
             let input = clear.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]

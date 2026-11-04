@@ -605,7 +605,8 @@ enum NativeProviderAPI {
 
     static func redgifs(session: URLSession, token: String, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
         let result: [String: Any]
-        if let niche = query.included.count == 1 ? redgifsNicheID(query.included[0]) : nil {
+        let selectedNicheID = query.included.count == 1 ? redgifsNicheID(query.included[0]) : nil
+        if let niche = selectedNicheID {
             result = try object(await data(session: session,
                 url: url("https://api.redgifs.com/v2/niches/\(niche)/gifs",
                     [.init(name: "order", value: sort == "recent" ? "latest" : "top"),
@@ -636,11 +637,22 @@ enum NativeProviderAPI {
             let id = text(row["id"]), urls = row["urls"] as? [String: Any] ?? [:]
             let media = text(urls["hd"] ?? urls["sd"] ?? urls["gif"])
             let image = text(row["type"]) == "i" || number(row["type"]) == 2
-            var post = Post(key: "redgifs:\(id)", id: id, provider: "RedGIFs", score: number(row["likes"]), tags: strings(row["tags"]),
+            var tags = strings(row["tags"])
+            let nicheSlugs = strings(row["niches"]) + rows(row["niches"]).map { text($0["slug"] ?? $0["id"]) }
+            for value in nicheSlugs {
+                let slug = value.lowercased().replacingOccurrences(of: "niche:", with: "")
+                if let nicheID = redgifsNicheID("niche:" + slug), !tags.contains(nicheID) {
+                    tags.append(nicheID)
+                }
+            }
+            if let selectedNicheID, !tags.contains(selectedNicheID) { tags.append(selectedNicheID) }
+            var post = Post(key: "redgifs:\(id)", id: id, provider: "RedGIFs", score: number(row["likes"]), tags: tags,
                             mediaUrl: media, thumbUrl: text(urls["poster"] ?? urls["thumbnail"] ?? urls["vthumbnail"]),
                             pageUrl: "https://www.redgifs.com/watch/\(id.lowercased())", type: image ? "image" : "video")
             let width = number(row["width"]), height = number(row["height"])
             if width > 0, height > 0 { post.width = width; post.height = height }
+            post.caption = ["title", "name", "description"].map { text(row[$0]) }.first(where: { !$0.isEmpty })
+            post.category = selectedNicheID
             post.creator = text(row["userName"]); post.createdAt = number(row["createDate"]); return post
         }
         return self.page(posts, hasMore: number(result["pages"]) > 0 ? page < Int(number(result["pages"])) : !raw.isEmpty, query: query, immersive: immersive)

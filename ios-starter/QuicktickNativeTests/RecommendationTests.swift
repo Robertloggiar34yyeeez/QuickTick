@@ -33,6 +33,8 @@ final class RecommendationTests: XCTestCase {
             RedgifsNiche(id: "cosplay", name: "Cosplay", imageURL: "https://example.com/cosplay.jpg", postCount: 10)
         ]
         XCTAssertEqual(model.rankNiches(niches).map(\.id), ["cosplay", "gaming", "sports"])
+        XCTAssertEqual(model.relatedSearchTerms(), ["gaming"],
+                       "Co-occurring, unliked niches should be eligible for candidate discovery")
         XCTAssertEqual(model.rankPosts([unrelated, observed, favorite]).map(\.id),
                        ["favorite", "observation", "unrelated"])
         let cold = RedgifsNicheAffinity(liked: [], observed: [observed])

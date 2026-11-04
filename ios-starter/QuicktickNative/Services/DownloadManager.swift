@@ -291,7 +291,15 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }
     nonisolated private static func safeName(_ value: String) -> String { value.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression) }
     private func finished(_ key: String, location: URL) {
-        guard let record = records.first(where: { $0.key == key }), record.state != .cancelled else { try? FileManager.default.removeItem(at: location); return }
+        guard let record = records.first(where: { $0.key == key }) else { return }
+        // HLS may report both didFinishDownloadingTo and didCompleteWithError.
+        // Never delete a successfully stored system-managed package on the
+        // second callback or count the same completion twice.
+        if record.state == .complete { return }
+        if record.state == .cancelled {
+            if record.kind == .file { try? FileManager.default.removeItem(at: location) }
+            return
+        }
         progressGate.clear(key: key)
         update(key) { $0.localMediaPath = location.path; $0.progress = 1; $0.state = .complete; $0.errorMessage = nil }
         tasks.removeValue(forKey: key)

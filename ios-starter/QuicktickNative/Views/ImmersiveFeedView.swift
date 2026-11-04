@@ -780,6 +780,17 @@ private struct ImmersiveItemView: View {
             }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 0) {
+                    if let title = post.displayTitle {
+                        Text(title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.trailing, 82)
+                            .shadow(color: .black, radius: 5)
+                            .accessibilityIdentifier("immersive-post-title-\(post.stableID)")
+                    }
                     HStack(spacing: 12) {
                         Text(post.provider.uppercased()).font(.caption.weight(.bold)).tracking(1.5)
                         Button("View tags") { showTags = true }.font(.caption.weight(.semibold)).frame(minHeight: 44)

@@ -179,14 +179,14 @@ actor QuicktickAPIClient {
         }
     }
 
-    func redgifsNiches() async throws -> [RedgifsNiche] {
+    func redgifsNiches(limit: Int = 8) async throws -> [RedgifsNiche] {
         let token = try await redgifsAuth.value(session: session)
         do {
-            return try await NativeProviderAPI.redgifsNiches(session: session, token: token)
+            return try await NativeProviderAPI.redgifsNiches(session: session, token: token, limit: limit)
         } catch APIError.providerStatus(.redgifs, 401) {
             await redgifsAuth.invalidate(expecting: token)
             let refreshed = try await redgifsAuth.value(session: session)
-            return try await NativeProviderAPI.redgifsNiches(session: session, token: refreshed)
+            return try await NativeProviderAPI.redgifsNiches(session: session, token: refreshed, limit: limit)
         }
     }
 

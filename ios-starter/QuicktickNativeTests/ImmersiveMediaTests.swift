@@ -8,7 +8,7 @@ final class ImmersiveMediaTests: XCTestCase {
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: false, interval: 10), 32)
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: true, interval: 25), 67)
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 4, duration: 120, forward: false, interval: 10), 0)
-        XCTAssertEqual(FullscreenSeekPolicy.target(current: 116, duration: 120, forward: true, interval: 10), 119.8, accuracy: 0.01)
+        XCTAssertEqual(FullscreenSeekPolicy.target(current: 116, duration: 120, forward: true, interval: 10) ?? -1, 119.8, accuracy: 0.01)
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 4, duration: .nan, forward: true, interval: 10), 14)
         XCTAssertNil(FullscreenSeekPolicy.target(current: .nan, duration: 120, forward: true, interval: 10))
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 4, duration: 120, forward: true, interval: 0), 5)

@@ -107,6 +107,11 @@ final class NavigationTests: XCTestCase {
         shuffle.tap()
         app.buttons["Original order"].tap()
         XCTAssertEqual(shuffle.value as? String, "Original order")
+        shuffle.tap()
+        let largest = app.buttons["downloads-sort-largest"]
+        XCTAssertTrue(largest.waitForExistence(timeout: 5))
+        largest.tap()
+        XCTAssertEqual(shuffle.value as? String, "Largest first")
     }
     override func setUp() async throws {
         continueAfterFailure = false

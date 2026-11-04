@@ -144,6 +144,11 @@ struct RedgifsNiche: Identifiable, Equatable, Sendable {
     let postCount: Int
 }
 
+struct RedgifsNichePage: Sendable {
+    let items: [RedgifsNiche]
+    let hasMore: Bool
+}
+
 enum NativeProviderAPI {
     static let userAgent = "QuickTickNative/1.0"
     // nHentai requests specifically ask clients for an identifying UA; keep
@@ -536,9 +541,17 @@ enum NativeProviderAPI {
     /// A missing/unavailable niche preview is omitted instead of displaying
     /// a generic tag icon with misleading content.
     static func redgifsNiches(session: URLSession, token: String, limit: Int = 8) async throws -> [RedgifsNiche] {
+        let page = try await redgifsNichesPage(session: session, token: token, page: 1,
+                                               limit: max(1, min(limit, 32)))
+        return Array(page.items.prefix(limit))
+    }
+
+    static func redgifsNichesPage(session: URLSession, token: String,
+                                 page: Int = 1, limit: Int = 24) async throws -> RedgifsNichePage {
+        guard (1...1000).contains(page), (1...32).contains(limit) else { throw APIError.invalidResponse }
         let response = try object(await data(session: session,
             url: url("https://api.redgifs.com/v2/niches",
-                [.init(name: "page", value: "1"), .init(name: "count", value: String(max(1, min(limit * 2, 32))))]),
+                [.init(name: "page", value: String(page)), .init(name: "count", value: String(limit))]),
             provider: .redgifs, headers: redgifsHeaders(token: token)))
         let entries = rows(response["niches"] ?? response["items"])
         var chosen: [RedgifsNiche] = [], seen = Set<String>()
@@ -580,11 +593,14 @@ enum NativeProviderAPI {
             }
             for (index, image) in collected { if let image { covers[index] = image } }
         }
-        return chosen.enumerated().compactMap { index, niche in
+        let enriched = chosen.enumerated().compactMap { index, niche -> RedgifsNiche? in
             let image = covers[index] ?? niche.imageURL
             guard !image.isEmpty else { return nil }
             return RedgifsNiche(id: niche.id, name: niche.name, imageURL: image, postCount: niche.postCount)
         }
+        let declaredPages = Int(number(response["pages"] ?? response["total_pages"]))
+        return RedgifsNichePage(items: enriched,
+                               hasMore: declaredPages > 0 ? page < declaredPages : entries.count >= limit)
     }
 
     static func redgifs(session: URLSession, token: String, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
@@ -650,6 +666,86 @@ enum NativeProviderAPI {
         }
         guard let list = current as? [[String: Any]] else { throw APIError.invalidResponse }
         return list
+    }
+
+    /// Resolve a current Hanime v11 player handshake into a first-party HLS
+    /// stream. This uses the same guest transport as the official web player,
+    /// and never treats 403/verification HTML as an authorized stream.
+    static func hanimeHLSResolve(session: URLSession, post: Post) async throws -> ResolvedMedia {
+        guard post.id.count <= 160,
+              post.id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else {
+            throw APIError.invalidResponse
+        }
+        do {
+            return try await hanimeHLSHandshake(session: session, slug: post.id)
+        } catch APIError.providerStatus(.hanime, 403) {
+            // A normal first-party page visit can establish an ordinary guest
+            // session cookie. No challenge solving or access bypass is used.
+            if let watch = URL(string: "https://hanime.tv/videos/hentai/" + post.id) {
+                _ = try? await data(session: session, url: watch, provider: .hanime,
+                                    maxBytes: 1024 * 1024, timeout: 8)
+            }
+            do {
+                return try await hanimeHLSHandshake(session: session, slug: post.id)
+            } catch APIError.providerStatus(.hanime, 403) {
+                throw APIError.server("Hanime requires browser verification before native HLS playback. Use Browse inside QuickTick or configure your authorized Hanime API in Settings.")
+            }
+        }
+    }
+
+    private static func hanimeHLSHandshake(session: URLSession, slug: String) async throws -> ResolvedMedia {
+        let time = Int(Date().timeIntervalSince1970)
+        let timestamp = String(time)
+        let signature = SHA256.hash(data: Data(
+            "\(timestamp),Xkdi29,https://hanime.tv,mn2,\(timestamp)".utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "timestamp_unix": time, "directive": "htv_player_handshake", "slug": slug
+        ])
+        let token = try HanimeHandshakeCodec.seal(payload)
+        let body = try JSONSerialization.data(withJSONObject: ["token": token])
+        let address = try url("https://auth.hanime.tv/api/v11/handshake")
+        var request = URLRequest(url: address)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.timeoutInterval = 25
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("https://hanime.tv", forHTTPHeaderField: "Origin")
+        request.setValue("https://hanime.tv/", forHTTPHeaderField: "Referer")
+        request.setValue("web2", forHTTPHeaderField: "x-signature-version")
+        request.setValue(signature, forHTTPHeaderField: "x-signature")
+        request.setValue(timestamp, forHTTPHeaderField: "x-time")
+        request.setValue("null", forHTTPHeaderField: "x-csrf-token")
+        try await ProviderRequestGate.shared.wait(host: "auth.hanime.tv", provider: .hanime)
+        let (bytes, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse, bytes.count <= 1024 * 1024 else {
+            throw APIError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.providerStatus(.hanime, http.statusCode)
+        }
+        guard let encrypted = http.value(forHTTPHeaderField: "x-token"), !encrypted.isEmpty else {
+            throw APIError.server("Hanime did not return an HLS handshake token. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
+        }
+        let cleartext = try HanimeHandshakeCodec.open(encrypted)
+        let result = try object(cleartext)
+        let streams = rows(result["sources"])
+            .filter { text($0["kind"]).lowercased() == "normal" }
+            .sorted { number($0["height"]) > number($1["height"]) }
+        let playable = streams.compactMap { source -> URL? in
+            let raw = text(source["src"])
+            guard !raw.isEmpty,
+                  let address = URL(string: raw, relativeTo: origin(.hanime))?.absoluteURL,
+                  HanimeGeneratedAPI.permittedStreamURL(address) else { return nil }
+            return address
+        }
+        guard let stream = playable.first else {
+            throw APIError.server("Hanime returned no playable HLS stream for this video. Use Browse inside QuickTick or configure an authorized Hanime API in Settings.")
+        }
+        return ResolvedMedia(mediaUrl: stream.absoluteString, type: "hls")
     }
 
     /// Prefer native AVPlayer for catalog entries that legitimately include a
@@ -1366,6 +1462,11 @@ extension NativeProviderAPI {
         // HTML post page masquerading as a downloadable video.
         let direct = mediaURL(post.mediaUrl, provider: post.providerKey)
         let directTypes: Set<String> = ["mp4", "m4v", "mov", "webm", "m3u8", "gif", "jpg", "jpeg", "png", "webp", "heic", "avif", "mp3", "m4a", "aac", "wav", "aiff", "caf", "flac", "ogg", "opus"]
+        if post.providerKey == .hanime, let direct,
+           HanimeGeneratedAPI.permittedStreamURL(direct) {
+            let isHLS = direct.path.hasPrefix("/hls/") || direct.pathExtension.lowercased() == "m3u8"
+            return ResolvedMedia(mediaUrl: direct.absoluteString, type: isHLS ? "hls" : "video")
+        }
         if let direct, directTypes.contains(direct.pathExtension.lowercased()) {
             return ResolvedMedia(mediaUrl: direct.absoluteString, type: direct.pathExtension.lowercased() == "m3u8" ? "hls" : post.type)
         }
@@ -1420,24 +1521,13 @@ extension NativeProviderAPI {
             }
             throw APIError.server("Eporner returned no playable public stream.")
         case .hanime:
-            let response: [String: Any]
             do {
-                response = try object(await data(session: session,
-                    url: url("https://hanime.tv/api/v8/video", [.init(name: "id", value: post.id)]),
-                    provider: provider))
-            } catch APIError.providerStatus(.hanime, 403) {
-                throw APIError.server("Hanime requires browser verification for this video. Use Browse inside QuickTick or configure a Hanime API in Settings.")
+                return try await hanimeHLSResolve(session: session, post: post)
             } catch APIError.providerStatus(.hanime, 404) {
-                throw APIError.server("Hanime's legacy video endpoint is unavailable. Native playback needs an authorized HLS stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
+                throw APIError.server("Hanime's HLS handshake was unavailable. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
             } catch APIError.providerStatus(.hanime, 410) {
-                throw APIError.server("Hanime's legacy video endpoint has been removed. Native playback needs an authorized HLS stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
+                throw APIError.server("Hanime's HLS handshake was removed. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
             }
-            let manifest = response["videos_manifest"] as? [String: Any] ?? [:]
-            let streams = rows(manifest["servers"]).flatMap { rows($0["streams"]) }.sorted { number($0["height"]) > number($1["height"]) }
-            guard let media = streams.compactMap({ mediaURL(text($0["url"]), provider: provider) }).first else {
-                throw APIError.server("Hanime no longer provides a public playback URL for this video. Use Browse inside QuickTick or configure a Hanime API in Settings.")
-            }
-            return ResolvedMedia(mediaUrl: media.absoluteString, type: media.pathExtension == "m3u8" ? "hls" : "video")
         case .pornhub:
             let canonical = mediaURL(post.pageUrl, provider: provider)
             let page: URL

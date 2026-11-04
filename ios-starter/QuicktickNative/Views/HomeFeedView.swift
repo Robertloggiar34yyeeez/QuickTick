@@ -698,8 +698,9 @@ struct HomeFeedView: View {
                     Image(systemName: "square.grid.2x2.fill").foregroundStyle(AppTheme.accent)
                     Text("RedGIFs niches").font(.subheadline.weight(.bold))
                     Text(store.favorites.values.contains(where: { $0.providerKey == .redgifs })
-                         ? "Based on your Likes + related niches" : "Explore popular clips")
+                         ? "For you" : "Explore")
                         .font(.caption2).foregroundStyle(AppTheme.secondaryLabel).lineLimit(1)
+                        .accessibilityLabel("Niches ranked from your Likes and related communities")
                     Spacer()
                     Button {
                         showAllRedgifsNiches = true

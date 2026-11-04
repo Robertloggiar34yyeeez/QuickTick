@@ -85,6 +85,25 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertTrue(CollectionSearch.matchingDownloadKeys([download], query: "cooking").isEmpty)
     }
 
+    func testDownloadsLargestFirstSortUsesMeasuredBytesAndKeepsUnknownLast() {
+        let samples: [(String, Int64?)] = [
+            ("small", 256), ("unknown", nil), ("large", 1_048_576),
+            ("same-size", 256), ("zero", 0)
+        ]
+        let records = samples.map { sample -> DownloadRecord in
+            let (key, size) = sample
+            var record = DownloadRecord(
+                key: "rule34:" + key, provider: "Rule34", postID: key,
+                title: key, tags: [], thumbnailRemoteURL: "", kind: .file,
+                state: .complete, progress: 1, createdAt: .now
+            )
+            record.fileSize = size
+            return record
+        }
+        XCTAssertEqual(DownloadSizeOrder.largestFirst(records).map(\.postID),
+                       ["large", "small", "same-size", "zero", "unknown"])
+    }
+
     func testCollectionProviderFilterNormalizesRestoredSourceNames() {
         XCTAssertEqual(CollectionProviderOrder.key("Erome"), "erome")
         XCTAssertEqual(CollectionProviderOrder.key("www.erome.com"), "erome")

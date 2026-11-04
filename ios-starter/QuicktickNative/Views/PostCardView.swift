@@ -14,6 +14,9 @@ struct PostCardView: View {
     var playbackTab = 0
     var offline = false
     var onDelete: (() -> Void)?
+    // Home owns its full-image cover so feed refreshes cannot unmount it.
+    // Other callers (Downloads/Favorites) retain their local presentation.
+    var onOpenFullImage: (() -> Void)?
     @State private var comments = false
     @State private var resumeAfterComments = false
     @State private var tags = false
@@ -393,7 +396,11 @@ struct PostCardView: View {
                     store.inlinePlaybackID = post.stableID
                 }
             }
-        } else { fullImage = true }
+        } else if let onOpenFullImage {
+            onOpenFullImage()
+        } else {
+            fullImage = true
+        }
     }
     private func preparePlayback() async {
         preparing = true; playbackError = nil; playing = false
@@ -624,7 +631,7 @@ private struct FullScreenPlayerController: UIViewControllerRepresentable {
     }
 }
 
-private struct FullComicView: View {
+struct FullComicView: View {
     let url: String
     let previewURL: String
     @Environment(\.dismiss) private var dismiss

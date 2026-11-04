@@ -179,7 +179,9 @@ final class NavigationTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["open-settings"].waitForExistence(timeout: 8))
         app.buttons["open-settings"].tap()
-        XCTAssertTrue(app.buttons["settings-change-theme"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 15),
+                      "The settings screen should be fully presented before checking its controls")
+        XCTAssertTrue(app.buttons["settings-change-theme"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.buttons["settings-refresh-recommended"].exists)
         XCTAssertTrue(app.buttons["settings-jump-models"].exists)
         XCTAssertTrue(app.buttons["settings-sections-menu"].exists)

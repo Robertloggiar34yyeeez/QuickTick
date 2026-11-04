@@ -469,24 +469,39 @@ struct PostCardView: View {
     }
 }
 
-/// Immediate tap feedback and live transfer state on every Home/Favorites card.
-/// Observing the manager makes the button stay accurate after scrolling away.
+/// Keep media cards independent of per-byte transfer progress. The button
+/// only needs state transitions, which the manager publishes separately.
 private struct FeedDownloadControl: View {
-    @ObservedObject var manager: DownloadManager
+    let manager: DownloadManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let post: Post
     @State private var taps = 0
-    private var record: DownloadRecord? { manager.records.first { $0.key == post.stableID } }
-    private var working: Bool { record?.state == .queued || record?.state == .downloading }
-    private var saved: Bool { record?.state == .complete }
-    private var failed: Bool { record?.state == .failed || record?.state == .cancelled }
+    @State private var status: DownloadState?
+    @State private var statusLoaded = false
+    private var currentState: DownloadState? {
+        statusLoaded ? status : manager.records.first(where: { $0.key == post.stableID })?.state
+    }
+    private var working: Bool { currentState == .queued || currentState == .downloading }
+    private var saved: Bool { currentState == .complete }
+    private var failed: Bool { currentState == .failed || currentState == .cancelled }
+
+    private func syncStatus() {
+        let latest = manager.records.first(where: { $0.key == post.stableID })?.state
+        if !statusLoaded || latest != status { status = latest }
+        statusLoaded = true
+    }
 
     var body: some View {
         Button {
             taps += 1
+            // Resolve the current record on tap; a card can scroll offscreen
+            // and return after a background transfer changes state.
+            let record = manager.records.first { $0.key == post.stableID }
             if let record, record.state == .paused { manager.resume(record) }
-            else if let record, failed { manager.retry(record) }
-            else if !working && !saved { manager.download(post) }
+            else if let record, (record.state == .failed || record.state == .cancelled) { manager.retry(record) }
+            else if record?.state != .queued && record?.state != .downloading && record?.state != .complete {
+                manager.download(post)
+            }
         } label: {
             Group {
                 if working { InfinityLoader(size: 22) }
@@ -510,6 +525,8 @@ private struct FeedDownloadControl: View {
         .accessibilityLabel("Download")
         .accessibilityValue(working ? "Downloading" : saved ? "Saved" : failed ? "Failed" : "Not downloaded")
         .accessibilityIdentifier("card-download-\(post.stableID)")
+        .onAppear(perform: syncStatus)
+        .onReceive(manager.catalogDidChange) { syncStatus() }
     }
 }
 

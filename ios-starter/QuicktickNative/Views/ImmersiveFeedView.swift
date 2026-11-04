@@ -604,6 +604,8 @@ private struct ImmersiveItemView: View {
     @State private var likePulse = false
     @State private var seekFeedbackForward: Bool?
     @State private var seekFeedbackSequence = 0
+    @State private var lastDoubleTapTarget: Double?
+    @State private var lastDoubleTapAt = Date.distantPast
     private var shouldSkipIntro: Bool {
         VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros, haven: skipHavenIntros)
     }
@@ -615,10 +617,15 @@ private struct ImmersiveItemView: View {
     }
 
     private func seekImmersive(forward: Bool) {
-        guard let player, let target = FullscreenSeekPolicy.target(
-            current: player.currentTime().seconds,
-            duration: player.currentItem?.duration.seconds ?? .nan,
+        guard let player else { return }
+        let current = Date().timeIntervalSince(lastDoubleTapAt) < 1.5
+            ? (lastDoubleTapTarget ?? player.currentTime().seconds)
+            : player.currentTime().seconds
+        guard let target = FullscreenSeekPolicy.target(
+            current: current, duration: player.currentItem?.duration.seconds ?? .nan,
             forward: forward, interval: doubleTapSeconds) else { return }
+        lastDoubleTapTarget = target
+        lastDoubleTapAt = .now
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero)
         seekFeedbackSequence += 1

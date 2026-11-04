@@ -525,7 +525,7 @@ private struct FullScreenVideoView: View {
                     HStack {
                         if forward { Spacer(minLength: 0) }
                         VStack(spacing: 6) {
-                            Image(systemName: forward ? "goforward.10" : "gobackward.10")
+                            Image(systemName: forward ? "goforward" : "gobackward")
                                 .font(.system(size: 36, weight: .semibold))
                             Text("\(forward ? "+" : "−")\(doubleTapSeconds)s")
                                 .font(.headline.weight(.bold))

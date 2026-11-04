@@ -123,7 +123,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocolDidFinishLoading(self); return
         }
         else if host == "hanime.tv", path == "/hls/alternate" {
-            payload = "#EXTM3U\\n#EXT-X-VERSION:3\\n#EXT-X-TARGETDURATION:6\\n"
+            payload = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n"
         }
         else if host == "hanime.tv", path == "/api/v8/video" {
             // Test both a removed endpoint and an empty legacy manifest.

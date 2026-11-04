@@ -574,7 +574,7 @@ struct HomeFeedView: View {
             do { try await Task.sleep(for: .milliseconds(800)) } catch { return }
             guard !Task.isCancelled else { return }
             do {
-                let discovered = try await store.api.redgifsNiches()
+                let discovered = try await store.api.redgifsNiches(limit: 16)
                 guard !Task.isCancelled, store.selectedProvider == .redgifs else { return }
                 redgifsNiches = discovered
             } catch {
@@ -684,6 +684,11 @@ struct HomeFeedView: View {
         }
     }
 
+    private var recommendedRedgifsNiches: [RedgifsNiche] {
+        let taste = RedgifsNicheAffinity(liked: Array(store.favorites.values), observed: store.posts)
+        return taste.rankNiches(redgifsNiches)
+    }
+
     /// RedGIFs' actual communities, represented by thumbnails from their
     /// popular clips. Tapping one opens that niche's immersive vertical feed.
     @ViewBuilder private var redgifsNicheRow: some View {
@@ -692,7 +697,9 @@ struct HomeFeedView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "square.grid.2x2.fill").foregroundStyle(AppTheme.accent)
                     Text("RedGIFs niches").font(.subheadline.weight(.bold))
-                    Text("Explore popular clips").font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                    Text(store.favorites.values.contains(where: { $0.providerKey == .redgifs })
+                         ? "Based on your Likes + related niches" : "Explore popular clips")
+                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel).lineLimit(1)
                     Spacer()
                     Button {
                         showAllRedgifsNiches = true
@@ -709,7 +716,7 @@ struct HomeFeedView: View {
                 }.padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
-                        ForEach(redgifsNiches) { niche in
+                        ForEach(recommendedRedgifsNiches) { niche in
                             Button {
                                 openRedgifsNiche(niche)
                             } label: {
@@ -934,8 +941,10 @@ private struct RedgifsNicheBrowserView: View {
     @State private var searchText = ""
 
     private var filtered: [RedgifsNiche] {
-        guard !searchText.isEmpty else { return niches }
-        return niches.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        let matching = searchText.isEmpty ? niches
+            : niches.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        let taste = RedgifsNicheAffinity(liked: Array(store.favorites.values), observed: store.posts)
+        return taste.rankNiches(matching)
     }
 
     var body: some View {

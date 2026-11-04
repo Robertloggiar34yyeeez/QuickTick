@@ -106,11 +106,24 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                     httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
             }
-            let result = slug == "no-stream"
-                ? #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"}]}"#
-                : #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"},{"kind":"normal","src":"/hls/42/fixture-token","height":1080,"type":"application/vnd.apple.mpegurl"}]}"#
+            let result: String
+            if slug == "no-stream" {
+                result = #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"}]}"#
+            } else if slug == "alternate-stream" {
+                result = #"{"sources":[{"kind":"normal","src":"/hls/broken","height":1080},{"kind":"normal","src":"/hls/alternate","height":720}]}"#
+            } else {
+                result = #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"},{"kind":"normal","src":"/hls/42/fixture-token","height":1080,"type":"application/vnd.apple.mpegurl"}]}"#
+            }
             responseHeaders["x-token"] = try? HanimeHandshakeCodec.seal(Data(result.utf8))
             payload = #"{"ok":true}"#
+        }
+        else if host == "hanime.tv", path == "/hls/broken" {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
+                httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self); return
+        }
+        else if host == "hanime.tv", path == "/hls/alternate" {
+            payload = "#EXTM3U\\n#EXT-X-VERSION:3\\n#EXT-X-TARGETDURATION:6\\n"
         }
         else if host == "hanime.tv", path == "/api/v8/video" {
             // Test both a removed endpoint and an empty legacy manifest.
@@ -476,6 +489,17 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(HanimeGeneratedAPI.mediaHeaders(for: URL(string: resolved.mediaUrl)!)["Referer"],
                        "https://player.hanime.tv/")
         XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v8/video" })
+    }
+
+    func testHanimeFallsBackToReachableLowerQualityHLSPlaylist() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "hanime:alternate-stream", id: "alternate-stream", provider: "Hanime", type: "video")
+        let resolved = try await api.resolveMedia(post)
+        XCTAssertEqual(resolved.mediaUrl, "https://hanime.tv/hls/alternate")
+        XCTAssertEqual(resolved.type, "hls")
+        let requests = NativeProviderProtocol.log.snapshot().filter { $0.url?.host == "hanime.tv" && $0.url?.path.hasPrefix("/hls/") == true }
+        XCTAssertEqual(requests.compactMap { $0.url?.path }, ["/hls/broken", "/hls/alternate"])
+        XCTAssertEqual(requests.last?.value(forHTTPHeaderField: "Referer"), "https://player.hanime.tv/")
     }
 
     func testHanimeHandshakeCodecAuthenticatesEnvelope() throws {

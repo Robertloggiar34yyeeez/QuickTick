@@ -509,6 +509,8 @@ private struct FullScreenVideoView: View {
     @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
     @State private var seekFeedbackForward: Bool?
     @State private var seekFeedbackSequence = 0
+    @State private var lastDoubleTapTarget: Double?
+    @State private var lastDoubleTapAt = Date.distantPast
     let player: AVPlayer
     let postID: String
     let exportURL: URL?
@@ -578,9 +580,14 @@ private struct FullScreenVideoView: View {
 
     private func seekByDoubleTap(forward: Bool) {
         let duration = player.currentItem?.duration.seconds ?? .nan
+        let current = Date().timeIntervalSince(lastDoubleTapAt) < 1.5
+            ? (lastDoubleTapTarget ?? player.currentTime().seconds)
+            : player.currentTime().seconds
         guard let target = FullscreenSeekPolicy.target(
-            current: player.currentTime().seconds, duration: duration,
+            current: current, duration: duration,
             forward: forward, interval: doubleTapSeconds) else { return }
+        lastDoubleTapTarget = target
+        lastDoubleTapAt = .now
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero)
         seekFeedbackSequence += 1

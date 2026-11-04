@@ -73,6 +73,8 @@ struct HomeFeedView: View {
     @State private var publicPopularFranchisePosts: [Post] = []
     @State private var redgifsNiches: [RedgifsNiche] = []
     @State private var openingNicheID: String?
+    @State private var showAllRedgifsNiches = false
+    @State private var queuedRedgifsNiche: RedgifsNiche?
     @State private var themeRefreshCycle = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var postSignature: String {
@@ -87,6 +89,23 @@ struct HomeFeedView: View {
         }
         .sheet(isPresented: $showProviderWebsite) {
             SourceWebsiteView(url: NativeProviderAPI.origin(store.selectedProvider)).ignoresSafeArea()
+        }
+        .fullScreenCover(isPresented: $showAllRedgifsNiches, onDismiss: {
+            if let niche = queuedRedgifsNiche {
+                queuedRedgifsNiche = nil
+                openRedgifsNiche(niche)
+            }
+        }) {
+            RedgifsNicheBrowserView(featured: redgifsNiches, onSelect: { niche in
+                queuedRedgifsNiche = niche
+                showAllRedgifsNiches = false
+            }, onReturnToFYP: {
+                queuedRedgifsNiche = nil
+                showAllRedgifsNiches = false
+                store.commitSearch(query: "", sort: "recommended")
+                Task { await store.refresh() }
+            })
+            .environmentObject(store)
         }
     }
 
@@ -664,24 +683,24 @@ struct HomeFeedView: View {
                     Text("RedGIFs niches").font(.subheadline.weight(.bold))
                     Text("Explore popular clips").font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
+                    Button {
+                        showAllRedgifsNiches = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Show all")
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("home-redgifs-show-all")
                 }.padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
                         ForEach(redgifsNiches) { niche in
                             Button {
-                                guard openingNicheID == nil else { return }
-                                openingNicheID = niche.id
-                                let query = "niche:" + niche.id
-                                store.commitSearch(query: query, sort: "popular")
-                                Task { @MainActor in
-                                    await store.refresh(immersive: true)
-                                    defer { openingNicheID = nil }
-                                    guard store.selectedProvider == .redgifs,
-                                          store.queryText == query,
-                                          let first = store.posts.first(where: \.isImmersiveMedia) else { return }
-                                    immersivePostID = first.stableID
-                                    immersive = true
-                                }
+                                openRedgifsNiche(niche)
                             } label: {
                                 VStack(alignment: .leading, spacing: 8) {
                                     CachedMediaImage(url: niche.imageURL, pixels: 320, fill: true)
@@ -710,7 +729,24 @@ struct HomeFeedView: View {
                         }
                     }.padding(.horizontal, 16)
                 }
-            }.accessibilityIdentifier("home-redgifs-niches")
+            }.accessibilityElement(children: .contain)
+                .accessibilityIdentifier("home-redgifs-niches")
+        }
+    }
+
+    private func openRedgifsNiche(_ niche: RedgifsNiche) {
+        guard openingNicheID == nil, store.selectedProvider == .redgifs else { return }
+        openingNicheID = niche.id
+        let query = "niche:" + niche.id
+        store.commitSearch(query: query, sort: "popular")
+        Task { @MainActor in
+            await store.refresh(immersive: true)
+            defer { openingNicheID = nil }
+            guard store.selectedProvider == .redgifs,
+                  store.queryText == query,
+                  let first = store.posts.first(where: \.isImmersiveMedia) else { return }
+            immersivePostID = first.stableID
+            immersive = true
         }
     }
 
@@ -865,6 +901,119 @@ struct HomeFeedView: View {
 
     private var searchBar: some View {
         NativeSearchBar(focusRequested: $showSearch)
+    }
+}
+
+/// Full-screen, paginated RedGIFs niche browser.
+private struct RedgifsNicheBrowserView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let featured: [RedgifsNiche]
+    let onSelect: (RedgifsNiche) -> Void
+    let onReturnToFYP: () -> Void
+    @State private var niches: [RedgifsNiche] = []
+    @State private var page = 1
+    @State private var hasMore = true
+    @State private var loading = false
+    @State private var errorMessage: String?
+    @State private var searchText = ""
+
+    private var filtered: [RedgifsNiche] {
+        guard !searchText.isEmpty else { return niches }
+        return niches.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 144, maximum: 220), spacing: 12)], spacing: 12) {
+                    ForEach(filtered) { niche in
+                        nicheCard(niche)
+                            .onAppear {
+                                if niche.id == niches.suffix(6).first?.id {
+                                    Task { await loadNextPage() }
+                                }
+                            }
+                    }
+                }
+                .padding(14)
+                if loading { ProgressView("Loading niches…").padding(18) }
+                if let errorMessage {
+                    VStack(spacing: 9) {
+                        Text(errorMessage).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        Button("Retry") { Task { await loadNextPage() } }
+                    }.padding(18)
+                }
+                if hasMore && !loading && errorMessage == nil {
+                    Button("Load more niches") { Task { await loadNextPage() } }
+                        .padding(.bottom, 24)
+                }
+            }
+            .background(ThemeBackdrop())
+            .navigationTitle("RedGIFs niches")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Filter loaded niches")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                        .accessibilityIdentifier("redgifs-all-close")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Return to FYP", action: onReturnToFYP)
+                        .fontWeight(.semibold)
+                        .accessibilityIdentifier("redgifs-return-fyp")
+                }
+            }
+        }
+        .tint(AppTheme.accent)
+        .task { if niches.isEmpty { niches = featured; await loadNextPage() } }
+    }
+
+    private func nicheCard(_ niche: RedgifsNiche) -> some View {
+        Button {
+            onSelect(niche)
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                CachedMediaImage(url: niche.imageURL, pixels: 420, fill: true)
+                    .frame(height: 182)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 15))
+                Text(niche.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                    .foregroundStyle(.white)
+                if niche.postCount > 0 {
+                    Text("\(niche.postCount) clips")
+                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(9)
+            .background(AppTheme.elevatedSurface,
+                        in: RoundedRectangle(cornerRadius: 19))
+        }
+        .buttonStyle(QuicktickPressStyle())
+        .accessibilityIdentifier("redgifs-all-niche-\(niche.id)")
+    }
+
+    @MainActor private func loadNextPage() async {
+        guard !loading, hasMore else { return }
+        loading = true
+        errorMessage = nil
+        defer { loading = false }
+        do {
+            let result = try await store.api.redgifsNichesPage(page: page, limit: 24)
+            var known = Set(niches.map(\.id))
+            for niche in result.items where known.insert(niche.id).inserted {
+                niches.append(niche)
+            }
+            hasMore = result.hasMore
+            page += 1
+        } catch is CancellationError {
+            // Closing the gallery cancels pending requests.
+        } catch {
+            errorMessage = "Niches could not be loaded: \(error.localizedDescription)"
+        }
     }
 }
 

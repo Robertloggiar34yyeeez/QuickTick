@@ -1483,6 +1483,27 @@ enum NativeProviderAPI {
         }
         return nil
     }
+
+    /// Players embed mediaDefinitions as either JSON or escaped JavaScript.
+    /// Keep the structured parser as the primary path, then recover only
+    /// explicit HTTPS video URLs when an otherwise valid embed page uses the
+    /// alternate encoding. No generic page links or thumbnail URLs qualify.
+    static func pornhubPlayerDefinitions(_ html: String) -> [[String: Any]] {
+        if let json = jsonFragment(html, after: "mediaDefinitions"),
+           let definitions = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]],
+           !definitions.isEmpty { return definitions }
+        let normalized = html.replacingOccurrences(of: "\\/", with: "/")
+            .replacingOccurrences(of: "\\\"", with: "\"")
+        let urls = matches(normalized, #"videoUrl\s*["']?\s*:\s*["'](https://[^"']+)["']"#)
+        return urls.compactMap { raw -> [String: Any]? in
+            guard let address = mediaURL(raw, provider: .pornhub) else { return nil }
+            switch address.pathExtension.lowercased() {
+            case "mp4", "m4v": return ["format": "mp4", "videoUrl": address.absoluteString]
+            case "m3u8": return ["format": "hls", "videoUrl": address.absoluteString]
+            default: return nil
+            }
+        }
+    }
 }
 
 // XMLParser handles entity escaping and malformed upstream XML safely, rather
@@ -1614,8 +1635,8 @@ extension NativeProviderAPI {
                 }
                 guard !unavailableHTML(bytes) else { continue }
                 let html = String(decoding: bytes, as: UTF8.self)
-                guard let json = jsonFragment(html, after: "mediaDefinitions"),
-                      let raw = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]] else { continue }
+                let raw = pornhubPlayerDefinitions(html)
+                guard !raw.isEmpty else { continue }
                 let sorted = raw.sorted { number($0["quality"]) > number($1["quality"]) }
                 for format in ["mp4", "hls"] {
                     for definition in sorted where text(definition["format"]) == format {

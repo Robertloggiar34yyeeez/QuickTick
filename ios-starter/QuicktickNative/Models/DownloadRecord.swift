@@ -36,7 +36,7 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
 
     // Earlier Hanime builds could mark the poster as a completed video.
     // Treat those entries as needing restoration, never as offline playback.
-    private var isHanimePosterOnly: Bool {
+    var isHanimePosterOnly: Bool {
         guard provider.lowercased() == "hanime", kind == .file,
               let path = localMediaPath else { return false }
         return ["jpg", "jpeg", "png", "webp", "avif", "heic"]

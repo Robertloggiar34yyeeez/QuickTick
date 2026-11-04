@@ -80,6 +80,7 @@ struct HomeFeedView: View {
     @State private var redgifsNiches: [RedgifsNiche] = []
     @State private var openingNicheID: String?
     @State private var showAllRedgifsNiches = false
+    @State private var showAllHanimeTopics = false
     @State private var presentedFullImage: HomeFullImagePresentation?
     @State private var themeRefreshCycle = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -109,6 +110,10 @@ struct HomeFeedView: View {
                 }
             })
             .environmentObject(store)
+        }
+        .sheet(isPresented: $showAllHanimeTopics) {
+            NavigationStack { HanimeTopicsBrowserView() }
+                .environmentObject(store)
         }
     }
 
@@ -248,7 +253,8 @@ struct HomeFeedView: View {
                 }
                 if store.selectedProvider == .redgifs {
                     redgifsNicheRow
-                } else if suggestedThemesEnabled && !themeSuggestions.isEmpty {
+                } else if store.selectedProvider == .hanime ||
+                            (suggestedThemesEnabled && !themeSuggestions.isEmpty) {
                     suggestedThemeRow
                 }
                 if store.selectedProvider == .pornhub {
@@ -341,7 +347,11 @@ struct HomeFeedView: View {
                 .fixedSize()
                 .contentShape(Rectangle())
                 .padding(.leading, viewport.size.width > 700 ? 88 : 14)
-                .padding(.bottom, 14)
+                // The root dock is an overlay, not an ordinary tab bar.
+                // Reserve its height plus the home-indicator inset so this
+                // control remains hittable on every iPhone.
+                .padding(.bottom, viewport.size.width > 600 ? 14 :
+                         (store.audio.currentPost == nil ? 90 : 168) + max(34, viewport.safeAreaInsets.bottom))
                 .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
                 .accessibilityLabel("Scroll to top")
                 .accessibilityIdentifier("home-scroll-top")
@@ -641,15 +651,27 @@ struct HomeFeedView: View {
     /// Personal suggestions work on *every* provider and use real covers or
     /// thumbnails from posts matching this provider's learned interests.
     @ViewBuilder private var suggestedThemeRow: some View {
-        if !themeSuggestions.isEmpty {
+        if !themeSuggestions.isEmpty || store.selectedProvider == .hanime {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
-                    Text("Suggested topics").font(.subheadline.weight(.bold))
+                    Text(store.selectedProvider == .hanime ? "Hanime topics" : "Suggested topics")
+                        .font(.subheadline.weight(.bold))
                     Text(store.selectedProvider == .rule34 && suggestedThemesMode == SuggestedThemeMode.franchises.rawValue
                          ? "Franchise discovery" : "Based on your taste")
                         .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
+                    if store.selectedProvider == .hanime {
+                        Button {
+                            showAllHanimeTopics = true
+                        } label: {
+                            Label("See more", systemImage: "square.grid.2x2")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("home-hanime-see-more")
+                    }
                 }.padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
@@ -972,7 +994,7 @@ private struct RedgifsNicheBrowserView: View {
                                   showSettings: $showSettings)
                     .id(selectedNiche.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea(.container, edges: .all)
+                    .background(AppTheme.canvas.ignoresSafeArea())
             } else {
                 NavigationStack {
                     directoryView
@@ -1106,9 +1128,12 @@ private struct RedgifsNicheBrowserView: View {
             guard store.selectedProvider == .redgifs, store.queryText == query else { return }
             // A failed request must not open stale FYP posts from the previous
             // provider feed. NativeProviderAPI labels every niche result.
+            // The request itself is constrained to this niche. Some API rows
+            // omit their category metadata, so a second exact-category gate
+            // can incorrectly turn a valid video response into an empty feed.
             guard store.lastError == nil,
                   let first = store.posts.first(where: {
-                      $0.isImmersiveMedia && $0.providerKey == .redgifs && $0.category == niche.id
+                      $0.isImmersiveMedia && $0.providerKey == .redgifs
                   }) else {
                 errorMessage = store.lastError ?? "No playable clips were returned for \(niche.name). Try another niche."
                 return
@@ -1146,6 +1171,110 @@ private struct RedgifsNicheBrowserView: View {
             // Closing the gallery cancels pending requests.
         } catch {
             errorMessage = "Niches could not be loaded: \(error.localizedDescription)"
+        }
+    }
+}
+
+/// Browses the full set of topics exposed by the accessible Hanime catalog,
+/// plus tags from saved posts. More catalog pages can be requested in place;
+/// the five personalized chips on Home are not the directory's limit.
+private struct HanimeTopicsBrowserView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+    @State private var catalogPosts: [Post] = []
+    @State private var page = 1
+    @State private var hasMore = true
+    @State private var loading = false
+    @State private var errorMessage: String?
+
+    private var topics: [String] {
+        let evidence = store.posts + Array(store.favorites.values) + catalogPosts
+        let chosen = store.tasteChoice(for: .hanime).into
+        let terms = chosen + store.learnedInterests + evidence
+            .filter { $0.providerKey == .hanime }.flatMap(\.tags)
+        let excluded = Set(store.exclusions.map { $0.lowercased() })
+        var seen = Set<String>()
+        return terms.compactMap { raw -> String? in
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "_", with: " ").lowercased()
+            guard !value.isEmpty, value.count <= 80,
+                  !value.contains(":"), !value.contains("/"),
+                  !excluded.contains(value), seen.insert(value).inserted else { return nil }
+            return value
+        }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    private var visibleTopics: [String] {
+        let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return term.isEmpty ? topics : topics.filter { $0.localizedCaseInsensitiveContains(term) }
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 9) {
+                Text("Topics from the available Hanime catalog and your saved videos")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    .padding(.bottom, 8)
+                ForEach(visibleTopics, id: \.self) { term in
+                    Button {
+                        let current = QueryParser.parse(store.queryText)
+                        store.commitSuggestedTopic(term, excluded: current.excluded)
+                        dismiss()
+                        Task { await store.refresh() }
+                    } label: {
+                        HStack {
+                            Text(term.capitalized).foregroundStyle(.white)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(AppTheme.accent)
+                        }
+                        .padding(14)
+                        .background(AppTheme.elevatedSurface,
+                                    in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("hanime-topic-\(term)")
+                }
+                if loading { ProgressView("Loading Hanime topics…").frame(maxWidth: .infinity).padding() }
+                if let errorMessage {
+                    Text(errorMessage).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                }
+                if hasMore && !loading {
+                    Button("Load more topics") { Task { await loadNextPage() } }
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .accessibilityIdentifier("hanime-topics-load-more")
+                }
+            }
+            .padding(16)
+        }
+        .background(ThemeBackdrop())
+        .navigationTitle("All Hanime topics")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Search topics")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+        }
+        .task { await loadNextPage() }
+    }
+
+    @MainActor private func loadNextPage() async {
+        guard !loading, hasMore, store.selectedProvider == .hanime else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            let result = try await store.api.posts(provider: .hanime,
+                query: QueryParser.parse(""), page: page, sort: "popular")
+            guard !Task.isCancelled else { return }
+            let known = Set(catalogPosts.map(\.stableID))
+            let unique = result.items.filter { !known.contains($0.stableID) }
+            catalogPosts.append(contentsOf: unique)
+            hasMore = (result.hasMore ?? false) && !unique.isEmpty && page < 25
+            page += 1
+            errorMessage = nil
+        } catch is CancellationError {
+        } catch {
+            errorMessage = "More topics are unavailable: \(error.localizedDescription)"
         }
     }
 }

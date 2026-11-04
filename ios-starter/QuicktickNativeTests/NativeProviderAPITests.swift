@@ -1174,6 +1174,9 @@ final class NativeProviderAPITests: XCTestCase {
     func testPornhubWatchPage404FallsBackToFirstPartyEmbedMedia() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
+        let embedMarkup = #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/embed-valid.m3u8"}]};</script>"#
+        XCTAssertEqual(NativeProviderAPI.pornhubPlayerDefinitions(embedMarkup).first?["videoUrl"] as? String,
+                       "https://cdn.pornhub.com/embed-valid.m3u8")
         let post = Post(key: "pornhub:watch-missing", id: "watch-missing",
                         provider: Provider.pornhub.rawValue, type: "video")
         let media = try await api.resolveMedia(post)

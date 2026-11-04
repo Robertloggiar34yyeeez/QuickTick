@@ -615,6 +615,12 @@ private struct ImmersiveItemView: View {
               ["hanime.tv", "www.hanime.tv"].contains(url.host ?? "") else { return nil }
         return url
     }
+    private var fillsNicheCanvas: Bool {
+        // A selected RedGIFs niche is a TikTok-style edge-to-edge feed. The
+        // regular player keeps aspect-fit for landscape and other providers.
+        post.providerKey == .redgifs && store.selectedProvider == .redgifs &&
+            store.queryText.hasPrefix("niche:")
+    }
 
     private func seekImmersive(forward: Bool) {
         guard let player else { return }
@@ -640,7 +646,7 @@ private struct ImmersiveItemView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let mediaSize = fittedSize(geo.size)
+            let mediaSize = fillsNicheCanvas ? geo.size : fittedSize(geo.size)
             let controlsBottomClearance = ImmersiveChromeLayout.bottomClearance(
                 viewportWidth: geo.size.width,
                 safeAreaBottom: geo.safeAreaInsets.bottom,
@@ -661,7 +667,8 @@ private struct ImmersiveItemView: View {
                         .ignoresSafeArea()
                     Group {
                         if let image = previews.images[post.stableID] {
-                            Image(uiImage: image).resizable().scaledToFit()
+                            Image(uiImage: image).resizable()
+                                .aspectRatio(contentMode: fillsNicheCanvas ? .fill : .fit)
                         } else if active {
                             VStack(spacing: 12) {
                                 Image(systemName: "play.rectangle.on.rectangle")
@@ -707,7 +714,7 @@ private struct ImmersiveItemView: View {
                     // must retain the stream's real aspect ratio. Filling a
                     // fixed 16:9 canvas cropped portrait and square videos.
                     NativePlayerSurface(player: player,
-                        fill: false,
+                        fill: fillsNicheCanvas,
                         ready: $ready, accessibilityID: "immersive-video-surface")
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready && introReady ? 1 : 0)

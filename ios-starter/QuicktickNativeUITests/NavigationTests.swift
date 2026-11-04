@@ -203,12 +203,18 @@ final class NavigationTests: XCTestCase {
         XCTAssertFalse(app.buttons["tab-Settings"].exists)
         app.swipeUp()
         let top = app.buttons["home-scroll-top"]
-        XCTAssertTrue(top.waitForExistence(timeout: 5)); top.tap()
+        XCTAssertTrue(top.waitForExistence(timeout: 5))
+        XCTAssertLessThan(top.frame.maxY, app.buttons["tab-Home"].frame.minY,
+                          "Scroll to top must be entirely above the floating iPhone dock")
+        XCTAssertTrue(top.isHittable)
+        top.tap()
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
         app.buttons["open-settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()
-        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+        let title = app.staticTexts["home-title"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hittable == true"), object: title)], timeout: 5), .completed)
     }
 
     @MainActor func testIconOnlyFeedActionsAndIdleScrollShortcutOnLeft() {

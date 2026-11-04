@@ -74,6 +74,15 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 } else { savedRecords = try JSONDecoder().decode([DownloadRecord].self, from: data) }
                 let paths = DownloadPathStorage(root: root)
                 records = Self.newestFirst(savedRecords.map { paths.restore($0) })
+                for index in records.indices where records[index].isHanimePosterOnly &&
+                    records[index].state == .complete {
+                    // Older versions saved the cover as the video. Preserve
+                    // that file, but make the record retryable so the user can
+                    // replace it with a real HLS/MP4 download.
+                    records[index].state = .failed
+                    records[index].progress = 0
+                    records[index].errorMessage = "Only the old preview was saved. Retry to download the full Hanime video."
+                }
                 // Older builds serialized the app container's absolute UUID path.
                 // iOS can change that UUID on an update even though the files survive.
                 // Rewrite recovered entries as container-relative references now.
@@ -114,7 +123,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         // Immersive can animate the tap immediately, even on a slow provider.
         let pending: DownloadRecord = {
             var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id,
-                title: post.tags.first ?? post.provider, tags: post.tags,
+                title: post.displayTitle ?? post.tags.first ?? post.provider, tags: post.tags,
                 thumbnailRemoteURL: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl,
                 kind: .file, state: .queued, progress: 0, createdAt: .now)
             record.mediaType = post.type
@@ -125,7 +134,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         Task {
             defer { preparing.remove(post.stableID) }
             do {
-                let media = try await resolver.resolve(post, refresh: refreshSource)
+                // Each Hanime transfer needs a newly issued signed playlist.
+                // Catalog previews and an AVPlayer's cached URL are not valid
+                // substitutes for a downloadable video package.
+                let media = try await resolver.resolve(post,
+                    refresh: refreshSource || post.providerKey == .hanime)
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--ui-testing"), let file = URL(string: media.mediaUrl), file.isFileURL {
                     let dir = root.appendingPathComponent(Self.safeName(post.stableID))
@@ -299,6 +312,17 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         if record.state == .cancelled {
             if record.kind == .file { try? FileManager.default.removeItem(at: location) }
             return
+        }
+        if record.kind == .hlsPackage {
+            var isDirectory: ObjCBool = false
+            guard location.pathExtension.lowercased() == "movpkg",
+                  FileManager.default.fileExists(atPath: location.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue,
+                  FileManager.default.enumerator(at: location, includingPropertiesForKeys: nil)?
+                    .nextObject() != nil else {
+                failedTransfer(key, reason: "The stream did not produce an offline video package. Retry to download the video.")
+                return
+            }
         }
         progressGate.clear(key: key)
         update(key) { $0.localMediaPath = location.path; $0.progress = 1; $0.state = .complete; $0.errorMessage = nil }

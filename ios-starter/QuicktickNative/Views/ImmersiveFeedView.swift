@@ -209,6 +209,20 @@ struct ImmersiveFeedView: View {
                                 .accessibilityLabel("Provider: \(store.selectedProvider.displayName)")
                         }
                     }
+                    if !offline && collectionTab == nil &&
+                       store.selectedProvider == .redgifs && store.queryText.hasPrefix("niche:") {
+                        Button("Return to FYP") {
+                            store.commitSearch(query: "", sort: "recommended")
+                            onClose?()
+                            Task { await store.refresh() }
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.accent)
+                        .padding(.horizontal, 10)
+                        .frame(height: 40)
+                        .background(.black.opacity(0.6), in: Capsule())
+                        .accessibilityIdentifier("redgifs-immersive-return-fyp")
+                    }
                     if !offline && collectionTab == nil {
                         Button { searchVisible.toggle() } label: {
                             Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)

@@ -1,7 +1,10 @@
 name: Native iOS build and IPA
 on:
   push:
-    branches-ignore: ['ipa-uploaded/**']
+    # Feature branches are built by pull_request below. Triggering both
+    # events for the same commit caused the concurrent IPA builds to cancel
+    # one another before reaching the Xcode archive.
+    branches: [main]
     paths-ignore: ['.github/workflows/keep-three-builds.yml']
   pull_request:
   workflow_dispatch:

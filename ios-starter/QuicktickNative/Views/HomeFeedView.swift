@@ -74,7 +74,6 @@ struct HomeFeedView: View {
     @State private var redgifsNiches: [RedgifsNiche] = []
     @State private var openingNicheID: String?
     @State private var showAllRedgifsNiches = false
-    @State private var queuedRedgifsNiche: RedgifsNiche?
     @State private var themeRefreshCycle = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var postSignature: String {
@@ -90,20 +89,14 @@ struct HomeFeedView: View {
         .sheet(isPresented: $showProviderWebsite) {
             SourceWebsiteView(url: NativeProviderAPI.origin(store.selectedProvider)).ignoresSafeArea()
         }
-        .fullScreenCover(isPresented: $showAllRedgifsNiches, onDismiss: {
-            if let niche = queuedRedgifsNiche {
-                queuedRedgifsNiche = nil
-                openRedgifsNiche(niche)
-            }
-        }) {
-            RedgifsNicheBrowserView(featured: redgifsNiches, onSelect: { niche in
-                queuedRedgifsNiche = niche
+        .fullScreenCover(isPresented: $showAllRedgifsNiches) {
+            RedgifsNicheBrowserView(featured: redgifsNiches, showSettings: $showSettings,
+                                    onReturnToFYP: {
                 showAllRedgifsNiches = false
-            }, onReturnToFYP: {
-                queuedRedgifsNiche = nil
-                showAllRedgifsNiches = false
-                store.commitSearch(query: "", sort: "recommended")
-                Task { await store.refresh() }
+                if !store.queryText.isEmpty || store.feedSort != "recommended" {
+                    store.commitSearch(query: "", sort: "recommended")
+                    Task { await store.refresh() }
+                }
             })
             .environmentObject(store)
         }
@@ -904,17 +897,21 @@ struct HomeFeedView: View {
     }
 }
 
-/// Full-screen, paginated RedGIFs niche browser.
+/// Full-screen, paginated niche browser. Selection and playback live in
+/// the same presentation so a sheet dismissal cannot drop the chosen filter.
 private struct RedgifsNicheBrowserView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let featured: [RedgifsNiche]
-    let onSelect: (RedgifsNiche) -> Void
+    @Binding var showSettings: Bool
     let onReturnToFYP: () -> Void
     @State private var niches: [RedgifsNiche] = []
     @State private var page = 1
     @State private var hasMore = true
     @State private var loading = false
+    @State private var loadingNicheID: String?
+    @State private var selectedNiche: RedgifsNiche?
+    @State private var selectedPostID: String?
     @State private var errorMessage: String?
     @State private var searchText = ""
 
@@ -925,75 +922,155 @@ private struct RedgifsNicheBrowserView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 144, maximum: 220), spacing: 12)], spacing: 12) {
-                    ForEach(filtered) { niche in
-                        nicheCard(niche)
-                            .onAppear {
-                                if niche.id == niches.suffix(6).first?.id {
-                                    Task { await loadNextPage() }
-                                }
-                            }
-                    }
-                }
-                .padding(14)
-                if loading { ProgressView("Loading niches…").padding(18) }
-                if let errorMessage {
-                    VStack(spacing: 9) {
-                        Text(errorMessage).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
-                        Button("Retry") { Task { await loadNextPage() } }
-                    }.padding(18)
-                }
-                if hasMore && !loading && errorMessage == nil {
-                    Button("Load more niches") { Task { await loadNextPage() } }
-                        .padding(.bottom, 24)
-                }
-            }
-            .background(ThemeBackdrop())
-            .navigationTitle("RedGIFs niches")
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: "Filter loaded niches")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Close") { dismiss() }
-                        .accessibilityIdentifier("redgifs-all-close")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Return to FYP", action: onReturnToFYP)
-                        .fontWeight(.semibold)
-                        .accessibilityIdentifier("redgifs-return-fyp")
-                }
+            if let selectedNiche {
+                ImmersiveFeedView(posts: store.posts, offline: false,
+                                  activePostID: $selectedPostID,
+                                  onClose: { closeImmersive() },
+                                  showSettings: $showSettings)
+                    .id(selectedNiche.id)
+            } else {
+                directoryView
             }
         }
         .tint(AppTheme.accent)
         .task { if niches.isEmpty { niches = featured; await loadNextPage() } }
     }
 
-    private func nicheCard(_ niche: RedgifsNiche) -> some View {
-        Button {
-            onSelect(niche)
+    private var directoryView: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                LazyVGrid(columns: columns(for: geometry.size.width), spacing: 12) {
+                    ForEach(filtered) { niche in
+                        nicheCard(niche, width: cardWidth(for: geometry.size.width))
+                            .onAppear {
+                                if searchText.isEmpty, niche.id == niches.suffix(6).first?.id {
+                                    Task { await loadNextPage() }
+                                }
+                            }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                if loading { ProgressView("Loading niches…").padding(18) }
+                if let errorMessage {
+                    VStack(spacing: 9) {
+                        Text(errorMessage)
+                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                            .multilineTextAlignment(.center)
+                        if hasMore {
+                            Button("Retry loading niches") { Task { await loadNextPage() } }
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.bottom, 16)
+                }
+                if hasMore && !loading && loadingNicheID == nil {
+                    Button("Load more niches") { Task { await loadNextPage() } }
+                        .padding(.bottom, 24)
+                }
+            }
+        }
+        .background(ThemeBackdrop())
+        .navigationTitle("RedGIFs niches")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Filter loaded niches")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Close") { dismiss() }
+                    .accessibilityIdentifier("redgifs-all-close")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Return to FYP", action: onReturnToFYP)
+                    .fontWeight(.semibold)
+                    .accessibilityIdentifier("redgifs-return-fyp")
+            }
+        }
+    }
+
+    private func columns(for width: CGFloat) -> [GridItem] {
+        let count = columnCount(for: width)
+        let width = cardWidth(for: width)
+        return Array(repeating: GridItem(.fixed(width), spacing: 12), count: count)
+    }
+
+    private func columnCount(for width: CGFloat) -> Int {
+        if width >= 1050 { return 5 }
+        if width >= 720 { return 4 }
+        if width >= 560 { return 3 }
+        return 2
+    }
+
+    private func cardWidth(for width: CGFloat) -> CGFloat {
+        let count = columnCount(for: width)
+        return max(116, (width - 32 - CGFloat(count - 1) * 12) / CGFloat(count))
+    }
+
+    private func nicheCard(_ niche: RedgifsNiche, width: CGFloat) -> some View {
+        let posterWidth = width - 18
+        return Button {
+            openNiche(niche)
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 CachedMediaImage(url: niche.imageURL, pixels: 420, fill: true)
-                    .frame(height: 182)
-                    .frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 15))
+                    .frame(width: posterWidth, height: posterWidth * 1.2)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 13))
                 Text(niche.name)
                     .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
                     .foregroundStyle(.white)
-                if niche.postCount > 0 {
-                    Text("\(niche.postCount) clips")
+                    .lineLimit(2)
+                    .frame(width: posterWidth, height: 36, alignment: .topLeading)
+                HStack(spacing: 4) {
+                    Text(niche.postCount > 0 ? "\(niche.postCount) clips" : "Explore niche")
                         .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                    if loadingNicheID == niche.id {
+                        ProgressView().controlSize(.mini)
+                    }
                 }
+                .frame(width: posterWidth, height: 16, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: posterWidth, alignment: .leading)
             .padding(9)
             .background(AppTheme.elevatedSurface,
                         in: RoundedRectangle(cornerRadius: 19))
+            .overlay(RoundedRectangle(cornerRadius: 19).stroke(AppTheme.border))
         }
         .buttonStyle(QuicktickPressStyle())
+        .frame(width: width)
+        .disabled(loadingNicheID != nil)
+        .accessibilityLabel("Open niche \(niche.name)")
         .accessibilityIdentifier("redgifs-all-niche-\(niche.id)")
+    }
+
+    private func openNiche(_ niche: RedgifsNiche) {
+        guard loadingNicheID == nil, store.selectedProvider == .redgifs else { return }
+        loadingNicheID = niche.id
+        errorMessage = nil
+        let query = "niche:" + niche.id
+        store.commitSearch(query: query, sort: "popular")
+        Task { @MainActor in
+            await store.refresh(immersive: true)
+            defer { loadingNicheID = nil }
+            guard store.selectedProvider == .redgifs, store.queryText == query else { return }
+            guard store.lastError == nil,
+                  let first = store.posts.first(where: \.isImmersiveMedia) else {
+                errorMessage = store.lastError ?? "No playable clips were returned for \(niche.name). Try another niche."
+                return
+            }
+            selectedPostID = first.stableID
+            selectedNiche = niche
+        }
+    }
+
+    private func closeImmersive() {
+        // Immersive's Return to FYP clears the query before onClose, while its
+        // normal back button preserves it. Keep those two actions distinct.
+        if store.queryText.isEmpty {
+            onReturnToFYP()
+        } else {
+            selectedNiche = nil
+            selectedPostID = nil
+        }
     }
 
     @MainActor private func loadNextPage() async {

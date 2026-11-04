@@ -670,10 +670,16 @@ final class AppStore: ObservableObject {
                     // Metadata and cached appearance vectors only: no model
                     // loading, network requests or pixel decoding on first paint.
                     let cachedAppearance = await visual.scores(incoming)
-                    filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
+                    let ranked = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
                         recent: recentProviderPosts, visualScores: cachedAppearance,
-                        strict: provider != .erome && (!topicPersonalized || (favorites.count >= 5 &&
-                            provider != .hhaven && provider != .nhentai)))
+                        strict: provider != .erome && provider != .redgifs &&
+                            (!topicPersonalized || (favorites.count >= 5 &&
+                                provider != .hhaven && provider != .nhentai)))
+                    if provider == .redgifs {
+                        let nicheTaste = RedgifsNicheAffinity(liked: Array(favorites.values),
+                            observed: incoming + recentProviderPosts)
+                        filtered = nicheTaste.rankPosts(ranked)
+                    } else { filtered = ranked }
                 } else { filtered = incoming }
                 let focusedMiss = filtered.isEmpty && acquisition?.focused == true
                 if focusedMiss, let acquisition {
@@ -852,11 +858,16 @@ final class AppStore: ObservableObject {
                 let cachedAppearance = await visual.scores(candidates)
                 let strict = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                     recent: Array(posts.suffix(10)), visualScores: cachedAppearance,
-                    strict: provider != .erome && (!topicPersonalized || (favorites.count >= 5 &&
-                        provider != .hhaven && provider != .nhentai)))
+                    strict: provider != .erome && provider != .redgifs &&
+                        (!topicPersonalized || (favorites.count >= 5 &&
+                            provider != .hhaven && provider != .nhentai)))
                 if strict.isEmpty && directCatalog {
                     ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                         recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: false)
+                } else if provider == .redgifs {
+                    let nicheTaste = RedgifsNicheAffinity(liked: Array(favorites.values),
+                        observed: candidates + Array(posts.suffix(30)))
+                    ranked = nicheTaste.rankPosts(strict)
                 } else { ranked = strict }
             } else { ranked = candidates }
             guard generation == token, !Task.isCancelled else { return }

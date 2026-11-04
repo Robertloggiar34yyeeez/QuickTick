@@ -155,6 +155,15 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     task = transfer
                 } else {
                     var request = URLRequest(url: url)
+                    if post.providerKey == .hanime {
+                        // MP4 variants use ordinary URLSession transfers, but
+                        // retain the same first-party headers as HLS playback.
+                        request.setValue(NativeProviderAPI.userAgent, forHTTPHeaderField: "User-Agent")
+                        request.setValue("video/mp4, video/*;q=0.9, */*;q=0.5", forHTTPHeaderField: "Accept")
+                        for (header, value) in HanimeGeneratedAPI.mediaHeaders(for: url) {
+                            request.setValue(value, forHTTPHeaderField: header)
+                        }
+                    }
                     if post.providerKey == .pornhub || post.providerKey == .erome {
                         // Some media CDNs check the public source-page origin.
                         // No account cookies or third-party proxy are used.

@@ -74,7 +74,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"{"pages":1,"gifs":[{"id":"gamingclip","type":"g","tags":["gaming"],"urls":{"hd":"https://media.redgifs.com/gamingclip.mp4","poster":"https://media.redgifs.com/gamingclip.jpg"}}]}"#
         }
         else if host == "api.redgifs.com", path == "/v2/niches/cosplay/gifs" {
-            payload = #"{"pages":2,"gifs":[{"id":"nicheclip","type":"g","tags":["cosplay"],"urls":{"hd":"https://media.redgifs.com/nicheclip.mp4","poster":"https://media.redgifs.com/nicheclip.jpg"}}]}"#
+            payload = #"{"pages":2,"gifs":[{"id":"nicheclip","type":"g","title":"Cosplay clip title","tags":["cosplay"],"urls":{"hd":"https://media.redgifs.com/nicheclip.mp4","poster":"https://media.redgifs.com/nicheclip.jpg"}}]}"#
         }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
         else if host == "www.erome.com", ["/explore", "/explore/new", "/search"].contains(path) {
@@ -400,6 +400,9 @@ final class NativeProviderAPITests: XCTestCase {
             page: 1, sort: "popular", immersive: true)
         XCTAssertEqual(page.items.map(\.id), ["nicheclip"])
         XCTAssertEqual(page.items.first?.mediaUrl, "https://media.redgifs.com/nicheclip.mp4")
+        XCTAssertEqual(page.items.first?.caption, "Cosplay clip title")
+        XCTAssertEqual(page.items.first?.category, "cosplay",
+                       "A Like from a niche feed should retain the community context")
         let another = try await api.posts(provider: .redgifs,
             query: ParsedQuery(included: ["niche:gaming"], excluded: []),
             page: 1, sort: "popular", immersive: true)

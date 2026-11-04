@@ -106,6 +106,16 @@ struct PostCardView: View {
                     .buttonStyle(QuicktickPressStyle())
                     .accessibilityLabel("View tags")
                 }
+                if let title = post.displayTitle {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3)
+                        .accessibilityIdentifier("post-title-\(post.stableID)")
+                }
                 HStack(spacing: 0) {
                     if offline {
                         if let onDelete { ActionIcon(title: "Delete", symbol: "trash", action: onDelete) }

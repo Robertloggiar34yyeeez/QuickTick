@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State private var backgroundError: String?
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
+    @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeekSeconds = 10
     @AppStorage(HanimeGeneratedAPI.settingKey) private var hanimeAPIURL = ""
     @AppStorage(EromeGeneratedAPI.settingKey) private var eromeAPIURL = ""
     @State private var status = ""
@@ -600,6 +601,18 @@ struct SettingsView: View {
                     .modifier(SettingsControlRow())
                     .accessibilityIdentifier("autoplay-videos-toggle")
                 Text("When off, videos in Home and other card views stay on previews until you tap Play. Immersive always autoplays as you swipe.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Stepper(value: $doubleTapSeekSeconds, in: 1...60, step: 1) {
+                    HStack {
+                        Text("Full-screen double-tap skip")
+                        Spacer()
+                        Text("\(doubleTapSeekSeconds) sec")
+                            .foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                }
+                .modifier(SettingsControlRow())
+                .accessibilityIdentifier("fullscreen-seek-seconds")
+                Text("Double-tap the right side of a full-screen video to skip ahead, or the left side to rewind. Works for Hanime and other videos.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
                     .modifier(SettingsControlRow())

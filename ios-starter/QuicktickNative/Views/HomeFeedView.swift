@@ -51,6 +51,12 @@ enum HomePaginationPolicy {
     }
 }
 
+private struct HomeFullImagePresentation: Identifiable {
+    let id: String
+    let url: String
+    let previewURL: String
+}
+
 struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
@@ -74,6 +80,7 @@ struct HomeFeedView: View {
     @State private var redgifsNiches: [RedgifsNiche] = []
     @State private var openingNicheID: String?
     @State private var showAllRedgifsNiches = false
+    @State private var presentedFullImage: HomeFullImagePresentation?
     @State private var themeRefreshCycle = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var postSignature: String {
@@ -88,6 +95,9 @@ struct HomeFeedView: View {
         }
         .sheet(isPresented: $showProviderWebsite) {
             SourceWebsiteView(url: NativeProviderAPI.origin(store.selectedProvider)).ignoresSafeArea()
+        }
+        .fullScreenCover(item: $presentedFullImage) { selection in
+            FullComicView(url: selection.url, previewURL: selection.previewURL)
         }
         .fullScreenCover(isPresented: $showAllRedgifsNiches) {
             RedgifsNicheBrowserView(featured: redgifsNiches, showSettings: $showSettings,
@@ -266,7 +276,15 @@ struct HomeFeedView: View {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))
                 }
                 ForEach(store.posts, id: \.stableID) { post in
-                    PostCardView(post: post, available: CGSize(width: max(1, min(AppTheme.feedWidth, viewport.size.width) - cardInset * 2), height: viewport.size.height))
+                    PostCardView(post: post, available: CGSize(width: max(1, min(AppTheme.feedWidth, viewport.size.width) - cardInset * 2), height: viewport.size.height),
+                                 onOpenFullImage: {
+                        // Keep the cover alive even when a sort/refresh swaps
+                        // out the post's LazyVStack card during presentation.
+                        presentedFullImage = HomeFullImagePresentation(
+                            id: post.stableID,
+                            url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
+                            previewURL: post.cardPreviewURL)
+                    })
                         .padding(.horizontal, cardInset)
                         .frame(maxWidth: .infinity)
                         .id(post.stableID)

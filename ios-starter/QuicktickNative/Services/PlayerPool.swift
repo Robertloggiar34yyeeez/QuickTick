@@ -43,6 +43,19 @@ enum VideoPlaybackPreferences {
     }
 }
 
+/// Full-screen video navigation shares one persisted interval across providers.
+/// A double tap never seeks past the last playable fraction of a second.
+enum FullscreenSeekPolicy {
+    static let settingKey = "quicktick-fullscreen-double-tap-seconds-v1"
+    static func target(current: Double, duration: Double, forward: Bool, interval: Int) -> Double? {
+        guard current.isFinite else { return nil }
+        let step = Double(min(60, max(1, interval)))
+        let proposed = current + (forward ? step : -step)
+        let upper = duration.isFinite && duration > 0 ? max(0, duration - 0.2) : Double.greatestFiniteMagnitude
+        return max(0, min(upper, proposed))
+    }
+}
+
 @MainActor
 final class PlayerPool: ObservableObject {
     private var players: [String: AVPlayer] = [:]

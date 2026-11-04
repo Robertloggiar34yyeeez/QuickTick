@@ -205,6 +205,7 @@ struct SettingsView: View {
                 Text(message).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings-quick-actions")
     }
 
@@ -248,6 +249,7 @@ struct SettingsView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings-category-chips")
     }
 

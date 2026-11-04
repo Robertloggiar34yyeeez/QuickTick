@@ -25,6 +25,23 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
         providerKey == .erome && mediaUrl.isEmpty && isImmersiveMedia
     }
     var isAudio: Bool { type.lowercased() == "audio" }
+
+    /// The existing caption field carries the source's real title. Rule34 is
+    /// intentionally title-free; other providers show an honest fallback when
+    /// their API omits a title instead of fabricating one.
+    var displayTitle: String? {
+        guard providerKey != .rule34 else { return nil }
+        let title = caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !title.isEmpty { return title }
+        if providerKey == .redgifs {
+            let topics = tags.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .prefix(3)
+                .map { $0.replacingOccurrences(of: "_", with: " ") }
+            if !topics.isEmpty { return "Topics: " + topics.joined(separator: " · ") }
+        }
+        return "Untitled post"
+    }
+
     var cardPreviewURL: String {
         if type.lowercased() == "image" {
             // Prefer the provider's bounded preview in scrolling feeds;

@@ -582,6 +582,8 @@ final class AppStore: ObservableObject {
         defer { if generation == token && !releasedLoading { isLoading = false } }
         do {
             let parsed = QueryParser.parse(requestedQuery)
+            let explicitRedgifsNiche = provider == .redgifs && parsed.included.count == 1
+                ? NativeProviderAPI.redgifsNicheID(parsed.included[0]) : nil
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let search = SearchFilters.split(queryText).tags
                 Task(priority: .utility) { await recordSearch(provider: provider, query: search) }
@@ -649,7 +651,15 @@ final class AppStore: ObservableObject {
                 }
                 let visibleBeforeNovelty = incoming
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
-                incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: tasteRanked, favoriteIDs: favoriteExclusionIDs)
+                // An explicitly selected niche is a browse filter, not an FYP
+                // recommendation. Show its real results even if those clips
+                // were previously viewed or liked.
+                if explicitRedgifsNiche == nil {
+                    incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values),
+                        recommended: tasteRanked, favoriteIDs: favoriteExclusionIDs)
+                } else {
+                    incoming = incoming.filter { $0.category == explicitRedgifsNiche }
+                }
                 if incoming.isEmpty, provider == .erome, mediaOnly {
                     // Revisit public clips when everything has already been
                     // offered. Otherwise Erome can permanently say "No videos"
@@ -742,7 +752,7 @@ final class AppStore: ObservableObject {
                         visualScores: appearance, strict: true)).prefix(24))
                 }
             }
-            if immediate.isEmpty, provider != .rule34,
+            if immediate.isEmpty, explicitRedgifsNiche == nil, provider != .rule34,
                !parsed.included.isEmpty || !parsed.excluded.isEmpty {
                 // Some video providers search titles but omit searchable
                 // keywords/tags from their index. Keep *verified* matches
@@ -755,7 +765,8 @@ final class AppStore: ObservableObject {
                     favoriteIDs: favoriteExclusionIDs)
             }
             guard generation == token, !Task.isCancelled else { return }
-            posts = immediate.isEmpty && keepWarmFeed ? previousVisible : immediate
+            posts = immediate.isEmpty && keepWarmFeed && explicitRedgifsNiche == nil
+                ? previousVisible : immediate
             if !immediate.isEmpty {
                 let snapshot = immediate
                 let persistence = feedPreviewPersistence
@@ -817,6 +828,8 @@ final class AppStore: ObservableObject {
         let provider = selectedProvider
         do {
             let parsed = QueryParser.parse(queryText)
+            let explicitRedgifsNiche = provider == .redgifs && parsed.included.count == 1
+                ? NativeProviderAPI.redgifsNicheID(parsed.included[0]) : nil
             lastError = nil
             let directCatalog = (provider == .hhaven || provider == .nhentai ||
                                  (provider == .erome && feedMediaOnly)) &&
@@ -847,8 +860,12 @@ final class AppStore: ObservableObject {
             }
             let visibleBeforeNovelty = candidates
             if candidateContext != nil { candidates = await recommendations.unseenRecommendations(candidates) }
-            candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
-                recommended: personalizedPage, favoriteIDs: favoriteExclusionIDs)
+            if explicitRedgifsNiche == nil {
+                candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values),
+                    existing: posts, recommended: personalizedPage, favoriteIDs: favoriteExclusionIDs)
+            } else {
+                candidates = candidates.filter { $0.category == explicitRedgifsNiche }
+            }
             if candidates.isEmpty, provider == .erome, feedMediaOnly {
                 candidates = feedExclusions.filter(visibleBeforeNovelty,
                     favorites: Array(favorites.values), existing: posts, recommended: false)

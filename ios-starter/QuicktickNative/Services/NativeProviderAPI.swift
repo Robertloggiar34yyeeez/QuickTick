@@ -1319,7 +1319,9 @@ enum NativeProviderAPI {
             do {
                 bytes = try await data(session: session, url: url(endpoint, parameters),
                                        provider: .pornhub, headers: cookieHeaders(credentials))
-            } catch APIError.providerStatus(.pornhub, 404) {
+            } catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 {
+                // Retired webmaster endpoints should never block the public
+                // first-party catalog fallback.
                 continue
             }
             guard !unavailableHTML(bytes),
@@ -1370,6 +1372,15 @@ enum NativeProviderAPI {
         if page == 1 {
             candidates.append(try url(route, parameters.filter { $0.name != "page" }))
             candidates.append(try url(route, parameters.filter { $0.name != "page" && $0.name != "o" }))
+        }
+        // Some first-party deployments return "requested URL was not found"
+        // for supported catalog pages when an optional filter query is
+        // present. Retry only the same search/category route with canonical
+        // parameters; apply the user's duration/production filters locally.
+        let essential = parameters.filter { ["page", "search", "category"].contains($0.name) }
+        candidates.append(try url(route, essential))
+        if page == 1 {
+            candidates.append(try url(route, essential.filter { $0.name != "page" }))
             if !searching && category == nil {
                 candidates.append(try url("https://www.pornhub.com/"))
             }
@@ -1589,22 +1600,43 @@ extension NativeProviderAPI {
             if let canonical, ["pornhub.com", "www.pornhub.com"].contains(canonical.host ?? ""), canonical.path == "/view_video.php" {
                 page = canonical
             } else { page = try url("https://www.pornhub.com/view_video.php", [.init(name: "viewkey", value: post.id)]) }
-            let html = String(decoding: try await data(session: session, url: page, provider: provider, headers: cookieHeaders(credentials)), as: UTF8.self)
-            guard let json = jsonFragment(html, after: "mediaDefinitions"), let raw = try JSONSerialization.jsonObject(with: json) as? [[String: Any]] else { throw APIError.server("Pornhub did not expose public media. Check your provider access.") }
-            let sorted = raw.sorted { number($0["quality"]) > number($1["quality"]) }
-            for format in ["mp4", "hls"] {
-                for definition in sorted where text(definition["format"]) == format {
-                    guard let candidate = mediaURL(text(definition["videoUrl"]), provider: provider) else { continue }
-                    if ["mp4", "m3u8"].contains(candidate.pathExtension.lowercased()) { return ResolvedMedia(mediaUrl: candidate.absoluteString, type: format == "hls" ? "hls" : "video") }
-                    guard candidate.host == "pornhub.com" || candidate.host?.hasSuffix(".pornhub.com") == true else { continue }
-                    let details: Data
-                    do { details = try await data(session: session, url: candidate, provider: provider, headers: cookieHeaders(credentials)) }
-                    catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 { continue }
-                    let list = rows(try JSONSerialization.jsonObject(with: details)).sorted { number($0["quality"]) > number($1["quality"]) }
-                    if let media = list.compactMap({ mediaURL(text($0["videoUrl"]), provider: provider) }).first { return ResolvedMedia(mediaUrl: media.absoluteString, type: "video") }
+            // The canonical watch URL can disappear while the first-party
+            // embed still exposes an ordinary public media definition.
+            // A 403/451 is deliberately NOT bypassed: respect provider access.
+            let pages = [page, try url("https://www.pornhub.com/embed/\(post.id)")]
+            for candidatePage in pages {
+                let bytes: Data
+                do {
+                    bytes = try await data(session: session, url: candidatePage,
+                                           provider: provider, headers: cookieHeaders(credentials))
+                } catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 {
+                    continue
+                }
+                guard !unavailableHTML(bytes) else { continue }
+                let html = String(decoding: bytes, as: UTF8.self)
+                guard let json = jsonFragment(html, after: "mediaDefinitions"),
+                      let raw = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]] else { continue }
+                let sorted = raw.sorted { number($0["quality"]) > number($1["quality"]) }
+                for format in ["mp4", "hls"] {
+                    for definition in sorted where text(definition["format"]) == format {
+                        guard let candidate = mediaURL(text(definition["videoUrl"]), provider: provider) else { continue }
+                        if ["mp4", "m3u8"].contains(candidate.pathExtension.lowercased()) {
+                            return ResolvedMedia(mediaUrl: candidate.absoluteString, type: format == "hls" ? "hls" : "video")
+                        }
+                        guard candidate.host == "pornhub.com" || candidate.host?.hasSuffix(".pornhub.com") == true else { continue }
+                        let details: Data
+                        do { details = try await data(session: session, url: candidate,
+                                                      provider: provider, headers: cookieHeaders(credentials)) }
+                        catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 { continue }
+                        let list = rows(try JSONSerialization.jsonObject(with: details))
+                            .sorted { number($0["quality"]) > number($1["quality"]) }
+                        if let media = list.compactMap({ mediaURL(text($0["videoUrl"]), provider: provider) }).first {
+                            return ResolvedMedia(mediaUrl: media.absoluteString, type: "video")
+                        }
+                    }
                 }
             }
-            throw APIError.server("Pornhub has no available stream for this post. It may have been removed or be unavailable in your region.")
+            throw APIError.server("Pornhub has no available public stream. The post may have been removed or be unavailable in your region.")
         }
     }
     static func quality(_ value: String) -> Int { Int(value.filter(\.isNumber)) ?? 0 }

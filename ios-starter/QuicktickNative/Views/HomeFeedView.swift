@@ -946,6 +946,7 @@ private struct RedgifsNicheBrowserView: View {
     @State private var hasMore = true
     @State private var loading = false
     @State private var loadingNicheID: String?
+    @State private var selectionID = UUID()
     @State private var selectedNiche: RedgifsNiche?
     @State private var selectedPostID: String?
     @State private var errorMessage: String?
@@ -970,6 +971,8 @@ private struct RedgifsNicheBrowserView: View {
                                   onClose: { closeImmersive() },
                                   showSettings: $showSettings)
                     .id(selectedNiche.id)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea(.container, edges: .all)
             } else {
                 NavigationStack {
                     directoryView
@@ -1081,23 +1084,32 @@ private struct RedgifsNicheBrowserView: View {
         }
         .buttonStyle(QuicktickPressStyle())
         .frame(width: width)
-        .disabled(loadingNicheID != nil)
+        .disabled(loadingNicheID == niche.id)
         .accessibilityLabel("Open niche \(niche.name)")
         .accessibilityIdentifier("redgifs-all-niche-\(niche.id)")
     }
 
     private func openNiche(_ niche: RedgifsNiche) {
-        guard loadingNicheID == nil, store.selectedProvider == .redgifs else { return }
+        guard store.selectedProvider == .redgifs else { return }
+        // A second tap supersedes the in-flight selection. Keeping all cards
+        // disabled during a network request made valid niche taps appear dead.
+        let requestID = UUID()
+        selectionID = requestID
         loadingNicheID = niche.id
         errorMessage = nil
         let query = "niche:" + niche.id
         store.commitSearch(query: query, sort: "popular")
         Task { @MainActor in
             await store.refresh(immersive: true)
-            defer { loadingNicheID = nil }
+            guard selectionID == requestID else { return }
+            loadingNicheID = nil
             guard store.selectedProvider == .redgifs, store.queryText == query else { return }
+            // A failed request must not open stale FYP posts from the previous
+            // provider feed. NativeProviderAPI labels every niche result.
             guard store.lastError == nil,
-                  let first = store.posts.first(where: \.isImmersiveMedia) else {
+                  let first = store.posts.first(where: {
+                      $0.isImmersiveMedia && $0.providerKey == .redgifs && $0.category == niche.id
+                  }) else {
                 errorMessage = store.lastError ?? "No playable clips were returned for \(niche.name). Try another niche."
                 return
             }

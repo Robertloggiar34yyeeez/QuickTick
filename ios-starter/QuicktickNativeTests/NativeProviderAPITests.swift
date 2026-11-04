@@ -224,6 +224,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 .first(where: { $0.name == "search" })?.value
             if search == "unavailable-route" || search == "public-html" ||
                search == "browse-missing-first" || search == "browse-soft404" ||
+               search == "browse-filter-404" ||
                (search == "api-host" && host != "api.pornhub.com") ||
                (path == "/webmasters/search" && search == "route-fixture") {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
@@ -238,6 +239,10 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "www.pornhub.com", path == "/video/search" {
             let params = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let search = params.first(where: { $0.name == "search" })?.value
+            if search == "browse-filter-404", params.contains(where: { $0.name == "min_duration" }) {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
             if search == "browse-missing-first", params.contains(where: { $0.name == "page" }) {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
@@ -247,8 +252,17 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 : #"<html><ul><li class="videoblock videoBox" data-video-vkey="phpublic"><a href="/view_video.php?viewkey=phpublic" title="Public &amp; indexed"><img data-thumb_url="https://cdn.pornhub.com/public.jpg" src="https://cdn.pornhub.com/public-small.jpg" alt="Public video"></a></li></ul></html>"#
         }
         else if path == "/view_video.php" {
+            let unavailable = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .contains { $0.name == "viewkey" && $0.value == "watch-missing" } == true
+            if unavailable {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
             let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
             payload = fallback ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://www.pornhub.com/removed-definition"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/valid.m3u8"}]};</script>"# : #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/full.mp4"}]};</script>"#
+        }
+        else if path == "/embed/watch-missing" {
+            payload = #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/embed-valid.m3u8"}]};</script>"#
         }
         else if path == "/removed-definition" {
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
@@ -432,6 +446,29 @@ final class NativeProviderAPITests: XCTestCase {
             URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
                 .contains(where: { $0.name == "page" && $0.value == "2" }) == true
         })
+    }
+
+    @MainActor func testRedgifsExplicitNicheSelectionReplacesFeedAndKeepsLikedClips() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+        await store.bootstrap()
+        store.selectedProvider = .redgifs
+        store.commitSearch(query: "niche:cosplay", sort: "popular")
+        await store.refresh(immersive: true)
+        let cosplay = try XCTUnwrap(store.posts.first)
+        XCTAssertEqual(cosplay.id, "nicheclip")
+        XCTAssertEqual(cosplay.category, "cosplay")
+        store.toggleFavorite(cosplay)
+        await store.refresh(immersive: true)
+        XCTAssertEqual(store.posts.map(\.id), ["nicheclip"],
+            "A direct niche filter should keep showing its clips after liking them")
+        store.commitSearch(query: "niche:gaming", sort: "popular")
+        await store.refresh(immersive: true)
+        XCTAssertEqual(store.posts.map(\.id), ["gamingclip"],
+            "Switching niche must replace the old feed with the requested niche")
+        XCTAssertNil(store.lastError)
     }
 
     func testHanimeV11CatalogSearchesTagsAndKeepsSiteHeaders() async throws {
@@ -1113,6 +1150,38 @@ final class NativeProviderAPITests: XCTestCase {
             XCTAssertFalse(listing[1].url?.query?.contains("page=") == true)
             XCTAssertTrue(listing[1].value(forHTTPHeaderField: "Accept")?.contains("text/html") == true)
         }
+    }
+
+    func testPornhubUnsupportedBrowseFilterRetriesCanonicalSearchRoute() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let options = PornhubSearchFilters(minimumMinutes: 10, maximumMinutes: 20)
+        let query = QueryParser.parse(options.encodedQuery("browse-filter-404"))
+        let result = try await api.posts(provider: .pornhub, query: query, page: 1)
+        XCTAssertEqual(result.items.map(\.stableID), ["pornhub:phpublic"])
+        let requests = NativeProviderProtocol.log.snapshot().filter {
+            $0.url?.path == "/video/search"
+        }
+        XCTAssertTrue(requests.contains {
+            $0.url?.query?.contains("min_duration") == true
+        })
+        XCTAssertTrue(requests.contains {
+            $0.url?.query?.contains("search=browse-filter-404") == true &&
+            $0.url?.query?.contains("min_duration") != true
+        }, "An unsupported filter must not permanently break a valid search")
+    }
+
+    func testPornhubWatchPage404FallsBackToFirstPartyEmbedMedia() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let post = Post(key: "pornhub:watch-missing", id: "watch-missing",
+                        provider: Provider.pornhub.rawValue, type: "video")
+        let media = try await api.resolveMedia(post)
+        XCTAssertEqual(media.mediaUrl, "https://cdn.pornhub.com/embed-valid.m3u8")
+        XCTAssertEqual(media.type, "hls")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path == "/embed/watch-missing"
+        })
     }
 
     func testPornhubMissingWebmasterRouteTriesFirstPartyAPIHost() async throws {

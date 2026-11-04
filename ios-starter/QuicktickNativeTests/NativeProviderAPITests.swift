@@ -50,7 +50,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 : #"{"pages":2,"niches":[{"id":"cosplay","name":"Cosplay","gifs":200,"thumbnail":"https://media.redgifs.com/niche.jpg"}]}"#
         }
         else if host == "api.redgifs.com", path == "/v2/niches/gaming/gifs" {
-            payload = #"{"gifs":[{"id":"gamingclip","urls":{"poster":"https://media.redgifs.com/gamingclip.jpg"}}]}"#
+            payload = #"{"pages":1,"gifs":[{"id":"gamingclip","type":"g","tags":["gaming"],"urls":{"hd":"https://media.redgifs.com/gamingclip.mp4","poster":"https://media.redgifs.com/gamingclip.jpg"}}]}"#
         }
         else if host == "api.redgifs.com", path == "/v2/niches/cosplay/gifs" {
             payload = #"{"pages":2,"gifs":[{"id":"nicheclip","type":"g","tags":["cosplay"],"urls":{"hd":"https://media.redgifs.com/nicheclip.mp4","poster":"https://media.redgifs.com/nicheclip.jpg"}}]}"#
@@ -366,9 +366,17 @@ final class NativeProviderAPITests: XCTestCase {
             page: 1, sort: "popular", immersive: true)
         XCTAssertEqual(page.items.map(\.id), ["nicheclip"])
         XCTAssertEqual(page.items.first?.mediaUrl, "https://media.redgifs.com/nicheclip.mp4")
+        let another = try await api.posts(provider: .redgifs,
+            query: ParsedQuery(included: ["niche:gaming"], excluded: []),
+            page: 1, sort: "popular", immersive: true)
+        XCTAssertEqual(another.items.map(\.id), ["gamingclip"])
+        XCTAssertNotEqual(another.items.first?.id, page.items.first?.id,
+                          "Selecting a different niche must load its own clips")
+        XCTAssertEqual(another.items.first?.mediaUrl, "https://media.redgifs.com/gamingclip.mp4")
         let routes = NativeProviderProtocol.log.snapshot()
         XCTAssertTrue(routes.contains { $0.url?.path == "/v2/niches" })
         XCTAssertTrue(routes.contains { $0.url?.path == "/v2/niches/cosplay/gifs" })
+        XCTAssertTrue(routes.contains { $0.url?.path == "/v2/niches/gaming/gifs" })
         XCTAssertTrue(routes.filter { $0.url?.path.hasPrefix("/v2/niches/") == true }
             .allSatisfy { $0.value(forHTTPHeaderField: "Referer") == "https://www.redgifs.com/" })
     }

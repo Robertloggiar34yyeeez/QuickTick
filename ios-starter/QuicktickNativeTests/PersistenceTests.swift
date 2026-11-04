@@ -11,6 +11,20 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(DownloadExporter.localFileURL(local.absoluteString), local)
     }
 
+    func testLegacyHanimePosterIsNotAnOfflineVideo() throws {
+        let poster = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: poster)
+        defer { try? FileManager.default.removeItem(at: poster) }
+        var record = DownloadRecord(key: "hanime:sample", provider: "Hanime", postID: "sample",
+                                    title: "Sample", tags: [], thumbnailRemoteURL: "",
+                                    localMediaPath: poster.path, kind: .file,
+                                    state: .complete, progress: 1, createdAt: .now)
+        record.mediaType = "video"
+        XCTAssertNil(record.offlinePost)
+        XCTAssertNil(record.exportURL)
+    }
+
     @MainActor func testFavoritesNewestFirstUsesLikeTimeAcrossProviders() {
         let posts = [
             Post(key: "rule34:900", id: "900", provider: "Rule34"),

@@ -921,15 +921,21 @@ private struct RedgifsNicheBrowserView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        Group {
             if let selectedNiche {
+                // The niche player is a full-screen cover in its own right.
+                // Keeping it inside NavigationStack makes UIKit reserve the
+                // navigation/safe-area bounds and shrinks the video canvas
+                // compared with the regular edge-to-edge Immersive feed.
                 ImmersiveFeedView(posts: store.posts, offline: false,
                                   activePostID: $selectedPostID,
                                   onClose: { closeImmersive() },
                                   showSettings: $showSettings)
                     .id(selectedNiche.id)
             } else {
-                directoryView
+                NavigationStack {
+                    directoryView
+                }
             }
         }
         .tint(AppTheme.accent)

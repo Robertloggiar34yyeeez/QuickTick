@@ -146,6 +146,16 @@ final class FeedReliabilityTests: XCTestCase {
             for: post))
     }
 
+    func testLegacyHanimePreviewNeverCountsAsOfflineVideo() {
+        let record = DownloadRecord(key: "hanime:sample-video", provider: "Hanime",
+            postID: "sample-video", title: "Preview", tags: [],
+            thumbnailRemoteURL: "", localMediaPath: "/tmp/quicktick-legacy-cover.jpg",
+            kind: .file, state: .complete, progress: 1, createdAt: .now)
+        XCTAssertTrue(record.isHanimePosterOnly)
+        XCTAssertNil(record.offlinePost)
+        XCTAssertNil(record.exportURL)
+    }
+
     func testHanimeVideoResponseRejectsImageBytes() {
         let url = URL(string: "https://cdn.hanime.tv/sample-video.mp4")!
         let image = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,

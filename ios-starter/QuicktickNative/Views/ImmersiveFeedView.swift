@@ -569,6 +569,7 @@ private struct ImmersiveItemView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
     @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
     let post: Post
     let offline: Bool
@@ -591,6 +592,7 @@ private struct ImmersiveItemView: View {
     @State private var scrubbing = false
     @State private var error: String?
     @State private var mediaRetry = 0
+    @State private var automaticHanimeRetry = 0
     @State private var browseHanime = false
     @State private var showComments = false
     @State private var showTags = false
@@ -607,7 +609,8 @@ private struct ImmersiveItemView: View {
     @State private var lastDoubleTapTarget: Double?
     @State private var lastDoubleTapAt = Date.distantPast
     private var shouldSkipIntro: Bool {
-        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros, haven: skipHavenIntros)
+        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
+                                 haven: skipHavenIntros, hanime: skipHanimeIntros)
     }
     private var hanimePage: URL? {
         guard post.providerKey == .hanime,
@@ -851,7 +854,7 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros)") {
+        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros)") {
             guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else {
                 endExposure(); player = nil; ready = false; introReady = true; gifURL = nil
                 if !active { playing = true }
@@ -870,6 +873,12 @@ private struct ImmersiveItemView: View {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if let player {
                     if player.currentItem?.status == .failed {
+                        if !offline, post.providerKey == .hanime, automaticHanimeRetry < 2 {
+                            automaticHanimeRetry += 1
+                            store.players.release(post.stableID)
+                            self.player = nil; ready = false; mediaRetry += 1
+                            break
+                        }
                         error = "This clip could not load. Retry or scroll to the next clip."; ready = false
                         continue
                     }
@@ -893,6 +902,13 @@ private struct ImmersiveItemView: View {
                     if playing && !scrubbing && (!seconds.isFinite || abs(seconds - lastTime) < 0.05) { stalledSeconds += 1 }
                     else { stalledSeconds = 0; if player.timeControlStatus == .playing { error = nil } }
                     lastTime = seconds
+                    if stalledSeconds >= 12, !offline, post.providerKey == .hanime,
+                       automaticHanimeRetry < 2 {
+                        automaticHanimeRetry += 1
+                        store.players.release(post.stableID)
+                        self.player = nil; ready = false; mediaRetry += 1
+                        break
+                    }
                     if stalledSeconds >= 20 { error = "Playback is not advancing. Retry media or swipe to another clip." }
                 }
                 sampleExposure()

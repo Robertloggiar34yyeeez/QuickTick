@@ -303,7 +303,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         catch { metadataFailed = true; storageError = error.localizedDescription }
     }
     nonisolated private static func safeName(_ value: String) -> String { value.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression) }
-    private func finished(_ key: String, location: URL) {
+    private func finished(_ key: String, location: URL) async {
         guard let record = records.first(where: { $0.key == key }) else { return }
         // HLS may report both didFinishDownloadingTo and didCompleteWithError.
         // Never delete a successfully stored system-managed package on the
@@ -323,7 +323,17 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 failedTransfer(key, reason: "The stream did not produce an offline video package. Retry to download the video.")
                 return
             }
+            let offlineAsset = AVURLAsset(url: location)
+            let playable = (try? await offlineAsset.load(.isPlayable)) ?? false
+            guard playable else {
+                failedTransfer(key, reason: "The HLS download contained no playable offline video. Retry to save the full stream.")
+                return
+            }
         }
+        // Multiple URLSession delegate callbacks may race while an HLS
+        // package is being verified; publish completion exactly once.
+        guard let current = records.first(where: { $0.key == key }),
+              current.state != .complete, current.state != .cancelled else { return }
         progressGate.clear(key: key)
         update(key) { $0.localMediaPath = location.path; $0.progress = 1; $0.state = .complete; $0.errorMessage = nil }
         tasks.removeValue(forKey: key)
@@ -376,7 +386,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
             // The temporary file disappears after this callback: move before dispatching to MainActor.
             try FileManager.default.moveItem(at: location, to: file)
-            Task { @MainActor in self.finished(key, location: file) }
+            Task { @MainActor in await self.finished(key, location: file) }
         } catch { let message = error.localizedDescription; Task { @MainActor in self.update(key) { $0.state = .failed; $0.errorMessage = message } } }
     }
     private func failedTransfer(_ key: String, reason: String) {
@@ -412,7 +422,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }
     nonisolated func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didFinishDownloadingTo location: URL) {
         guard let key = assetDownloadTask.taskDescription else { return }
-        Task { @MainActor in self.finished(key, location: location) }
+        Task { @MainActor in await self.finished(key, location: location) }
     }
     nonisolated func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didLoad timeRange: CMTimeRange, totalTimeRangesLoaded: [NSValue], timeRangeExpectedToLoad: CMTimeRange) {
         guard let key = assetDownloadTask.taskDescription else { return }
@@ -439,7 +449,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 // a successful offline package stuck at "Downloading".
                 if let path = record.localMediaPath,
                    FileManager.default.fileExists(atPath: path) {
-                    self.finished(key, location: URL(fileURLWithPath: path))
+                    await self.finished(key, location: URL(fileURLWithPath: path))
                 } else {
                     self.tasks.removeValue(forKey: key)
                     self.update(key) {

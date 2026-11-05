@@ -813,6 +813,7 @@ struct HomeFeedView: View {
                     .foregroundStyle(AppTheme.secondaryLabel)
                 ForEach(ProviderSearchCategories.suggestions(provider: provider)) { item in
                     let active = selected == item.value
+                    let preview = pornhubCategoryPreview(item.label)
                     Button {
                         let current = QueryParser.parse(store.queryText)
                         let keywords = ProviderSearchCategories.split(current, provider: provider).keywords
@@ -821,14 +822,22 @@ struct HomeFeedView: View {
                         store.commitSearch(query: QueryParser.formatted(next), sort: store.feedSort)
                         Task { await store.refresh() }
                     } label: {
-                        Text(item.label)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(active ? .white : AppTheme.secondaryLabel)
-                            .padding(.horizontal, 14)
-                            .frame(minHeight: 36)
+                        HStack(spacing: 7) {
+                            if let preview {
+                                CachedMediaImage(url: preview, pixels: 160, fill: true)
+                                    .frame(width: 42, height: 46)
+                                    .clipped()
+                                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                            }
+                            Text(item.label)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(active ? .white : AppTheme.secondaryLabel)
+                        }
+                            .padding(.horizontal, preview == nil ? 14 : 7)
+                            .frame(minHeight: 48)
                             .background(active ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface),
-                                        in: Capsule())
-                            .overlay(Capsule().stroke(active ? AppTheme.accent : AppTheme.border, lineWidth: 1))
+                                        in: RoundedRectangle(cornerRadius: 15))
+                            .overlay(RoundedRectangle(cornerRadius: 15).stroke(active ? AppTheme.accent : AppTheme.border, lineWidth: 1))
                     }
                     .buttonStyle(QuicktickPressStyle())
                     .accessibilityIdentifier("home-category-\(item.value)")
@@ -836,6 +845,17 @@ struct HomeFeedView: View {
                 }
             }.padding(.horizontal, 16)
         }.accessibilityIdentifier("home-categories")
+    }
+
+    private func pornhubCategoryPreview(_ label: String) -> String? {
+        // Only use imagery that was actually provided with a Pornhub post.
+        // Do not invent category covers or request every category at once.
+        let key = label.lowercased().replacingOccurrences(of: "-", with: " ")
+        return (store.posts + Array(store.favorites.values)).first { post in
+            post.providerKey == .pornhub &&
+                post.tags.contains { $0.lowercased().replacingOccurrences(of: "-", with: " ") == key } &&
+                URL(string: post.cardPreviewURL)?.scheme == "https"
+        }?.cardPreviewURL
     }
 
     private func refreshFromGesture() async {
@@ -1210,21 +1230,51 @@ private struct HanimeTopicsBrowserView: View {
         return term.isEmpty ? topics : topics.filter { $0.localizedCaseInsensitiveContains(term) }
     }
 
+    private var topicPreviews: [String: String] {
+        var previews: [String: String] = [:]
+        for post in catalogPosts + store.posts + Array(store.favorites.values)
+        where post.providerKey == .hanime && URL(string: post.cardPreviewURL)?.scheme == "https" {
+            for tag in post.tags {
+                let key = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "_", with: " ").lowercased()
+                if previews[key] == nil { previews[key] = post.cardPreviewURL }
+            }
+        }
+        return previews
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 9) {
                 Text("Topics from the available Hanime catalog and your saved videos")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     .padding(.bottom, 8)
+                let previews = topicPreviews
                 ForEach(visibleTopics, id: \.self) { term in
+                    let preview = previews[term]
                     Button {
                         let current = QueryParser.parse(store.queryText)
                         store.commitSuggestedTopic(term, excluded: current.excluded)
                         dismiss()
                         Task { await store.refresh() }
                     } label: {
-                        HStack {
-                            Text(term.capitalized).foregroundStyle(.white)
+                        HStack(spacing: 12) {
+                            if let preview {
+                                CachedMediaImage(url: preview, pixels: 240, fill: true)
+                                    .frame(width: 76, height: 84)
+                                    .clipped()
+                                    .clipShape(RoundedRectangle(cornerRadius: 11))
+                            } else {
+                                RoundedRectangle(cornerRadius: 11)
+                                    .fill(AppTheme.gradient)
+                                    .opacity(0.35)
+                                    .overlay(Image(systemName: "tag.fill")
+                                        .foregroundStyle(.white.opacity(0.65)))
+                                    .frame(width: 76, height: 84)
+                            }
+                            Text(term.capitalized)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .foregroundStyle(AppTheme.accent)

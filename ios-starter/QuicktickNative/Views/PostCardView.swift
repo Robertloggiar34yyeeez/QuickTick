@@ -9,6 +9,7 @@ struct PostCardView: View {
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
     let post: Post
     var available = CGSize(width: 400, height: 800)
     var playbackTab = 0
@@ -29,13 +30,15 @@ struct PostCardView: View {
     @State private var gifURL: URL?
     @State private var ready = false
     private var shouldSkipIntro: Bool {
-        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros, haven: skipHavenIntros)
+        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
+                                 haven: skipHavenIntros, hanime: skipHanimeIntros)
     }
     @State private var introReady = true
     @State private var manualPlaybackRequested = false
     @State private var playing = false
     @State private var preparing = false
     @State private var playbackError: String?
+    @State private var hanimeStreamRetry = 0
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
     @State private var showLikeHeart = false
@@ -177,7 +180,7 @@ struct PostCardView: View {
                     }
                 }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(manualPlaybackRequested)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros):\(hanimeStreamRetry):\(manualPlaybackRequested)") {
                 // Images, comics and audio cards have no inline
                 // video player to reconcile on each global playback change.
                 guard !Task.isCancelled else { return }
@@ -211,7 +214,21 @@ struct PostCardView: View {
             // Just() emissions whenever its parent recomputes during scroll.
             .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Empty<AVPlayer.TimeControlStatus, Never>(completeImmediately: false).eraseToAnyPublisher()) { playing = $0 == .playing }
             .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Empty<AVPlayerItem.Status, Never>(completeImmediately: false).eraseToAnyPublisher()) { status in
-                if status == .failed { playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."; playing = false; store.players.release(post.stableID) }
+                if status == .failed {
+                    playing = false
+                    store.players.release(post.stableID)
+                    if !offline, post.providerKey == .hanime, hanimeStreamRetry < 1,
+                       store.inlinePlaybackID == post.stableID {
+                        // A short-lived signed playlist may expire between
+                        // prewarming and the first frame. Retry once with a
+                        // fresh handshake rather than keeping a dead player.
+                        hanimeStreamRetry += 1
+                        player = nil; ready = false
+                        playbackError = nil
+                    } else {
+                        playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."
+                    }
+                }
             }
             .onChange(of: comments) { _, shown in
                 if shown {
@@ -420,7 +437,7 @@ struct PostCardView: View {
             if offline {
                 guard let local = URL(string: post.mediaUrl), local.isFileURL, FileManager.default.fileExists(atPath: local.path) else { throw APIError.server("Downloaded file is missing.") }
                 resolved = ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type)
-            } else { resolved = try await store.resolver.resolve(post) }
+            } else { resolved = try await store.resolver.resolve(post, refresh: hanimeStreamRetry > 0) }
             guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, let url = URL(string: resolved.mediaUrl) else { return }
             if post.type.lowercased() == "gif" {
                 gifURL = url; playing = store.pausedPlaybackID != post.stableID; preparing = false

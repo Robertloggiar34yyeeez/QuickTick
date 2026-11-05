@@ -125,6 +125,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "hanime.tv", path == "/hls/alternate" {
             payload = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n"
         }
+        else if host == "hanime.tv", path == "/hls/42/fixture-token" {
+            payload = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n"
+        }
         else if host == "hanime.tv", path == "/api/v8/video" {
             // Test both a removed endpoint and an empty legacy manifest.
             let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
@@ -1179,7 +1182,14 @@ final class NativeProviderAPITests: XCTestCase {
                        "https://cdn.pornhub.com/embed-valid.m3u8")
         let post = Post(key: "pornhub:watch-missing", id: "watch-missing",
                         provider: Provider.pornhub.rawValue, type: "video")
-        let media = try await api.resolveMedia(post)
+        let media: ResolvedMedia
+        do {
+            media = try await api.resolveMedia(post)
+        } catch {
+            let routes = NativeProviderProtocol.log.snapshot().compactMap { $0.url?.absoluteString }
+            XCTFail("Pornhub media fallback failed after requests: \(routes.joined(separator: ", ")); \(error)")
+            throw error
+        }
         XCTAssertEqual(media.mediaUrl, "https://cdn.pornhub.com/embed-valid.m3u8")
         XCTAssertEqual(media.type, "hls")
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {

@@ -3,20 +3,28 @@ import AVFoundation
 import Combine
 
 enum VideoIntroPolicy {
+    static let hanimeSettingKey = "quicktick-skip-hanime-intros-v1"
+
     static func isPornhub(_ provider: String) -> Bool {
         provider.lowercased() == "pornhub"
+    }
+
+    static func isHanime(_ provider: String) -> Bool {
+        provider.lowercased() == "hanime"
     }
 
     static func isHaven(_ provider: String) -> Bool {
         ["hhaven", "hentai haven", "hentaihaven"].contains(provider.lowercased())
     }
 
-    static func enabled(provider: String, pornhub: Bool, haven: Bool) -> Bool {
-        isHaven(provider) ? haven : (isPornhub(provider) && pornhub)
+    static func enabled(provider: String, pornhub: Bool, haven: Bool,
+                        hanime: Bool = false) -> Bool {
+        isHaven(provider) ? haven : (isHanime(provider) ? hanime : (isPornhub(provider) && pornhub))
     }
 
     static func startTime(duration: Double, enabled: Bool, provider: String) -> Double {
-        enabled && (isPornhub(provider) || isHaven(provider)) && duration.isFinite && duration > 12 ? 10 : 0
+        enabled && (isPornhub(provider) || isHaven(provider) || isHanime(provider)) &&
+            duration.isFinite && duration > 12 ? 10 : 0
     }
 
     static func bufferedFrom(_ start: Double, ranges: [CMTimeRange], requiredSeconds: Double = 0.7) -> Bool {
@@ -135,7 +143,8 @@ final class PlayerPool: ObservableObject {
         let provider = String(key.split(separator: ":", maxSplits: 1).first ?? "")
         let skipIntro = VideoIntroPolicy.enabled(provider: provider,
             pornhub: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
-            haven: UserDefaults.standard.object(forKey: "quicktick-skip-hhaven-intros-v1") as? Bool ?? true)
+            haven: UserDefaults.standard.object(forKey: "quicktick-skip-hhaven-intros-v1") as? Bool ?? true,
+            hanime: UserDefaults.standard.bool(forKey: VideoIntroPolicy.hanimeSettingKey))
         if skipIntro, !introSkipped.contains(key),
            p.currentItem != nil {
             // Crucially: never decode 0:00 and seek a playing video afterward.
@@ -161,7 +170,15 @@ final class PlayerPool: ObservableObject {
                       self.activeKey == key, player.currentItem === item,
                       self.introAttempts[key] == attempt, item.status == .readyToPlay else { return }
                 self.introObservers.removeValue(forKey: key)
-                let duration = (try? await item.asset.load(.duration))?.seconds ?? 0
+                let loadedDuration = (try? await item.asset.load(.duration))?.seconds ?? 0
+                // A VOD HLS playlist can initially report an indefinite
+                // asset duration. Its seekable range still gives the intro
+                // skip a safe end bound once AVPlayerItem is ready.
+                let seekableEnd = item.seekableTimeRanges.map {
+                    CMTimeRangeGetEnd($0.timeRangeValue).seconds
+                }.filter { $0.isFinite && $0 > 0 }.max() ?? 0
+                let duration = loadedDuration.isFinite && loadedDuration > 0
+                    ? loadedDuration : seekableEnd
                 let current = player.currentTime().seconds
                 guard self.players[key] === player, self.activeKey == key,
                       self.introAttempts[key] == attempt else { return }

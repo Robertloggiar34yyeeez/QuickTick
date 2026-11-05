@@ -20,6 +20,7 @@ struct SettingsView: View {
     @State private var backgroundImporting = false
     @State private var backgroundError: String?
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeekSeconds = 10
     @AppStorage(HanimeGeneratedAPI.settingKey) private var hanimeAPIURL = ""
@@ -617,7 +618,10 @@ struct SettingsView: View {
                 Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
                     .modifier(SettingsControlRow())
                     .accessibilityIdentifier("skip-video-intros-toggle")
-                Text("When enabled, the 10-second intro skip is used for Pornhub videos longer than 12 seconds. Old saved Haven posts retain their previous preference.")
+                Toggle("Skip Hanime intros (10 seconds)", isOn: $skipHanimeIntros)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("skip-hanime-intros-toggle")
+                Text("When enabled, the first 10 seconds are skipped for Pornhub or Hanime videos longer than 12 seconds, independently for each provider. Old saved Haven posts retain their previous preference.")
                     .font(.footnote).foregroundStyle(.secondary)
             }.id(SettingsDestination.playback.rawValue)
             SettingsGroup(title: "Rhythm & floating player", icon: "waveform.path") {

@@ -702,6 +702,11 @@ enum NativeProviderAPI {
             } catch APIError.providerStatus(.hanime, 403) {
                 throw APIError.server("Hanime requires browser verification before native HLS playback. Use Browse inside QuickTick or configure your authorized Hanime API in Settings.")
             }
+        } catch APIError.server(let message) where message.contains("HLS playlist") {
+            // Signed HLS paths can expire between the handshake and the first
+            // request. Retry the legitimate first-party handshake once before
+            // surfacing an unavailable stream to native playback.
+            return try await hanimeHLSHandshake(session: session, slug: post.id)
         }
     }
 
@@ -754,25 +759,23 @@ enum NativeProviderAPI {
                   HanimeGeneratedAPI.permittedStreamURL(address) else { return nil }
             return address
         }
-        guard let stream = playable.first else {
+        guard !playable.isEmpty else {
             throw APIError.server("Hanime returned no playable HLS stream for this video. Use Browse inside QuickTick or configure an authorized Hanime API in Settings.")
         }
         // The highest advertised resolution is not always accessible. Test
         // alternatives using normal first-party media headers before handing a
         // signed URL to AVPlayer; a 403, 404 or HTML page is not a stream.
-        // Single-source responses retain their fast native playback path.
-        if playable.count > 1 {
-            for alternate in playable.prefix(5) {
-                try Task.checkCancellation()
-                if await hanimeHLSPlaylistAvailable(session: session, url: alternate) {
-                    return ResolvedMedia(mediaUrl: alternate.absoluteString,
-                                         type: ["mp4", "m4v"].contains(alternate.pathExtension.lowercased()) ? "video" : "hls")
-                }
+        for alternate in playable.prefix(5) {
+            try Task.checkCancellation()
+            let fileType = alternate.pathExtension.lowercased()
+            let available = ["mp4", "m4v"].contains(fileType)
+                ? true : await hanimeHLSPlaylistAvailable(session: session, url: alternate)
+            if available {
+                return ResolvedMedia(mediaUrl: alternate.absoluteString,
+                                     type: ["mp4", "m4v"].contains(fileType) ? "video" : "hls")
             }
-            throw APIError.server("Hanime returned HLS variants, but none exposed a playable playlist. Try again to request fresh streams or use Browse inside QuickTick.")
         }
-        return ResolvedMedia(mediaUrl: stream.absoluteString,
-                             type: ["mp4", "m4v"].contains(stream.pathExtension.lowercased()) ? "video" : "hls")
+        throw APIError.server("Hanime returned an HLS playlist that could not be loaded. Try again for a fresh stream or use Browse inside QuickTick.")
     }
 
     private static func hanimeHLSPlaylistAvailable(session: URLSession, url: URL) async -> Bool {
@@ -1319,7 +1322,8 @@ enum NativeProviderAPI {
             do {
                 bytes = try await data(session: session, url: url(endpoint, parameters),
                                        provider: .pornhub, headers: cookieHeaders(credentials))
-            } catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 {
+            } catch APIError.providerStatus(.pornhub, let status)
+                where [404, 410, 500, 502, 503, 504].contains(status) {
                 // Retired webmaster endpoints should never block the public
                 // first-party catalog fallback.
                 continue
@@ -1395,7 +1399,8 @@ enum NativeProviderAPI {
             do {
                 bytes = try await data(session: session, url: candidate,
                                        provider: .pornhub, headers: htmlHeaders)
-            } catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 {
+            } catch APIError.providerStatus(.pornhub, let status)
+                where [404, 410, 500, 502, 503, 504].contains(status) {
                 continue
             }
             // Some upstream missing routes produce HTTP 200 with an HTML 404.
@@ -1624,12 +1629,17 @@ extension NativeProviderAPI {
             // The canonical watch URL can disappear while the first-party
             // embed still exposes an ordinary public media definition.
             // A 403/451 is deliberately NOT bypassed: respect provider access.
-            let pages = [page, try url("https://www.pornhub.com/embed/\(post.id)")]
+            let encodedID = post.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? post.id
+            let pages = [page, try url("https://www.pornhub.com/embed/\(encodedID)"),
+                         try url("https://pornhub.com/embed/\(encodedID)")]
             for candidatePage in pages {
                 let bytes: Data
                 do {
                     bytes = try await data(session: session, url: candidatePage,
-                                           provider: provider, headers: cookieHeaders(credentials))
+                                           provider: provider,
+                                           headers: cookieHeaders(credentials).merging([
+                                            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.7"
+                                           ]) { _, html in html })
                 } catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 {
                     continue
                 }
@@ -1638,11 +1648,15 @@ extension NativeProviderAPI {
                 let raw = pornhubPlayerDefinitions(html)
                 guard !raw.isEmpty else { continue }
                 let sorted = raw.sorted { number($0["quality"]) > number($1["quality"]) }
-                for format in ["mp4", "hls"] {
-                    for definition in sorted where text(definition["format"]) == format {
+                // A player can label a source "hls", "HLS", "video/mp4" or
+                // omit format entirely. Trust the validated URL extension
+                // first, retaining nested first-party definitions as a fallback.
+                for definition in sorted {
                         guard let candidate = mediaURL(text(definition["videoUrl"]), provider: provider) else { continue }
-                        if ["mp4", "m3u8"].contains(candidate.pathExtension.lowercased()) {
-                            return ResolvedMedia(mediaUrl: candidate.absoluteString, type: format == "hls" ? "hls" : "video")
+                        let ext = candidate.pathExtension.lowercased()
+                        if ["mp4", "m4v", "mov", "m3u8"].contains(ext) {
+                            return ResolvedMedia(mediaUrl: candidate.absoluteString,
+                                                 type: ext == "m3u8" ? "hls" : "video")
                         }
                         guard candidate.host == "pornhub.com" || candidate.host?.hasSuffix(".pornhub.com") == true else { continue }
                         let details: Data
@@ -1654,7 +1668,6 @@ extension NativeProviderAPI {
                         if let media = list.compactMap({ mediaURL(text($0["videoUrl"]), provider: provider) }).first {
                             return ResolvedMedia(mediaUrl: media.absoluteString, type: "video")
                         }
-                    }
                 }
             }
             throw APIError.server("Pornhub has no available public stream. The post may have been removed or be unavailable in your region.")

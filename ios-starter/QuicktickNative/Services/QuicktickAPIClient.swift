@@ -190,6 +190,11 @@ actor QuicktickAPIClient {
         }
     }
 
+    func pornhubCategoryPreview(token: String) async throws -> String? {
+        try await NativeProviderAPI.pornhubCategoryPreview(session: session,
+            credentials: credentials, token: token)
+    }
+
     func redgifsNichesPage(page: Int, limit: Int = 24) async throws -> RedgifsNichePage {
         let token = try await redgifsAuth.value(session: session)
         do {

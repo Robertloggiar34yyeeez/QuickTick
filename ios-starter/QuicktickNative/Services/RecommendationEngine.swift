@@ -1578,6 +1578,13 @@ actor RecommendationEngine {
                 if term.count > 7 && !out.contains(term) { out.append(term) }
                 continue
             }
+            if source == Provider.redgifs.rawValue,
+               let niche = NativeProviderAPI.redgifsNicheID(value) {
+                // Store the user-facing namespace but score the provider's
+                // canonical niche ID present in actual clip metadata.
+                if !out.contains(niche) { out.append(niche) }
+                continue
+            }
             for raw in value.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ").split(whereSeparator: { $0.isWhitespace }) {
                 let clean = String(raw).lowercased().filter { $0.isLetter || $0.isNumber || $0 == "'" }
                 if isTermAllowed(source: source, term: clean), !out.contains(clean) { out.append(clean) }

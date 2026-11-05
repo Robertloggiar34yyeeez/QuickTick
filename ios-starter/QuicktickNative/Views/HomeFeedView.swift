@@ -78,6 +78,7 @@ struct HomeFeedView: View {
     @State private var themeSuggestions: [HomeThemeSuggestion] = []
     @State private var publicPopularFranchisePosts: [Post] = []
     @State private var redgifsNiches: [RedgifsNiche] = []
+    @State private var pornhubCategoryPreviews: [String: String] = [:]
     @State private var openingNicheID: String?
     @State private var showAllRedgifsNiches = false
     @State private var showAllHanimeTopics = false
@@ -813,7 +814,7 @@ struct HomeFeedView: View {
                     .foregroundStyle(AppTheme.secondaryLabel)
                 ForEach(ProviderSearchCategories.suggestions(provider: provider)) { item in
                     let active = selected == item.value
-                    let preview = pornhubCategoryPreview(item.label)
+                    let preview = pornhubCategoryPreview(item.value)
                     Button {
                         let current = QueryParser.parse(store.queryText)
                         let keywords = ProviderSearchCategories.split(current, provider: provider).keywords
@@ -828,12 +829,18 @@ struct HomeFeedView: View {
                                     .frame(width: 42, height: 46)
                                     .clipped()
                                     .clipShape(RoundedRectangle(cornerRadius: 9))
+                            } else {
+                                RoundedRectangle(cornerRadius: 9)
+                                    .fill(AppTheme.accent.opacity(0.18))
+                                    .overlay(Image(systemName: "square.grid.2x2.fill")
+                                        .font(.caption).foregroundStyle(AppTheme.accent))
+                                    .frame(width: 42, height: 46)
                             }
                             Text(item.label)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(active ? .white : AppTheme.secondaryLabel)
                         }
-                            .padding(.horizontal, preview == nil ? 14 : 7)
+                            .padding(.horizontal, 7)
                             .frame(minHeight: 48)
                             .background(active ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface),
                                         in: RoundedRectangle(cornerRadius: 15))
@@ -844,18 +851,39 @@ struct HomeFeedView: View {
                     .accessibilityAddTraits(active ? .isSelected : [])
                 }
             }.padding(.horizontal, 16)
-        }.accessibilityIdentifier("home-categories")
+        }
+        .accessibilityIdentifier("home-categories")
+        .task(id: store.selectedProvider) { await discoverPornhubCategoryPreviews() }
     }
 
-    private func pornhubCategoryPreview(_ label: String) -> String? {
-        // Only use imagery that was actually provided with a Pornhub post.
-        // Do not invent category covers or request every category at once.
-        let key = label.lowercased().replacingOccurrences(of: "-", with: " ")
-        return (store.posts + Array(store.favorites.values)).first { post in
-            post.providerKey == .pornhub &&
-                post.tags.contains { $0.lowercased().replacingOccurrences(of: "-", with: " ") == key } &&
-                URL(string: post.cardPreviewURL)?.scheme == "https"
+    private func pornhubCategoryPreview(_ token: String) -> String? {
+        if let cached = pornhubCategoryPreviews[token] { return cached }
+        // A word in a title is not evidence of a video's category. Only a
+        // category-specific website result or verified API category qualifies.
+        return (store.posts + Array(store.favorites.values)).first {
+            $0.providerKey == .pornhub && $0.category == token &&
+                URL(string: $0.cardPreviewURL)?.scheme == "https"
         }?.cardPreviewURL
+    }
+
+    @MainActor private func discoverPornhubCategoryPreviews() async {
+        guard store.selectedProvider == .pornhub else {
+            pornhubCategoryPreviews = [:]
+            return
+        }
+        // Each category is independently verified against the first-party
+        // catalog. A failed or blocked category keeps its honest placeholder.
+        // Fetch serially and away from first paint to avoid a burst of calls.
+        try? await Task.sleep(for: .milliseconds(1_300))
+        for category in ProviderSearchCategories.suggestions(provider: .pornhub) {
+            guard !Task.isCancelled, store.selectedProvider == .pornhub else { return }
+            guard pornhubCategoryPreviews[category.value] == nil else { continue }
+            if let preview = try? await store.api.pornhubCategoryPreview(token: category.value),
+               URL(string: preview)?.scheme == "https" {
+                pornhubCategoryPreviews[category.value] = preview
+            }
+            try? await Task.sleep(for: .milliseconds(350))
+        }
     }
 
     private func refreshFromGesture() async {

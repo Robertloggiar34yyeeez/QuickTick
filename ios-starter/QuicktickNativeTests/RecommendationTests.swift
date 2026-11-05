@@ -129,6 +129,40 @@ final class RecommendationTests: XCTestCase {
         XCTAssertFalse(suggestions.contains("16:9"))
     }
 
+    func testTasteEditorUsesProviderNativeHanimeAndRedgifsVocabularies() {
+        let hanime = Post(key: "hanime:1", id: "1", provider: "Hanime",
+                          tags: ["fantasy", "monster girl"], type: "video")
+        let redgifs = Post(key: "redgifs:2", id: "2", provider: "RedGIFs",
+                           tags: ["cosplay", "example-niche"], type: "video")
+        let niches = [RedgifsNiche(id: "example-niche", name: "Example niche",
+                                   imageURL: "", postCount: 10)]
+        let hanimeTags = TasteTagSuggestions.rank(learned: [],
+            favorites: [hanime, redgifs], posts: [], provider: .hanime,
+            visual: ["kimono", "blue_eyes"], niches: niches)
+        XCTAssertTrue(hanimeTags.contains("fantasy"))
+        XCTAssertTrue(hanimeTags.contains("kimono"), "Use learned WD visual attributes")
+        XCTAssertFalse(hanimeTags.contains("example-niche"), "No RedGIFs niche leakage into Hanime")
+        let redgifsTags = TasteTagSuggestions.rank(learned: [],
+            favorites: [hanime, redgifs], posts: [], provider: .redgifs,
+            visual: ["beach"], niches: niches)
+        XCTAssertTrue(redgifsTags.contains("niche:example-niche"))
+        XCTAssertTrue(redgifsTags.contains("cosplay"))
+        XCTAssertTrue(redgifsTags.contains("beach"))
+        XCTAssertFalse(redgifsTags.contains("fantasy"), "No unrelated Hanime catalog categories")
+    }
+
+    func testBlockingRedgifsNicheExcludesItsRealMembership() {
+        var matching = Post(key: "redgifs:1", id: "1", provider: "RedGIFs",
+                            tags: ["example-niche", "cosplay"], type: "video")
+        matching.category = "example-niche"
+        let unrelated = Post(key: "redgifs:2", id: "2", provider: "RedGIFs",
+                             tags: ["other-niche"], type: "video")
+        XCTAssertTrue(RecommendationTagRules.rejects(matching,
+            exclusions: ["niche:example-niche"]))
+        XCTAssertFalse(RecommendationTagRules.rejects(unrelated,
+            exclusions: ["niche:example-niche"]))
+    }
+
     func testInstalledIPAMigratesV3CacheIntoV5WithoutDeletingTheOriginal() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -599,7 +599,7 @@ final class AppStore: ObservableObject {
             // metadata. A focused, two-lane recommendation search can miss
             // every video and wait for dozens of album fetches. Start with
             // the public video catalog and rank the resulting clips locally.
-            let directCatalog = personalized && (provider == .hhaven || provider == .nhentai ||
+            let directCatalog = personalized && (provider == .hhaven || provider == .nhentai || provider == .hanime ||
                                                  (provider == .erome && mediaOnly))
             let banned = Set((exclusions + parsed.excluded + tasteChoice(for: provider).notInto).map(RecommendationTagRules.canonical))
             let context = provider.rawValue + "|batch40|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
@@ -610,6 +610,7 @@ final class AppStore: ObservableObject {
             var filtered: [Post] = []
             var havenExploration: [Post] = []
             var havenSafeCatalog: [Post] = []
+            var hanimeSafeCatalog: [Post] = []
             var nhentaiDiscovery: [Post] = []
             var epornerDiscovery: [Post] = []
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
@@ -642,6 +643,12 @@ final class AppStore: ObservableObject {
                 }
                 if personalized, provider == .hhaven, havenSafeCatalog.count < 48 {
                     havenSafeCatalog.append(contentsOf: incoming.prefix(48 - havenSafeCatalog.count))
+                }
+                if personalized, provider == .hanime, hanimeSafeCatalog.count < 48 {
+                    // The v11 Hanime search endpoint is an entire video catalog,
+                    // not an indexed WD-tag search. Retain safe video entries
+                    // before novelty/strict taste can empty Immersive.
+                    hanimeSafeCatalog.append(contentsOf: incoming.prefix(48 - hanimeSafeCatalog.count))
                 }
                 if personalized, provider == .eporner, epornerDiscovery.count < 120 {
                     // The Eporner browse API can repeatedly return the same
@@ -682,7 +689,7 @@ final class AppStore: ObservableObject {
                     let cachedAppearance = await visual.scores(incoming)
                     let ranked = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
                         recent: recentProviderPosts, visualScores: cachedAppearance,
-                        strict: provider != .erome && provider != .redgifs &&
+                        strict: provider != .erome && provider != .redgifs && provider != .hanime &&
                             (!topicPersonalized || (favorites.count >= 5 &&
                                 provider != .hhaven && provider != .nhentai)))
                     if provider == .redgifs {
@@ -701,6 +708,21 @@ final class AppStore: ObservableObject {
                 if !filtered.isEmpty || (directCatalog && !havenSafeCatalog.isEmpty) || (!hasMore && !focusedMiss) { break }
             }
             var immediate = filtered
+            if immediate.isEmpty, personalized, provider == .hanime, !hanimeSafeCatalog.isEmpty {
+                // Every previously offered Hanime video can be rejected as
+                // "already seen" on a later Immersive visit. Keep hard blocks,
+                // dislikes and favorites excluded, but allow the provider's
+                // actual playable catalog to reappear instead of a dead feed.
+                let eligible = feedExclusions.filter(hanimeSafeCatalog,
+                    favorites: Array(favorites.values), recommended: false,
+                    favoriteIDs: favoriteExclusionIDs)
+                if !eligible.isEmpty {
+                    let visualEvidence = await visual.scores(eligible)
+                    immediate = Array((await recommendations.rankFast(eligible,
+                        taste: tasteChoice(for: provider), recent: recentProviderPosts,
+                        visualScores: visualEvidence, strict: false)).prefix(24))
+                }
+            }
             if immediate.isEmpty, personalized, provider == .hhaven, !havenExploration.isEmpty {
                 // A handful of clearly provisional discoveries is preferable
                 // to an empty Recommended page while WD poster evidence warms.

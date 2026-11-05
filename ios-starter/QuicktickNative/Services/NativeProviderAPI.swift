@@ -1221,6 +1221,28 @@ enum NativeProviderAPI {
         return Array(Set(values.filter { !$0.isEmpty })).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
+    /// Category artwork must come from that category's own public page.
+    /// A generic video title containing "cosplay" does not prove it belongs
+    /// to the Cosplay category and must never supply its cover.
+    static func pornhubCategoryPreview(session: URLSession, credentials: ProviderCredentials,
+                                       token: String) async throws -> String? {
+        guard ProviderSearchCategories.valid(token, provider: .pornhub) else { return nil }
+        let slug = String(token.dropFirst("category:".count))
+        let source = try url("https://www.pornhub.com/categories/" + slug)
+        let bytes: Data
+        do {
+            bytes = try await data(session: session, url: source, provider: .pornhub,
+                headers: cookieHeaders(credentials).merging([
+                    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.7"
+                ]) { _, html in html }, maxBytes: 2 * 1024 * 1024)
+        } catch APIError.providerStatus(.pornhub, let status)
+            where [404, 410].contains(status) { return nil }
+        guard !unavailableHTML(bytes) else { return nil }
+        return pornhubHTMLPosts(String(decoding: bytes, as: UTF8.self))
+            .map(\.cardPreviewURL)
+            .first(where: { URL(string: $0)?.scheme == "https" })
+    }
+
     static func pornhubSearchParameters(query: ParsedQuery, page: Int, sort: String) -> [URLQueryItem] {
         let selection = ProviderSearchCategories.split(query, provider: .pornhub)
         let filters = (query.pornhub ?? PornhubSearchFilters()).normalized
@@ -1305,6 +1327,14 @@ enum NativeProviderAPI {
                             tags: strings(row["tags"]) + strings(row["categories"]),
                             previewUrl: posters.first ?? "", thumbUrl: posters.dropFirst().first ?? posters.first ?? "",
                             pageUrl: text(row["url"]), type: "video")
+            // A category thumbnail is trustworthy only if the provider's
+            // structured categories actually establish that membership.
+            if let requested = selection.category.map({ String($0.dropFirst("category:".count)) }),
+               strings(row["categories"]).contains(where: {
+                   $0.lowercased().replacingOccurrences(of: " ", with: "-") == requested
+               }) {
+                post.category = "category:" + requested
+            }
             post.caption = text(row["title"]); post.creator = text(row["username"]); return post
         }
         return self.page(posts, hasMore: raw.count >= 20, query: query, immersive: immersive)
@@ -1408,8 +1438,13 @@ enum NativeProviderAPI {
             // canonical first-party browse URL.
             guard !unavailableHTML(bytes) else { continue }
             let html = String(decoding: bytes.prefix(2 * 1024 * 1024), as: UTF8.self)
-            let posts = pornhubHTMLPosts(html, filters: filters)
+            var posts = pornhubHTMLPosts(html, filters: filters)
             if !posts.isEmpty {
+                if let category, !searching, candidate.path.hasPrefix("/categories/" + category) {
+                    // A first-party category page is source evidence for its
+                    // own cards; title words in a generic feed are not.
+                    for index in posts.indices { posts[index].category = "category:" + category }
+                }
                 return self.page(posts, hasMore: posts.count >= 20,
                                  query: query, immersive: immersive)
             }

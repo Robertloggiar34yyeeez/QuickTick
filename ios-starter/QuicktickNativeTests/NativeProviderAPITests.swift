@@ -143,8 +143,8 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "api.rule34.xxx" {
             let comments = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "s" && $0.value == "comment" } == true
             payload = comments ? #"<comments><comment id="7" creator="Fixture" body="A &amp; B" /></comments>"# : #"[{"id":1,"score":9,"tags":"engineering car","width":1920,"height":1080,"file_url":"https://media.rule34.xxx/clip.mp4","preview_url":"https://media.rule34.xxx/clip.jpg"}]"#
-        } else if path.contains("/embed/") { payload = #"<html><script>var hash='00112233445566778899aabbccddeeff';</script></html>"# }
-        else if path.contains("/xhr/video/") { payload = #"{"sources":{"mp4":{"360p":{"src":"https://cdn.eporner.com/small.mp4"},"1080p":{"src":"https://cdn.eporner.com/full.mp4"}}}}"# }
+        } else if host == "www.eporner.com", path.contains("/embed/") { payload = #"<html><script>var hash='00112233445566778899aabbccddeeff';</script></html>"# }
+        else if host == "www.eporner.com", path.contains("/xhr/video/") { payload = #"{"sources":{"mp4":{"360p":{"src":"https://cdn.eporner.com/small.mp4"},"1080p":{"src":"https://cdn.eporner.com/full.mp4"}}}}"# }
         else if host == "www.eporner.com" {
             let parameters = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let page = Int(parameters.first(where: { $0.name == "page" })?.value ?? "1") ?? 1
@@ -253,6 +253,12 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = search == "browse-soft404" && params.contains(where: { $0.name == "page" })
                 ? "<html><head><title>404 Not Found</title></head><body>The requested URL was not found on this server.</body></html>"
                 : #"<html><ul><li class="videoblock videoBox" data-video-vkey="phpublic"><a href="/view_video.php?viewkey=phpublic" title="Public &amp; indexed"><img data-thumb_url="https://cdn.pornhub.com/public.jpg" src="https://cdn.pornhub.com/public-small.jpg" alt="Public video"></a></li></ul></html>"#
+        }
+        else if host == "www.pornhub.com", path == "/categories/cosplay" {
+            payload = #"<html><ul><li class="videoblock videoBox" data-video-vkey="phcos"><a href="/view_video.php?viewkey=phcos" title="Costume category entry"><img data-thumb_url="https://cdn.pornhub.com/category-cosplay.jpg"></a></li></ul></html>"#
+        }
+        else if host == "www.pornhub.com", path == "/categories/hentai" {
+            payload = "<html><title>404 Not Found</title><body>The requested URL was not found on this server.</body></html>"
         }
         else if path == "/view_video.php" {
             let unavailable = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
@@ -1195,6 +1201,38 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
             $0.url?.path == "/embed/watch-missing"
         })
+    }
+
+    func testPornhubCategoryArtworkUsesActualCategoryPageOnly() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let preview = try await api.pornhubCategoryPreview(token: "category:cosplay")
+        XCTAssertEqual(preview, "https://cdn.pornhub.com/category-cosplay.jpg")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path == "/categories/cosplay"
+        })
+        let unavailable = try await api.pornhubCategoryPreview(token: "category:hentai")
+        XCTAssertNil(unavailable, "An unavailable category must never borrow a generic video's poster")
+        let invalid = try await api.pornhubCategoryPreview(token: "category:../wrong")
+        XCTAssertNil(invalid)
+    }
+
+    @MainActor func testHanimeImmersiveKeepsVideosWithUnmatchedWDInterests() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+        await store.bootstrap()
+        store.selectedProvider = .hanime
+        store.tasteSetup.sources[Provider.hanime.rawValue] = TasteChoice(done: true,
+            into: ["extremely_specific_wd_visual_tag"])
+        await store.recommendations.load(RecommendationState())
+        await store.refresh(immersive: true)
+        XCTAssertEqual(store.posts.map(\.stableID), ["hanime:sample"])
+        XCTAssertTrue(store.posts.allSatisfy(\.isImmersiveMedia))
+        await store.refresh(immersive: true)
+        XCTAssertEqual(store.posts.map(\.stableID), ["hanime:sample"],
+            "Seen clips should remain available when the finite Hanime catalog has no new matches")
     }
 
     func testPornhubMissingWebmasterRouteTriesFirstPartyAPIHost() async throws {

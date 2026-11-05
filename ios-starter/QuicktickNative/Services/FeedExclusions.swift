@@ -66,6 +66,10 @@ enum RecommendationTagRules {
         guard !exclusions.isEmpty else { return false }
         let blocked = Set(exclusions.map(canonical))
         if blocked.contains("furry"), FurryTagAliases.matches(post) { return true }
+        if post.providerKey == .redgifs, exclusions.contains(where: { raw in
+            guard let id = NativeProviderAPI.redgifsNicheID(raw) else { return false }
+            return post.category == id || post.tags.contains { canonical($0) == canonical(id) }
+        }) { return true }
         // On keyword providers a banned topic may appear only in the title,
         // category or credited creator. Preserve whole-word boundaries, so
         // banning "bat" does not hide "battle".

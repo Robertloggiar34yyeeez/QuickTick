@@ -607,11 +607,36 @@ enum NativeProviderAPI {
         let result: [String: Any]
         let selectedNicheID = query.included.count == 1 ? redgifsNicheID(query.included[0]) : nil
         if let niche = selectedNicheID {
-            result = try object(await data(session: session,
-                url: url("https://api.redgifs.com/v2/niches/\(niche)/gifs",
-                    [.init(name: "order", value: sort == "recent" ? "latest" : "top"),
-                     .init(name: "count", value: "40"), .init(name: "page", value: String(page))]),
-                provider: .redgifs, headers: redgifsHeaders(token: token)))
+            let primaryOrder = sort == "recent" ? "latest" : "top"
+            let orders = page == 1 ? [primaryOrder, primaryOrder == "top" ? "latest" : "top"] : [primaryOrder]
+            var chosen: [String: Any] = [:]
+            for order in orders {
+                let response = try object(await data(session: session,
+                    url: url("https://api.redgifs.com/v2/niches/\(niche)/gifs",
+                        [.init(name: "order", value: order),
+                         .init(name: "count", value: "40"), .init(name: "page", value: String(page))]),
+                    provider: .redgifs, headers: redgifsHeaders(token: token)))
+                chosen = response
+                let nested = response["data"] as? [String: Any] ?? [:]
+                let offered = rows(response["gifs"] ?? response["items"] ?? nested["gifs"])
+                // A niche's top page may contain only still images, missing
+                // streams or mislabeled clips. Try its latest feed once if
+                // no actual video from this niche can be played.
+                let playable = offered.contains { row in
+                    guard !["i", "image"].contains(text(row["type"]).lowercased()),
+                          number(row["type"]) != 2 else { return false }
+                    let urls = row["urls"] as? [String: Any] ?? [:]
+                    guard [urls["hd"], urls["sd"], urls["gif"]]
+                        .contains(where: { !text($0).isEmpty }) else { return false }
+                    let memberships = strings(row["niches"]) +
+                        rows(row["niches"]).map { text($0["slug"] ?? $0["id"]) }
+                    return memberships.isEmpty || memberships.contains {
+                        redgifsNicheID("niche:" + $0.lowercased().replacingOccurrences(of: "niche:", with: "")) == niche
+                    }
+                }
+                if playable { break }
+            }
+            result = chosen
         } else {
             guard !query.included.contains(where: { $0.hasPrefix("niche:") }) else { throw APIError.invalidResponse }
             let items = [URLQueryItem(name: "order", value: sort == "recent" ? "latest" : sort == "popular" ? "top7" : "trending"),
@@ -632,13 +657,24 @@ enum NativeProviderAPI {
             guard let found else { throw lastError }
             result = found
         }
-        let raw = rows(result["gifs"])
-        let posts = raw.map { row -> Post in
+        let nested = result["data"] as? [String: Any] ?? [:]
+        let raw = rows(result["gifs"] ?? result["items"] ?? nested["gifs"])
+        let posts = raw.compactMap { row -> Post? in
             let id = text(row["id"]), urls = row["urls"] as? [String: Any] ?? [:]
-            let media = text(urls["hd"] ?? urls["sd"] ?? urls["gif"])
-            let image = text(row["type"]) == "i" || number(row["type"]) == 2
+            guard !id.isEmpty else { return nil }
+            let media = [urls["hd"], urls["sd"], urls["gif"]]
+                .map { text($0) }.first(where: { !$0.isEmpty }) ?? ""
+            let image = ["i", "image"].contains(text(row["type"]).lowercased()) || number(row["type"]) == 2
             var tags = strings(row["tags"])
             let nicheSlugs = strings(row["niches"]) + rows(row["niches"]).map { text($0["slug"] ?? $0["id"]) }
+            let declaredNiches = Set(nicheSlugs.compactMap { value in
+                redgifsNicheID("niche:" + value.lowercased().replacingOccurrences(of: "niche:", with: ""))
+            })
+            // The niche endpoint is the source of truth when rows omit their
+            // memberships. But rows that explicitly name a *different* niche
+            // must never be relabeled as the one the user selected.
+            if let selectedNicheID, !declaredNiches.isEmpty,
+               !declaredNiches.contains(selectedNicheID) { return nil }
             for value in nicheSlugs {
                 let slug = value.lowercased().replacingOccurrences(of: "niche:", with: "")
                 if let nicheID = redgifsNicheID("niche:" + slug), !tags.contains(nicheID) {

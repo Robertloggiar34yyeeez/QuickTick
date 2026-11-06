@@ -806,7 +806,10 @@ struct HomeFeedView: View {
             defer { openingNicheID = nil }
             guard store.selectedProvider == .redgifs,
                   store.queryText == query,
-                  let first = store.posts.first(where: \.isImmersiveMedia) else { return }
+                  store.lastError == nil,
+                  let first = store.posts.first(where: {
+                      $0.providerKey == .redgifs && $0.category == niche.id && $0.isImmersiveMedia
+                  }) else { return }
             immersivePostID = first.stableID
             immersive = true
         }
@@ -1029,7 +1032,9 @@ private struct RedgifsNicheBrowserView: View {
                 // Keeping it inside NavigationStack makes UIKit reserve the
                 // navigation/safe-area bounds and shrinks the video canvas
                 // compared with the regular edge-to-edge Immersive feed.
-                ImmersiveFeedView(posts: store.posts, offline: false,
+                ImmersiveFeedView(posts: store.posts.filter {
+                    $0.providerKey == .redgifs && $0.category == selectedNiche.id
+                }, offline: false,
                                   activePostID: $selectedPostID,
                                   onClose: { closeImmersive() },
                                   showSettings: $showSettings)
@@ -1174,7 +1179,8 @@ private struct RedgifsNicheBrowserView: View {
             // can incorrectly turn a valid video response into an empty feed.
             guard store.lastError == nil,
                   let first = store.posts.first(where: {
-                      $0.isImmersiveMedia && $0.providerKey == .redgifs
+                      $0.isImmersiveMedia && $0.providerKey == .redgifs &&
+                          $0.category == niche.id
                   }) else {
                 errorMessage = store.lastError ?? "No playable clips were returned for \(niche.name). Try another niche."
                 return

@@ -3,14 +3,15 @@ import AVKit
 import ImageIO
 import UIKit
 
-private enum ImmersiveChromeLayout {
+enum ImmersiveChromeLayout {
     static func bottomClearance(viewportWidth: CGFloat, safeAreaBottom: CGFloat,
-                                backgroundAudioVisible: Bool) -> CGFloat {
+                                backgroundAudioVisible: Bool,
+                                sideNavigation: Bool) -> CGFloat {
         // The media fills the physical display, but the timeline must sit
         // *above* the root tab dock and home indicator. The fullscreen
         // GeometryReader may report zero safe-area insets after
         // ignoresSafeArea, so retain a conservative device inset.
-        let sideDock = viewportWidth > 600
+        let sideDock = viewportWidth > 600 && sideNavigation
         let deviceInset = max(safeAreaBottom, sideDock ? 20 : 34)
         let tabDockHeight: CGFloat = sideDock ? 0 : 62
         let audioControlsHeight: CGFloat = backgroundAudioVisible ? 80 : 0
@@ -584,6 +585,7 @@ private struct ImmersiveItemView: View {
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
     @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
     @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
+    @AppStorage("quicktick-ipad-side-navigation-v1") private var ipadSidebarEnabled = false
     let post: Post
     let offline: Bool
     let active: Bool
@@ -638,13 +640,6 @@ private struct ImmersiveItemView: View {
               ["pornhub.com", "www.pornhub.com"].contains(url.host?.lowercased() ?? "") else { return nil }
         return url
     }
-    private var fillsNicheCanvas: Bool {
-        // A selected RedGIFs niche is a TikTok-style edge-to-edge feed. The
-        // regular player keeps aspect-fit for landscape and other providers.
-        post.providerKey == .redgifs && store.selectedProvider == .redgifs &&
-            store.queryText.hasPrefix("niche:")
-    }
-
     private func seekImmersive(forward: Bool) {
         guard let player else { return }
         let current = Date().timeIntervalSince(lastDoubleTapAt) < 1.5
@@ -669,11 +664,14 @@ private struct ImmersiveItemView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let mediaSize = fillsNicheCanvas ? geo.size : fittedSize(geo.size)
+            // Keep the fullscreen canvas edge-to-edge, but never crop the
+            // actual clip merely because it came from a selected niche.
+            let mediaSize = fittedSize(geo.size)
             let controlsBottomClearance = ImmersiveChromeLayout.bottomClearance(
                 viewportWidth: geo.size.width,
                 safeAreaBottom: geo.safeAreaInsets.bottom,
-                backgroundAudioVisible: store.audio.currentPost != nil)
+                backgroundAudioVisible: store.audio.currentPost != nil,
+                sideNavigation: store.activeTab == 1 || collection || ipadSidebarEnabled)
             ZStack(alignment: .center) {
                 AppTheme.canvas
                 if post.type.lowercased() != "image" && gifURL == nil {
@@ -691,7 +689,7 @@ private struct ImmersiveItemView: View {
                     Group {
                         if let image = previews.images[post.stableID] {
                             Image(uiImage: image).resizable()
-                                .aspectRatio(contentMode: fillsNicheCanvas ? .fill : .fit)
+                                .aspectRatio(contentMode: .fit)
                         } else if active {
                             VStack(spacing: 12) {
                                 Image(systemName: "play.rectangle.on.rectangle")
@@ -737,7 +735,7 @@ private struct ImmersiveItemView: View {
                     // must retain the stream's real aspect ratio. Filling a
                     // fixed 16:9 canvas cropped portrait and square videos.
                     NativePlayerSurface(player: player,
-                        fill: fillsNicheCanvas,
+                        fill: false,
                         ready: $ready, accessibilityID: "immersive-video-surface")
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready && introReady ? 1 : 0)
@@ -800,16 +798,16 @@ private struct ImmersiveItemView: View {
                 if active && presentationActive {
                     // Keep the action rail reachable on small iPhones, while
                     // giving the iPad canvas appropriately sized controls.
-                    let scale = min(1.12, max(1.0, geo.size.width / 430))
+                    let scale = min(1.06, max(0.96, geo.size.width / 430))
                     actionRail
                         .scaleEffect(scale, anchor: .bottomTrailing)
                         .padding(.trailing, geo.size.width > 600 ? 30 : 14)
-                        .padding(.bottom, max(min(110, max(76, geo.size.height * 0.12)),
-                                              post.type.lowercased() == "video" ? controlsBottomClearance + 44 : 0))
+                        .padding(.bottom, controlsBottomClearance +
+                            (post.type.lowercased() == "video" ? 46 : 14))
                 }
             }
             .overlay(alignment: .bottom) {
-                VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
                     if let title = post.displayTitle {
                         Text(title)
                             .font(.subheadline.weight(.semibold))
@@ -977,7 +975,7 @@ private struct ImmersiveItemView: View {
     }
 
     private var actionRail: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             railButton("Like", symbol: "heart.fill", selected: store.favorites[post.stableID] != nil) {
                 interacted = true; store.toggleFavorite(post)
             }.accessibilityValue(store.favorites[post.stableID] == nil ? "Not liked" : "Liked")
@@ -998,8 +996,8 @@ private struct ImmersiveItemView: View {
                         }
                     } label: {
                         Image(systemName: "paintbrush.pointed.fill")
-                            .font(.system(size: 22, weight: .semibold))
-                            .frame(width: 56, height: 56)
+                            .font(.system(size: 21, weight: .semibold))
+                            .frame(width: 52, height: 52)
                             .background(.black.opacity(0.16), in: Circle())
                             .overlay(Circle().strokeBorder(.white.opacity(0.24)))
                     }
@@ -1020,10 +1018,10 @@ private struct ImmersiveItemView: View {
     private func railButton(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 25, weight: .semibold))
+                .font(.system(size: 23, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(selected ? AppTheme.accent : .white)
-                .frame(width: 56, height: 56).contentShape(Circle())
+                .frame(width: 52, height: 52).contentShape(Circle())
                 .background(.black.opacity(0.16), in: Circle())
                 .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.8) : .white.opacity(0.25), lineWidth: 1))
                 .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
@@ -1175,7 +1173,7 @@ private struct ImmersiveDownloadControl: View {
             Group {
                 if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 28) }
                 else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 23, weight: .semibold)) }
-            }.foregroundStyle(.white).frame(width: 56, height: 56).contentShape(Circle())
+            }.foregroundStyle(.white).frame(width: 52, height: 52).contentShape(Circle())
                 .background(.black.opacity(0.16), in: Circle())
                 .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
                 .shadow(color: .black.opacity(0.23), radius: 6, y: 2)

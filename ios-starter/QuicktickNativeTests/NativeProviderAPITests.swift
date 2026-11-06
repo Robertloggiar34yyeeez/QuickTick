@@ -74,7 +74,14 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"{"pages":1,"gifs":[{"id":"gamingclip","type":"g","tags":["gaming"],"urls":{"hd":"https://media.redgifs.com/gamingclip.mp4","poster":"https://media.redgifs.com/gamingclip.jpg"}}]}"#
         }
         else if host == "api.redgifs.com", path == "/v2/niches/cosplay/gifs" {
-            payload = #"{"pages":2,"gifs":[{"id":"nicheclip","type":"g","title":"Cosplay clip title","tags":["cosplay"],"urls":{"hd":"https://media.redgifs.com/nicheclip.mp4","poster":"https://media.redgifs.com/nicheclip.jpg"}}]}"#
+            payload = #"{"pages":2,"gifs":[{"id":"nicheclip","type":"g","title":"Cosplay clip title","tags":["cosplay"],"niches":["cosplay"],"urls":{"hd":"https://media.redgifs.com/nicheclip.mp4","poster":"https://media.redgifs.com/nicheclip.jpg"}},{"id":"wrongclip","type":"g","niches":["gaming"],"urls":{"hd":"https://media.redgifs.com/wrongclip.mp4","poster":"https://media.redgifs.com/wrongclip.jpg"}}]}"#
+        }
+        else if host == "api.redgifs.com", path == "/v2/niches/empty-top/gifs" {
+            let order = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "order" })?.value
+            payload = order == "top"
+                ? #"{"pages":1,"gifs":[{"id":"still","type":"i","niches":["empty-top"],"urls":{"poster":"https://media.redgifs.com/still.jpg"}}]}"#
+                : #"{"pages":1,"gifs":[{"id":"usable","type":"g","niches":["empty-top"],"urls":{"hd":"https://media.redgifs.com/usable.mp4","poster":"https://media.redgifs.com/usable.jpg"}}]}"#
         }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
         else if host == "www.erome.com", ["/explore", "/explore/new", "/search"].contains(path) {
@@ -439,6 +446,8 @@ final class NativeProviderAPITests: XCTestCase {
             query: ParsedQuery(included: ["niche:cosplay"], excluded: []),
             page: 1, sort: "popular", immersive: true)
         XCTAssertEqual(page.items.map(\.id), ["nicheclip"])
+        XCTAssertFalse(page.items.contains { $0.id == "wrongclip" },
+                       "An explicitly different niche membership must not be relabeled as the selected niche")
         XCTAssertEqual(page.items.first?.mediaUrl, "https://media.redgifs.com/nicheclip.mp4")
         XCTAssertEqual(page.items.first?.caption, "Cosplay clip title")
         XCTAssertEqual(page.items.first?.category, "cosplay",
@@ -456,6 +465,20 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(routes.contains { $0.url?.path == "/v2/niches/gaming/gifs" })
         XCTAssertTrue(routes.filter { $0.url?.path.hasPrefix("/v2/niches/") == true }
             .allSatisfy { $0.value(forHTTPHeaderField: "Referer") == "https://www.redgifs.com/" })
+    }
+
+    func testRedgifsNicheTriesLatestWhenTopContainsNoPlayableVideo() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .redgifs,
+            query: ParsedQuery(included: ["niche:empty-top"], excluded: []),
+            page: 1, sort: "popular", immersive: true)
+        XCTAssertEqual(page.items.map(\.id), ["usable"])
+        XCTAssertEqual(page.items.first?.category, "empty-top")
+        let orders = NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/v2/niches/empty-top/gifs" }
+            .compactMap { URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "order" })?.value }
+        XCTAssertEqual(orders, ["top", "latest"])
     }
 
     func testRedgifsShowAllNichesPaginatesAndUsesRealPopularPosters() async throws {

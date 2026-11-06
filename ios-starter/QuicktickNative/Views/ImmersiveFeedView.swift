@@ -901,7 +901,7 @@ private struct ImmersiveItemView: View {
                 if let player {
                     if player.currentItem?.status == .failed {
                         if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
-                           automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
+                           automaticProviderRetry < (post.providerKey == .hanime ? 2 : 3) {
                             automaticProviderRetry += 1
                             store.players.release(post.stableID)
                             self.player = nil; ready = false; mediaRetry += 1
@@ -932,7 +932,7 @@ private struct ImmersiveItemView: View {
                     lastTime = seconds
                     if stalledSeconds >= 12, !offline,
                        (post.providerKey == .hanime || post.providerKey == .pornhub),
-                       automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
+                       automaticProviderRetry < (post.providerKey == .hanime ? 2 : 3) {
                         automaticProviderRetry += 1
                         store.players.release(post.stableID)
                         self.player = nil; ready = false; mediaRetry += 1
@@ -1042,7 +1042,7 @@ private struct ImmersiveItemView: View {
                 url = prepared
             } else {
                 let resolved = try await store.resolver.resolve(post,
-                    refresh: mediaRetry > 0, hanimeVariant: mediaRetry)
+                    refresh: mediaRetry > 0, streamVariant: mediaRetry)
                 guard let remote = URL(string: resolved.mediaUrl) else { throw URLError(.badURL) }
                 url = remote
             }

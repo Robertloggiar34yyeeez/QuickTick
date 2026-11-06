@@ -318,7 +318,7 @@ struct HomeFeedView: View {
                         }
                         if store.selectedProvider == .hanime,
                            let website = URL(string: "https://hanime.tv/") {
-                            Link("Verify Hanime in Safari", destination: website)
+                            Link("Open Hanime in Safari", destination: website)
                             Button("Configure Hanime API") { showSettings = true }
                         }
                     }

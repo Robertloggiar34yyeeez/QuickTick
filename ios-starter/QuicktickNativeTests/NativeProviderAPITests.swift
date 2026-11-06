@@ -111,11 +111,16 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 result = #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"}]}"#
             } else if slug == "alternate-stream" {
                 result = #"{"sources":[{"kind":"normal","src":"/hls/broken","height":1080},{"kind":"normal","src":"/hls/alternate","height":720}]}"#
+            } else if slug == "plain-json" {
+                result = #"{"sources":[{"kind":"normal","src":"https://cdn.hanime.tv/hls/signed-opaque?token=abc","height":720}]}"#
             } else {
                 result = #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"},{"kind":"normal","src":"/hls/42/fixture-token","height":1080,"type":"application/vnd.apple.mpegurl"}]}"#
             }
-            responseHeaders["x-token"] = try? HanimeHandshakeCodec.seal(Data(result.utf8))
-            payload = #"{"ok":true}"#
+            if slug == "plain-json" { payload = result }
+            else {
+                responseHeaders["x-token"] = try? HanimeHandshakeCodec.seal(Data(result.utf8))
+                payload = #"{"ok":true}"#
+            }
         }
         else if host == "hanime.tv", path == "/hls/broken" {
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
@@ -223,8 +228,10 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"{"categories":[{"category":"Cosplay"},{"category":"Vintage"},{"category":"Anal"}]}"#
         }
         else if path == "/webmasters/search" || path == "/webmasters/search/" {
-            let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            let params = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let search = params
                 .first(where: { $0.name == "search" })?.value
+            let category = params.first(where: { $0.name == "category" })?.value
             if search == "unavailable-route" || search == "public-html" ||
                search == "browse-missing-first" || search == "browse-soft404" ||
                search == "browse-filter-404" ||
@@ -233,7 +240,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
             }
-            payload = search == "filtered-terms"
+            payload = category == "hentai" && search == nil
+                ? #"{"videos":[{"video_id":"hentai-cover","categories":[{"category":"Hentai"}],"hd_thumb":"https://cdn.pornhub.com/verified-hentai.jpg"}]}"#
+                : search == "filtered-terms"
                 ? #"{"videos":[{"video_id":"allowed","title":"First","duration":"15:00","production":"homemade","categories":[{"category":"Cosplay"}]},{"video_id":"blocked","title":"Second","duration":"04:00","production":"professional","categories":[{"category":"Vintage"}]}]}"#
                 : search == "html-response"
                 ? "<html><head><title>404 Not Found</title></head><body>The requested URL was not found on this server.</body></html>"
@@ -257,7 +266,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "www.pornhub.com", path == "/categories/cosplay" {
             payload = #"<html><ul><li class="videoblock videoBox" data-video-vkey="phcos"><a href="/view_video.php?viewkey=phcos" title="Costume category entry"><img data-thumb_url="https://cdn.pornhub.com/category-cosplay.jpg"></a></li></ul></html>"#
         }
-        else if host == "www.pornhub.com", path == "/categories/hentai" {
+        else if host == "www.pornhub.com", ["/categories/hentai", "/categories/vintage"].contains(path) {
             payload = "<html><title>404 Not Found</title><body>The requested URL was not found on this server.</body></html>"
         }
         else if path == "/view_video.php" {
@@ -269,9 +278,14 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             }
             let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
             let opaque = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "opaque" } == true
+            let multi = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "multi" } == true
             payload = fallback ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://www.pornhub.com/removed-definition"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/valid.m3u8"}]};</script>"#
                 : opaque ? #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"1080","videoUrl":"https://vid-cdn.phncdn.com/signed/abc123?expires=123&token=xyz"}]};</script>"#
+                : multi ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/first-1080.mp4"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/second-720.m3u8"}]};</script>"#
                 : #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/full.mp4"}]};</script>"#
+        }
+        else if path == "/embed/multi" {
+            payload = #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/first-1080.mp4"},{"format":"mp4","quality":"480","videoUrl":"https://cdn.pornhub.com/third-480.mp4"}]};</script>"#
         }
         else if path == "/embed/watch-missing" {
             payload = #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/embed-valid.m3u8"}]};</script>"#
@@ -513,6 +527,21 @@ final class NativeProviderAPITests: XCTestCase {
         }.count, 1, "Switching back to Hanime should reuse the existing catalog")
     }
 
+    func testHanimeArtworkPrefersVerifiedFirstPartyNestedPosterFields() {
+        let row: [String: Any] = [
+            "poster_url": "",
+            "cover": ["large": "https://cdn.hanime.tv/cover-original.webp"],
+            "thumbnail": "https://unrelated.example.com/unverified.jpg"
+        ]
+        XCTAssertEqual(NativeProviderAPI.hanimePosterURL(row),
+                       "https://cdn.hanime.tv/cover-original.webp")
+        XCTAssertEqual(NativeProviderAPI.hanimePosterURL([
+            "thumbnail": "https://unrelated.example.com/unverified.jpg"
+        ]), "", "Topic artwork must never come from an unrelated image host")
+        XCTAssertEqual(HanimeGeneratedAPI.mediaHeaders(for:
+            URL(string: "https://img.hanime.tv/poster.webp")!)["Referer"], "https://hanime.tv/")
+    }
+
     func testHanimeMissingPublicStreamSuggestsSupportedPlaybackOptions() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let post = Post(key: "hanime:no-stream", id: "no-stream", provider: "Hanime", type: "video")
@@ -548,11 +577,19 @@ final class NativeProviderAPITests: XCTestCase {
         let post = Post(key: "hanime:alternate-stream", id: "alternate-stream", provider: "Hanime", type: "video")
         let initial = try await api.resolveMedia(post)
         XCTAssertEqual(initial.mediaUrl, "https://hanime.tv/hls/broken")
-        let resolved = try await api.resolveMedia(post, hanimeVariant: 1)
+        let resolved = try await api.resolveMedia(post, streamVariant: 1)
         XCTAssertEqual(resolved.mediaUrl, "https://hanime.tv/hls/alternate")
         XCTAssertEqual(resolved.type, "hls")
         let requests = NativeProviderProtocol.log.snapshot().filter { $0.url?.host == "hanime.tv" && $0.url?.path.hasPrefix("/hls/") == true }
         XCTAssertTrue(requests.isEmpty, "The native player must receive signed HLS URLs before any extra GET request")
+    }
+    func testHanimeAcceptsAuthorizedPlainJSONStreamOnOfficialSignedCDN() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "hanime:plain-json", id: "plain-json", provider: "Hanime", type: "video")
+        let resolved = try await api.resolveMedia(post)
+        XCTAssertEqual(resolved.mediaUrl, "https://cdn.hanime.tv/hls/signed-opaque?token=abc")
+        XCTAssertEqual(resolved.type, "hls")
+        XCTAssertTrue(HanimeGeneratedAPI.permittedStreamURL(URL(string: resolved.mediaUrl)!))
     }
 
     func testHanimeHandshakeCodecAuthenticatesEnvelope() throws {
@@ -1207,7 +1244,7 @@ final class NativeProviderAPITests: XCTestCase {
         })
     }
 
-    func testPornhubCategoryArtworkUsesActualCategoryPageOnly() async throws {
+    func testPornhubCategoryArtworkUsesFirstPartyPageOrVerifiedCategoryMetadata() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
         let preview = try await api.pornhubCategoryPreview(token: "category:cosplay")
@@ -1215,10 +1252,16 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
             $0.url?.path == "/categories/cosplay"
         })
-        let unavailable = try await api.pornhubCategoryPreview(token: "category:hentai")
+        let verified = try await api.pornhubCategoryPreview(token: "category:hentai")
+        XCTAssertEqual(verified, "https://cdn.pornhub.com/verified-hentai.jpg",
+                       "A category API result may supply a cover when its metadata confirms membership")
+        let unavailable = try await api.pornhubCategoryPreview(token: "category:vintage")
         XCTAssertNil(unavailable, "An unavailable category must never borrow a generic video's poster")
         let invalid = try await api.pornhubCategoryPreview(token: "category:../wrong")
         XCTAssertNil(invalid)
+        XCTAssertEqual(NativeProviderAPI.pornhubImageHeaders(for:
+            URL(string: "https://thumbs.phncdn.com/cosplay.webp")!)["Referer"],
+            "https://www.pornhub.com/")
     }
 
     @MainActor func testHanimeImmersiveKeepsVideosWithUnmatchedWDInterests() async throws {
@@ -1471,6 +1514,24 @@ final class NativeProviderAPITests: XCTestCase {
         let media = try await api.resolveMedia(post)
         XCTAssertEqual(media.mediaUrl, "https://vid-cdn.phncdn.com/signed/abc123?expires=123&token=xyz")
         XCTAssertEqual(media.type, "hls")
+    }
+    func testPornhubPlaybackRetryStepsDownQualityAndAvoidsDuplicateEmbedSources() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "pornhub:multi", id: "multi", provider: "Pornhub",
+                        pageUrl: "https://www.pornhub.com/view_video.php?viewkey=multi", type: "video")
+        let highest = try await api.resolveMedia(post)
+        let lower = try await api.resolveMedia(post, streamVariant: 1)
+        let embed = try await api.resolveMedia(post, streamVariant: 2)
+        XCTAssertEqual(highest.mediaUrl, "https://cdn.pornhub.com/first-1080.mp4")
+        XCTAssertEqual(lower.mediaUrl, "https://cdn.pornhub.com/second-720.m3u8")
+        XCTAssertEqual(embed.mediaUrl, "https://cdn.pornhub.com/third-480.mp4")
+    }
+    func testPornhubParsesFlashvarsEscapedMediaDefinitions() throws {
+        let html = #"<script>window.flashvars={"mediaDefinitions":"[{\"format\":\"hls\",\"quality\":\"720\",\"videoUrl\":\"https:\/\/cdn.pornhub.com\/escaped.m3u8\"}]"};</script>"#
+        let definitions = NativeProviderAPI.pornhubPlayerDefinitions(html)
+        let stream = try XCTUnwrap(definitions.first)
+        XCTAssertEqual(NativeProviderAPI.pornhubDeclaredMedia(stream)?.mediaUrl,
+                       "https://cdn.pornhub.com/escaped.m3u8")
     }
     func testRule34BatchIsSmallAndStillIncludesNextPageMetadata() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }

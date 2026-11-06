@@ -114,7 +114,7 @@ struct SettingsView: View {
                     }
                     .padding(13).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                    .overlay(RoundedRectangle(cornerRadius: 17).stroke(AppTheme.border))
+                    .modifier(SettingsCardOutline(radius: 17))
                     .tag(provider)
                 }
             }
@@ -173,8 +173,7 @@ struct SettingsView: View {
                     .padding(13)
                     .background(AppTheme.elevatedSurface,
                                 in: RoundedRectangle(cornerRadius: 17))
-                    .overlay(RoundedRectangle(cornerRadius: 17)
-                        .stroke(AppTheme.border))
+                    .modifier(SettingsCardOutline(radius: 17))
                 }
                 .buttonStyle(QuicktickPressStyle())
                 .disabled(store.isUnifiedRecommendationRefreshRunning || store.isManualVisualScanRunning)
@@ -192,8 +191,7 @@ struct SettingsView: View {
                     .padding(13)
                     .background(AppTheme.elevatedSurface,
                                 in: RoundedRectangle(cornerRadius: 17))
-                    .overlay(RoundedRectangle(cornerRadius: 17)
-                        .stroke(AppTheme.border))
+                    .modifier(SettingsCardOutline(radius: 17))
                 }
                 .buttonStyle(QuicktickPressStyle())
                 .accessibilityIdentifier("settings-change-theme")
@@ -242,8 +240,8 @@ struct SettingsView: View {
                                     ? AnyShapeStyle(AppTheme.gradient)
                                     : AnyShapeStyle(AppTheme.surface),
                                     in: RoundedRectangle(cornerRadius: 15))
-                        .overlay(RoundedRectangle(cornerRadius: 15)
-                            .stroke(AppTheme.border))
+                        .modifier(SettingsCardOutline(radius: 15,
+                            highlighted: activeSection == destination))
                     }
                     .buttonStyle(QuicktickPressStyle())
                     .accessibilityIdentifier("settings-jump-\(destination.rawValue)")
@@ -1040,6 +1038,8 @@ private struct SettingsGroup<Content: View>: View {
                     .frame(width: 36, height: 36)
                     .background(AppTheme.isDeSlopified ? Color.clear : AppTheme.accent.opacity(0.13),
                                 in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(AppTheme.accent.opacity(0.22), lineWidth: 0.8))
                 Text(title)
                     .font(.system(size: 16, weight: .semibold,
                                   design: AppTheme.isDeSlopified ? .default : .rounded))
@@ -1058,7 +1058,28 @@ private struct SettingsGroup<Content: View>: View {
         .padding(AppTheme.isDeSlopified ? AppTheme.contentMargin : 18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+        .modifier(SettingsCardOutline(radius: AppTheme.panelRadius))
+    }
+}
+
+/// A subtle illuminated edge replaces the old heavy, uniform card outlines.
+/// The same treatment works on iPhone and iPad without extra translucent
+/// layers behind each control row.
+private struct SettingsCardOutline: ViewModifier {
+    let radius: CGFloat
+    var highlighted = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(LinearGradient(colors: highlighted
+                        ? [AppTheme.accent.opacity(0.83), .white.opacity(0.43), AppTheme.accent.opacity(0.32)]
+                        : [.white.opacity(0.17), AppTheme.accent.opacity(0.12), .white.opacity(0.055)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing),
+                        lineWidth: highlighted ? 1.35 : 0.9)
+            }
+            .shadow(color: .black.opacity(0.15), radius: 11, y: 5)
     }
 }
 

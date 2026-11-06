@@ -9,7 +9,7 @@ enum HanimeGeneratedAPI {
     static func mediaHeaders(for url: URL) -> [String: String] {
         guard url.scheme == "https" else { return [:] }
         let isStream = permittedStreamURL(url)
-        let isPoster = url.host == "cdn.hanime.tv" &&
+        let isPoster = (url.host == "hanime.tv" || url.host?.hasSuffix(".hanime.tv") == true) &&
             ["jpg", "jpeg", "png", "webp", "avif"].contains(url.pathExtension.lowercased())
         if isStream {
             return ["Referer": "https://player.hanime.tv/", "Origin": "https://player.hanime.tv"]
@@ -24,7 +24,8 @@ enum HanimeGeneratedAPI {
         guard url.scheme == "https", url.user == nil, url.password == nil else { return false }
         if url.host == "hanime.tv", url.path.hasPrefix("/hls/") { return true }
         return url.host == "cdn.hanime.tv" &&
-            ["m3u8", "mp4", "m4v"].contains(url.pathExtension.lowercased())
+            (url.path.hasPrefix("/hls/") ||
+                ["m3u8", "mp4", "m4v"].contains(url.pathExtension.lowercased()))
     }
 
     static var configuredURL: URL? {

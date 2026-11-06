@@ -683,13 +683,14 @@ enum NativeProviderAPI {
     /// Resolve a current Hanime v11 player handshake into a first-party HLS
     /// stream. This uses the same guest transport as the official web player,
     /// and never treats 403/verification HTML as an authorized stream.
-    static func hanimeHLSResolve(session: URLSession, post: Post) async throws -> ResolvedMedia {
+    static func hanimeHLSResolve(session: URLSession, post: Post,
+                                 variant: Int = 0) async throws -> ResolvedMedia {
         guard post.id.count <= 160,
               post.id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else {
             throw APIError.invalidResponse
         }
         do {
-            return try await hanimeHLSHandshake(session: session, slug: post.id)
+            return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
         } catch APIError.providerStatus(.hanime, 403) {
             // A normal first-party page visit can establish an ordinary guest
             // session cookie. No challenge solving or access bypass is used.
@@ -698,7 +699,7 @@ enum NativeProviderAPI {
                                     maxBytes: 1024 * 1024, timeout: 8)
             }
             do {
-                return try await hanimeHLSHandshake(session: session, slug: post.id)
+                return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
             } catch APIError.providerStatus(.hanime, 403) {
                 throw APIError.server("Hanime requires browser verification before native HLS playback. Use Browse inside QuickTick or configure your authorized Hanime API in Settings.")
             }
@@ -706,11 +707,12 @@ enum NativeProviderAPI {
             // Signed HLS paths can expire between the handshake and the first
             // request. Retry the legitimate first-party handshake once before
             // surfacing an unavailable stream to native playback.
-            return try await hanimeHLSHandshake(session: session, slug: post.id)
+            return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
         }
     }
 
-    private static func hanimeHLSHandshake(session: URLSession, slug: String) async throws -> ResolvedMedia {
+    private static func hanimeHLSHandshake(session: URLSession, slug: String,
+                                           variant: Int = 0) async throws -> ResolvedMedia {
         let time = Int(Date().timeIntervalSince1970)
         let timestamp = String(time)
         let signature = SHA256.hash(data: Data(
@@ -762,42 +764,17 @@ enum NativeProviderAPI {
         guard !playable.isEmpty else {
             throw APIError.server("Hanime returned no playable HLS stream for this video. Use Browse inside QuickTick or configure an authorized Hanime API in Settings.")
         }
-        // The highest advertised resolution is not always accessible. Test
-        // alternatives using normal first-party media headers before handing a
-        // signed URL to AVPlayer; a 403, 404 or HTML page is not a stream.
-        for alternate in playable.prefix(5) {
-            try Task.checkCancellation()
-            let fileType = alternate.pathExtension.lowercased()
-            let available = ["mp4", "m4v"].contains(fileType)
-                ? true : await hanimeHLSPlaylistAvailable(session: session, url: alternate)
-            if available {
-                return ResolvedMedia(mediaUrl: alternate.absoluteString,
-                                     type: ["mp4", "m4v"].contains(fileType) ? "video" : "hls")
-            }
-        }
-        throw APIError.server("Hanime returned an HLS playlist that could not be loaded. Try again for a fresh stream or use Browse inside QuickTick.")
-    }
-
-    private static func hanimeHLSPlaylistAvailable(session: URLSession, url: URL) async -> Bool {
-        guard HanimeGeneratedAPI.permittedStreamURL(url) else { return false }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 6
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("application/vnd.apple.mpegurl, application/x-mpegURL, video/mp4", forHTTPHeaderField: "Accept")
-        for (header, value) in HanimeGeneratedAPI.mediaHeaders(for: url) {
-            request.setValue(value, forHTTPHeaderField: header)
-        }
-        do {
-            let (data, response) = try await session.data(for: request)
-            try Task.checkCancellation()
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode),
-                  !data.isEmpty, data.count <= 512 * 1024 else { return false }
-            if ["mp4", "m4v"].contains(url.pathExtension.lowercased()) { return true }
-            return String(decoding: data.prefix(256), as: UTF8.self).contains("#EXTM3U")
-        } catch {
-            return false
-        }
+        // HLS URLs from the signed handshake must be handed straight to
+        // AVPlayer. A separate GET preflight can consume a short-lived token
+        // or use different headers from the native media loader, making a
+        // previously playable video fail as "HLS stream error".
+        // After a genuine AVPlayer failure, request a fresh handshake and
+        // step down through the advertised variants without probing/using up
+        // the playlist URL. Normal first playback still picks best quality.
+        let selected = playable[min(max(0, variant), playable.count - 1)]
+        let extensionName = selected.pathExtension.lowercased()
+        return ResolvedMedia(mediaUrl: selected.absoluteString,
+                             type: ["mp4", "m4v"].contains(extensionName) ? "video" : "hls")
     }
 
     /// Prefer native AVPlayer for catalog entries that legitimately include a
@@ -1544,6 +1521,30 @@ enum NativeProviderAPI {
             }
         }
     }
+
+    /// Signed CDN media URLs frequently have no .mp4 or .m3u8 suffix.
+    /// Only a provider-declared stream on its recognized CDN is accepted;
+    /// opaque main-site URLs remain metadata endpoints to resolve separately.
+    static func pornhubDeclaredMedia(_ definition: [String: Any]) -> ResolvedMedia? {
+        guard let address = mediaURL(text(definition["videoUrl"]), provider: .pornhub),
+              let host = address.host?.lowercased() else { return nil }
+        let ext = address.pathExtension.lowercased()
+        if ["mp4", "m4v", "mov", "m3u8"].contains(ext) {
+            return ResolvedMedia(mediaUrl: address.absoluteString,
+                                 type: ext == "m3u8" ? "hls" : "video")
+        }
+        let allowedCDN = host.hasSuffix(".phncdn.com") || host == "phncdn.com" ||
+            (host.hasSuffix(".pornhub.com") && host != "www.pornhub.com")
+        guard allowedCDN else { return nil }
+        let format = text(definition["format"] ?? definition["type"]).lowercased()
+        if ["hls", "application/x-mpegurl", "application/vnd.apple.mpegurl"].contains(format) {
+            return ResolvedMedia(mediaUrl: address.absoluteString, type: "hls")
+        }
+        if ["mp4", "video", "video/mp4", "m4v"].contains(format) {
+            return ResolvedMedia(mediaUrl: address.absoluteString, type: "video")
+        }
+        return nil
+    }
 }
 
 // XMLParser handles entity escaping and malformed upstream XML safely, rather
@@ -1576,7 +1577,8 @@ extension NativeProviderAPI {
     static let archiveAcceptHeaders = ["Accept": "application/json, text/css;q=0.9, */*;q=0.5"]
 
     static func resolve(session: URLSession, credentials: ProviderCredentials, post: Post,
-                        redgifsToken: String?, havenToken: String? = nil) async throws -> ResolvedMedia {
+                        redgifsToken: String?, havenToken: String? = nil,
+                        hanimeVariant: Int = 0) async throws -> ResolvedMedia {
         // A valid direct media URL can outlive its provider metadata (for
         // example an imported/restored post with a legacy or unknown site).
         // Only use this fallback for actual file/playlist paths, never an
@@ -1649,7 +1651,8 @@ extension NativeProviderAPI {
             throw APIError.server("Eporner returned no playable public stream.")
         case .hanime:
             do {
-                return try await hanimeHLSResolve(session: session, post: post)
+                return try await hanimeHLSResolve(session: session, post: post,
+                                                  variant: hanimeVariant)
             } catch APIError.providerStatus(.hanime, 404) {
                 throw APIError.server("Hanime's HLS handshake was unavailable. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
             } catch APIError.providerStatus(.hanime, 410) {
@@ -1687,22 +1690,18 @@ extension NativeProviderAPI {
                 // omit format entirely. Trust the validated URL extension
                 // first, retaining nested first-party definitions as a fallback.
                 for definition in sorted {
-                        guard let candidate = mediaURL(text(definition["videoUrl"]), provider: provider) else { continue }
-                        let ext = candidate.pathExtension.lowercased()
-                        if ["mp4", "m4v", "mov", "m3u8"].contains(ext) {
-                            return ResolvedMedia(mediaUrl: candidate.absoluteString,
-                                                 type: ext == "m3u8" ? "hls" : "video")
-                        }
-                        guard candidate.host == "pornhub.com" || candidate.host?.hasSuffix(".pornhub.com") == true else { continue }
-                        let details: Data
-                        do { details = try await data(session: session, url: candidate,
+                    if let media = pornhubDeclaredMedia(definition) { return media }
+                    guard let candidate = mediaURL(text(definition["videoUrl"]), provider: provider) else { continue }
+                    guard candidate.host == "pornhub.com" || candidate.host?.hasSuffix(".pornhub.com") == true else { continue }
+                    let details: Data
+                    do { details = try await data(session: session, url: candidate,
                                                       provider: provider, headers: cookieHeaders(credentials)) }
-                        catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 { continue }
-                        let list = rows(try JSONSerialization.jsonObject(with: details))
-                            .sorted { number($0["quality"]) > number($1["quality"]) }
-                        if let media = list.compactMap({ mediaURL(text($0["videoUrl"]), provider: provider) }).first {
-                            return ResolvedMedia(mediaUrl: media.absoluteString, type: "video")
-                        }
+                    catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 { continue }
+                    let list = rows(try JSONSerialization.jsonObject(with: details))
+                        .sorted { number($0["quality"]) > number($1["quality"]) }
+                    if let media = list.compactMap(pornhubDeclaredMedia).first {
+                        return media
+                    }
                 }
             }
             throw APIError.server("Pornhub has no available public stream. The post may have been removed or be unavailable in your region.")

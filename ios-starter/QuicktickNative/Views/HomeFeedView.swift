@@ -57,6 +57,49 @@ private struct HomeFullImagePresentation: Identifiable {
     let previewURL: String
 }
 
+/// A single full-bleed artwork treatment for every provider's topic tiles.
+/// The label stays legible *inside* the chip instead of displacing the cover.
+private struct HomeArtworkChip: View {
+    let title: String
+    let imageURL: String
+    var selected = false
+    var width: CGFloat = 182
+    var height: CGFloat = 210
+    var placeholder = "tag.fill"
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            if !imageURL.isEmpty {
+                CachedMediaImage(url: imageURL, pixels: 480, fill: true)
+                    .frame(width: width, height: height)
+                    .clipped()
+            } else {
+                Rectangle().fill(AppTheme.gradient)
+                    .overlay {
+                        Image(systemName: placeholder)
+                            .font(.system(size: 43, weight: .light))
+                            .foregroundStyle(.white.opacity(0.55))
+                    }
+            }
+            LinearGradient(colors: [.clear, .black.opacity(0.18), .black.opacity(0.87)],
+                           startPoint: .center, endPoint: .bottom)
+                .allowsHitTesting(false)
+            Text(title)
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(13)
+                .shadow(color: .black.opacity(0.75), radius: 4)
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous)
+            .strokeBorder(selected ? AppTheme.accent : .white.opacity(0.17), lineWidth: selected ? 2.5 : 1))
+        .contentShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+    }
+}
+
 struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
@@ -684,28 +727,8 @@ struct HomeFeedView: View {
                                                            excluded: current.excluded)
                                 Task { await store.refresh() }
                             } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(theme.label).font(.subheadline.weight(.semibold))
-                                        .lineLimit(2).foregroundStyle(.white)
-                                        .frame(height: 36, alignment: .topLeading)
-                                    if !theme.imageURL.isEmpty {
-                                        CachedMediaImage(url: theme.imageURL, pixels: 320, fill: true)
-                                            .frame(width: 154, height: 184)
-                                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-                                    } else {
-                                        RoundedRectangle(cornerRadius: 15, style: .continuous)
-                                            .fill(AppTheme.gradient)
-                                            .overlay(Image(systemName: "tag.fill")
-                                                .font(.system(size: 40, weight: .light)).foregroundStyle(.white))
-                                            .frame(width: 154, height: 184)
-                                    }
-                                }
-                                .frame(width: 154, alignment: .leading)
-                                .padding(10)
-                                .background(selected ? AnyShapeStyle(AppTheme.accent.opacity(0.25)) : AnyShapeStyle(AppTheme.elevatedSurface),
-                                            in: RoundedRectangle(cornerRadius: 21, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 21, style: .continuous)
-                                    .stroke(selected ? AppTheme.accent : AppTheme.border, lineWidth: 1.5))
+                                HomeArtworkChip(title: theme.label, imageURL: theme.imageURL,
+                                                selected: selected)
                             }
                             .buttonStyle(QuicktickPressStyle())
                             .accessibilityLabel("Suggested theme: \(theme.label)")
@@ -754,25 +777,12 @@ struct HomeFeedView: View {
                             Button {
                                 openRedgifsNiche(niche)
                             } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    CachedMediaImage(url: niche.imageURL, pixels: 320, fill: true)
-                                        .frame(width: 154, height: 184)
-                                        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-                                    HStack(spacing: 5) {
-                                        Text(niche.name).font(.subheadline.weight(.semibold))
-                                            .lineLimit(1)
+                                HomeArtworkChip(title: niche.name, imageURL: niche.imageURL)
+                                    .overlay(alignment: .topTrailing) {
                                         if openingNicheID == niche.id {
-                                            ProgressView().controlSize(.mini)
+                                            ProgressView().tint(.white).padding(12)
                                         }
                                     }
-                                    .foregroundStyle(.white)
-                                }
-                                .frame(width: 154, alignment: .leading)
-                                .padding(10)
-                                .background(AppTheme.elevatedSurface,
-                                            in: RoundedRectangle(cornerRadius: 21, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 21, style: .continuous)
-                                    .stroke(AppTheme.border, lineWidth: 1.5))
                             }
                             .buttonStyle(QuicktickPressStyle())
                             .disabled(openingNicheID != nil)
@@ -807,11 +817,12 @@ struct HomeFeedView: View {
     private var homeCategoryRow: some View {
         let provider = store.selectedProvider
         let selected = ProviderSearchCategories.split(QueryParser.parse(store.queryText), provider: provider).category
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Text("Categories")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.secondaryLabel)
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Categories")
+                .font(.subheadline.weight(.bold))
+                .padding(.horizontal, 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
                 ForEach(ProviderSearchCategories.suggestions(provider: provider)) { item in
                     let active = selected == item.value
                     let preview = pornhubCategoryPreview(item.value)
@@ -823,34 +834,16 @@ struct HomeFeedView: View {
                         store.commitSearch(query: QueryParser.formatted(next), sort: store.feedSort)
                         Task { await store.refresh() }
                     } label: {
-                        HStack(spacing: 7) {
-                            if let preview {
-                                CachedMediaImage(url: preview, pixels: 160, fill: true)
-                                    .frame(width: 42, height: 46)
-                                    .clipped()
-                                    .clipShape(RoundedRectangle(cornerRadius: 9))
-                            } else {
-                                RoundedRectangle(cornerRadius: 9)
-                                    .fill(AppTheme.accent.opacity(0.18))
-                                    .overlay(Image(systemName: "square.grid.2x2.fill")
-                                        .font(.caption).foregroundStyle(AppTheme.accent))
-                                    .frame(width: 42, height: 46)
-                            }
-                            Text(item.label)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(active ? .white : AppTheme.secondaryLabel)
-                        }
-                            .padding(.horizontal, 7)
-                            .frame(minHeight: 48)
-                            .background(active ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface),
-                                        in: RoundedRectangle(cornerRadius: 15))
-                            .overlay(RoundedRectangle(cornerRadius: 15).stroke(active ? AppTheme.accent : AppTheme.border, lineWidth: 1))
+                        HomeArtworkChip(title: item.label, imageURL: preview ?? "",
+                                        selected: active, width: 174, height: 198,
+                                        placeholder: "square.grid.2x2.fill")
                     }
                     .buttonStyle(QuicktickPressStyle())
                     .accessibilityIdentifier("home-category-\(item.value)")
                     .accessibilityAddTraits(active ? .isSelected : [])
                 }
-            }.padding(.horizontal, 16)
+                }.padding(.horizontal, 16)
+            }
         }
         .accessibilityIdentifier("home-categories")
         .task(id: store.selectedProvider) { await discoverPornhubCategoryPreviews() }

@@ -194,8 +194,15 @@ struct ImmersiveFeedView: View {
 
     private var immersiveHeader: some View {
         VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    if let onClose { Button(action: onClose) { Image(systemName: "chevron.left").frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("Back") }
+                HStack(spacing: 10) {
+                    if let onClose {
+                        Button(action: onClose) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 21, weight: .semibold))
+                                .frame(width: 52, height: 52)
+                                .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 17))
+                        }.buttonStyle(.plain).accessibilityLabel("Back")
+                    }
                     Text(offline ? "Offline" : "Immersive").font(.subheadline.weight(.semibold)).shadow(color: .black, radius: 4)
                     Spacer(minLength: 0)
                     if !offline && onClose == nil {
@@ -203,9 +210,9 @@ struct ImmersiveFeedView: View {
                             Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
                         }; Divider(); Button("Personalize recommendations") { preferencesVisible = true } } label: {
                             ProviderLogoView(provider: store.selectedProvider)
-                                .frame(width: 52, height: 44)
-                                .background(.black.opacity(0.55), in: Capsule())
-                                .overlay(Capsule().stroke(.white.opacity(0.15)))
+                                .frame(width: 58, height: 52)
+                                .background(.black.opacity(0.18), in: Capsule())
+                                .overlay(Capsule().stroke(.white.opacity(0.23)))
                                 .accessibilityLabel("Provider: \(store.selectedProvider.displayName)")
                         }
                     }
@@ -219,18 +226,20 @@ struct ImmersiveFeedView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(AppTheme.accent)
                         .padding(.horizontal, 10)
-                        .frame(height: 40)
-                        .background(.black.opacity(0.6), in: Capsule())
+                        .frame(minHeight: 52)
+                        .background(.black.opacity(0.18), in: Capsule())
                         .accessibilityIdentifier("redgifs-immersive-return-fyp")
                     }
                     if !offline && collectionTab == nil {
                         Button { searchVisible.toggle() } label: {
-                            Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)
-                                .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 21, weight: .semibold))
+                                .frame(width: 52, height: 52)
+                                .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 17))
                         }.buttonStyle(.plain).accessibilityLabel("Search")
-                        SettingsLauncher(isPresented: $showSettings)
+                        SettingsLauncher(isPresented: $showSettings, immersive: true)
                     }
-                }.padding(.horizontal, 16).frame(height: 52)
+                }.padding(.horizontal, 14).frame(minHeight: 58)
 
         }
     }
@@ -592,8 +601,9 @@ private struct ImmersiveItemView: View {
     @State private var scrubbing = false
     @State private var error: String?
     @State private var mediaRetry = 0
-    @State private var automaticHanimeRetry = 0
+    @State private var automaticProviderRetry = 0
     @State private var browseHanime = false
+    @State private var browsePornhub = false
     @State private var showComments = false
     @State private var showTags = false
     @State private var gifURL: URL?
@@ -616,6 +626,12 @@ private struct ImmersiveItemView: View {
         guard post.providerKey == .hanime,
               let url = URL(string: post.pageUrl), url.scheme == "https",
               ["hanime.tv", "www.hanime.tv"].contains(url.host ?? "") else { return nil }
+        return url
+    }
+    private var pornhubPage: URL? {
+        guard post.providerKey == .pornhub,
+              let url = URL(string: post.pageUrl), url.scheme == "https",
+              ["pornhub.com", "www.pornhub.com"].contains(url.host?.lowercased() ?? "") else { return nil }
         return url
     }
     private var fillsNicheCanvas: Bool {
@@ -780,10 +796,10 @@ private struct ImmersiveItemView: View {
                 if active && presentationActive {
                     // Keep the action rail reachable on small iPhones, while
                     // giving the iPad canvas appropriately sized controls.
-                    let scale = min(1.16, max(0.82, geo.size.width / 430))
+                    let scale = min(1.12, max(1.0, geo.size.width / 430))
                     actionRail
                         .scaleEffect(scale, anchor: .bottomTrailing)
-                        .padding(.trailing, geo.size.width > 600 ? 30 : 12)
+                        .padding(.trailing, geo.size.width > 600 ? 30 : 14)
                         .padding(.bottom, max(min(110, max(76, geo.size.height * 0.12)),
                                               post.type.lowercased() == "video" ? controlsBottomClearance + 44 : 0))
                 }
@@ -824,6 +840,10 @@ private struct ImmersiveItemView: View {
                             Button("Open on Hanime inside QuickTick") { browseHanime = true }
                                 .frame(minHeight: 44)
                         }
+                        if pornhubPage != nil {
+                            Button("Open original in QuickTick browser") { browsePornhub = true }
+                                .frame(minHeight: 44)
+                        }
                     }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
                 }
                 if active, !offline, !collection, let message = store.lastError {
@@ -849,6 +869,9 @@ private struct ImmersiveItemView: View {
         .sheet(isPresented: $browseHanime) {
             if let url = hanimePage { SourceWebsiteView(url: url).ignoresSafeArea() }
         }
+        .sheet(isPresented: $browsePornhub) {
+            if let url = pornhubPage { SourceWebsiteView(url: url).ignoresSafeArea() }
+        }
         .task(id: likePulse) {
             guard likePulse else { return }
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
@@ -873,8 +896,9 @@ private struct ImmersiveItemView: View {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if let player {
                     if player.currentItem?.status == .failed {
-                        if !offline, post.providerKey == .hanime, automaticHanimeRetry < 2 {
-                            automaticHanimeRetry += 1
+                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
+                           automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
+                            automaticProviderRetry += 1
                             store.players.release(post.stableID)
                             self.player = nil; ready = false; mediaRetry += 1
                             break
@@ -902,9 +926,10 @@ private struct ImmersiveItemView: View {
                     if playing && !scrubbing && (!seconds.isFinite || abs(seconds - lastTime) < 0.05) { stalledSeconds += 1 }
                     else { stalledSeconds = 0; if player.timeControlStatus == .playing { error = nil } }
                     lastTime = seconds
-                    if stalledSeconds >= 12, !offline, post.providerKey == .hanime,
-                       automaticHanimeRetry < 2 {
-                        automaticHanimeRetry += 1
+                    if stalledSeconds >= 12, !offline,
+                       (post.providerKey == .hanime || post.providerKey == .pornhub),
+                       automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
+                        automaticProviderRetry += 1
                         store.players.release(post.stableID)
                         self.player = nil; ready = false; mediaRetry += 1
                         break
@@ -948,7 +973,7 @@ private struct ImmersiveItemView: View {
     }
 
     private var actionRail: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             railButton("Like", symbol: "heart.fill", selected: store.favorites[post.stableID] != nil) {
                 interacted = true; store.toggleFavorite(post)
             }.accessibilityValue(store.favorites[post.stableID] == nil ? "Not liked" : "Liked")
@@ -970,8 +995,9 @@ private struct ImmersiveItemView: View {
                     } label: {
                         Image(systemName: "paintbrush.pointed.fill")
                             .font(.system(size: 22, weight: .semibold))
-                            .frame(width: 48, height: 48)
-                            .background(.black.opacity(0.25), in: Circle())
+                            .frame(width: 56, height: 56)
+                            .background(.black.opacity(0.16), in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(0.24)))
                     }
                     .accessibilityLabel("More from this artist")
                 }
@@ -990,14 +1016,13 @@ private struct ImmersiveItemView: View {
     private func railButton(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 23, weight: .semibold))
+                .font(.system(size: 25, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(selected ? AppTheme.accent : .white)
-                .frame(width: 48, height: 48).contentShape(Circle())
-                .background(.black.opacity(0.25), in: Circle())
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.75) : .white.opacity(0.27), lineWidth: 1))
-                .shadow(color: .black.opacity(0.32), radius: 8, y: 3)
+                .frame(width: 56, height: 56).contentShape(Circle())
+                .background(.black.opacity(0.16), in: Circle())
+                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.8) : .white.opacity(0.25), lineWidth: 1))
+                .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
         }.buttonStyle(.plain).accessibilityLabel(title)
             .accessibilityIdentifier(active ? "immersive-\(title)" : "inactive-\(title)-\(post.stableID)")
     }
@@ -1012,7 +1037,8 @@ private struct ImmersiveItemView: View {
                 // Reuse the already-resolved, already-warmed AVPlayer URL.
                 url = prepared
             } else {
-                let resolved = try await store.resolver.resolve(post, refresh: mediaRetry > 0)
+                let resolved = try await store.resolver.resolve(post,
+                    refresh: mediaRetry > 0, hanimeVariant: mediaRetry)
                 guard let remote = URL(string: resolved.mediaUrl) else { throw URLError(.badURL) }
                 url = remote
             }
@@ -1145,11 +1171,10 @@ private struct ImmersiveDownloadControl: View {
             Group {
                 if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 28) }
                 else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 23, weight: .semibold)) }
-            }.foregroundStyle(.white).frame(width: 48, height: 48).contentShape(Circle())
-                .background(.black.opacity(0.25), in: Circle())
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(.white.opacity(0.27), lineWidth: 1))
-                .shadow(color: .black.opacity(0.32), radius: 8, y: 3)
+            }.foregroundStyle(.white).frame(width: 56, height: 56).contentShape(Circle())
+                .background(.black.opacity(0.16), in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
+                .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
         }.buttonStyle(.plain).accessibilityLabel("Download").accessibilityValue(status)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: status)
             .sensoryFeedback(.selection, trigger: taps)

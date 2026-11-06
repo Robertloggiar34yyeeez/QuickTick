@@ -1220,6 +1220,40 @@ actor RecommendationEngine {
         let candidateFacets = ActionSemantics.facets(post)
         let reinforcedMatch = !reinforced.isDisjoint(with: observed)
             || !candidateFacets.isDisjoint(with: reinforcedFavoriteFacets[source] ?? [])
+        if source == Provider.rule34.rawValue {
+            // Rule34 supplies exact booru tags. High visual similarity, a
+            // shared broad pose or an adjacent franchise is not sufficient
+            // evidence to admit a new post to a personalized feed. The model
+            // may reorder verified matches, but cannot invent their relevance.
+            let recentAnchors = Set(sessionTaste.strongInterests(provider: source, limit: 12)
+                .filter { $0.1 >= 2.7 }.map { RecommendationTagRules.canonical($0.0) })
+            let learnedAnchors = Set(positiveTermEntries(source: source, taste: TasteChoice(),
+                limit: 16, learned: profile(for: source))
+                .filter { $0.1 >= 3.0 }.map { RecommendationTagRules.canonical($0.0) })
+            let anchors = Set(selected.union(reinforced).union(recentAnchors).union(learnedAnchors)
+                .filter { tag in
+                    !Self.genericTasteTerms.contains(tag) &&
+                    !Self.lowSignalDiscoveryTags.contains(tag) &&
+                    !Self.broadDiversityTags.contains(tag) &&
+                    !(sourcesWithFictionalCharacters.contains(source) && TasteConcepts.franchises.contains(tag))
+                })
+            guard !anchors.isEmpty else { return true } // Honest cold start.
+            if !anchors.isDisjoint(with: observed) ||
+                !ActionSemantics.facets(Array(anchors)).isDisjoint(with: candidateFacets) {
+                return true
+            }
+            // Independently reinforced co-tags can introduce a neighboring
+            // niche, but single incidental metadata overlaps cannot.
+            let profile = profile(for: source)
+            return anchors.contains { anchor in
+                (profile.related[anchor] ?? [:]).contains { entry in
+                    entry.value >= 3 && observed.contains(entry.key) &&
+                    !Self.genericTasteTerms.contains(entry.key) &&
+                    !Self.lowSignalDiscoveryTags.contains(entry.key) &&
+                    !Self.broadDiversityTags.contains(entry.key)
+                }
+            }
+        }
         // Broad format preferences such as "2d" must not open the gate for
         // *every* 2D post when a character, action or artist was selected too.
         // This was the source of many apparently unrelated recommendations.

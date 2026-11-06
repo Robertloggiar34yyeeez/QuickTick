@@ -268,7 +268,10 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 client?.urlProtocolDidFinishLoading(self); return
             }
             let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
-            payload = fallback ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://www.pornhub.com/removed-definition"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/valid.m3u8"}]};</script>"# : #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/full.mp4"}]};</script>"#
+            let opaque = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "opaque" } == true
+            payload = fallback ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://www.pornhub.com/removed-definition"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/valid.m3u8"}]};</script>"#
+                : opaque ? #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"1080","videoUrl":"https://vid-cdn.phncdn.com/signed/abc123?expires=123&token=xyz"}]};</script>"#
+                : #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/full.mp4"}]};</script>"#
         }
         else if path == "/embed/watch-missing" {
             payload = #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/embed-valid.m3u8"}]};</script>"#
@@ -540,15 +543,16 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v8/video" })
     }
 
-    func testHanimeFallsBackToReachableLowerQualityHLSPlaylist() async throws {
+    func testHanimeRetriesLowerQualityWithoutConsumingSignedPlaylist() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let post = Post(key: "hanime:alternate-stream", id: "alternate-stream", provider: "Hanime", type: "video")
-        let resolved = try await api.resolveMedia(post)
+        let initial = try await api.resolveMedia(post)
+        XCTAssertEqual(initial.mediaUrl, "https://hanime.tv/hls/broken")
+        let resolved = try await api.resolveMedia(post, hanimeVariant: 1)
         XCTAssertEqual(resolved.mediaUrl, "https://hanime.tv/hls/alternate")
         XCTAssertEqual(resolved.type, "hls")
         let requests = NativeProviderProtocol.log.snapshot().filter { $0.url?.host == "hanime.tv" && $0.url?.path.hasPrefix("/hls/") == true }
-        XCTAssertEqual(requests.compactMap { $0.url?.path }, ["/hls/broken", "/hls/alternate"])
-        XCTAssertEqual(requests.last?.value(forHTTPHeaderField: "Referer"), "https://player.hanime.tv/")
+        XCTAssertTrue(requests.isEmpty, "The native player must receive signed HLS URLs before any extra GET request")
     }
 
     func testHanimeHandshakeCodecAuthenticatesEnvelope() throws {
@@ -1459,6 +1463,14 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(media.mediaUrl, "https://cdn.pornhub.com/valid.m3u8")
         XCTAssertEqual(media.type, "hls")
         XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/view_video.php" }.count, 1)
+    }
+    func testPornhubAcceptsExplicitSignedCDNStreamWithoutFileExtension() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "pornhub:opaque", id: "opaque", provider: "Pornhub",
+                        pageUrl: "https://www.pornhub.com/view_video.php?viewkey=opaque", type: "video")
+        let media = try await api.resolveMedia(post)
+        XCTAssertEqual(media.mediaUrl, "https://vid-cdn.phncdn.com/signed/abc123?expires=123&token=xyz")
+        XCTAssertEqual(media.type, "hls")
     }
     func testRule34BatchIsSmallAndStillIncludesNextPageMetadata() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }

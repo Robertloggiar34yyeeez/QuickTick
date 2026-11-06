@@ -384,7 +384,7 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(Set(results.map(\.stableID)), Set([relevantOne.stableID, relevantTwo.stableID]))
     }
 
-    func testStrongCachedVisualMatchCanExploreAnotherIdentityWithoutLosingFavorite() async {
+    func testStrongCachedVisualMatchCannotAdmitUnrelatedRule34Posts() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let taste = TasteChoice(done: true, into: ["chun_li"], notInto: [])
         let visuallyMatching = Post(key: "rule34:visual-rescue", id: "visual-rescue", provider: "rule34",
@@ -397,10 +397,8 @@ final class RecommendationTests: XCTestCase {
                       identifiedOther.stableID: 3.9]
         let served = await engine.rankFast([unrelated, identifiedOther, visuallyMatching],
                                            taste: taste, recent: [], visualScores: scores, strict: true)
-        XCTAssertEqual(Set(served.map(\.stableID)),
-            Set([visuallyMatching.stableID, identifiedOther.stableID]))
-        XCTAssertEqual(served.first?.stableID, visuallyMatching.stableID,
-            "A new identity needs strong visual evidence and starts below a matching favorite")
+        XCTAssertTrue(served.isEmpty,
+            "Visual scores reorder matching posts, but cannot create tag evidence that is absent")
     }
 
     func testTransferableInterestNeedsIndependentIdentitiesNotRepeatedOneCharacter() async {
@@ -796,8 +794,8 @@ final class RecommendationTests: XCTestCase {
                                             taste: taste, recent: [], strict: true)
         XCTAssertFalse(result.contains { $0.stableID == irrelevant.stableID })
         XCTAssertTrue(result.contains { $0.stableID == wanted.stableID })
-        XCTAssertTrue(result.contains { $0.stableID == unknownIdentity.stableID },
-                      "Unlabeled subjects can still match a loved action or outfit")
+        XCTAssertFalse(result.contains { $0.stableID == unknownIdentity.stableID },
+                       "Generic pose and gaze alone must never admit an unrelated post")
     }
 
     func testChosenCharacterRejectsConflictingIdentifiedCharacterEvenWithoutFavorites() async {
@@ -813,7 +811,8 @@ final class RecommendationTests: XCTestCase {
                                            recent: [], strict: true)
         XCTAssertFalse(result.contains { $0.stableID == unrelated.stableID })
         XCTAssertTrue(result.contains { $0.stableID == selected.stableID })
-        XCTAssertTrue(result.contains { $0.stableID == unknown.stableID })
+        XCTAssertFalse(result.contains { $0.stableID == unknown.stableID },
+                       "An unknown subject still needs a specific matching interest")
     }
 
     func testIdentityLedRetrievalNeverSearchesGenericPoseAlone() async {

@@ -22,6 +22,7 @@ struct PostCardView: View {
     @State private var resumeAfterComments = false
     @State private var tags = false
     @State private var havenBrowser = false
+    @State private var pornhubBrowser = false
     @State private var creditedArtists: [String] = []
     @State private var fullImage = false
     @State private var readingManga = false
@@ -38,7 +39,7 @@ struct PostCardView: View {
     @State private var playing = false
     @State private var preparing = false
     @State private var playbackError: String?
-    @State private var hanimeStreamRetry = 0
+    @State private var mediaStreamRetry = 0
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
     @State private var showLikeHeart = false
@@ -83,6 +84,16 @@ struct PostCardView: View {
                             Label("Watch in QuickTick browser", systemImage: "play.rectangle.on.rectangle")
                                 .font(.caption.weight(.semibold))
                                 .padding(.horizontal, 14).frame(minHeight: 38)
+                                .background(AppTheme.elevatedSurface, in: Capsule())
+                        }
+                    }
+                    if post.providerKey == .pornhub,
+                       let source = URL(string: post.pageUrl), source.scheme == "https",
+                       ["pornhub.com", "www.pornhub.com"].contains(source.host?.lowercased() ?? "") {
+                        Button { pornhubBrowser = true } label: {
+                            Label("Open original in QuickTick browser", systemImage: "safari")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 14).frame(minHeight: 44)
                                 .background(AppTheme.elevatedSurface, in: Capsule())
                         }
                     }
@@ -160,6 +171,9 @@ struct PostCardView: View {
             .sheet(isPresented: $havenBrowser) {
                 if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
             }
+            .sheet(isPresented: $pornhubBrowser) {
+                if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
+            }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
                 previewURL: post.cardPreviewURL) }
             .fullScreenCover(isPresented: $readingManga) {
@@ -180,7 +194,7 @@ struct PostCardView: View {
                     }
                 }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros):\(hanimeStreamRetry):\(manualPlaybackRequested)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros):\(mediaStreamRetry):\(manualPlaybackRequested)") {
                 // Images, comics and audio cards have no inline
                 // video player to reconcile on each global playback change.
                 guard !Task.isCancelled else { return }
@@ -217,12 +231,13 @@ struct PostCardView: View {
                 if status == .failed {
                     playing = false
                     store.players.release(post.stableID)
-                    if !offline, post.providerKey == .hanime, hanimeStreamRetry < 1,
+                    if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
+                       mediaStreamRetry < (post.providerKey == .hanime ? 2 : 1),
                        store.inlinePlaybackID == post.stableID {
                         // A short-lived signed playlist may expire between
                         // prewarming and the first frame. Retry once with a
                         // fresh handshake rather than keeping a dead player.
-                        hanimeStreamRetry += 1
+                        mediaStreamRetry += 1
                         player = nil; ready = false
                         playbackError = nil
                     } else {
@@ -437,7 +452,9 @@ struct PostCardView: View {
             if offline {
                 guard let local = URL(string: post.mediaUrl), local.isFileURL, FileManager.default.fileExists(atPath: local.path) else { throw APIError.server("Downloaded file is missing.") }
                 resolved = ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type)
-            } else { resolved = try await store.resolver.resolve(post, refresh: hanimeStreamRetry > 0) }
+            } else { resolved = try await store.resolver.resolve(post,
+                refresh: mediaStreamRetry > 0,
+                hanimeVariant: post.providerKey == .hanime ? mediaStreamRetry : 0) }
             guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, let url = URL(string: resolved.mediaUrl) else { return }
             if post.type.lowercased() == "gif" {
                 gifURL = url; playing = store.pausedPlaybackID != post.stableID; preparing = false
@@ -787,7 +804,6 @@ struct FullComicView: View {
                     // cannot reliably resolve the implicit symbol label here.
                     Text("×").font(.system(size: 30, weight: .medium, design: .rounded))
                         .frame(width: 48, height: 48)
-                        .accessibilityHidden(true)
                         .background(.ultraThinMaterial, in: Circle())
                 }.accessibilityLabel("Close full image")
             }.buttonStyle(.plain).padding(12)

@@ -704,12 +704,16 @@ struct PostTagsView: View {
 
 struct SettingsLauncher: View {
     @Binding var isPresented: Bool
+    var immersive = false
     var body: some View {
         Button { isPresented = true } label: {
             Image(systemName: "slider.horizontal.3").font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(.white).frame(width: 44, height: 44)
-                .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppTheme.border, lineWidth: 1))
+                .foregroundStyle(.white)
+                .frame(width: immersive ? 52 : 44, height: immersive ? 52 : 44)
+                .background(immersive ? Color.black.opacity(0.16) : AppTheme.elevatedSurface,
+                            in: RoundedRectangle(cornerRadius: immersive ? 17 : 14))
+                .overlay(RoundedRectangle(cornerRadius: immersive ? 17 : 14)
+                    .stroke(immersive ? .white.opacity(0.25) : AppTheme.border, lineWidth: 1))
         }.buttonStyle(QuicktickPressStyle()).accessibilityLabel("Settings").accessibilityIdentifier("open-settings")
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Optional transport for the user-supplied, self-hosted Hanime API.
 /// The iOS app never assumes the Node service is running on the phone.
@@ -10,7 +11,10 @@ enum HanimeGeneratedAPI {
         let isStream = permittedStreamURL(url)
         let isPoster = url.host == "cdn.hanime.tv" &&
             ["jpg", "jpeg", "png", "webp", "avif"].contains(url.pathExtension.lowercased())
-        return isStream || isPoster ? ["Referer": "https://hanime.tv/"] : [:]
+        if isStream {
+            return ["Referer": "https://player.hanime.tv/", "Origin": "https://player.hanime.tv"]
+        }
+        return isPoster ? ["Referer": "https://hanime.tv/"] : [:]
     }
 
     /// Self-hosted adapters may return either Hanime's HLS path or a signed
@@ -84,5 +88,51 @@ enum HanimeGeneratedAPI {
             throw APIError.server(message ?? "Hanime API HTTP \(http.statusCode)")
         }
         return bytes
+    }
+}
+
+
+/// Matches the current first-party v11 player handshake token format.
+/// Only authenticated AES-GCM payloads are accepted; malformed headers fail
+/// closed rather than being interpreted as stream URLs.
+enum HanimeHandshakeCodec {
+    private static let key = SymmetricKey(data: Data(SHA256.hash(
+        data: Data("htv-insecure-handshake-v1".utf8))))
+    private static let associatedData = Data("htv-insecure-v1".utf8)
+
+    static func seal(_ payload: Data) throws -> String {
+        let nonce = AES.GCM.Nonce()
+        let sealed = try AES.GCM.seal(payload, using: key, nonce: nonce,
+                                      authenticating: associatedData)
+        let envelope: [String: Any] = [
+            "v": 1, "alg": "AES-256-GCM",
+            "iv": nonce.withUnsafeBytes { Data($0) }.base64EncodedString(),
+            "tag": sealed.tag.base64EncodedString(),
+            "data": sealed.ciphertext.base64EncodedString()
+        ]
+        return try JSONSerialization.data(withJSONObject: envelope).base64EncodedString()
+    }
+
+    static func open(_ token: String) throws -> Data {
+        guard let envelopeBytes = decodeBase64(token),
+              let envelope = try JSONSerialization.jsonObject(with: envelopeBytes) as? [String: Any],
+              envelope["v"] as? Int == 1, envelope["alg"] as? String == "AES-256-GCM",
+              let ivText = envelope["iv"] as? String, let tagText = envelope["tag"] as? String,
+              let ciphertextText = envelope["data"] as? String,
+              let iv = decodeBase64(ivText), iv.count == 12,
+              let tag = decodeBase64(tagText), tag.count == 16,
+              let ciphertext = decodeBase64(ciphertextText) else {
+            throw APIError.invalidResponse
+        }
+        let nonce = try AES.GCM.Nonce(data: iv)
+        let box = try AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag)
+        return try AES.GCM.open(box, using: key, authenticating: associatedData)
+    }
+
+    private static func decodeBase64(_ token: String) -> Data? {
+        let normalized = token.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let padding = (4 - normalized.count % 4) % 4
+        return Data(base64Encoded: normalized + String(repeating: "=", count: padding))
     }
 }

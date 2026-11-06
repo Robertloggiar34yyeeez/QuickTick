@@ -29,6 +29,12 @@ final class QueryParserTests: XCTestCase {
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "hhaven"), 10)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true, provider: "hhaven"), 0)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: false, provider: "hhaven"), 0)
+        XCTAssertTrue(VideoIntroPolicy.enabled(provider: "Hanime", pornhub: false,
+                                              haven: false, hanime: true))
+        XCTAssertFalse(VideoIntroPolicy.enabled(provider: "Hanime", pornhub: true,
+                                               haven: true, hanime: false))
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "Hanime"), 10)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true, provider: "Hanime"), 0)
     }
 
     func testPornhubIntroMustHaveBufferedFramesAfterTenSeconds() {

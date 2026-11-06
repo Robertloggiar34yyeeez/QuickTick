@@ -14,7 +14,8 @@ actor MediaResolver {
     init(api: QuicktickAPIClient) { self.api = api }
 
     private func identity(_ post: Post) -> String { "\(post.stableID)|\(post.mediaUrl)|\(post.type)" }
-    func resolve(_ post: Post, refresh: Bool = false) async throws -> ResolvedMedia {
+    func resolve(_ post: Post, refresh: Bool = false,
+                 hanimeVariant: Int = 0) async throws -> ResolvedMedia {
         let key = identity(post)
         if refresh {
             // Do not coalesce a user retry with an old signed URL resolution.
@@ -24,7 +25,7 @@ actor MediaResolver {
             if ProcessInfo.processInfo.arguments.contains("--ui-testing"), URL(string: post.mediaUrl)?.isFileURL == true { fresh = post }
             #endif
             cache.removeValue(forKey: identity(fresh))
-            let value = try await fetch(fresh)
+            let value = try await fetch(fresh, hanimeVariant: hanimeVariant)
             try Task.checkCancellation()
             cache[key] = (value, .now)
             return value
@@ -47,12 +48,12 @@ actor MediaResolver {
         }
     }
 
-    private func fetch(_ post: Post) async throws -> ResolvedMedia {
+    private func fetch(_ post: Post, hanimeVariant: Int = 0) async throws -> ResolvedMedia {
         if let (media, date) = cache[identity(post)], Date().timeIntervalSince(date) < 180 { return media }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing"), URL(string: post.mediaUrl)?.isFileURL == true { return ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type) }
         #endif
-        let media = try await api.resolveMedia(post)
+        let media = try await api.resolveMedia(post, hanimeVariant: hanimeVariant)
         cache[identity(post)] = (media, .now)
         if cache.count > 40 { cache.removeValue(forKey: cache.min { $0.value.1 < $1.value.1 }!.key) }
         return media

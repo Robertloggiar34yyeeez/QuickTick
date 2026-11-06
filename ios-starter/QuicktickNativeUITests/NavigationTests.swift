@@ -107,6 +107,11 @@ final class NavigationTests: XCTestCase {
         shuffle.tap()
         app.buttons["Original order"].tap()
         XCTAssertEqual(shuffle.value as? String, "Original order")
+        shuffle.tap()
+        let largest = app.buttons["downloads-sort-largest"]
+        XCTAssertTrue(largest.waitForExistence(timeout: 5))
+        largest.tap()
+        XCTAssertEqual(shuffle.value as? String, "Largest first")
     }
     override func setUp() async throws {
         continueAfterFailure = false
@@ -173,6 +178,23 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
     }
 
+    @MainActor func testSettingsDirectoryMakesThemesAndRefreshEasyToFind() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        XCTAssertTrue(app.buttons["open-settings"].waitForExistence(timeout: 8))
+        app.buttons["open-settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 15),
+                      "The settings screen should be fully presented before checking its controls")
+        XCTAssertTrue(app.buttons["settings-change-theme"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["settings-refresh-recommended"].exists)
+        XCTAssertTrue(app.buttons["settings-jump-models"].exists)
+        XCTAssertTrue(app.buttons["settings-sections-menu"].exists)
+        app.buttons["settings-change-theme"].tap()
+        XCTAssertTrue(app.switches["automatic-seasonal-theme-toggle"].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
+    }
+
     @MainActor func testFiveTabsSettingsAndScrollToTop() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         XCTAssertTrue(app.staticTexts["home-title"].waitForExistence(timeout: 10))
@@ -181,12 +203,18 @@ final class NavigationTests: XCTestCase {
         XCTAssertFalse(app.buttons["tab-Settings"].exists)
         app.swipeUp()
         let top = app.buttons["home-scroll-top"]
-        XCTAssertTrue(top.waitForExistence(timeout: 5)); top.tap()
+        XCTAssertTrue(top.waitForExistence(timeout: 5))
+        XCTAssertLessThan(top.frame.maxY, app.buttons["tab-Home"].frame.minY,
+                          "Scroll to top must be entirely above the floating iPhone dock")
+        XCTAssertTrue(top.isHittable)
+        top.tap()
         XCTAssertTrue(app.staticTexts["home-title"].isHittable)
         app.buttons["open-settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()
-        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+        let title = app.staticTexts["home-title"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hittable == true"), object: title)], timeout: 5), .completed)
     }
 
     @MainActor func testIconOnlyFeedActionsAndIdleScrollShortcutOnLeft() {

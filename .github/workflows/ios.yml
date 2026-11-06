@@ -1,7 +1,10 @@
 name: Native iOS build and IPA
 on:
   push:
-    branches-ignore: ['ipa-uploaded/**']
+    # Feature branches are built by pull_request below. Triggering both
+    # events for the same commit caused the concurrent IPA builds to cancel
+    # one another before reaching the Xcode archive.
+    branches: [main]
     paths-ignore: ['.github/workflows/keep-three-builds.yml']
   pull_request:
   workflow_dispatch:
@@ -92,12 +95,40 @@ jobs:
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-labels.json
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-model-card.md
           key: wd-vit-v3-7f6b584-fp16-coreml8.3-arm64-v5
+      - name: Resolve Swift packages with clean-checkout retries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+          # GitHub's shared SwiftPM checkout can occasionally be only partially
+          # initialized ("fatal: not a git repository"). Each retry uses a new
+          # checkout root and bypasses the potentially damaged repository cache.
+          resolved=0
+          for attempt in 1 2 3; do
+            packages="$RUNNER_TEMP/quicktick-swiftpm-$attempt"
+            echo "Resolving Swift packages (attempt $attempt of 3)"
+            if xcodebuild -resolvePackageDependencies \
+                -project ios-starter/QuicktickNative.xcodeproj \
+                -scheme QuicktickNative \
+                -clonedSourcePackagesDirPath "$packages" \
+                -disablePackageRepositoryCache > "logs/xcodebuild-swiftpm-$attempt.txt" 2>&1; then
+              echo "QUICKTICK_SPM_DIR=$packages" >> "$GITHUB_ENV"
+              resolved=1
+              break
+            fi
+            tail -n 50 "logs/xcodebuild-swiftpm-$attempt.txt"
+            if [ "$attempt" -lt 3 ]; then sleep 8; fi
+          done
+          if [ "$resolved" -ne 1 ]; then
+            echo "::error::Swift package resolution failed after three isolated attempts"
+            exit 1
+          fi
       - name: Archive real iPhone build without signing
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p logs
-          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination 'generic/platform=iOS' -archivePath build/QuicktickNative.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive | tee logs/xcodebuild-archive.txt
+          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination 'generic/platform=iOS' -archivePath build/QuicktickNative.xcarchive -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive | tee logs/xcodebuild-archive.txt
       - name: Package unsigned IPA from verified Xcode archive
         id: ipa-package
         shell: bash
@@ -124,7 +155,7 @@ jobs:
           run_iphone_tests() {
             local bundle="$1" log="$2"
             shift 2
-            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO "$@" -resultBundlePath "logs/$bundle.xcresult" test | tee "logs/$log.txt"
+            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO "$@" -resultBundlePath "logs/$bundle.xcresult" test | tee "logs/$log.txt"
           }
           failures=0
           boot_clean_iphone
@@ -169,7 +200,7 @@ jobs:
           xcrun simctl boot "$IPAD" || true
           xcrun simctl bootstatus "$IPAD" -b
           run_ipad_tests() {
-            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$IPAD" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -only-testing:QuicktickNativeUITests/NavigationTests/testAdaptiveMediaAcrossOrientationsAndForeground -only-testing:QuicktickNativeUITests/NavigationTests/testHomeInlinePlaybackAndComicClose -only-testing:QuicktickNativeUITests/NavigationTests/testImmersiveIPadCanvasAndSideNavigation -only-testing:QuicktickNativeUITests/NavigationTests/testSearchAppearsOnceBeforeAndAfterSubmitting -only-testing:QuicktickNativeUITests/NavigationTests/testDownloadedImagesUseNormalFeedAndCloseFullComic -resultBundlePath "logs/$1.xcresult" test | tee "logs/$2"
+            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$IPAD" -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -only-testing:QuicktickNativeUITests/NavigationTests/testAdaptiveMediaAcrossOrientationsAndForeground -only-testing:QuicktickNativeUITests/NavigationTests/testHomeInlinePlaybackAndComicClose -only-testing:QuicktickNativeUITests/NavigationTests/testImmersiveIPadCanvasAndSideNavigation -only-testing:QuicktickNativeUITests/NavigationTests/testSearchAppearsOnceBeforeAndAfterSubmitting -only-testing:QuicktickNativeUITests/NavigationTests/testDownloadedImagesUseNormalFeedAndCloseFullComic -resultBundlePath "logs/$1.xcresult" test | tee "logs/$2"
           }
           if ! run_ipad_tests QuicktickIPadTests xcodebuild-ipad-test.txt; then
             # The previous run aborted inside Apple's AX symbol-localization

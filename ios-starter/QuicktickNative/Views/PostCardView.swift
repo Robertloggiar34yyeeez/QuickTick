@@ -9,15 +9,20 @@ struct PostCardView: View {
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
     let post: Post
     var available = CGSize(width: 400, height: 800)
     var playbackTab = 0
     var offline = false
     var onDelete: (() -> Void)?
+    // Home owns its full-image cover so feed refreshes cannot unmount it.
+    // Other callers (Downloads/Favorites) retain their local presentation.
+    var onOpenFullImage: (() -> Void)?
     @State private var comments = false
     @State private var resumeAfterComments = false
     @State private var tags = false
     @State private var havenBrowser = false
+    @State private var pornhubBrowser = false
     @State private var creditedArtists: [String] = []
     @State private var fullImage = false
     @State private var readingManga = false
@@ -26,13 +31,15 @@ struct PostCardView: View {
     @State private var gifURL: URL?
     @State private var ready = false
     private var shouldSkipIntro: Bool {
-        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros, haven: skipHavenIntros)
+        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
+                                 haven: skipHavenIntros, hanime: skipHanimeIntros)
     }
     @State private var introReady = true
     @State private var manualPlaybackRequested = false
     @State private var playing = false
     @State private var preparing = false
     @State private var playbackError: String?
+    @State private var mediaStreamRetry = 0
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
     @State private var showLikeHeart = false
@@ -80,6 +87,16 @@ struct PostCardView: View {
                                 .background(AppTheme.elevatedSurface, in: Capsule())
                         }
                     }
+                    if post.providerKey == .pornhub,
+                       let source = URL(string: post.pageUrl), source.scheme == "https",
+                       ["pornhub.com", "www.pornhub.com"].contains(source.host?.lowercased() ?? "") {
+                        Button { pornhubBrowser = true } label: {
+                            Label("Open original in QuickTick browser", systemImage: "safari")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 14).frame(minHeight: 44)
+                                .background(AppTheme.elevatedSurface, in: Capsule())
+                        }
+                    }
                 }.padding(8)
             }
             VStack(spacing: 6) {
@@ -102,6 +119,16 @@ struct PostCardView: View {
                     }
                     .buttonStyle(QuicktickPressStyle())
                     .accessibilityLabel("View tags")
+                }
+                if let title = post.displayTitle {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3)
+                        .accessibilityIdentifier("post-title-\(post.stableID)")
                 }
                 HStack(spacing: 0) {
                     if offline {
@@ -144,6 +171,9 @@ struct PostCardView: View {
             .sheet(isPresented: $havenBrowser) {
                 if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
             }
+            .sheet(isPresented: $pornhubBrowser) {
+                if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
+            }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
                 previewURL: post.cardPreviewURL) }
             .fullScreenCover(isPresented: $readingManga) {
@@ -164,7 +194,7 @@ struct PostCardView: View {
                     }
                 }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(manualPlaybackRequested)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros):\(mediaStreamRetry):\(manualPlaybackRequested)") {
                 // Images, comics and audio cards have no inline
                 // video player to reconcile on each global playback change.
                 guard !Task.isCancelled else { return }
@@ -198,7 +228,22 @@ struct PostCardView: View {
             // Just() emissions whenever its parent recomputes during scroll.
             .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Empty<AVPlayer.TimeControlStatus, Never>(completeImmediately: false).eraseToAnyPublisher()) { playing = $0 == .playing }
             .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Empty<AVPlayerItem.Status, Never>(completeImmediately: false).eraseToAnyPublisher()) { status in
-                if status == .failed { playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."; playing = false; store.players.release(post.stableID) }
+                if status == .failed {
+                    playing = false
+                    store.players.release(post.stableID)
+                    if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
+                       mediaStreamRetry < (post.providerKey == .hanime ? 2 : 1),
+                       store.inlinePlaybackID == post.stableID {
+                        // A short-lived signed playlist may expire between
+                        // prewarming and the first frame. Retry once with a
+                        // fresh handshake rather than keeping a dead player.
+                        mediaStreamRetry += 1
+                        player = nil; ready = false
+                        playbackError = nil
+                    } else {
+                        playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."
+                    }
+                }
             }
             .onChange(of: comments) { _, shown in
                 if shown {
@@ -393,7 +438,11 @@ struct PostCardView: View {
                     store.inlinePlaybackID = post.stableID
                 }
             }
-        } else { fullImage = true }
+        } else if let onOpenFullImage {
+            onOpenFullImage()
+        } else {
+            fullImage = true
+        }
     }
     private func preparePlayback() async {
         preparing = true; playbackError = nil; playing = false
@@ -403,7 +452,9 @@ struct PostCardView: View {
             if offline {
                 guard let local = URL(string: post.mediaUrl), local.isFileURL, FileManager.default.fileExists(atPath: local.path) else { throw APIError.server("Downloaded file is missing.") }
                 resolved = ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type)
-            } else { resolved = try await store.resolver.resolve(post) }
+            } else { resolved = try await store.resolver.resolve(post,
+                refresh: mediaStreamRetry > 0,
+                hanimeVariant: post.providerKey == .hanime ? mediaStreamRetry : 0) }
             guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, let url = URL(string: resolved.mediaUrl) else { return }
             if post.type.lowercased() == "gif" {
                 gifURL = url; playing = store.pausedPlaybackID != post.stableID; preparing = false
@@ -452,24 +503,39 @@ struct PostCardView: View {
     }
 }
 
-/// Immediate tap feedback and live transfer state on every Home/Favorites card.
-/// Observing the manager makes the button stay accurate after scrolling away.
+/// Keep media cards independent of per-byte transfer progress. The button
+/// only needs state transitions, which the manager publishes separately.
 private struct FeedDownloadControl: View {
-    @ObservedObject var manager: DownloadManager
+    let manager: DownloadManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let post: Post
     @State private var taps = 0
-    private var record: DownloadRecord? { manager.records.first { $0.key == post.stableID } }
-    private var working: Bool { record?.state == .queued || record?.state == .downloading }
-    private var saved: Bool { record?.state == .complete }
-    private var failed: Bool { record?.state == .failed || record?.state == .cancelled }
+    @State private var status: DownloadState?
+    @State private var statusLoaded = false
+    private var currentState: DownloadState? {
+        statusLoaded ? status : manager.records.first(where: { $0.key == post.stableID })?.state
+    }
+    private var working: Bool { currentState == .queued || currentState == .downloading }
+    private var saved: Bool { currentState == .complete }
+    private var failed: Bool { currentState == .failed || currentState == .cancelled }
+
+    private func syncStatus() {
+        let latest = manager.records.first(where: { $0.key == post.stableID })?.state
+        if !statusLoaded || latest != status { status = latest }
+        statusLoaded = true
+    }
 
     var body: some View {
         Button {
             taps += 1
+            // Resolve the current record on tap; a card can scroll offscreen
+            // and return after a background transfer changes state.
+            let record = manager.records.first { $0.key == post.stableID }
             if let record, record.state == .paused { manager.resume(record) }
-            else if let record, failed { manager.retry(record) }
-            else if !working && !saved { manager.download(post) }
+            else if let record, (record.state == .failed || record.state == .cancelled) { manager.retry(record) }
+            else if record?.state != .queued && record?.state != .downloading && record?.state != .complete {
+                manager.download(post)
+            }
         } label: {
             Group {
                 if working { InfinityLoader(size: 22) }
@@ -493,12 +559,19 @@ private struct FeedDownloadControl: View {
         .accessibilityLabel("Download")
         .accessibilityValue(working ? "Downloading" : saved ? "Saved" : failed ? "Failed" : "Not downloaded")
         .accessibilityIdentifier("card-download-\(post.stableID)")
+        .onAppear(perform: syncStatus)
+        .onReceive(manager.catalogDidChange) { syncStatus() }
     }
 }
 
 private struct FullScreenVideoView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
+    @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
+    @State private var seekFeedbackForward: Bool?
+    @State private var seekFeedbackSequence = 0
+    @State private var lastDoubleTapTarget: Double?
+    @State private var lastDoubleTapAt = Date.distantPast
     let player: AVPlayer
     let postID: String
     let exportURL: URL?
@@ -507,7 +580,30 @@ private struct FullScreenVideoView: View {
         FullScreenPlayerController(player: player, onSwipeDown: {
             store.pausedPlaybackID = player.timeControlStatus == .paused ? postID : nil
             onClose()
+        }, onDoubleTap: { forward in
+            seekByDoubleTap(forward: forward)
         }).ignoresSafeArea()
+            .overlay {
+                if let forward = seekFeedbackForward {
+                    HStack {
+                        if forward { Spacer(minLength: 0) }
+                        VStack(spacing: 6) {
+                            Image(systemName: forward ? "goforward" : "gobackward")
+                                .font(.system(size: 36, weight: .semibold))
+                            Text("\(forward ? "+" : "−")\(doubleTapSeconds)s")
+                                .font(.headline.weight(.bold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(20)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .frame(maxWidth: .infinity)
+                        if !forward { Spacer(minLength: 0) }
+                    }
+                    .padding(.horizontal, 14)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .allowsHitTesting(false)
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 10) {
                     if let exportURL {
@@ -542,12 +638,35 @@ private struct FullScreenVideoView: View {
                 if foreground, autoplayVideos, store.pausedPlaybackID != postID { player.play() }
             }
     }
+
+    private func seekByDoubleTap(forward: Bool) {
+        let duration = player.currentItem?.duration.seconds ?? .nan
+        let current = Date().timeIntervalSince(lastDoubleTapAt) < 1.5
+            ? (lastDoubleTapTarget ?? player.currentTime().seconds)
+            : player.currentTime().seconds
+        guard let target = FullscreenSeekPolicy.target(
+            current: current, duration: duration,
+            forward: forward, interval: doubleTapSeconds) else { return }
+        lastDoubleTapTarget = target
+        lastDoubleTapAt = .now
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero)
+        seekFeedbackSequence += 1
+        let sequence = seekFeedbackSequence
+        withAnimation(.easeOut(duration: 0.12)) { seekFeedbackForward = forward }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(720))
+            guard seekFeedbackSequence == sequence else { return }
+            withAnimation(.easeOut(duration: 0.16)) { seekFeedbackForward = nil }
+        }
+    }
 }
 
 // Attach the gesture to the native UIKit player rather than an overlay:
 // AVPlayerViewController intercepts drags before SwiftUI's overlay sees them.
 private final class FullscreenSwipeDownHandler: NSObject, UIGestureRecognizerDelegate {
     var onExit: () -> Void
+    var onDoubleTap: ((Bool) -> Void)?
     private var didExit = false
     init(onExit: @escaping () -> Void) { self.onExit = onExit }
 
@@ -566,8 +685,19 @@ private final class FullscreenSwipeDownHandler: NSObject, UIGestureRecognizerDel
             view.addGestureRecognizer(swipe)
         }
     }
+    func installDoubleTap(on view: UIView) {
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(didDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = false
+        doubleTap.delegate = self
+        view.addGestureRecognizer(doubleTap)
+    }
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard let view = gestureRecognizer.view else { return false }
+        if let tap = gestureRecognizer as? UITapGestureRecognizer {
+            let x = tap.location(in: view).x
+            return x <= view.bounds.width * 0.44 || x >= view.bounds.width * 0.56
+        }
         if gestureRecognizer is UISwipeGestureRecognizer { return !(view is ComicScrollView) }
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
         let velocity = pan.velocity(in: view)
@@ -595,6 +725,10 @@ private final class FullscreenSwipeDownHandler: NSObject, UIGestureRecognizerDel
         guard gesture.state == .ended else { return }
         exitOnce()
     }
+    @objc private func didDoubleTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, let view = gesture.view else { return }
+        onDoubleTap?(gesture.location(in: view).x > view.bounds.midX)
+    }
     private func exitOnce() {
         guard !didExit else { return }
         didExit = true
@@ -605,6 +739,7 @@ private final class FullscreenSwipeDownHandler: NSObject, UIGestureRecognizerDel
 private struct FullScreenPlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
     let onSwipeDown: () -> Void
+    let onDoubleTap: (Bool) -> Void
     func makeCoordinator() -> FullscreenSwipeDownHandler { FullscreenSwipeDownHandler(onExit: onSwipeDown) }
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
@@ -612,19 +747,22 @@ private struct FullScreenPlayerController: UIViewControllerRepresentable {
         controller.showsPlaybackControls = true
         controller.videoGravity = .resizeAspect
         context.coordinator.install(on: controller.view, addSwipe: true)
+        context.coordinator.installDoubleTap(on: controller.view)
+        context.coordinator.onDoubleTap = onDoubleTap
         if let overlay = controller.contentOverlayView { context.coordinator.install(on: overlay, addSwipe: true) }
         return controller
     }
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== player { controller.player = player }
         context.coordinator.onExit = onSwipeDown
+        context.coordinator.onDoubleTap = onDoubleTap
     }
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: FullscreenSwipeDownHandler) {
         controller.player = nil
     }
 }
 
-private struct FullComicView: View {
+struct FullComicView: View {
     let url: String
     let previewURL: String
     @Environment(\.dismiss) private var dismiss
@@ -666,7 +804,6 @@ private struct FullComicView: View {
                     // cannot reliably resolve the implicit symbol label here.
                     Text("×").font(.system(size: 30, weight: .medium, design: .rounded))
                         .frame(width: 48, height: 48)
-                        .accessibilityHidden(true)
                         .background(.ultraThinMaterial, in: Circle())
                 }.accessibilityLabel("Close full image")
             }.buttonStyle(.plain).padding(12)

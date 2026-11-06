@@ -43,6 +43,7 @@ struct ImmersiveFeedView: View {
     @State private var horizontalCloseDrag: CGFloat = 0
     @State private var closing = false
     @State private var dragAxis: ImmersiveDragAxis?
+    @State private var settlingNicheSwipe = false
     @State private var searchVisible = false
     @State private var preferencesVisible = false
     @StateObject private var previews = ImmersivePreviewCache()
@@ -63,6 +64,10 @@ struct ImmersiveFeedView: View {
     }
     private var playbackOwner: String { offline ? "offline-immersive" : (collectionTab == 2 ? "favorites-immersive" : (onClose != nil ? "home-immersive" : "immersive")) }
     private var interactiveCloseAllowed: Bool { true }
+    private var smoothNichePaging: Bool {
+        !offline && onClose != nil && collectionTab == nil &&
+            store.selectedProvider == .redgifs && store.queryText.hasPrefix("niche:")
+    }
 
     private var adjacentPost: Post? {
         let next = activeIndex + (verticalDrag < 0 ? 1 : -1)
@@ -145,6 +150,7 @@ struct ImmersiveFeedView: View {
         .onChange(of: store.feedRevision) { _, _ in
             activeSince = .distantPast
             activeIndex = 0; activeID = mediaPosts.first?.stableID
+            settlingNicheSwipe = false; verticalDrag = 0
         }
         .onChange(of: mediaSignature) { _, _ in
             let keys = mediaPosts.map(\.stableID)
@@ -171,7 +177,10 @@ struct ImmersiveFeedView: View {
             store.protectImmersivePost(key)
             if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index }
         }
-        .onDisappear { if store.players.activeOwner == playbackOwner { store.players.releaseAll() } }
+        .onDisappear {
+            settlingNicheSwipe = false
+            if store.players.activeOwner == playbackOwner { store.players.releaseAll() }
+        }
         .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
         .sheet(isPresented: $searchVisible) { NativeSearchBar(immersive: true) }
         .quicktickEdgeBack {
@@ -184,9 +193,16 @@ struct ImmersiveFeedView: View {
     }
 
     private var immersiveHeader: some View {
-        VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    if let onClose { Button(action: onClose) { Image(systemName: "chevron.left").frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel("Back") }
+        VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    if let onClose {
+                        Button(action: onClose) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 21, weight: .semibold))
+                                .frame(width: 52, height: 52)
+                                .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 17))
+                        }.buttonStyle(.plain).accessibilityLabel("Back")
+                    }
                     Text(offline ? "Offline" : "Immersive").font(.subheadline.weight(.semibold)).shadow(color: .black, radius: 4)
                     Spacer(minLength: 0)
                     if !offline && onClose == nil {
@@ -194,21 +210,41 @@ struct ImmersiveFeedView: View {
                             Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
                         }; Divider(); Button("Personalize recommendations") { preferencesVisible = true } } label: {
                             ProviderLogoView(provider: store.selectedProvider)
-                                .frame(width: 52, height: 44)
-                                .background(.black.opacity(0.55), in: Capsule())
-                                .overlay(Capsule().stroke(.white.opacity(0.15)))
+                                .frame(width: 58, height: 52)
+                                .background(.black.opacity(0.18), in: Capsule())
+                                .overlay(Capsule().stroke(.white.opacity(0.23)))
                                 .accessibilityLabel("Provider: \(store.selectedProvider.displayName)")
                         }
                     }
                     if !offline && collectionTab == nil {
                         Button { searchVisible.toggle() } label: {
-                            Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)
-                                .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 21, weight: .semibold))
+                                .frame(width: 52, height: 52)
+                                .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 17))
                         }.buttonStyle(.plain).accessibilityLabel("Search")
-                        SettingsLauncher(isPresented: $showSettings)
+                        SettingsLauncher(isPresented: $showSettings, immersive: true)
                     }
-                }.padding(.horizontal, 16).frame(height: 52)
-
+                }.padding(.horizontal, 14).frame(minHeight: 58)
+                if !offline && collectionTab == nil &&
+                   store.selectedProvider == .redgifs && store.queryText.hasPrefix("niche:") {
+                    Button {
+                        store.commitSearch(query: "", sort: "recommended")
+                        onClose?()
+                        Task { await store.refresh() }
+                    } label: {
+                        Label("Return to FYP", systemImage: "arrow.uturn.backward")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 48)
+                            .background(.black.opacity(0.16), in: Capsule())
+                            .overlay(Capsule().stroke(.white.opacity(0.24)))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 14)
+                    .accessibilityIdentifier("redgifs-immersive-return-fyp")
+                }
         }
     }
 
@@ -228,7 +264,7 @@ struct ImmersiveFeedView: View {
     }
 
     private func updatePan(_ translation: CGSize, viewport: CGSize) {
-        guard !closing else { return }
+        guard !closing, !settlingNicheSwipe else { return }
         if dragAxis == nil {
             if interactiveCloseAllowed && translation.width > 12 &&
                 translation.width > abs(translation.height) * 1.2 {
@@ -252,6 +288,7 @@ struct ImmersiveFeedView: View {
     private func endPan(from origin: String, translation: CGSize,
                         velocity: CGSize, viewport: CGSize) {
         defer { dragAxis = nil }
+        guard !settlingNicheSwipe else { return }
         if dragAxis == .horizontal {
             let complete = horizontalCloseDrag >= viewport.width * 0.28 ||
                 (horizontalCloseDrag >= 50 && velocity.width >= 650)
@@ -277,12 +314,64 @@ struct ImmersiveFeedView: View {
             }
             return
         }
+        if smoothNichePaging {
+            smoothNichePageSwipe(from: origin, translation: translation,
+                                velocity: velocity, viewport: viewport)
+            return
+        }
         pageSwipe(from: origin, translation: translation, velocity: velocity,
                   viewportHeight: viewport.height)
         withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.88)) {
             verticalDrag = 0
         }
     }
+
+    /// Niche swipes keep the outgoing canvas attached to the finger until the
+    /// adjacent page fully occupies the viewport. Only then do we swap the
+    /// playing post without a second insertion/snap animation.
+    private func smoothNichePageSwipe(from origin: String, translation: CGSize,
+                                     velocity: CGSize, viewport: CGSize) {
+        guard presentationActive,
+              let direction = ImmersivePageSwipePolicy.direction(
+                  translation: translation, velocity: velocity,
+                  viewportHeight: viewport.height),
+              let index = mediaPosts.firstIndex(where: { $0.stableID == origin }),
+              mediaPosts.indices.contains(index + direction) else {
+            withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.88)) {
+                verticalDrag = 0
+            }
+            return
+        }
+        let next = index + direction
+        let destinationID = mediaPosts[next].stableID
+        settlingNicheSwipe = true
+        pageDirection = direction
+        withAnimation(.easeOut(duration: ImmersiveNicheSwipeMotion.duration)) {
+            verticalDrag = ImmersiveNicheSwipeMotion.destinationOffset(direction: direction,
+                                                                    viewportHeight: viewport.height)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(290))
+            guard settlingNicheSwipe else { return }
+            let stillCurrent = presentationActive && activeID == origin &&
+                mediaPosts.indices.contains(next) && mediaPosts[next].stableID == destinationID
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                if stillCurrent {
+                    activeIndex = next
+                    activeID = destinationID
+                }
+                verticalDrag = 0
+            }
+            settlingNicheSwipe = false
+            if stillCurrent && direction > 0, !offline, collectionTab == nil,
+               next >= mediaPosts.count - 8, !store.isLoading, store.hasMore {
+                Task(priority: .utility) { await store.loadMore(immersive: true) }
+            }
+        }
+    }
+
     private func pageSwipe(from origin: String, translation: CGSize,
                            velocity: CGSize, viewportHeight: CGFloat) {
         #if DEBUG
@@ -369,6 +458,16 @@ struct ImmersiveFeedView: View {
 
 private enum ImmersiveDragAxis { case vertical, horizontal }
 
+/// The gesture and the newly mounted page meet at the same viewport edge.
+enum ImmersiveNicheSwipeMotion {
+    static let duration = 0.28
+
+    static func destinationOffset(direction: Int, viewportHeight: CGFloat) -> CGFloat {
+        let height = max(0, viewportHeight)
+        return direction > 0 ? -height : height
+    }
+}
+
 enum ImmersivePreloadPlan {
     static func retainedIndices(current: Int, count: Int) -> [Int] {
         guard count > 0, (0..<count).contains(current) else { return [] }
@@ -410,7 +509,7 @@ enum ImmersivePageSwipePolicy {
 private struct ImmersiveTouchSurface: UIViewRepresentable {
     let id: String
     let onSingleTap: () -> Void
-    let onDoubleTap: () -> Void
+    let onDoubleTap: (CGFloat) -> Void
     let onPan: (CGSize, CGSize, Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -448,10 +547,10 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
 
     final class Coordinator: NSObject {
         var single: () -> Void
-        var double: () -> Void
+        var double: (CGFloat) -> Void
         var pan: (CGSize, CGSize, Bool) -> Void
 
-        init(single: @escaping () -> Void, double: @escaping () -> Void,
+        init(single: @escaping () -> Void, double: @escaping (CGFloat) -> Void,
              pan: @escaping (CGSize, CGSize, Bool) -> Void) {
             self.single = single
             self.double = double
@@ -463,7 +562,9 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
         }
 
         @objc func doubleTapped(_ recognizer: UITapGestureRecognizer) {
-            if recognizer.state == .ended { double() }
+            guard recognizer.state == .ended, let view = recognizer.view,
+                  view.bounds.width > 0 else { return }
+            double(recognizer.location(in: view).x / view.bounds.width)
         }
 
         @objc func panned(_ recognizer: UIPanGestureRecognizer) {
@@ -481,6 +582,8 @@ private struct ImmersiveItemView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
+    @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
     let post: Post
     let offline: Bool
     let active: Bool
@@ -502,7 +605,9 @@ private struct ImmersiveItemView: View {
     @State private var scrubbing = false
     @State private var error: String?
     @State private var mediaRetry = 0
+    @State private var automaticProviderRetry = 0
     @State private var browseHanime = false
+    @State private var browsePornhub = false
     @State private var showComments = false
     @State private var showTags = false
     @State private var gifURL: URL?
@@ -513,8 +618,13 @@ private struct ImmersiveItemView: View {
     @State private var gifClock = 0.0
     @State private var lastGIFSample = Date()
     @State private var likePulse = false
+    @State private var seekFeedbackForward: Bool?
+    @State private var seekFeedbackSequence = 0
+    @State private var lastDoubleTapTarget: Double?
+    @State private var lastDoubleTapAt = Date.distantPast
     private var shouldSkipIntro: Bool {
-        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros, haven: skipHavenIntros)
+        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
+                                 haven: skipHavenIntros, hanime: skipHanimeIntros)
     }
     private var hanimePage: URL? {
         guard post.providerKey == .hanime,
@@ -522,10 +632,44 @@ private struct ImmersiveItemView: View {
               ["hanime.tv", "www.hanime.tv"].contains(url.host ?? "") else { return nil }
         return url
     }
+    private var pornhubPage: URL? {
+        guard post.providerKey == .pornhub,
+              let url = URL(string: post.pageUrl), url.scheme == "https",
+              ["pornhub.com", "www.pornhub.com"].contains(url.host?.lowercased() ?? "") else { return nil }
+        return url
+    }
+    private var fillsNicheCanvas: Bool {
+        // A selected RedGIFs niche is a TikTok-style edge-to-edge feed. The
+        // regular player keeps aspect-fit for landscape and other providers.
+        post.providerKey == .redgifs && store.selectedProvider == .redgifs &&
+            store.queryText.hasPrefix("niche:")
+    }
+
+    private func seekImmersive(forward: Bool) {
+        guard let player else { return }
+        let current = Date().timeIntervalSince(lastDoubleTapAt) < 1.5
+            ? (lastDoubleTapTarget ?? player.currentTime().seconds)
+            : player.currentTime().seconds
+        guard let target = FullscreenSeekPolicy.target(
+            current: current, duration: player.currentItem?.duration.seconds ?? .nan,
+            forward: forward, interval: doubleTapSeconds) else { return }
+        lastDoubleTapTarget = target
+        lastDoubleTapAt = .now
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero)
+        seekFeedbackSequence += 1
+        let sequence = seekFeedbackSequence
+        withAnimation(.easeOut(duration: 0.12)) { seekFeedbackForward = forward }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(720))
+            guard seekFeedbackSequence == sequence else { return }
+            withAnimation(.easeOut(duration: 0.16)) { seekFeedbackForward = nil }
+        }
+    }
 
     var body: some View {
         GeometryReader { geo in
-            let mediaSize = fittedSize(geo.size)
+            let mediaSize = fillsNicheCanvas ? geo.size : fittedSize(geo.size)
             let controlsBottomClearance = ImmersiveChromeLayout.bottomClearance(
                 viewportWidth: geo.size.width,
                 safeAreaBottom: geo.safeAreaInsets.bottom,
@@ -546,7 +690,8 @@ private struct ImmersiveItemView: View {
                         .ignoresSafeArea()
                     Group {
                         if let image = previews.images[post.stableID] {
-                            Image(uiImage: image).resizable().scaledToFit()
+                            Image(uiImage: image).resizable()
+                                .aspectRatio(contentMode: fillsNicheCanvas ? .fill : .fit)
                         } else if active {
                             VStack(spacing: 12) {
                                 Image(systemName: "play.rectangle.on.rectangle")
@@ -592,7 +737,7 @@ private struct ImmersiveItemView: View {
                     // must retain the stream's real aspect ratio. Filling a
                     // fixed 16:9 canvas cropped portrait and square videos.
                     NativePlayerSurface(player: player,
-                        fill: false,
+                        fill: fillsNicheCanvas,
                         ready: $ready, accessibilityID: "immersive-video-surface")
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready && introReady ? 1 : 0)
@@ -611,16 +756,39 @@ private struct ImmersiveItemView: View {
                 }
                 ImmersiveTouchSurface(id: post.stableID, onSingleTap: {
                     if post.isImmersiveMedia { playing.toggle(); playing ? player?.play() : player?.pause() }
-                }, onDoubleTap: {
+                }, onDoubleTap: { normalizedX in
                     interacted = true
-                    if store.favorites[post.stableID] == nil { store.toggleFavorite(post) }
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { likePulse = true }
+                    if post.type.lowercased() == "video",
+                       normalizedX <= 0.44 || normalizedX >= 0.56 {
+                        seekImmersive(forward: normalizedX >= 0.56)
+                    } else {
+                        if store.favorites[post.stableID] == nil { store.toggleFavorite(post) }
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { likePulse = true }
+                    }
                 }, onPan: onPageSwipe)
                     .frame(width: geo.size.width, height: geo.size.height)
                 if likePulse {
                     Image(systemName: "heart.fill").font(.system(size: 88)).foregroundStyle(.white)
                         .shadow(color: .pink.opacity(0.8), radius: 20).transition(.scale.combined(with: .opacity))
                         .allowsHitTesting(false)
+                }
+                if let forward = seekFeedbackForward {
+                    HStack {
+                        if forward { Spacer(minLength: 0) }
+                        VStack(spacing: 5) {
+                            Image(systemName: forward ? "goforward" : "gobackward")
+                                .font(.system(size: 32, weight: .semibold))
+                            Text("\(forward ? "+" : "−")\(doubleTapSeconds)s")
+                                .font(.headline.weight(.bold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(18)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        if !forward { Spacer(minLength: 0) }
+                    }
+                    .padding(.horizontal, 26)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .allowsHitTesting(false)
                 }
                 if !playing && !scrubbing {
                     Image(systemName: "play.fill").font(.system(size: 48)).foregroundStyle(.white.opacity(0.7))
@@ -632,16 +800,27 @@ private struct ImmersiveItemView: View {
                 if active && presentationActive {
                     // Keep the action rail reachable on small iPhones, while
                     // giving the iPad canvas appropriately sized controls.
-                    let scale = min(1.16, max(0.82, geo.size.width / 430))
+                    let scale = min(1.12, max(1.0, geo.size.width / 430))
                     actionRail
                         .scaleEffect(scale, anchor: .bottomTrailing)
-                        .padding(.trailing, geo.size.width > 600 ? 30 : 12)
+                        .padding(.trailing, geo.size.width > 600 ? 30 : 14)
                         .padding(.bottom, max(min(110, max(76, geo.size.height * 0.12)),
                                               post.type.lowercased() == "video" ? controlsBottomClearance + 44 : 0))
                 }
             }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 0) {
+                    if let title = post.displayTitle {
+                        Text(title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.trailing, 82)
+                            .shadow(color: .black, radius: 5)
+                            .accessibilityIdentifier("immersive-post-title-\(post.stableID)")
+                    }
                     HStack(spacing: 12) {
                         Text(post.provider.uppercased()).font(.caption.weight(.bold)).tracking(1.5)
                         Button("View tags") { showTags = true }.font(.caption.weight(.semibold)).frame(minHeight: 44)
@@ -663,6 +842,10 @@ private struct ImmersiveItemView: View {
                         }.frame(minHeight: 44)
                         if hanimePage != nil {
                             Button("Open on Hanime inside QuickTick") { browseHanime = true }
+                                .frame(minHeight: 44)
+                        }
+                        if pornhubPage != nil {
+                            Button("Open original in QuickTick browser") { browsePornhub = true }
                                 .frame(minHeight: 44)
                         }
                     }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
@@ -690,12 +873,15 @@ private struct ImmersiveItemView: View {
         .sheet(isPresented: $browseHanime) {
             if let url = hanimePage { SourceWebsiteView(url: url).ignoresSafeArea() }
         }
+        .sheet(isPresented: $browsePornhub) {
+            if let url = pornhubPage { SourceWebsiteView(url: url).ignoresSafeArea() }
+        }
         .task(id: likePulse) {
             guard likePulse else { return }
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros)") {
+        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros)") {
             guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else {
                 endExposure(); player = nil; ready = false; introReady = true; gifURL = nil
                 if !active { playing = true }
@@ -714,6 +900,13 @@ private struct ImmersiveItemView: View {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if let player {
                     if player.currentItem?.status == .failed {
+                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
+                           automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
+                            automaticProviderRetry += 1
+                            store.players.release(post.stableID)
+                            self.player = nil; ready = false; mediaRetry += 1
+                            break
+                        }
                         error = "This clip could not load. Retry or scroll to the next clip."; ready = false
                         continue
                     }
@@ -737,6 +930,14 @@ private struct ImmersiveItemView: View {
                     if playing && !scrubbing && (!seconds.isFinite || abs(seconds - lastTime) < 0.05) { stalledSeconds += 1 }
                     else { stalledSeconds = 0; if player.timeControlStatus == .playing { error = nil } }
                     lastTime = seconds
+                    if stalledSeconds >= 12, !offline,
+                       (post.providerKey == .hanime || post.providerKey == .pornhub),
+                       automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
+                        automaticProviderRetry += 1
+                        store.players.release(post.stableID)
+                        self.player = nil; ready = false; mediaRetry += 1
+                        break
+                    }
                     if stalledSeconds >= 20 { error = "Playback is not advancing. Retry media or swipe to another clip." }
                 }
                 sampleExposure()
@@ -776,7 +977,7 @@ private struct ImmersiveItemView: View {
     }
 
     private var actionRail: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             railButton("Like", symbol: "heart.fill", selected: store.favorites[post.stableID] != nil) {
                 interacted = true; store.toggleFavorite(post)
             }.accessibilityValue(store.favorites[post.stableID] == nil ? "Not liked" : "Liked")
@@ -798,8 +999,9 @@ private struct ImmersiveItemView: View {
                     } label: {
                         Image(systemName: "paintbrush.pointed.fill")
                             .font(.system(size: 22, weight: .semibold))
-                            .frame(width: 48, height: 48)
-                            .background(.black.opacity(0.25), in: Circle())
+                            .frame(width: 56, height: 56)
+                            .background(.black.opacity(0.16), in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(0.24)))
                     }
                     .accessibilityLabel("More from this artist")
                 }
@@ -818,14 +1020,13 @@ private struct ImmersiveItemView: View {
     private func railButton(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 23, weight: .semibold))
+                .font(.system(size: 25, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(selected ? AppTheme.accent : .white)
-                .frame(width: 48, height: 48).contentShape(Circle())
-                .background(.black.opacity(0.25), in: Circle())
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.75) : .white.opacity(0.27), lineWidth: 1))
-                .shadow(color: .black.opacity(0.32), radius: 8, y: 3)
+                .frame(width: 56, height: 56).contentShape(Circle())
+                .background(.black.opacity(0.16), in: Circle())
+                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.8) : .white.opacity(0.25), lineWidth: 1))
+                .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
         }.buttonStyle(.plain).accessibilityLabel(title)
             .accessibilityIdentifier(active ? "immersive-\(title)" : "inactive-\(title)-\(post.stableID)")
     }
@@ -840,7 +1041,8 @@ private struct ImmersiveItemView: View {
                 // Reuse the already-resolved, already-warmed AVPlayer URL.
                 url = prepared
             } else {
-                let resolved = try await store.resolver.resolve(post, refresh: mediaRetry > 0)
+                let resolved = try await store.resolver.resolve(post,
+                    refresh: mediaRetry > 0, hanimeVariant: mediaRetry)
                 guard let remote = URL(string: resolved.mediaUrl) else { throw URLError(.badURL) }
                 url = remote
             }
@@ -973,11 +1175,10 @@ private struct ImmersiveDownloadControl: View {
             Group {
                 if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 28) }
                 else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 23, weight: .semibold)) }
-            }.foregroundStyle(.white).frame(width: 48, height: 48).contentShape(Circle())
-                .background(.black.opacity(0.25), in: Circle())
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(.white.opacity(0.27), lineWidth: 1))
-                .shadow(color: .black.opacity(0.32), radius: 8, y: 3)
+            }.foregroundStyle(.white).frame(width: 56, height: 56).contentShape(Circle())
+                .background(.black.opacity(0.16), in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
+                .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
         }.buttonStyle(.plain).accessibilityLabel("Download").accessibilityValue(status)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: status)
             .sensoryFeedback(.selection, trigger: taps)

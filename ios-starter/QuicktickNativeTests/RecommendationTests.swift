@@ -2,6 +2,61 @@ import XCTest
 @testable import QuicktickNative
 
 final class RecommendationTests: XCTestCase {
+    func testPostTitlesAppearForProvidersExceptRule34() {
+        var hanime = Post(key: "hanime:1", id: "1", provider: "Hanime", type: "video")
+        hanime.caption = "  Episode One  "
+        XCTAssertEqual(hanime.displayTitle, "Episode One")
+        var erome = Post(key: "erome:2", id: "2", provider: "Erome", type: "image")
+        erome.caption = "Gallery at sunset"
+        XCTAssertEqual(erome.displayTitle, "Gallery at sunset")
+        var redgifs = Post(key: "redgifs:3", id: "3", provider: "RedGIFs",
+                           tags: ["cosplay", "gaming"], type: "video")
+        XCTAssertEqual(redgifs.displayTitle, "Topics: cosplay · gaming")
+        redgifs.caption = "Real clip title"
+        XCTAssertEqual(redgifs.displayTitle, "Real clip title")
+        let rule34 = Post(key: "rule34:4", id: "4", provider: "Rule34",
+                          tags: ["cosplay"], type: "image")
+        XCTAssertNil(rule34.displayTitle)
+    }
+
+    func testRedgifsLikesAndNicheOverlapRecommendRelatedNewNiches() {
+        let favorite = Post(key: "redgifs:favorite", id: "favorite", provider: "RedGIFs",
+                            tags: ["cosplay"], type: "video")
+        let observed = Post(key: "redgifs:observation", id: "observation", provider: "RedGIFs",
+                            tags: ["cosplay", "gaming"], type: "video")
+        let unrelated = Post(key: "redgifs:unrelated", id: "unrelated", provider: "RedGIFs",
+                             tags: ["sports"], type: "video")
+        let model = RedgifsNicheAffinity(liked: [favorite], observed: [observed, unrelated])
+        let niches = [
+            RedgifsNiche(id: "sports", name: "Sports", imageURL: "https://example.com/sports.jpg", postCount: 10),
+            RedgifsNiche(id: "gaming", name: "Gaming", imageURL: "https://example.com/gaming.jpg", postCount: 10),
+            RedgifsNiche(id: "cosplay", name: "Cosplay", imageURL: "https://example.com/cosplay.jpg", postCount: 10)
+        ]
+        XCTAssertEqual(model.rankNiches(niches).map(\.id), ["cosplay", "gaming", "sports"])
+        XCTAssertEqual(model.relatedSearchTerms(), ["gaming"],
+                       "Co-occurring, unliked niches should be eligible for candidate discovery")
+        XCTAssertEqual(model.rankPosts([unrelated, observed, favorite]).map(\.id),
+                       ["observation", "favorite", "unrelated"], 
+                       "A clip combining a liked niche with a related niche should gain a synergy boost")
+        let cold = RedgifsNicheAffinity(liked: [], observed: [observed])
+        XCTAssertEqual(cold.rankNiches(niches).map(\.id), niches.map(\.id))
+        XCTAssertEqual(cold.rankPosts([unrelated, observed]).map(\.id), ["unrelated", "observation"])
+    }
+
+    func testRedgifsExplicitNicheLikeDoesNotBorrowRule34Favorites() {
+        var clicked = Post(key: "redgifs:clicked", id: "clicked", provider: "RedGIFs",
+                           type: "video")
+        clicked.category = "cosplay"
+        let anotherProvider = Post(key: "rule34:favorite", id: "favorite", provider: "Rule34",
+                                   tags: ["gaming"], type: "image")
+        let model = RedgifsNicheAffinity(liked: [clicked, anotherProvider], observed: [])
+        let posts = [
+            Post(key: "redgifs:other", id: "other", provider: "RedGIFs", tags: ["gaming"], type: "video"),
+            Post(key: "redgifs:match", id: "match", provider: "RedGIFs", tags: ["cosplay"], type: "video")
+        ]
+        XCTAssertEqual(model.rankPosts(posts).first?.id, "match")
+    }
+
     func testExplicitArtistRanksCreditedWorkWithoutTreatingPoseAsIdentity() async {
         let engine = RecommendationEngine()
         var selected = Post(key: "nhentai:1", id: "1", provider: "nhentai", tags: ["manga", "kneeling"], type: "image")
@@ -72,6 +127,40 @@ final class RecommendationTests: XCTestCase {
         XCTAssertTrue(suggestions.contains("cosplay"))
         XCTAssertFalse(suggestions.contains("1girl"))
         XCTAssertFalse(suggestions.contains("16:9"))
+    }
+
+    func testTasteEditorUsesProviderNativeHanimeAndRedgifsVocabularies() {
+        let hanime = Post(key: "hanime:1", id: "1", provider: "Hanime",
+                          tags: ["fantasy", "monster girl"], type: "video")
+        let redgifs = Post(key: "redgifs:2", id: "2", provider: "RedGIFs",
+                           tags: ["cosplay", "example-niche"], type: "video")
+        let niches = [RedgifsNiche(id: "example-niche", name: "Example niche",
+                                   imageURL: "", postCount: 10)]
+        let hanimeTags = TasteTagSuggestions.rank(learned: [],
+            favorites: [hanime, redgifs], posts: [], provider: .hanime,
+            visual: ["kimono", "blue_eyes"], niches: niches)
+        XCTAssertTrue(hanimeTags.contains("fantasy"))
+        XCTAssertTrue(hanimeTags.contains("kimono"), "Use learned WD visual attributes")
+        XCTAssertFalse(hanimeTags.contains("example-niche"), "No RedGIFs niche leakage into Hanime")
+        let redgifsTags = TasteTagSuggestions.rank(learned: [],
+            favorites: [hanime, redgifs], posts: [], provider: .redgifs,
+            visual: ["beach"], niches: niches)
+        XCTAssertTrue(redgifsTags.contains("niche:example-niche"))
+        XCTAssertTrue(redgifsTags.contains("cosplay"))
+        XCTAssertTrue(redgifsTags.contains("beach"))
+        XCTAssertFalse(redgifsTags.contains("fantasy"), "No unrelated Hanime catalog categories")
+    }
+
+    func testBlockingRedgifsNicheExcludesItsRealMembership() {
+        var matching = Post(key: "redgifs:1", id: "1", provider: "RedGIFs",
+                            tags: ["example-niche", "cosplay"], type: "video")
+        matching.category = "example-niche"
+        let unrelated = Post(key: "redgifs:2", id: "2", provider: "RedGIFs",
+                             tags: ["other-niche"], type: "video")
+        XCTAssertTrue(RecommendationTagRules.rejects(matching,
+            exclusions: ["niche:example-niche"]))
+        XCTAssertFalse(RecommendationTagRules.rejects(unrelated,
+            exclusions: ["niche:example-niche"]))
     }
 
     func testInstalledIPAMigratesV3CacheIntoV5WithoutDeletingTheOriginal() async throws {
@@ -295,7 +384,7 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(Set(results.map(\.stableID)), Set([relevantOne.stableID, relevantTwo.stableID]))
     }
 
-    func testStrongCachedVisualMatchCanExploreAnotherIdentityWithoutLosingFavorite() async {
+    func testStrongCachedVisualMatchCannotAdmitUnrelatedRule34Posts() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let taste = TasteChoice(done: true, into: ["chun_li"], notInto: [])
         let visuallyMatching = Post(key: "rule34:visual-rescue", id: "visual-rescue", provider: "rule34",
@@ -308,10 +397,8 @@ final class RecommendationTests: XCTestCase {
                       identifiedOther.stableID: 3.9]
         let served = await engine.rankFast([unrelated, identifiedOther, visuallyMatching],
                                            taste: taste, recent: [], visualScores: scores, strict: true)
-        XCTAssertEqual(Set(served.map(\.stableID)),
-            Set([visuallyMatching.stableID, identifiedOther.stableID]))
-        XCTAssertEqual(served.first?.stableID, visuallyMatching.stableID,
-            "A new identity needs strong visual evidence and starts below a matching favorite")
+        XCTAssertTrue(served.isEmpty,
+            "Visual scores reorder matching posts, but cannot create tag evidence that is absent")
     }
 
     func testTransferableInterestNeedsIndependentIdentitiesNotRepeatedOneCharacter() async {
@@ -707,8 +794,8 @@ final class RecommendationTests: XCTestCase {
                                             taste: taste, recent: [], strict: true)
         XCTAssertFalse(result.contains { $0.stableID == irrelevant.stableID })
         XCTAssertTrue(result.contains { $0.stableID == wanted.stableID })
-        XCTAssertTrue(result.contains { $0.stableID == unknownIdentity.stableID },
-                      "Unlabeled subjects can still match a loved action or outfit")
+        XCTAssertFalse(result.contains { $0.stableID == unknownIdentity.stableID },
+                       "Generic pose and gaze alone must never admit an unrelated post")
     }
 
     func testChosenCharacterRejectsConflictingIdentifiedCharacterEvenWithoutFavorites() async {
@@ -724,7 +811,8 @@ final class RecommendationTests: XCTestCase {
                                            recent: [], strict: true)
         XCTAssertFalse(result.contains { $0.stableID == unrelated.stableID })
         XCTAssertTrue(result.contains { $0.stableID == selected.stableID })
-        XCTAssertTrue(result.contains { $0.stableID == unknown.stableID })
+        XCTAssertFalse(result.contains { $0.stableID == unknown.stableID },
+                       "An unknown subject still needs a specific matching interest")
     }
 
     func testIdentityLedRetrievalNeverSearchesGenericPoseAlone() async {

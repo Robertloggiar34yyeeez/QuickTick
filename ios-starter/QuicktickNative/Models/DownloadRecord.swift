@@ -34,14 +34,25 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         return ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
     }
 
+    // Earlier Hanime builds could mark the poster as a completed video.
+    // Treat those entries as needing restoration, never as offline playback.
+    var isHanimePosterOnly: Bool {
+        guard provider.lowercased() == "hanime", kind == .file,
+              let path = localMediaPath else { return false }
+        return ["jpg", "jpeg", "png", "webp", "avif", "heic"]
+            .contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
     // The share sheet exports the existing file/package without decoding or copying it.
     var exportURL: URL? {
-        guard state == .complete, let path = localMediaPath, FileManager.default.fileExists(atPath: path) else { return nil }
+        guard !isHanimePosterOnly, state == .complete, let path = localMediaPath,
+              FileManager.default.fileExists(atPath: path) else { return nil }
         return URL(fileURLWithPath: path)
     }
 
     var offlinePost: Post? {
-        guard state == .complete, let path = localMediaPath, FileManager.default.fileExists(atPath: path) else { return nil }
+        guard !isHanimePosterOnly, state == .complete, let path = localMediaPath,
+              FileManager.default.fileExists(atPath: path) else { return nil }
         let media = URL(fileURLWithPath: path)
         let type: String
         if let mediaType, ["image", "video", "gif"].contains(mediaType.lowercased()) { type = mediaType.lowercased() }

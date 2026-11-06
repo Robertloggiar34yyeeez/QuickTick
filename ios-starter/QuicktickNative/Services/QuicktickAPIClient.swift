@@ -179,6 +179,35 @@ actor QuicktickAPIClient {
         }
     }
 
+    func redgifsNiches(limit: Int = 8) async throws -> [RedgifsNiche] {
+        let token = try await redgifsAuth.value(session: session)
+        do {
+            return try await NativeProviderAPI.redgifsNiches(session: session, token: token, limit: limit)
+        } catch APIError.providerStatus(.redgifs, 401) {
+            await redgifsAuth.invalidate(expecting: token)
+            let refreshed = try await redgifsAuth.value(session: session)
+            return try await NativeProviderAPI.redgifsNiches(session: session, token: refreshed, limit: limit)
+        }
+    }
+
+    func pornhubCategoryPreview(token: String) async throws -> String? {
+        try await NativeProviderAPI.pornhubCategoryPreview(session: session,
+            credentials: credentials, token: token)
+    }
+
+    func redgifsNichesPage(page: Int, limit: Int = 24) async throws -> RedgifsNichePage {
+        let token = try await redgifsAuth.value(session: session)
+        do {
+            return try await NativeProviderAPI.redgifsNichesPage(session: session, token: token,
+                                                                 page: page, limit: limit)
+        } catch APIError.providerStatus(.redgifs, 401) {
+            await redgifsAuth.invalidate(expecting: token)
+            let refreshed = try await redgifsAuth.value(session: session)
+            return try await NativeProviderAPI.redgifsNichesPage(session: session, token: refreshed,
+                                                                 page: page, limit: limit)
+        }
+    }
+
     func mangaPages(bookID: String) async throws -> [URL] {
         try await NativeProviderAPI.nhentaiPages(session: session, bookID: bookID)
     }
@@ -409,7 +438,7 @@ actor QuicktickAPIClient {
         return url
     }
 
-    func resolveMedia(_ post: Post) async throws -> ResolvedMedia {
+    func resolveMedia(_ post: Post, hanimeVariant: Int = 0) async throws -> ResolvedMedia {
         if post.providerKey == .hanime, post.mediaUrl.isEmpty,
            let base = HanimeGeneratedAPI.configuredURL {
             return try await HanimeGeneratedAPI.resolve(session: session, base: base, post: post)
@@ -430,7 +459,8 @@ actor QuicktickAPIClient {
             ? try await havenAuth.value(session: session) : nil
         do {
             return try await NativeProviderAPI.resolve(session: session, credentials: credentials,
-                post: post, redgifsToken: token, havenToken: havenToken)
+                post: post, redgifsToken: token, havenToken: havenToken,
+                hanimeVariant: hanimeVariant)
         } catch APIError.providerStatus(.hhaven, 401) {
             guard let havenToken else { throw APIError.invalidResponse }
             await havenAuth.invalidate(expecting: havenToken)

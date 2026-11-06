@@ -51,6 +51,55 @@ enum HomePaginationPolicy {
     }
 }
 
+private struct HomeFullImagePresentation: Identifiable {
+    let id: String
+    let url: String
+    let previewURL: String
+}
+
+/// A single full-bleed artwork treatment for every provider's topic tiles.
+/// The label stays legible *inside* the chip instead of displacing the cover.
+private struct HomeArtworkChip: View {
+    let title: String
+    let imageURL: String
+    var selected = false
+    var width: CGFloat = 182
+    var height: CGFloat = 210
+    var placeholder = "tag.fill"
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            if !imageURL.isEmpty {
+                CachedMediaImage(url: imageURL, pixels: 480, fill: true)
+                    .frame(width: width, height: height)
+                    .clipped()
+            } else {
+                Rectangle().fill(AppTheme.gradient)
+                    .overlay {
+                        Image(systemName: placeholder)
+                            .font(.system(size: 43, weight: .light))
+                            .foregroundStyle(.white.opacity(0.55))
+                    }
+            }
+            LinearGradient(colors: [.clear, .black.opacity(0.18), .black.opacity(0.87)],
+                           startPoint: .center, endPoint: .bottom)
+                .allowsHitTesting(false)
+            Text(title)
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(13)
+                .shadow(color: .black.opacity(0.75), radius: 4)
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous)
+            .strokeBorder(selected ? AppTheme.accent : .white.opacity(0.17), lineWidth: selected ? 2.5 : 1))
+        .contentShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+    }
+}
+
 struct HomeFeedView: View {
     @EnvironmentObject private var store: AppStore
     @Binding var showSettings: Bool
@@ -71,6 +120,12 @@ struct HomeFeedView: View {
     @State private var visualThemeTerms: [String] = []
     @State private var themeSuggestions: [HomeThemeSuggestion] = []
     @State private var publicPopularFranchisePosts: [Post] = []
+    @State private var redgifsNiches: [RedgifsNiche] = []
+    @State private var pornhubCategoryPreviews: [String: String] = [:]
+    @State private var openingNicheID: String?
+    @State private var showAllRedgifsNiches = false
+    @State private var showAllHanimeTopics = false
+    @State private var presentedFullImage: HomeFullImagePresentation?
     @State private var themeRefreshCycle = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var postSignature: String {
@@ -85,6 +140,24 @@ struct HomeFeedView: View {
         }
         .sheet(isPresented: $showProviderWebsite) {
             SourceWebsiteView(url: NativeProviderAPI.origin(store.selectedProvider)).ignoresSafeArea()
+        }
+        .fullScreenCover(item: $presentedFullImage) { selection in
+            FullComicView(url: selection.url, previewURL: selection.previewURL)
+        }
+        .fullScreenCover(isPresented: $showAllRedgifsNiches) {
+            RedgifsNicheBrowserView(featured: redgifsNiches, showSettings: $showSettings,
+                                    onReturnToFYP: {
+                showAllRedgifsNiches = false
+                if !store.queryText.isEmpty || store.feedSort != "recommended" {
+                    store.commitSearch(query: "", sort: "recommended")
+                    Task { await store.refresh() }
+                }
+            })
+            .environmentObject(store)
+        }
+        .sheet(isPresented: $showAllHanimeTopics) {
+            NavigationStack { HanimeTopicsBrowserView() }
+                .environmentObject(store)
         }
     }
 
@@ -222,7 +295,12 @@ struct HomeFeedView: View {
                     .padding(.horizontal, 16)
                     .accessibilityIdentifier("home-active-filter")
                 }
-                if suggestedThemesEnabled && !themeSuggestions.isEmpty { suggestedThemeRow }
+                if store.selectedProvider == .redgifs {
+                    redgifsNicheRow
+                } else if store.selectedProvider == .hanime ||
+                            (suggestedThemesEnabled && !themeSuggestions.isEmpty) {
+                    suggestedThemeRow
+                }
                 if store.selectedProvider == .pornhub {
                     homeCategoryRow
                 }
@@ -248,7 +326,15 @@ struct HomeFeedView: View {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))
                 }
                 ForEach(store.posts, id: \.stableID) { post in
-                    PostCardView(post: post, available: CGSize(width: max(1, min(AppTheme.feedWidth, viewport.size.width) - cardInset * 2), height: viewport.size.height))
+                    PostCardView(post: post, available: CGSize(width: max(1, min(AppTheme.feedWidth, viewport.size.width) - cardInset * 2), height: viewport.size.height),
+                                 onOpenFullImage: {
+                        // Keep the cover alive even when a sort/refresh swaps
+                        // out the post's LazyVStack card during presentation.
+                        presentedFullImage = HomeFullImagePresentation(
+                            id: post.stableID,
+                            url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
+                            previewURL: post.cardPreviewURL)
+                    })
                         .padding(.horizontal, cardInset)
                         .frame(maxWidth: .infinity)
                         .id(post.stableID)
@@ -305,7 +391,11 @@ struct HomeFeedView: View {
                 .fixedSize()
                 .contentShape(Rectangle())
                 .padding(.leading, viewport.size.width > 700 ? 88 : 14)
-                .padding(.bottom, 14)
+                // The root dock is an overlay, not an ordinary tab bar.
+                // Reserve its height plus the home-indicator inset so this
+                // control remains hittable on every iPhone.
+                .padding(.bottom, viewport.size.width > 600 ? 14 :
+                         (store.audio.currentPost == nil ? 90 : 168) + max(34, viewport.safeAreaInsets.bottom))
                 .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
                 .accessibilityLabel("Scroll to top")
                 .accessibilityIdentifier("home-scroll-top")
@@ -494,67 +584,98 @@ struct HomeFeedView: View {
         .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
-        let suggestionsScroll = navigableScroll
-        .task(id: "franchise-discovery:\(store.selectedProvider.rawValue):\(suggestedThemesMode):\(suggestedThemesEnabled):\(store.bootstrapped)") {
-            guard store.bootstrapped, store.selectedProvider == .rule34,
-                  suggestedThemesEnabled, suggestedThemesMode != SuggestedThemeMode.tags.rawValue else {
+        // Break the independent async discovery lanes into separate view
+        // expressions. One enormous modifier chain exhausted Swift's type
+        // checker during Release archive even though each task is valid.
+        let franchiseScroll = navigableScroll
+            .task(id: "franchise-discovery:\(store.selectedProvider.rawValue):\(suggestedThemesMode):\(suggestedThemesEnabled):\(store.bootstrapped)") {
+                await discoverPopularFranchises()
+            }
+        let nicheScroll = franchiseScroll
+            .task(id: "redgifs-niches:\(store.selectedProvider.rawValue):\(store.bootstrapped)") {
+                await discoverRedgifsNiches()
+            }
+        let visualScroll = nicheScroll
+            .task(id: store.selectedProvider) {
+                await discoverVisualThemes()
+            }
+        let postChangeScroll = visualScroll
+            .onChange(of: postSignature) { _, _ in
+                playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
+                // Do not replace topic cards during a feed pagination.
+                if themeSuggestions.isEmpty { refreshThemeSuggestions() }
+            }
+        let tasteChangeScroll = postChangeScroll
+            .onChange(of: store.favorites.count) { _, _ in refreshThemeSuggestions() }
+            .onChange(of: store.tasteChoice(for: store.selectedProvider)) { _, _ in refreshThemeSuggestions() }
+            .onChange(of: store.exclusions) { _, _ in refreshThemeSuggestions() }
+        let preferenceScroll = tasteChangeScroll
+            .onChange(of: suggestedThemesEnabled) { _, _ in refreshThemeSuggestions() }
+            .onChange(of: suggestedThemesMode) { _, _ in refreshThemeSuggestions() }
+        let finalScroll = preferenceScroll
+            .onChange(of: store.selectedProvider) { _, _ in
+                visualThemeTerms = []
                 publicPopularFranchisePosts = []
-                return
-            }
-            // Public franchise discovery is its own, broad popularity lane.
-            // It must never inherit the user's liked tags or focused query.
-            // Defer it until after Home's initial feed request starts.
-            do { try await Task.sleep(for: .milliseconds(1_400)) } catch { return }
-            guard !Task.isCancelled else { return }
-            do {
-                let page = try await store.api.posts(provider: .rule34,
-                    query: ParsedQuery(included: [], excluded: []), page: 1,
-                    sort: "popular")
-                guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
-                var discovered = page.items
-                // A second public top-scored page expands the choice of
-                // franchises without gating Home's first visible results.
-                if let next = try? await store.api.posts(provider: .rule34,
-                    query: ParsedQuery(included: [], excluded: []), page: 2,
-                    sort: "popular"), !Task.isCancelled, store.selectedProvider == .rule34 {
-                    let seen = Set(page.items.map(\.stableID))
-                    discovered += next.items.filter { !seen.contains($0.stableID) }
-                }
-                guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
-                publicPopularFranchisePosts = discovered
+                redgifsNiches = []
+                openingNicheID = nil
+                themeSuggestions = []
                 refreshThemeSuggestions()
-            } catch {
-                // A slow or unavailable popularity endpoint must never stall
-                // the main Home feed or replace its valid suggestions.
             }
-        }
-        .task(id: store.selectedProvider) {
-            let provider = store.selectedProvider
-            let discovered = await store.visual.discoveryTerms(provider: provider)
-            guard !Task.isCancelled, store.selectedProvider == provider else { return }
-            visualThemeTerms = discovered
-            refreshThemeSuggestions()
-        }
-        .onChange(of: postSignature) { _, _ in
-            playableIDs = Set(store.posts.filter(\.isImmersiveMedia).map(\.stableID))
-            // Growing a feed or receiving delayed metadata must not replace
-            // topic cards while the user is reading or scrolling.
-            if themeSuggestions.isEmpty { refreshThemeSuggestions() }
-        }
-        .onChange(of: store.favorites.count) { _, _ in refreshThemeSuggestions() }
-        // Idle taste updates are not navigation events. Keep the visible topic
-        // cards stable until the next explicit refresh or preference change.
-        .onChange(of: store.tasteChoice(for: store.selectedProvider)) { _, _ in refreshThemeSuggestions() }
-        .onChange(of: store.exclusions) { _, _ in refreshThemeSuggestions() }
-        .onChange(of: suggestedThemesEnabled) { _, _ in refreshThemeSuggestions() }
-        .onChange(of: suggestedThemesMode) { _, _ in refreshThemeSuggestions() }
-        .onChange(of: store.selectedProvider) { _, _ in
-            visualThemeTerms = []
+        return finalScroll
+    }
+
+    private func discoverPopularFranchises() async {
+        guard store.bootstrapped, store.selectedProvider == .rule34,
+              suggestedThemesEnabled, suggestedThemesMode != SuggestedThemeMode.tags.rawValue else {
             publicPopularFranchisePosts = []
-            themeSuggestions = []
-            refreshThemeSuggestions()
+            return
         }
-        return suggestionsScroll
+        // This broad public popularity lane does not inherit liked tags.
+        do { try await Task.sleep(for: .milliseconds(1_400)) } catch { return }
+        guard !Task.isCancelled else { return }
+        do {
+            let page = try await store.api.posts(
+                provider: .rule34, query: ParsedQuery(included: [], excluded: []),
+                page: 1, sort: "popular")
+            guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
+            var discovered = page.items
+            if let next = try? await store.api.posts(
+                provider: .rule34, query: ParsedQuery(included: [], excluded: []),
+                page: 2, sort: "popular"),
+               !Task.isCancelled, store.selectedProvider == .rule34 {
+                let seen = Set(page.items.map(\.stableID))
+                discovered += next.items.filter { !seen.contains($0.stableID) }
+            }
+            guard !Task.isCancelled, store.selectedProvider == .rule34 else { return }
+            publicPopularFranchisePosts = discovered
+            refreshThemeSuggestions()
+        } catch {
+            // Discovery failure must not stall or replace the main feed.
+        }
+    }
+
+    private func discoverRedgifsNiches() async {
+        guard store.bootstrapped, store.selectedProvider == .redgifs else {
+            redgifsNiches = []
+            return
+        }
+        do { try await Task.sleep(for: .milliseconds(800)) } catch { return }
+        guard !Task.isCancelled else { return }
+        do {
+            let discovered = try await store.api.redgifsNiches(limit: 16)
+            guard !Task.isCancelled, store.selectedProvider == .redgifs else { return }
+            redgifsNiches = discovered
+        } catch {
+            redgifsNiches = []
+        }
+    }
+
+    private func discoverVisualThemes() async {
+        let provider = store.selectedProvider
+        let discovered = await store.visual.discoveryTerms(provider: provider)
+        guard !Task.isCancelled, store.selectedProvider == provider else { return }
+        visualThemeTerms = discovered
+        refreshThemeSuggestions()
     }
 
     private func refreshThemeSuggestions() {
@@ -574,15 +695,27 @@ struct HomeFeedView: View {
     /// Personal suggestions work on *every* provider and use real covers or
     /// thumbnails from posts matching this provider's learned interests.
     @ViewBuilder private var suggestedThemeRow: some View {
-        if !themeSuggestions.isEmpty {
+        if !themeSuggestions.isEmpty || store.selectedProvider == .hanime {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
-                    Text("Suggested topics").font(.subheadline.weight(.bold))
+                    Text(store.selectedProvider == .hanime ? "Hanime topics" : "Suggested topics")
+                        .font(.subheadline.weight(.bold))
                     Text(store.selectedProvider == .rule34 && suggestedThemesMode == SuggestedThemeMode.franchises.rawValue
                          ? "Franchise discovery" : "Based on your taste")
                         .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
+                    if store.selectedProvider == .hanime {
+                        Button {
+                            showAllHanimeTopics = true
+                        } label: {
+                            Label("See more", systemImage: "square.grid.2x2")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("home-hanime-see-more")
+                    }
                 }.padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
@@ -594,28 +727,8 @@ struct HomeFeedView: View {
                                                            excluded: current.excluded)
                                 Task { await store.refresh() }
                             } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(theme.label).font(.subheadline.weight(.semibold))
-                                        .lineLimit(2).foregroundStyle(.white)
-                                        .frame(height: 36, alignment: .topLeading)
-                                    if !theme.imageURL.isEmpty {
-                                        CachedMediaImage(url: theme.imageURL, pixels: 320, fill: true)
-                                            .frame(width: 154, height: 184)
-                                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-                                    } else {
-                                        RoundedRectangle(cornerRadius: 15, style: .continuous)
-                                            .fill(AppTheme.gradient)
-                                            .overlay(Image(systemName: "tag.fill")
-                                                .font(.system(size: 40, weight: .light)).foregroundStyle(.white))
-                                            .frame(width: 154, height: 184)
-                                    }
-                                }
-                                .frame(width: 154, alignment: .leading)
-                                .padding(10)
-                                .background(selected ? AnyShapeStyle(AppTheme.accent.opacity(0.25)) : AnyShapeStyle(AppTheme.elevatedSurface),
-                                            in: RoundedRectangle(cornerRadius: 21, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 21, style: .continuous)
-                                    .stroke(selected ? AppTheme.accent : AppTheme.border, lineWidth: 1.5))
+                                HomeArtworkChip(title: theme.label, imageURL: theme.imageURL,
+                                                selected: selected)
                             }
                             .buttonStyle(QuicktickPressStyle())
                             .accessibilityLabel("Suggested theme: \(theme.label)")
@@ -627,18 +740,92 @@ struct HomeFeedView: View {
         }
     }
 
+    private var recommendedRedgifsNiches: [RedgifsNiche] {
+        let taste = RedgifsNicheAffinity(liked: Array(store.favorites.values), observed: store.posts)
+        return taste.rankNiches(redgifsNiches)
+    }
+
+    /// RedGIFs' actual communities, represented by thumbnails from their
+    /// popular clips. Tapping one opens that niche's immersive vertical feed.
+    @ViewBuilder private var redgifsNicheRow: some View {
+        if !redgifsNiches.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.grid.2x2.fill").foregroundStyle(AppTheme.accent)
+                    Text("RedGIFs niches").font(.subheadline.weight(.bold))
+                    Text(store.favorites.values.contains(where: { $0.providerKey == .redgifs })
+                         ? "For you" : "Explore")
+                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel).lineLimit(1)
+                        .accessibilityLabel("Niches ranked from your Likes and related communities")
+                    Spacer()
+                    Button {
+                        showAllRedgifsNiches = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Show all")
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("home-redgifs-show-all")
+                }.padding(.horizontal, 16)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(recommendedRedgifsNiches) { niche in
+                            Button {
+                                openRedgifsNiche(niche)
+                            } label: {
+                                HomeArtworkChip(title: niche.name, imageURL: niche.imageURL)
+                                    .overlay(alignment: .topTrailing) {
+                                        if openingNicheID == niche.id {
+                                            ProgressView().tint(.white).padding(12)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(QuicktickPressStyle())
+                            .disabled(openingNicheID != nil)
+                            .accessibilityLabel("Explore RedGIFs niche: \(niche.name)")
+                            .accessibilityIdentifier("redgifs-niche-\(niche.id)")
+                        }
+                    }.padding(.horizontal, 16)
+                }
+            }.accessibilityElement(children: .contain)
+                .accessibilityIdentifier("home-redgifs-niches")
+        }
+    }
+
+    private func openRedgifsNiche(_ niche: RedgifsNiche) {
+        guard openingNicheID == nil, store.selectedProvider == .redgifs else { return }
+        openingNicheID = niche.id
+        let query = "niche:" + niche.id
+        store.commitSearch(query: query, sort: "popular")
+        Task { @MainActor in
+            await store.refresh(immersive: true)
+            defer { openingNicheID = nil }
+            guard store.selectedProvider == .redgifs,
+                  store.queryText == query,
+                  let first = store.posts.first(where: \.isImmersiveMedia) else { return }
+            immersivePostID = first.stableID
+            immersive = true
+        }
+    }
+
     /// Provider categories live on Home as one-tap discovery chips. They are
     /// intentionally not part of the Search sheet's autocomplete suggestions.
     private var homeCategoryRow: some View {
         let provider = store.selectedProvider
         let selected = ProviderSearchCategories.split(QueryParser.parse(store.queryText), provider: provider).category
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Text("Categories")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.secondaryLabel)
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Categories")
+                .font(.subheadline.weight(.bold))
+                .padding(.horizontal, 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
                 ForEach(ProviderSearchCategories.suggestions(provider: provider)) { item in
                     let active = selected == item.value
+                    let preview = pornhubCategoryPreview(item.value)
                     Button {
                         let current = QueryParser.parse(store.queryText)
                         let keywords = ProviderSearchCategories.split(current, provider: provider).keywords
@@ -647,21 +834,49 @@ struct HomeFeedView: View {
                         store.commitSearch(query: QueryParser.formatted(next), sort: store.feedSort)
                         Task { await store.refresh() }
                     } label: {
-                        Text(item.label)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(active ? .white : AppTheme.secondaryLabel)
-                            .padding(.horizontal, 14)
-                            .frame(minHeight: 36)
-                            .background(active ? AnyShapeStyle(AppTheme.gradient) : AnyShapeStyle(AppTheme.elevatedSurface),
-                                        in: Capsule())
-                            .overlay(Capsule().stroke(active ? AppTheme.accent : AppTheme.border, lineWidth: 1))
+                        HomeArtworkChip(title: item.label, imageURL: preview ?? "",
+                                        selected: active, width: 174, height: 198,
+                                        placeholder: "square.grid.2x2.fill")
                     }
                     .buttonStyle(QuicktickPressStyle())
                     .accessibilityIdentifier("home-category-\(item.value)")
                     .accessibilityAddTraits(active ? .isSelected : [])
                 }
-            }.padding(.horizontal, 16)
-        }.accessibilityIdentifier("home-categories")
+                }.padding(.horizontal, 16)
+            }
+        }
+        .accessibilityIdentifier("home-categories")
+        .task(id: store.selectedProvider) { await discoverPornhubCategoryPreviews() }
+    }
+
+    private func pornhubCategoryPreview(_ token: String) -> String? {
+        if let cached = pornhubCategoryPreviews[token] { return cached }
+        // A word in a title is not evidence of a video's category. Only a
+        // category-specific website result or verified API category qualifies.
+        return (store.posts + Array(store.favorites.values)).first {
+            $0.providerKey == .pornhub && $0.category == token &&
+                URL(string: $0.cardPreviewURL)?.scheme == "https"
+        }?.cardPreviewURL
+    }
+
+    @MainActor private func discoverPornhubCategoryPreviews() async {
+        guard store.selectedProvider == .pornhub else {
+            pornhubCategoryPreviews = [:]
+            return
+        }
+        // Each category is independently verified against the first-party
+        // catalog. A failed or blocked category keeps its honest placeholder.
+        // Fetch serially and away from first paint to avoid a burst of calls.
+        try? await Task.sleep(for: .milliseconds(1_300))
+        for category in ProviderSearchCategories.suggestions(provider: .pornhub) {
+            guard !Task.isCancelled, store.selectedProvider == .pornhub else { return }
+            guard pornhubCategoryPreviews[category.value] == nil else { continue }
+            if let preview = try? await store.api.pornhubCategoryPreview(token: category.value),
+               URL(string: preview)?.scheme == "https" {
+                pornhubCategoryPreviews[category.value] = preview
+            }
+            try? await Task.sleep(for: .milliseconds(350))
+        }
     }
 
     private func refreshFromGesture() async {
@@ -778,6 +993,360 @@ struct HomeFeedView: View {
 
     private var searchBar: some View {
         NativeSearchBar(focusRequested: $showSearch)
+    }
+}
+
+/// Full-screen, paginated niche browser. Selection and playback live in
+/// the same presentation so a sheet dismissal cannot drop the chosen filter.
+private struct RedgifsNicheBrowserView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let featured: [RedgifsNiche]
+    @Binding var showSettings: Bool
+    let onReturnToFYP: () -> Void
+    @State private var niches: [RedgifsNiche] = []
+    @State private var page = 1
+    @State private var hasMore = true
+    @State private var loading = false
+    @State private var loadingNicheID: String?
+    @State private var selectionID = UUID()
+    @State private var selectedNiche: RedgifsNiche?
+    @State private var selectedPostID: String?
+    @State private var errorMessage: String?
+    @State private var searchText = ""
+
+    private var filtered: [RedgifsNiche] {
+        let matching = searchText.isEmpty ? niches
+            : niches.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        let taste = RedgifsNicheAffinity(liked: Array(store.favorites.values), observed: store.posts)
+        return taste.rankNiches(matching)
+    }
+
+    var body: some View {
+        Group {
+            if let selectedNiche {
+                // The niche player is a full-screen cover in its own right.
+                // Keeping it inside NavigationStack makes UIKit reserve the
+                // navigation/safe-area bounds and shrinks the video canvas
+                // compared with the regular edge-to-edge Immersive feed.
+                ImmersiveFeedView(posts: store.posts, offline: false,
+                                  activePostID: $selectedPostID,
+                                  onClose: { closeImmersive() },
+                                  showSettings: $showSettings)
+                    .id(selectedNiche.id)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(AppTheme.canvas.ignoresSafeArea())
+            } else {
+                NavigationStack {
+                    directoryView
+                }
+            }
+        }
+        .tint(AppTheme.accent)
+        .task { if niches.isEmpty { niches = featured; await loadNextPage() } }
+    }
+
+    private var directoryView: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                LazyVGrid(columns: columns(for: geometry.size.width), spacing: 12) {
+                    ForEach(filtered) { niche in
+                        nicheCard(niche, width: cardWidth(for: geometry.size.width))
+                            .onAppear {
+                                if searchText.isEmpty, niche.id == niches.suffix(6).first?.id {
+                                    Task { await loadNextPage() }
+                                }
+                            }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                if loading { ProgressView("Loading niches…").padding(18) }
+                if let errorMessage {
+                    VStack(spacing: 9) {
+                        Text(errorMessage)
+                            .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                            .multilineTextAlignment(.center)
+                        if hasMore {
+                            Button("Retry loading niches") { Task { await loadNextPage() } }
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.bottom, 16)
+                }
+                if hasMore && !loading && loadingNicheID == nil {
+                    Button("Load more niches") { Task { await loadNextPage() } }
+                        .padding(.bottom, 24)
+                }
+            }
+        }
+        .background(ThemeBackdrop())
+        .navigationTitle("RedGIFs niches")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Filter loaded niches")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Close") { dismiss() }
+                    .accessibilityIdentifier("redgifs-all-close")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Return to FYP", action: onReturnToFYP)
+                    .fontWeight(.semibold)
+                    .accessibilityIdentifier("redgifs-return-fyp")
+            }
+        }
+    }
+
+    private func columns(for width: CGFloat) -> [GridItem] {
+        let count = columnCount(for: width)
+        let width = cardWidth(for: width)
+        return Array(repeating: GridItem(.fixed(width), spacing: 12), count: count)
+    }
+
+    private func columnCount(for width: CGFloat) -> Int {
+        if width >= 1050 { return 5 }
+        if width >= 720 { return 4 }
+        if width >= 560 { return 3 }
+        return 2
+    }
+
+    private func cardWidth(for width: CGFloat) -> CGFloat {
+        let count = columnCount(for: width)
+        return max(116, (width - 32 - CGFloat(count - 1) * 12) / CGFloat(count))
+    }
+
+    private func nicheCard(_ niche: RedgifsNiche, width: CGFloat) -> some View {
+        let posterWidth = width - 18
+        return Button {
+            openNiche(niche)
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                CachedMediaImage(url: niche.imageURL, pixels: 420, fill: true)
+                    .frame(width: posterWidth, height: posterWidth * 1.2)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 13))
+                Text(niche.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .frame(width: posterWidth, height: 36, alignment: .topLeading)
+                HStack(spacing: 4) {
+                    Text(niche.postCount > 0 ? "\(niche.postCount) clips" : "Explore niche")
+                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+                    if loadingNicheID == niche.id {
+                        ProgressView().controlSize(.mini)
+                    }
+                }
+                .frame(width: posterWidth, height: 16, alignment: .leading)
+            }
+            .frame(width: posterWidth, alignment: .leading)
+            .padding(9)
+            .background(AppTheme.elevatedSurface,
+                        in: RoundedRectangle(cornerRadius: 19))
+            .overlay(RoundedRectangle(cornerRadius: 19).stroke(AppTheme.border))
+        }
+        .buttonStyle(QuicktickPressStyle())
+        .frame(width: width)
+        .disabled(loadingNicheID == niche.id)
+        .accessibilityLabel("Open niche \(niche.name)")
+        .accessibilityIdentifier("redgifs-all-niche-\(niche.id)")
+    }
+
+    private func openNiche(_ niche: RedgifsNiche) {
+        guard store.selectedProvider == .redgifs else { return }
+        // A second tap supersedes the in-flight selection. Keeping all cards
+        // disabled during a network request made valid niche taps appear dead.
+        let requestID = UUID()
+        selectionID = requestID
+        loadingNicheID = niche.id
+        errorMessage = nil
+        let query = "niche:" + niche.id
+        store.commitSearch(query: query, sort: "popular")
+        Task { @MainActor in
+            await store.refresh(immersive: true)
+            guard selectionID == requestID else { return }
+            loadingNicheID = nil
+            guard store.selectedProvider == .redgifs, store.queryText == query else { return }
+            // A failed request must not open stale FYP posts from the previous
+            // provider feed. NativeProviderAPI labels every niche result.
+            // The request itself is constrained to this niche. Some API rows
+            // omit their category metadata, so a second exact-category gate
+            // can incorrectly turn a valid video response into an empty feed.
+            guard store.lastError == nil,
+                  let first = store.posts.first(where: {
+                      $0.isImmersiveMedia && $0.providerKey == .redgifs
+                  }) else {
+                errorMessage = store.lastError ?? "No playable clips were returned for \(niche.name). Try another niche."
+                return
+            }
+            selectedPostID = first.stableID
+            selectedNiche = niche
+        }
+    }
+
+    private func closeImmersive() {
+        // Immersive's Return to FYP clears the query before onClose, while its
+        // normal back button preserves it. Keep those two actions distinct.
+        if store.queryText.isEmpty {
+            onReturnToFYP()
+        } else {
+            selectedNiche = nil
+            selectedPostID = nil
+        }
+    }
+
+    @MainActor private func loadNextPage() async {
+        guard !loading, hasMore else { return }
+        loading = true
+        errorMessage = nil
+        defer { loading = false }
+        do {
+            let result = try await store.api.redgifsNichesPage(page: page, limit: 24)
+            var known = Set(niches.map(\.id))
+            for niche in result.items where known.insert(niche.id).inserted {
+                niches.append(niche)
+            }
+            hasMore = result.hasMore
+            page += 1
+        } catch is CancellationError {
+            // Closing the gallery cancels pending requests.
+        } catch {
+            errorMessage = "Niches could not be loaded: \(error.localizedDescription)"
+        }
+    }
+}
+
+/// Browses the full set of topics exposed by the accessible Hanime catalog,
+/// plus tags from saved posts. More catalog pages can be requested in place;
+/// the five personalized chips on Home are not the directory's limit.
+private struct HanimeTopicsBrowserView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+    @State private var catalogPosts: [Post] = []
+    @State private var page = 1
+    @State private var hasMore = true
+    @State private var loading = false
+    @State private var errorMessage: String?
+
+    private var topics: [String] {
+        let evidence = store.posts + Array(store.favorites.values) + catalogPosts
+        let chosen = store.tasteChoice(for: .hanime).into
+        let terms = chosen + store.learnedInterests + evidence
+            .filter { $0.providerKey == .hanime }.flatMap(\.tags)
+        let excluded = Set(store.exclusions.map { $0.lowercased() })
+        var seen = Set<String>()
+        return terms.compactMap { raw -> String? in
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "_", with: " ").lowercased()
+            guard !value.isEmpty, value.count <= 80,
+                  !value.contains(":"), !value.contains("/"),
+                  !excluded.contains(value), seen.insert(value).inserted else { return nil }
+            return value
+        }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    private var visibleTopics: [String] {
+        let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return term.isEmpty ? topics : topics.filter { $0.localizedCaseInsensitiveContains(term) }
+    }
+
+    private var topicPreviews: [String: String] {
+        var previews: [String: String] = [:]
+        for post in catalogPosts + store.posts + Array(store.favorites.values)
+        where post.providerKey == .hanime && URL(string: post.cardPreviewURL)?.scheme == "https" {
+            for tag in post.tags {
+                let key = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "_", with: " ").lowercased()
+                if previews[key] == nil { previews[key] = post.cardPreviewURL }
+            }
+        }
+        return previews
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 9) {
+                Text("Topics from the available Hanime catalog and your saved videos")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    .padding(.bottom, 8)
+                let previews = topicPreviews
+                ForEach(visibleTopics, id: \.self) { term in
+                    let preview = previews[term]
+                    Button {
+                        let current = QueryParser.parse(store.queryText)
+                        store.commitSuggestedTopic(term, excluded: current.excluded)
+                        dismiss()
+                        Task { await store.refresh() }
+                    } label: {
+                        HStack(spacing: 12) {
+                            if let preview {
+                                CachedMediaImage(url: preview, pixels: 240, fill: true)
+                                    .frame(width: 76, height: 84)
+                                    .clipped()
+                                    .clipShape(RoundedRectangle(cornerRadius: 11))
+                            } else {
+                                RoundedRectangle(cornerRadius: 11)
+                                    .fill(AppTheme.gradient)
+                                    .opacity(0.35)
+                                    .overlay(Image(systemName: "tag.fill")
+                                        .foregroundStyle(.white.opacity(0.65)))
+                                    .frame(width: 76, height: 84)
+                            }
+                            Text(term.capitalized)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(AppTheme.accent)
+                        }
+                        .padding(14)
+                        .background(AppTheme.elevatedSurface,
+                                    in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("hanime-topic-\(term)")
+                }
+                if loading { ProgressView("Loading Hanime topics…").frame(maxWidth: .infinity).padding() }
+                if let errorMessage {
+                    Text(errorMessage).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                }
+                if hasMore && !loading {
+                    Button("Load more topics") { Task { await loadNextPage() } }
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .accessibilityIdentifier("hanime-topics-load-more")
+                }
+            }
+            .padding(16)
+        }
+        .background(ThemeBackdrop())
+        .navigationTitle("All Hanime topics")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Search topics")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+        }
+        .task { await loadNextPage() }
+    }
+
+    @MainActor private func loadNextPage() async {
+        guard !loading, hasMore, store.selectedProvider == .hanime else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            let result = try await store.api.posts(provider: .hanime,
+                query: QueryParser.parse(""), page: page, sort: "popular")
+            guard !Task.isCancelled else { return }
+            let known = Set(catalogPosts.map(\.stableID))
+            let unique = result.items.filter { !known.contains($0.stableID) }
+            catalogPosts.append(contentsOf: unique)
+            hasMore = (result.hasMore ?? false) && !unique.isEmpty && page < 25
+            page += 1
+            errorMessage = nil
+        } catch is CancellationError {
+        } catch {
+            errorMessage = "More topics are unavailable: \(error.localizedDescription)"
+        }
     }
 }
 

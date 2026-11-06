@@ -189,12 +189,27 @@ private struct DownloadSearchIdentity: Equatable {
     let mediaType: String?
     let localMediaPath: String?
     let thumbnailLocalPath: String?
+    let fileSize: Int64?
+    let errorMessage: String?
 
     init(_ record: DownloadRecord) {
         key = record.key; title = record.title; provider = record.provider
         postID = record.postID; tags = record.tags; state = record.state
         mediaType = record.mediaType; localMediaPath = record.localMediaPath
         thumbnailLocalPath = record.thumbnailLocalPath
+        fileSize = record.fileSize; errorMessage = record.errorMessage
+    }
+}
+
+/// Stable size sorting keeps unknown/incomplete file sizes last and preserves
+/// the current order when two files have the same measured byte count.
+enum DownloadSizeOrder {
+    static func largestFirst(_ records: [DownloadRecord]) -> [DownloadRecord] {
+        records.enumerated().sorted { lhs, rhs in
+            let leftSize = lhs.element.fileSize ?? -1
+            let rightSize = rhs.element.fileSize ?? -1
+            return leftSize == rightSize ? lhs.offset < rhs.offset : leftSize > rightSize
+        }.map { $0.element }
     }
 }
 
@@ -209,7 +224,10 @@ struct DownloadsFeedView: View {
 }
 
 private struct DownloadContent: View {
-    @ObservedObject var manager: DownloadManager
+    // Download progress publishes often. Only transfer rows subscribe to it;
+    // the large scroll container redraws when its catalog actually changes.
+    let manager: DownloadManager
+    @State private var catalogRecords: [DownloadRecord] = []
     var scrollToTopRevision = 0
     var onImmersiveChange: (Bool) -> Void = { _ in }
     @State private var immersive = false
@@ -221,24 +239,29 @@ private struct DownloadContent: View {
     @State private var downloadOrder = DownloadShuffleOrder()
     @State private var selectedProviderID: String?
     @State private var sortByProvider = false
+    @State private var sortBySizeDescending = false
     @State private var searchText = ""
     @State private var matchingKeys: Set<String> = []
     @State private var offlinePostCache: [String: Post] = [:]
     @State private var offlineCacheReady = false
     @State private var recordIdentity: [DownloadSearchIdentity] = []
+    @State private var offlineMediaIdentity: [String] = []
+    @State private var searchableIdentity: [String] = []
     @State private var recordRevision = 0
     @State private var searchRevision = 0
     @State private var searching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var cacheTask: Task<Void, Never>?
     private var cardInset: CGFloat { AppTheme.isDeSlopified ? AppTheme.contentMargin : 0 }
-    private var availableProviders: [String] { CollectionProviderOrder.available(manager.records.map(\.provider)) }
+    private var availableProviders: [String] { CollectionProviderOrder.available(catalogRecords.map(\.provider)) }
     private var filteredRecords: [DownloadRecord] {
-        var records = downloadOrder.ordered(manager.records)
+        var records = downloadOrder.ordered(catalogRecords)
         if let selectedProviderID {
             records = records.filter { CollectionProviderOrder.key($0.provider) == selectedProviderID }
         }
-        if sortByProvider {
+        if sortBySizeDescending {
+            records = DownloadSizeOrder.largestFirst(records)
+        } else if sortByProvider {
             records = records.enumerated().sorted { lhs, rhs in
                 let a = CollectionProviderOrder.name(CollectionProviderOrder.key(lhs.element.provider))
                 let b = CollectionProviderOrder.name(CollectionProviderOrder.key(rhs.element.provider))
@@ -253,18 +276,29 @@ private struct DownloadContent: View {
     }
     private var collectionSubtitle: String {
         if searching { return "Searching your downloads…" }
-        if searchText.isEmpty && selectedProviderID == nil { return "\(manager.records.count) downloads, always with you" }
-        return "\(filteredRecords.count) of \(manager.records.count) downloads"
+        if searchText.isEmpty && selectedProviderID == nil { return "\(catalogRecords.count) downloads, always with you" }
+        return "\(filteredRecords.count) of \(catalogRecords.count) downloads"
     }
     private var exportURLs: [URL] {
-        manager.records.filter { selectedKeys.contains($0.key) }.compactMap(\.exportURL)
+        catalogRecords.filter { selectedKeys.contains($0.key) }.compactMap(\.exportURL)
     }
     private func refreshCatalog(_ records: [DownloadRecord]) {
         let next = records.map(DownloadSearchIdentity.init)
         guard next != recordIdentity else { return }
         recordIdentity = next
+        catalogRecords = records
         downloadOrder.reconcile(records: records)
-        offlineCacheReady = false
+        let searchable = records.map { "\($0.key)|\($0.provider)|\($0.title)|\($0.tags.joined(separator: ","))" }
+        if searchable != searchableIdentity {
+            searchableIdentity = searchable
+            scheduleSearch(records: records)
+        }
+        // File sizes, error strings and sort changes must not discard all
+        // decoded offline posts. Rebuild only when playable paths change.
+        let playable = records.filter { $0.state == .complete }
+            .map { "\($0.key)|\($0.localMediaPath ?? "")|\($0.thumbnailLocalPath ?? "")|\($0.mediaType ?? "")" }
+        guard playable != offlineMediaIdentity else { return }
+        offlineMediaIdentity = playable
         recordRevision &+= 1
         let revision = recordRevision
         cacheTask?.cancel()
@@ -280,7 +314,6 @@ private struct DownloadContent: View {
             offlinePostCache = built
             offlineCacheReady = true
         }
-        scheduleSearch(records: records)
     }
     private func scheduleSearch(records: [DownloadRecord]) {
         searchTask?.cancel()
@@ -358,17 +391,19 @@ private struct DownloadContent: View {
                         }
                         .accessibilityIdentifier("downloads-provider-filter")
                         Spacer()
-                        if sortByProvider {
+                        if sortBySizeDescending {
+                            Text("Largest first").font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                        } else if sortByProvider {
                             Text("Provider A–Z").font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                         }
                     }
                     .padding(.horizontal, AppTheme.contentMargin)
-                    if selecting { selectionControls.padding(.horizontal, AppTheme.contentMargin) }
+                    // Selection actions stay docked below while cards scroll.
                     if let error = manager.storageError {
                         Text(error).foregroundStyle(.orange)
                             .padding(.horizontal, AppTheme.contentMargin)
                     }
-                    if manager.records.isEmpty {
+                    if catalogRecords.isEmpty {
                         ContentUnavailableView("No downloads yet", systemImage: "arrow.down.to.line", description: Text("Save posts to view them offline here."))
                             .padding(.horizontal, AppTheme.contentMargin)
                     }
@@ -393,36 +428,11 @@ private struct DownloadContent: View {
                             .padding(.horizontal, cardInset)
                             .frame(maxWidth: .infinity)
                         } else {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                if let path = record.thumbnailLocalPath {
-                                    CachedMediaImage(url: URL(fileURLWithPath: path).absoluteString, pixels: 216).frame(width: 72, height: 72).clipped()
-                                }
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack(spacing: 8) {
-                                        if record.state == .downloading { InfinityLoader(size: 27) }
-                                        Text(record.title).font(.subheadline.weight(.semibold)).lineLimit(2)
-                                    }
-                                    Text("\(record.provider) · \(record.state.rawValue)")
-                                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
-                                    Text(record.formattedSize).font(.caption.monospacedDigit())
-                                    ProgressView(value: record.progress).tint(AppTheme.accent)
-                                    if let error = record.errorMessage { Text(error).foregroundStyle(.orange).font(.caption) }
-                                }
+                            DownloadTransferRow(manager: manager, fallback: record,
+                                                selecting: selecting, selected: selectedKeys.contains(record.key)) {
+                                toggleSelection(record.key)
                             }
-                            HStack {
-                                if record.state == .downloading { Button("Pause") { manager.pause(record) }; Button("Cancel") { manager.cancel(record) } }
-                                if record.state == .paused { Button("Resume") { manager.resume(record) }; Button("Cancel") { manager.cancel(record) } }
-                                if record.state == .failed || record.state == .cancelled { Button("Retry") { manager.retry(record) } }
-                                Spacer()
-                                if !selecting { Button("Delete", role: .destructive) { manager.delete(record) } }
-                            }.buttonStyle(.bordered)
-                        }
-                        .padding(14)
-                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
-                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(AppTheme.border))
-                        .overlay { if selecting { selectionOverlay(for: record) } }
-                        .padding(.horizontal, AppTheme.contentMargin)
+                            .padding(.horizontal, AppTheme.contentMargin)
                         }
                     }
                 }
@@ -449,6 +459,18 @@ private struct DownloadContent: View {
                     .transition(.move(edge: .trailing))
             }
         }.scrollContentBackground(.hidden).background(ThemeBackdrop()).navigationTitle("Downloads")
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if selecting && !immersive {
+                    selectionControls
+                        .frame(maxWidth: AppTheme.feedWidth)
+                        .padding(.horizontal, AppTheme.contentMargin)
+                        .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity)
+                        .background(.ultraThinMaterial)
+                        .overlay(alignment: .top) { Rectangle().fill(AppTheme.border).frame(height: 1) }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { rhythm = true } label: { Label("Rhythm", systemImage: "waveform.path") }
@@ -456,31 +478,44 @@ private struct DownloadContent: View {
                         .accessibilityIdentifier("downloads-rhythm")
                     Menu {
                         Button("Shuffle downloads", systemImage: "shuffle") {
+                            sortBySizeDescending = false
                             sortByProvider = false
-                            downloadOrder.shuffle(records: manager.records)
+                            downloadOrder.shuffle(records: catalogRecords)
                             immersivePostID = nil
                         }
                         Button("Original order", systemImage: "list.bullet") {
+                            sortBySizeDescending = false
                             sortByProvider = false
                             downloadOrder.restoreOriginalOrder()
                             immersivePostID = nil
                         }
-                        .disabled(!downloadOrder.isShuffled && !sortByProvider)
+                        .disabled(!downloadOrder.isShuffled && !sortByProvider && !sortBySizeDescending)
                         Button("Provider A–Z", systemImage: "square.grid.2x2") {
                             downloadOrder.restoreOriginalOrder()
                             sortByProvider = true
+                            sortBySizeDescending = false
                             immersivePostID = nil
                         }
                         .disabled(sortByProvider)
+                        Button("Largest first", systemImage: "arrow.down.to.line") {
+                            downloadOrder.restoreOriginalOrder()
+                            sortByProvider = false
+                            sortBySizeDescending = true
+                            immersivePostID = nil
+                        }
+                        .disabled(sortBySizeDescending)
+                        .accessibilityIdentifier("downloads-sort-largest")
                     } label: {
-                        Image(systemName: sortByProvider ? "line.3.horizontal.decrease.circle.fill" :
-                                            (downloadOrder.isShuffled ? "shuffle.circle.fill" : "shuffle"))
+                        Image(systemName: sortBySizeDescending ? "arrow.down.circle.fill" :
+                                            (sortByProvider ? "line.3.horizontal.decrease.circle.fill" :
+                                            (downloadOrder.isShuffled ? "shuffle.circle.fill" : "shuffle")))
                             .frame(minWidth: 44, minHeight: 44)
                     }
-                    .disabled(manager.records.isEmpty)
-                    .accessibilityLabel("Browse downloads randomly")
-                    .accessibilityValue(sortByProvider ? "Provider A–Z" :
-                                        (downloadOrder.isShuffled ? "Shuffled" : "Original order"))
+                    .disabled(catalogRecords.isEmpty)
+                    .accessibilityLabel("Sort downloads")
+                    .accessibilityValue(sortBySizeDescending ? "Largest first" :
+                                        (sortByProvider ? "Provider A–Z" :
+                                        (downloadOrder.isShuffled ? "Shuffled" : "Original order")))
                     .accessibilityIdentifier("downloads-shuffle")
                     Button(immersive ? "Feed" : "Offline Immersive") { immersive.toggle() }
                         .disabled(!immersive && !localPosts.contains(where: \.isImmersiveMedia))
@@ -573,6 +608,81 @@ private struct DownloadContent: View {
     }
     private func toggleSelection(_ key: String) {
         if !selectedKeys.insert(key).inserted { selectedKeys.remove(key) }
+    }
+}
+
+/// Only an active transfer observes byte-level progress, preventing a
+/// running background HLS download from invalidating the entire offline feed.
+private struct DownloadTransferRow: View {
+    @ObservedObject var manager: DownloadManager
+    let fallback: DownloadRecord
+    let selecting: Bool
+    let selected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        let record = manager.records.first(where: { $0.key == fallback.key }) ?? fallback
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                if let path = record.thumbnailLocalPath {
+                    CachedMediaImage(url: URL(fileURLWithPath: path).absoluteString, pixels: 216)
+                        .frame(width: 72, height: 72).clipped()
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        if record.state == .downloading { InfinityLoader(size: 27) }
+                        Text(record.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    }
+                    Text("\(record.provider) · \(record.state.rawValue)")
+                        .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    Text(record.formattedSize).font(.caption.monospacedDigit())
+                    ProgressView(value: record.progress).tint(AppTheme.accent)
+                    if let error = record.errorMessage {
+                        Text(error).foregroundStyle(.orange).font(.caption)
+                    }
+                }
+            }
+            HStack {
+                if record.state == .downloading {
+                    Button("Pause") { manager.pause(record) }
+                    Button("Cancel") { manager.cancel(record) }
+                }
+                if record.state == .paused {
+                    Button("Resume") { manager.resume(record) }
+                    Button("Cancel") { manager.cancel(record) }
+                }
+                if record.state == .failed || record.state == .cancelled {
+                    Button("Retry") { manager.retry(record) }
+                }
+                Spacer()
+                if !selecting {
+                    Button("Delete", role: .destructive) { manager.delete(record) }
+                }
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(14)
+        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(AppTheme.border))
+        .overlay {
+            if selecting {
+                Button(action: onSelect) {
+                    RoundedRectangle(cornerRadius: 19).fill(.black.opacity(0.001))
+                        .overlay(alignment: .topLeading) {
+                            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 29, weight: .semibold))
+                                .foregroundStyle(selected ? AppTheme.accent : .white)
+                                .shadow(color: .black.opacity(0.6), radius: 5)
+                                .padding(13)
+                        }
+                        .overlay(RoundedRectangle(cornerRadius: 19)
+                            .stroke(selected ? AppTheme.accent : .clear, lineWidth: 2))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(selected ? "Deselect" : "Select") \(record.title)")
+                .accessibilityIdentifier("select-download-\(record.key)")
+            }
+        }
     }
 }
 

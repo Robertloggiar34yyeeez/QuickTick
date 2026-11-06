@@ -170,6 +170,7 @@ struct TasteOnboardingView: View {
     @State private var into = Set<String>()
     @State private var notInto = Set<String>()
     @State private var suggestedTags: [String] = []
+    @State private var wdSuggestedTags = Set<String>()
     @State private var artistDraft = ""
     @State private var creditedArtists: [String] = []
     var body: some View {
@@ -195,11 +196,13 @@ struct TasteOnboardingView: View {
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .background(AppTheme.accent.opacity(0.13), in: Capsule())
                     TasteTagSection(preferred: true, selected: $into, opposite: $notInto,
-                                    candidates: suggestedTags, provider: store.selectedProvider)
+                                    candidates: suggestedTags, provider: store.selectedProvider,
+                                    wdCandidates: wdSuggestedTags)
                     artistPreferences
                     TasteTagSection(preferred: false, selected: $notInto, opposite: $into,
-                                    candidates: suggestedTags, provider: store.selectedProvider)
-                    Label("Suggestions use your liked posts, learned interests and matching source tags. Your history remains private on this device.",
+                                    candidates: suggestedTags, provider: store.selectedProvider,
+                                    wdCandidates: wdSuggestedTags)
+                    Label("Suggestions come from this source's own catalog and on-device visual learning. Your history remains private on this device.",
                           systemImage: "lock.shield")
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                         .padding(.horizontal, 4)
@@ -232,6 +235,32 @@ struct TasteOnboardingView: View {
                 favorites: Array(store.favorites.values.prefix(250)), posts: Array(store.posts.prefix(80)),
                 provider: store.selectedProvider)
         }
+        .task(id: store.selectedProvider) { await loadProviderInterests() }
+    }
+
+    @MainActor private func loadProviderInterests() async {
+        let provider = store.selectedProvider
+        let visualTags = await store.visual.discoveryTerms(provider: provider)
+        let catalogPosts: [Post]
+        if provider == .hanime {
+            // Immersive may currently be empty even though the first-party
+            // Hanime catalog contains usable categories and genres.
+            let page = try? await store.api.posts(provider: .hanime,
+                query: ParsedQuery(included: [], excluded: []),
+                page: 1, sort: "popular")
+            catalogPosts = page?.items ?? []
+        } else { catalogPosts = [] }
+        let niches: [RedgifsNiche]
+        if provider == .redgifs {
+            niches = (try? await store.api.redgifsNiches(limit: 24)) ?? []
+        } else { niches = [] }
+        guard !Task.isCancelled, store.selectedProvider == provider else { return }
+        wdSuggestedTags = provider == .hanime ? Set(visualTags) : []
+        suggestedTags = TasteTagSuggestions.rank(
+            learned: store.learnedInterests,
+            favorites: Array(store.favorites.values.prefix(250)),
+            posts: Array(store.posts.prefix(80)) + catalogPosts, provider: provider,
+            visual: visualTags, niches: niches)
     }
 
     private var artistPreferences: some View {
@@ -312,6 +341,7 @@ private struct TasteTagSection: View {
     @Binding var opposite: Set<String>
     let candidates: [String]
     let provider: Provider
+    let wdCandidates: Set<String>
     @State private var draft = ""
     @State private var remote: [TagSuggestion] = []
     private var hue: Color { preferred ? AppTheme.accent : Color.orange }
@@ -335,7 +365,12 @@ private struct TasteTagSection: View {
         VStack(alignment: .leading, spacing: 12) {
             Label(preferred ? "More like this" : "See less of this", systemImage: preferred ? "heart.fill" : "hand.thumbsdown.fill")
                 .font(.headline).foregroundStyle(hue)
-            Text(preferred ? "Choose subjects, characters, styles or scenes." : "De-emphasize topics you dislike. Exact Rule34 tags can also be excluded.")
+            Text(provider == .hanime
+                 ? "Hanime catalog categories and WD Tagger visual attributes."
+                 : provider == .redgifs
+                 ? "RedGIFs communities (niches), clip tags and visual attributes."
+                 : preferred ? "Choose subjects, characters, styles or scenes."
+                 : "De-emphasize topics you dislike. Exact Rule34 tags can also be excluded.")
                 .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(AppTheme.secondaryLabel)
@@ -364,7 +399,7 @@ private struct TasteTagSection: View {
                     ForEach(selected.sorted(), id: \.self) { tag in
                         Button { selected.remove(tag) } label: {
                             HStack(spacing: 6) {
-                                Text(tag.replacingOccurrences(of: "_", with: " "))
+                                Text(label(for: tag))
                                     .lineLimit(1)
                                 Image(systemName: "xmark.circle.fill")
                             }
@@ -379,7 +414,9 @@ private struct TasteTagSection: View {
                 }
             }
             if !matches.isEmpty {
-                Text(normalizedDraft.isEmpty ? "SUGGESTED FOR YOU" : "MATCHING TAGS")
+                Text(normalizedDraft.isEmpty
+                     ? (provider == .redgifs ? "NICHES & ATTRIBUTES" : provider == .hanime ? "HANIME TOPICS & WD TAGS" : "SUGGESTED FOR YOU")
+                     : "MATCHING TAGS")
                     .font(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(1.3).foregroundStyle(AppTheme.secondaryLabel)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
@@ -387,7 +424,7 @@ private struct TasteTagSection: View {
                         Button { add(tag) } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "plus.circle.fill").foregroundStyle(hue)
-                                Text(tag.replacingOccurrences(of: "_", with: " ")).lineLimit(1)
+                                Text(label(for: tag)).lineLimit(1)
                                 Spacer(minLength: 0)
                             }
                             .font(.caption.weight(.medium))
@@ -432,6 +469,14 @@ private struct TasteTagSection: View {
         opposite.remove(normal)
         if selected.count < 40 { selected.insert(normal) }
     }
+    private func label(for tag: String) -> String {
+        if provider == .redgifs, let id = NativeProviderAPI.redgifsNicheID(tag) {
+            return "Niche · " + id.replacingOccurrences(of: "-", with: " ").capitalized
+        }
+        let label = tag.replacingOccurrences(of: "_", with: " ")
+        return provider == .hanime && wdCandidates.contains(tag)
+            ? "WD · " + label : label
+    }
 }
 
 enum TasteTagSuggestions {
@@ -450,7 +495,8 @@ enum TasteTagSuggestions {
             && !tag.hasPrefix("rating:") && !tag.hasPrefix("score:")
     }
 
-    static func rank(learned: [String], favorites: [Post], posts: [Post], provider: Provider) -> [String] {
+    static func rank(learned: [String], favorites: [Post], posts: [Post], provider: Provider,
+                     visual: [String] = [], niches: [RedgifsNiche] = []) -> [String] {
         var weights: [String: Int] = [:]
         func add(_ words: [String], weight: Int) {
             for raw in Set(words) {
@@ -460,11 +506,25 @@ enum TasteTagSuggestions {
             }
         }
         add(learned, weight: 15)
-        for post in favorites { add(post.tags, weight: 5) }
-        for post in posts { add(post.tags, weight: 1) }
+        add(visual, weight: 12)
+        for post in favorites where post.providerKey == provider {
+            add(post.tags, weight: 5)
+            if provider == .redgifs, let niche = post.category,
+               let id = NativeProviderAPI.redgifsNicheID("niche:" + niche) {
+                add(["niche:" + id], weight: 10)
+            }
+        }
+        for post in posts where post.providerKey == provider {
+            add(post.tags, weight: 1)
+            if provider == .redgifs, let niche = post.category,
+               let id = NativeProviderAPI.redgifsNicheID("niche:" + niche) {
+                add(["niche:" + id], weight: 3)
+            }
+        }
+        if provider == .redgifs { add(niches.map { "niche:" + $0.id }, weight: 8) }
         if provider == .rule34 {
             add(StarterTastePick.characters.flatMap(\.tags), weight: 2)
-        } else {
+        } else if provider != .hanime && provider != .redgifs {
             add(StarterTastePick.keywords.flatMap(\.tags), weight: 2)
         }
         return weights.keys.sorted { lhs, rhs in

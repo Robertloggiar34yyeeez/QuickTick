@@ -3,6 +3,25 @@ import AVFoundation
 @testable import QuicktickNative
 
 final class ImmersiveMediaTests: XCTestCase {
+    func testFullscreenDoubleTapSeekClampsAndRespectsSettingsInterval() {
+        XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: true, interval: 10), 52)
+        XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: false, interval: 10), 32)
+        XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: true, interval: 25), 67)
+        XCTAssertEqual(FullscreenSeekPolicy.target(current: 4, duration: 120, forward: false, interval: 10), 0)
+        XCTAssertEqual(FullscreenSeekPolicy.target(current: 116, duration: 120, forward: true, interval: 10) ?? -1, 119.8, accuracy: 0.01)
+        XCTAssertEqual(FullscreenSeekPolicy.target(current: 4, duration: .nan, forward: true, interval: 10), 14)
+        XCTAssertNil(FullscreenSeekPolicy.target(current: .nan, duration: 120, forward: true, interval: 10))
+        XCTAssertEqual(FullscreenSeekPolicy.target(current: 4, duration: 120, forward: true, interval: 0), 5)
+        XCTAssertEqual(FullscreenSeekPolicy.target(current: 4, duration: 120, forward: true, interval: 999), 64)
+    }
+
+    func testRedgifsNicheSwipeFinishesAtAdjacentViewportWithoutExtraSnap() {
+        XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: 1, viewportHeight: 844), -844)
+        XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: -1, viewportHeight: 844), 844)
+        XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: 1, viewportHeight: 0), 0)
+        XCTAssertEqual(ImmersiveNicheSwipeMotion.duration, 0.28, accuracy: 0.0001)
+    }
+
     func testImmersivePreloadsTwoUpcomingPostsAndRetainsPreviousForReverseSwipe() {
         XCTAssertEqual(ImmersivePreloadPlan.retainedIndices(current: 0, count: 5), [0, 1, 2])
         XCTAssertEqual(ImmersivePreloadPlan.forwardIndices(current: 0, count: 5), [1, 2])

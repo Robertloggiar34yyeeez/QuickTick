@@ -582,6 +582,8 @@ final class AppStore: ObservableObject {
         defer { if generation == token && !releasedLoading { isLoading = false } }
         do {
             let parsed = QueryParser.parse(requestedQuery)
+            let explicitRedgifsNiche = provider == .redgifs && parsed.included.count == 1
+                ? NativeProviderAPI.redgifsNicheID(parsed.included[0]) : nil
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let search = SearchFilters.split(queryText).tags
                 Task(priority: .utility) { await recordSearch(provider: provider, query: search) }
@@ -597,7 +599,7 @@ final class AppStore: ObservableObject {
             // metadata. A focused, two-lane recommendation search can miss
             // every video and wait for dozens of album fetches. Start with
             // the public video catalog and rank the resulting clips locally.
-            let directCatalog = personalized && (provider == .hhaven || provider == .nhentai ||
+            let directCatalog = personalized && (provider == .hhaven || provider == .nhentai || provider == .hanime ||
                                                  (provider == .erome && mediaOnly))
             let banned = Set((exclusions + parsed.excluded + tasteChoice(for: provider).notInto).map(RecommendationTagRules.canonical))
             let context = provider.rawValue + "|batch40|" + (mediaOnly ? "clips" : "all") + "|" + banned.sorted().joined(separator: ",")
@@ -608,6 +610,7 @@ final class AppStore: ObservableObject {
             var filtered: [Post] = []
             var havenExploration: [Post] = []
             var havenSafeCatalog: [Post] = []
+            var hanimeSafeCatalog: [Post] = []
             var nhentaiDiscovery: [Post] = []
             var epornerDiscovery: [Post] = []
             // Skip consumed/filtered pages; never reinsert them just to fill a batch.
@@ -641,6 +644,12 @@ final class AppStore: ObservableObject {
                 if personalized, provider == .hhaven, havenSafeCatalog.count < 48 {
                     havenSafeCatalog.append(contentsOf: incoming.prefix(48 - havenSafeCatalog.count))
                 }
+                if personalized, provider == .hanime, hanimeSafeCatalog.count < 48 {
+                    // The v11 Hanime search endpoint is an entire video catalog,
+                    // not an indexed WD-tag search. Retain safe video entries
+                    // before novelty/strict taste can empty Immersive.
+                    hanimeSafeCatalog.append(contentsOf: incoming.prefix(48 - hanimeSafeCatalog.count))
+                }
                 if personalized, provider == .eporner, epornerDiscovery.count < 120 {
                     // The Eporner browse API can repeatedly return the same
                     // top pages. Record safe candidates before novelty drops
@@ -649,7 +658,15 @@ final class AppStore: ObservableObject {
                 }
                 let visibleBeforeNovelty = incoming
                 if personalized { incoming = await recommendations.unseenRecommendations(incoming) }
-                incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values), recommended: tasteRanked, favoriteIDs: favoriteExclusionIDs)
+                // An explicitly selected niche is a browse filter, not an FYP
+                // recommendation. Show its real results even if those clips
+                // were previously viewed or liked.
+                if explicitRedgifsNiche == nil {
+                    incoming = feedExclusions.filter(incoming, favorites: Array(favorites.values),
+                        recommended: tasteRanked, favoriteIDs: favoriteExclusionIDs)
+                } else {
+                    incoming = incoming.filter { $0.category == explicitRedgifsNiche }
+                }
                 if incoming.isEmpty, provider == .erome, mediaOnly {
                     // Revisit public clips when everything has already been
                     // offered. Otherwise Erome can permanently say "No videos"
@@ -670,10 +687,16 @@ final class AppStore: ObservableObject {
                     // Metadata and cached appearance vectors only: no model
                     // loading, network requests or pixel decoding on first paint.
                     let cachedAppearance = await visual.scores(incoming)
-                    filtered = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
+                    let ranked = await recommendations.rankFast(incoming, taste: tasteChoice(for: provider),
                         recent: recentProviderPosts, visualScores: cachedAppearance,
-                        strict: provider != .erome && (!topicPersonalized || (favorites.count >= 5 &&
-                            provider != .hhaven && provider != .nhentai)))
+                        strict: provider != .erome && provider != .redgifs && provider != .hanime &&
+                            (!topicPersonalized || (favorites.count >= 5 &&
+                                provider != .hhaven && provider != .nhentai)))
+                    if provider == .redgifs {
+                        let nicheTaste = RedgifsNicheAffinity(liked: Array(favorites.values),
+                            observed: incoming + recentProviderPosts)
+                        filtered = nicheTaste.rankPosts(ranked)
+                    } else { filtered = ranked }
                 } else { filtered = incoming }
                 let focusedMiss = filtered.isEmpty && acquisition?.focused == true
                 if focusedMiss, let acquisition {
@@ -685,6 +708,21 @@ final class AppStore: ObservableObject {
                 if !filtered.isEmpty || (directCatalog && !havenSafeCatalog.isEmpty) || (!hasMore && !focusedMiss) { break }
             }
             var immediate = filtered
+            if immediate.isEmpty, personalized, provider == .hanime, !hanimeSafeCatalog.isEmpty {
+                // Every previously offered Hanime video can be rejected as
+                // "already seen" on a later Immersive visit. Keep hard blocks,
+                // dislikes and favorites excluded, but allow the provider's
+                // actual playable catalog to reappear instead of a dead feed.
+                let eligible = feedExclusions.filter(hanimeSafeCatalog,
+                    favorites: Array(favorites.values), recommended: false,
+                    favoriteIDs: favoriteExclusionIDs)
+                if !eligible.isEmpty {
+                    let visualEvidence = await visual.scores(eligible)
+                    immediate = Array((await recommendations.rankFast(eligible,
+                        taste: tasteChoice(for: provider), recent: recentProviderPosts,
+                        visualScores: visualEvidence, strict: false)).prefix(24))
+                }
+            }
             if immediate.isEmpty, personalized, provider == .hhaven, !havenExploration.isEmpty {
                 // A handful of clearly provisional discoveries is preferable
                 // to an empty Recommended page while WD poster evidence warms.
@@ -736,7 +774,7 @@ final class AppStore: ObservableObject {
                         visualScores: appearance, strict: true)).prefix(24))
                 }
             }
-            if immediate.isEmpty, provider != .rule34,
+            if immediate.isEmpty, explicitRedgifsNiche == nil, provider != .rule34,
                !parsed.included.isEmpty || !parsed.excluded.isEmpty {
                 // Some video providers search titles but omit searchable
                 // keywords/tags from their index. Keep *verified* matches
@@ -749,7 +787,8 @@ final class AppStore: ObservableObject {
                     favoriteIDs: favoriteExclusionIDs)
             }
             guard generation == token, !Task.isCancelled else { return }
-            posts = immediate.isEmpty && keepWarmFeed ? previousVisible : immediate
+            posts = immediate.isEmpty && keepWarmFeed && explicitRedgifsNiche == nil
+                ? previousVisible : immediate
             if !immediate.isEmpty {
                 let snapshot = immediate
                 let persistence = feedPreviewPersistence
@@ -811,6 +850,8 @@ final class AppStore: ObservableObject {
         let provider = selectedProvider
         do {
             let parsed = QueryParser.parse(queryText)
+            let explicitRedgifsNiche = provider == .redgifs && parsed.included.count == 1
+                ? NativeProviderAPI.redgifsNicheID(parsed.included[0]) : nil
             lastError = nil
             let directCatalog = (provider == .hhaven || provider == .nhentai ||
                                  (provider == .erome && feedMediaOnly)) &&
@@ -841,8 +882,12 @@ final class AppStore: ObservableObject {
             }
             let visibleBeforeNovelty = candidates
             if candidateContext != nil { candidates = await recommendations.unseenRecommendations(candidates) }
-            candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values), existing: posts,
-                recommended: personalizedPage, favoriteIDs: favoriteExclusionIDs)
+            if explicitRedgifsNiche == nil {
+                candidates = feedExclusions.filter(candidates, favorites: Array(favorites.values),
+                    existing: posts, recommended: personalizedPage, favoriteIDs: favoriteExclusionIDs)
+            } else {
+                candidates = candidates.filter { $0.category == explicitRedgifsNiche }
+            }
             if candidates.isEmpty, provider == .erome, feedMediaOnly {
                 candidates = feedExclusions.filter(visibleBeforeNovelty,
                     favorites: Array(favorites.values), existing: posts, recommended: false)
@@ -852,11 +897,16 @@ final class AppStore: ObservableObject {
                 let cachedAppearance = await visual.scores(candidates)
                 let strict = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                     recent: Array(posts.suffix(10)), visualScores: cachedAppearance,
-                    strict: provider != .erome && (!topicPersonalized || (favorites.count >= 5 &&
-                        provider != .hhaven && provider != .nhentai)))
+                    strict: provider != .erome && provider != .redgifs &&
+                        (!topicPersonalized || (favorites.count >= 5 &&
+                            provider != .hhaven && provider != .nhentai)))
                 if strict.isEmpty && directCatalog {
                     ranked = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                         recent: Array(posts.suffix(10)), visualScores: cachedAppearance, strict: false)
+                } else if provider == .redgifs {
+                    let nicheTaste = RedgifsNicheAffinity(liked: Array(favorites.values),
+                        observed: candidates + Array(posts.suffix(30)))
+                    ranked = nicheTaste.rankPosts(strict)
                 } else { ranked = strict }
             } else { ranked = candidates }
             guard generation == token, !Task.isCancelled else { return }
@@ -923,6 +973,31 @@ final class AppStore: ObservableObject {
                 query: ParsedQuery(included: [], excluded: first.query.excluded),
                 page: first.context == broadKey ? max(broadCursor, firstCursor + 1) : broadCursor,
                 focused: false)
+        }
+        if provider == .redgifs {
+            // Keep the regular broad discovery lane on alternating requests.
+            // On other rounds search a co-occurring, not-yet-liked topic to
+            // acquire genuinely new niche clips for the local reranker.
+            let nicheTaste = RedgifsNicheAffinity(liked: Array(favorites.values),
+                observed: posts + Array(favorites.values))
+            let blocked = Set(RecommendationTagRules.queryExclusions(
+                exclusions + taste.notInto).map(RecommendationTagRules.canonical))
+            let related = nicheTaste.relatedSearchTerms().filter { !blocked.contains($0) }
+            if !related.isEmpty {
+                let roundKey = context + "|redgifs-related-round"
+                let round = candidateCursors[roundKey] ?? 0
+                candidateCursors[roundKey] = round + 1
+                if round % 2 == 1 {
+                    let term = related[(round / 2) % related.count]
+                    if !first.query.included.contains(term) {
+                        let key = context + "|redgifs-related:" + term
+                        second = RecommendationEngine.CandidateRequest(
+                            context: key,
+                            query: ParsedQuery(included: [term], excluded: first.query.excluded),
+                            page: candidateCursors[key] ?? 1, focused: true)
+                    }
+                }
+            }
         }
         func prepared(_ request: RecommendationEngine.CandidateRequest)
             -> (key: String, query: ParsedQuery, page: Int) {

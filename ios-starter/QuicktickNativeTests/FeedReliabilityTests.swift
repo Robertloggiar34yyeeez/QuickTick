@@ -85,6 +85,25 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertTrue(CollectionSearch.matchingDownloadKeys([download], query: "cooking").isEmpty)
     }
 
+    func testDownloadsLargestFirstSortUsesMeasuredBytesAndKeepsUnknownLast() {
+        let samples: [(String, Int64?)] = [
+            ("small", 256), ("unknown", nil), ("large", 1_048_576),
+            ("same-size", 256), ("zero", 0)
+        ]
+        let records = samples.map { sample -> DownloadRecord in
+            let (key, size) = sample
+            var record = DownloadRecord(
+                key: "rule34:" + key, provider: "Rule34", postID: key,
+                title: key, tags: [], thumbnailRemoteURL: "", kind: .file,
+                state: .complete, progress: 1, createdAt: .now
+            )
+            record.fileSize = size
+            return record
+        }
+        XCTAssertEqual(DownloadSizeOrder.largestFirst(records).map(\.postID),
+                       ["large", "small", "same-size", "zero", "unknown"])
+    }
+
     func testCollectionProviderFilterNormalizesRestoredSourceNames() {
         XCTAssertEqual(CollectionProviderOrder.key("Erome"), "erome")
         XCTAssertEqual(CollectionProviderOrder.key("www.erome.com"), "erome")
@@ -109,6 +128,49 @@ final class FeedReliabilityTests: XCTestCase {
         let forbidden = HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: [:])!
         XCTAssertTrue(DownloadResponseValidator.failure(response: forbidden, header: Data())?.contains("403") == true)
     }
+    func testHanimeDownloadsRequireVideoNotPoster() throws {
+        let post = Post(key: "hanime:sample-video", id: "sample-video", provider: "Hanime", type: "video")
+        XCTAssertThrowsError(try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://cdn.hanime.tv/poster.jpg", type: "image"),
+            for: post))
+        let hls = try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://hanime.tv/hls/sample-video/playlist.m3u8", type: "hls"),
+            for: post)
+        XCTAssertTrue(hls.isHLS)
+        let mp4 = try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://cdn.hanime.tv/sample-video.mp4", type: "hls"),
+            for: post)
+        XCTAssertFalse(mp4.isHLS, "MP4 must be stored as a video file, not an HLS playlist package.")
+        XCTAssertThrowsError(try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://example.com/sample-video.mp4", type: "video"),
+            for: post))
+    }
+
+    func testLegacyHanimePreviewNeverCountsAsOfflineVideo() {
+        let record = DownloadRecord(key: "hanime:sample-video", provider: "Hanime",
+            postID: "sample-video", title: "Preview", tags: [],
+            thumbnailRemoteURL: "", localMediaPath: "/tmp/quicktick-legacy-cover.jpg",
+            kind: .file, state: .complete, progress: 1, createdAt: .now)
+        XCTAssertTrue(record.isHanimePosterOnly)
+        XCTAssertNil(record.offlinePost)
+        XCTAssertNil(record.exportURL)
+    }
+
+    func testHanimeVideoResponseRejectsImageBytes() {
+        let url = URL(string: "https://cdn.hanime.tv/sample-video.mp4")!
+        let image = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                    headerFields: ["Content-Type": "image/jpeg"])!
+        XCTAssertNotNil(DownloadResponseValidator.failure(
+            response: image, header: Data([0xFF, 0xD8, 0xFF]), expectedVideo: true))
+        let opaque = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                     headerFields: ["Content-Type": "application/octet-stream"])!
+        XCTAssertNotNil(DownloadResponseValidator.failure(
+            response: opaque, header: Data([0xFF, 0xD8, 0xFF]), expectedVideo: true))
+        XCTAssertNil(DownloadResponseValidator.failure(
+            response: opaque, header: Data([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70]),
+            expectedVideo: true))
+    }
+
     @MainActor func testRecommendedContinuesPastPageRemovedByNegativePreferences() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }

@@ -137,6 +137,18 @@ enum EromeBrowserCatalog {
 
 // Provider networking lives on the API actor, never on a scrolling view. No
 // requests in this service use the optional QuickTick Sync origin.
+struct RedgifsNiche: Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let imageURL: String
+    let postCount: Int
+}
+
+struct RedgifsNichePage: Sendable {
+    let items: [RedgifsNiche]
+    let hasMore: Bool
+}
+
 enum NativeProviderAPI {
     static let userAgent = "QuickTickNative/1.0"
     // nHentai requests specifically ask clients for an identifying UA; keep
@@ -506,33 +518,141 @@ enum NativeProviderAPI {
                                            sort: sort, immersive: immersive)
     }
 
-    static func redgifs(session: URLSession, token: String, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
-        let items = [URLQueryItem(name: "order", value: sort == "recent" ? "latest" : sort == "popular" ? "top7" : "trending"),
-                     .init(name: "count", value: "40"), .init(name: "page", value: String(page))] + (query.included.isEmpty ? [] : [.init(name: "search_text", value: query.included.joined(separator: " "))])
-        var result: [String: Any]?
-        var lastError: Error = APIError.invalidResponse
-        for path in ["https://api.redgifs.com/v2/gifs/search", "https://api.redgifs.com/v2/search/gifs"] {
-            do {
-                let object = try Self.object(await data(session: session, url: url(path, items), provider: .redgifs, headers: ["Authorization": "Bearer " + token]))
-                guard object["gifs"] is [[String: Any]] else { throw APIError.invalidResponse }
-                result = object; break
-            } catch is CancellationError { throw CancellationError() } catch {
-                if (error as? APIError)?.retryAfter != nil { throw error }
-                if let failure = error as? APIError, case .providerStatus(.redgifs, 401) = failure { throw error }
-                lastError = error
-            }
+    private static func redgifsHeaders(token: String) -> [String: String] {
+        ["Authorization": "Bearer " + token, "Referer": "https://www.redgifs.com/"]
+    }
+
+    static func redgifsNicheID(_ token: String) -> String? {
+        guard token.hasPrefix("niche:") else { return nil }
+        let id = String(token.dropFirst("niche:".count))
+        guard id.count <= 70,
+              id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else { return nil }
+        return id
+    }
+
+    private static func redgifsPreview(_ raw: String) -> String {
+        guard let address = mediaURL(raw, provider: .redgifs),
+              let host = address.host?.lowercased(),
+              host == "redgifs.com" || host.hasSuffix(".redgifs.com") else { return "" }
+        return address.absoluteString
+    }
+
+    /// Genuine RedGIFs niches, with a poster from each niche's popular posts.
+    /// A missing/unavailable niche preview is omitted instead of displaying
+    /// a generic tag icon with misleading content.
+    static func redgifsNiches(session: URLSession, token: String, limit: Int = 8) async throws -> [RedgifsNiche] {
+        let page = try await redgifsNichesPage(session: session, token: token, page: 1,
+                                               limit: max(1, min(limit, 32)))
+        return Array(page.items.prefix(limit))
+    }
+
+    static func redgifsNichesPage(session: URLSession, token: String,
+                                 page: Int = 1, limit: Int = 24) async throws -> RedgifsNichePage {
+        guard (1...1000).contains(page), (1...32).contains(limit) else { throw APIError.invalidResponse }
+        let response = try object(await data(session: session,
+            url: url("https://api.redgifs.com/v2/niches",
+                [.init(name: "page", value: String(page)), .init(name: "count", value: String(limit))]),
+            provider: .redgifs, headers: redgifsHeaders(token: token)))
+        let entries = rows(response["niches"] ?? response["items"])
+        var chosen: [RedgifsNiche] = [], seen = Set<String>()
+        for item in entries {
+            let slug = text(item["slug"] ?? item["id"]).lowercased()
+            guard let id = redgifsNicheID("niche:" + slug), seen.insert(id).inserted else { continue }
+            let title = text(item["name"] ?? item["title"])
+            guard !title.isEmpty else { continue }
+            let thumbnail = redgifsPreview(text(item["thumbnail"] ?? item["cover"]))
+            chosen.append(RedgifsNiche(id: id, name: title, imageURL: thumbnail,
+                                      postCount: Int(number(item["gifs"] ?? item["count"]))))
+            if chosen.count >= limit { break }
         }
-        guard let result else { throw lastError }
+        var covers: [Int: String] = [:]
+        for start in stride(from: 0, to: chosen.count, by: 4) {
+            try Task.checkCancellation()
+            let indices = Array(start..<min(start + 4, chosen.count))
+            let collected = await withTaskGroup(of: (Int, String?).self) { group in
+                for index in indices {
+                    let id = chosen[index].id
+                    group.addTask {
+                        do {
+                            let sample = try object(await data(session: session,
+                                url: url("https://api.redgifs.com/v2/niches/\(id)/gifs",
+                                    [.init(name: "order", value: "top"), .init(name: "page", value: "1"), .init(name: "count", value: "4")]),
+                                provider: .redgifs, headers: redgifsHeaders(token: token)))
+                            let image = rows(sample["gifs"]).compactMap { gif -> String? in
+                                let urls = gif["urls"] as? [String: Any] ?? [:]
+                                let value = redgifsPreview(text(urls["poster"] ?? urls["thumbnail"] ?? urls["vthumbnail"]))
+                                return value.isEmpty ? nil : value
+                            }.first
+                            return (index, image)
+                        } catch { return (index, nil) }
+                    }
+                }
+                var result: [(Int, String?)] = []
+                for await entry in group { result.append(entry) }
+                return result
+            }
+            for (index, image) in collected { if let image { covers[index] = image } }
+        }
+        let enriched = chosen.enumerated().compactMap { index, niche -> RedgifsNiche? in
+            let image = covers[index] ?? niche.imageURL
+            guard !image.isEmpty else { return nil }
+            return RedgifsNiche(id: niche.id, name: niche.name, imageURL: image, postCount: niche.postCount)
+        }
+        let declaredPages = Int(number(response["pages"] ?? response["total_pages"]))
+        return RedgifsNichePage(items: enriched,
+                               hasMore: declaredPages > 0 ? page < declaredPages : entries.count >= limit)
+    }
+
+    static func redgifs(session: URLSession, token: String, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
+        let result: [String: Any]
+        let selectedNicheID = query.included.count == 1 ? redgifsNicheID(query.included[0]) : nil
+        if let niche = selectedNicheID {
+            result = try object(await data(session: session,
+                url: url("https://api.redgifs.com/v2/niches/\(niche)/gifs",
+                    [.init(name: "order", value: sort == "recent" ? "latest" : "top"),
+                     .init(name: "count", value: "40"), .init(name: "page", value: String(page))]),
+                provider: .redgifs, headers: redgifsHeaders(token: token)))
+        } else {
+            guard !query.included.contains(where: { $0.hasPrefix("niche:") }) else { throw APIError.invalidResponse }
+            let items = [URLQueryItem(name: "order", value: sort == "recent" ? "latest" : sort == "popular" ? "top7" : "trending"),
+                         .init(name: "count", value: "40"), .init(name: "page", value: String(page))] + (query.included.isEmpty ? [] : [.init(name: "search_text", value: query.included.joined(separator: " "))])
+            var found: [String: Any]?
+            var lastError: Error = APIError.invalidResponse
+            for path in ["https://api.redgifs.com/v2/gifs/search", "https://api.redgifs.com/v2/search/gifs"] {
+                do {
+                    let object = try Self.object(await data(session: session, url: url(path, items), provider: .redgifs, headers: redgifsHeaders(token: token)))
+                    guard object["gifs"] is [[String: Any]] else { throw APIError.invalidResponse }
+                    found = object; break
+                } catch is CancellationError { throw CancellationError() } catch {
+                    if (error as? APIError)?.retryAfter != nil { throw error }
+                    if let failure = error as? APIError, case .providerStatus(.redgifs, 401) = failure { throw error }
+                    lastError = error
+                }
+            }
+            guard let found else { throw lastError }
+            result = found
+        }
         let raw = rows(result["gifs"])
         let posts = raw.map { row -> Post in
             let id = text(row["id"]), urls = row["urls"] as? [String: Any] ?? [:]
             let media = text(urls["hd"] ?? urls["sd"] ?? urls["gif"])
             let image = text(row["type"]) == "i" || number(row["type"]) == 2
-            var post = Post(key: "redgifs:\(id)", id: id, provider: "RedGIFs", score: number(row["likes"]), tags: strings(row["tags"]),
+            var tags = strings(row["tags"])
+            let nicheSlugs = strings(row["niches"]) + rows(row["niches"]).map { text($0["slug"] ?? $0["id"]) }
+            for value in nicheSlugs {
+                let slug = value.lowercased().replacingOccurrences(of: "niche:", with: "")
+                if let nicheID = redgifsNicheID("niche:" + slug), !tags.contains(nicheID) {
+                    tags.append(nicheID)
+                }
+            }
+            if let selectedNicheID, !tags.contains(selectedNicheID) { tags.append(selectedNicheID) }
+            var post = Post(key: "redgifs:\(id)", id: id, provider: "RedGIFs", score: number(row["likes"]), tags: tags,
                             mediaUrl: media, thumbUrl: text(urls["poster"] ?? urls["thumbnail"] ?? urls["vthumbnail"]),
                             pageUrl: "https://www.redgifs.com/watch/\(id.lowercased())", type: image ? "image" : "video")
             let width = number(row["width"]), height = number(row["height"])
             if width > 0, height > 0 { post.width = width; post.height = height }
+            post.caption = ["title", "name", "description"].map { text(row[$0]) }.first(where: { !$0.isEmpty })
+            post.category = selectedNicheID
             post.creator = text(row["userName"]); post.createdAt = number(row["createDate"]); return post
         }
         return self.page(posts, hasMore: number(result["pages"]) > 0 ? page < Int(number(result["pages"])) : !raw.isEmpty, query: query, immersive: immersive)
@@ -558,6 +678,118 @@ enum NativeProviderAPI {
         }
         guard let list = current as? [[String: Any]] else { throw APIError.invalidResponse }
         return list
+    }
+
+    /// Resolve a current Hanime v11 player handshake into a first-party HLS
+    /// stream. This uses the same guest transport as the official web player,
+    /// and never treats 403/verification HTML as an authorized stream.
+    static func hanimeHLSResolve(session: URLSession, post: Post,
+                                 variant: Int = 0) async throws -> ResolvedMedia {
+        guard post.id.count <= 160,
+              post.id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else {
+            throw APIError.invalidResponse
+        }
+        do {
+            return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
+        } catch APIError.providerStatus(.hanime, 403) {
+            // A normal first-party page visit can establish an ordinary guest
+            // session cookie. No challenge solving or access bypass is used.
+            if let watch = URL(string: "https://hanime.tv/videos/hentai/" + post.id) {
+                _ = try? await data(session: session, url: watch, provider: .hanime,
+                                    maxBytes: 1024 * 1024, timeout: 8)
+            }
+            do {
+                return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
+            } catch APIError.providerStatus(.hanime, 403) {
+                throw APIError.server("Hanime requires browser verification before native HLS playback. Use Browse inside QuickTick or configure your authorized Hanime API in Settings.")
+            }
+        } catch APIError.server(let message) where message.contains("HLS playlist") {
+            // Signed HLS paths can expire between the handshake and the first
+            // request. Retry the legitimate first-party handshake once before
+            // surfacing an unavailable stream to native playback.
+            return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
+        }
+    }
+
+    private static func hanimeHLSHandshake(session: URLSession, slug: String,
+                                           variant: Int = 0) async throws -> ResolvedMedia {
+        let time = Int(Date().timeIntervalSince1970)
+        let timestamp = String(time)
+        let signature = SHA256.hash(data: Data(
+            "\(timestamp),Xkdi29,https://hanime.tv,mn2,\(timestamp)".utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "timestamp_unix": time, "directive": "htv_player_handshake", "slug": slug
+        ])
+        let token = try HanimeHandshakeCodec.seal(payload)
+        let body = try JSONSerialization.data(withJSONObject: ["token": token])
+        let address = try url("https://auth.hanime.tv/api/v11/handshake")
+        var request = URLRequest(url: address)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.timeoutInterval = 25
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("https://hanime.tv", forHTTPHeaderField: "Origin")
+        request.setValue("https://hanime.tv/", forHTTPHeaderField: "Referer")
+        request.setValue("web2", forHTTPHeaderField: "x-signature-version")
+        request.setValue(signature, forHTTPHeaderField: "x-signature")
+        request.setValue(timestamp, forHTTPHeaderField: "x-time")
+        request.setValue("null", forHTTPHeaderField: "x-csrf-token")
+        try await ProviderRequestGate.shared.wait(host: "auth.hanime.tv", provider: .hanime)
+        let (bytes, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse, bytes.count <= 1024 * 1024 else {
+            throw APIError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.providerStatus(.hanime, http.statusCode)
+        }
+        guard let encrypted = http.value(forHTTPHeaderField: "x-token"), !encrypted.isEmpty else {
+            throw APIError.server("Hanime did not return an HLS handshake token. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
+        }
+        let cleartext = try HanimeHandshakeCodec.open(encrypted)
+        let result = try object(cleartext)
+        let streams = rows(result["sources"])
+            .filter { text($0["kind"]).lowercased() == "normal" }
+            .sorted { number($0["height"]) > number($1["height"]) }
+        let playable = streams.compactMap { source -> URL? in
+            let raw = text(source["src"])
+            guard !raw.isEmpty,
+                  let address = URL(string: raw, relativeTo: origin(.hanime))?.absoluteURL,
+                  HanimeGeneratedAPI.permittedStreamURL(address) else { return nil }
+            return address
+        }
+        guard !playable.isEmpty else {
+            throw APIError.server("Hanime returned no playable HLS stream for this video. Use Browse inside QuickTick or configure an authorized Hanime API in Settings.")
+        }
+        // HLS URLs from the signed handshake must be handed straight to
+        // AVPlayer. A separate GET preflight can consume a short-lived token
+        // or use different headers from the native media loader, making a
+        // previously playable video fail as "HLS stream error".
+        // After a genuine AVPlayer failure, request a fresh handshake and
+        // step down through the advertised variants without probing/using up
+        // the playlist URL. Normal first playback still picks best quality.
+        let selected = playable[min(max(0, variant), playable.count - 1)]
+        let extensionName = selected.pathExtension.lowercased()
+        return ResolvedMedia(mediaUrl: selected.absoluteString,
+                             type: ["mp4", "m4v"].contains(extensionName) ? "video" : "hls")
+    }
+
+    /// Prefer native AVPlayer for catalog entries that legitimately include a
+    /// first-party HLS/MP4 URL. The v11 catalog often omits streams entirely;
+    /// never interpret a watch page or external link as playable media.
+    static func hanimeCatalogStream(_ row: [String: Any]) -> String {
+        let direct = ["stream_url", "hls_url", "video_url", "media_url", "streamUrl", "videoUrl"]
+            .map { text(row[$0]) }
+        let manifest = row["videos_manifest"] as? [String: Any] ?? [:]
+        let embedded = rows(manifest["servers"])
+            .flatMap { rows($0["streams"]) }
+            .sorted { number($0["height"]) > number($1["height"]) }
+            .map { text($0["url"]) }
+        return (direct + embedded).compactMap { mediaURL($0, provider: .hanime) }
+            .first(where: HanimeGeneratedAPI.permittedStreamURL)?.absoluteString ?? ""
     }
 
     static func hanime(session: URLSession, query: ParsedQuery, page: Int,
@@ -592,9 +824,11 @@ enum NativeProviderAPI {
             let thumb = text(row["poster_url"] ?? row["cover_url"] ?? row["thumbnail"])
             let cover = URL(string: thumb)
             let safeThumb = cover?.scheme == "https" ? thumb : ""
+            let stream = hanimeCatalogStream(row)
             var post = Post(key: "hanime:\(id)", id: id, provider: "Hanime",
                             score: number(row["views"] ?? row["views_count"]), tags: tags,
-                            thumbUrl: safeThumb, pageUrl: "https://hanime.tv/videos/hentai/\(id)", type: "video")
+                            mediaUrl: stream, thumbUrl: safeThumb,
+                            pageUrl: "https://hanime.tv/videos/hentai/\(id)", type: "video")
             post.caption = text(row["name"] ?? row["title"])
             post.creator = text((row["brand"] as? [String: Any])?["name"] ?? row["brand"])
             post.createdAt = number(row["released_at_unix"] ?? row["created_at_unix"])
@@ -964,6 +1198,28 @@ enum NativeProviderAPI {
         return Array(Set(values.filter { !$0.isEmpty })).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
+    /// Category artwork must come from that category's own public page.
+    /// A generic video title containing "cosplay" does not prove it belongs
+    /// to the Cosplay category and must never supply its cover.
+    static func pornhubCategoryPreview(session: URLSession, credentials: ProviderCredentials,
+                                       token: String) async throws -> String? {
+        guard ProviderSearchCategories.valid(token, provider: .pornhub) else { return nil }
+        let slug = String(token.dropFirst("category:".count))
+        let source = try url("https://www.pornhub.com/categories/" + slug)
+        let bytes: Data
+        do {
+            bytes = try await data(session: session, url: source, provider: .pornhub,
+                headers: cookieHeaders(credentials).merging([
+                    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.7"
+                ]) { _, html in html }, maxBytes: 2 * 1024 * 1024)
+        } catch APIError.providerStatus(.pornhub, let status)
+            where [404, 410].contains(status) { return nil }
+        guard !unavailableHTML(bytes) else { return nil }
+        return pornhubHTMLPosts(String(decoding: bytes, as: UTF8.self))
+            .map(\.cardPreviewURL)
+            .first(where: { URL(string: $0)?.scheme == "https" })
+    }
+
     static func pornhubSearchParameters(query: ParsedQuery, page: Int, sort: String) -> [URLQueryItem] {
         let selection = ProviderSearchCategories.split(query, provider: .pornhub)
         let filters = (query.pornhub ?? PornhubSearchFilters()).normalized
@@ -1048,6 +1304,14 @@ enum NativeProviderAPI {
                             tags: strings(row["tags"]) + strings(row["categories"]),
                             previewUrl: posters.first ?? "", thumbUrl: posters.dropFirst().first ?? posters.first ?? "",
                             pageUrl: text(row["url"]), type: "video")
+            // A category thumbnail is trustworthy only if the provider's
+            // structured categories actually establish that membership.
+            if let requested = selection.category.map({ String($0.dropFirst("category:".count)) }),
+               strings(row["categories"]).contains(where: {
+                   $0.lowercased().replacingOccurrences(of: " ", with: "-") == requested
+               }) {
+                post.category = "category:" + requested
+            }
             post.caption = text(row["title"]); post.creator = text(row["username"]); return post
         }
         return self.page(posts, hasMore: raw.count >= 20, query: query, immersive: immersive)
@@ -1065,7 +1329,10 @@ enum NativeProviderAPI {
             do {
                 bytes = try await data(session: session, url: url(endpoint, parameters),
                                        provider: .pornhub, headers: cookieHeaders(credentials))
-            } catch APIError.providerStatus(.pornhub, 404) {
+            } catch APIError.providerStatus(.pornhub, let status)
+                where [404, 410, 500, 502, 503, 504].contains(status) {
+                // Retired webmaster endpoints should never block the public
+                // first-party catalog fallback.
                 continue
             }
             guard !unavailableHTML(bytes),
@@ -1116,6 +1383,15 @@ enum NativeProviderAPI {
         if page == 1 {
             candidates.append(try url(route, parameters.filter { $0.name != "page" }))
             candidates.append(try url(route, parameters.filter { $0.name != "page" && $0.name != "o" }))
+        }
+        // Some first-party deployments return "requested URL was not found"
+        // for supported catalog pages when an optional filter query is
+        // present. Retry only the same search/category route with canonical
+        // parameters; apply the user's duration/production filters locally.
+        let essential = parameters.filter { ["page", "search", "category"].contains($0.name) }
+        candidates.append(try url(route, essential))
+        if page == 1 {
+            candidates.append(try url(route, essential.filter { $0.name != "page" }))
             if !searching && category == nil {
                 candidates.append(try url("https://www.pornhub.com/"))
             }
@@ -1130,7 +1406,8 @@ enum NativeProviderAPI {
             do {
                 bytes = try await data(session: session, url: candidate,
                                        provider: .pornhub, headers: htmlHeaders)
-            } catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 {
+            } catch APIError.providerStatus(.pornhub, let status)
+                where [404, 410, 500, 502, 503, 504].contains(status) {
                 continue
             }
             // Some upstream missing routes produce HTTP 200 with an HTML 404.
@@ -1138,8 +1415,13 @@ enum NativeProviderAPI {
             // canonical first-party browse URL.
             guard !unavailableHTML(bytes) else { continue }
             let html = String(decoding: bytes.prefix(2 * 1024 * 1024), as: UTF8.self)
-            let posts = pornhubHTMLPosts(html, filters: filters)
+            var posts = pornhubHTMLPosts(html, filters: filters)
             if !posts.isEmpty {
+                if let category, !searching, candidate.path.hasPrefix("/categories/" + category) {
+                    // A first-party category page is source evidence for its
+                    // own cards; title words in a generic feed are not.
+                    for index in posts.indices { posts[index].category = "category:" + category }
+                }
                 return self.page(posts, hasMore: posts.count >= 20,
                                  query: query, immersive: immersive)
             }
@@ -1218,6 +1500,51 @@ enum NativeProviderAPI {
         }
         return nil
     }
+
+    /// Players embed mediaDefinitions as either JSON or escaped JavaScript.
+    /// Keep the structured parser as the primary path, then recover only
+    /// explicit HTTPS video URLs when an otherwise valid embed page uses the
+    /// alternate encoding. No generic page links or thumbnail URLs qualify.
+    static func pornhubPlayerDefinitions(_ html: String) -> [[String: Any]] {
+        if let json = jsonFragment(html, after: "mediaDefinitions"),
+           let definitions = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]],
+           !definitions.isEmpty { return definitions }
+        let normalized = html.replacingOccurrences(of: "\\/", with: "/")
+            .replacingOccurrences(of: "\\\"", with: "\"")
+        let urls = matches(normalized, #"videoUrl\s*["']?\s*:\s*["'](https://[^"']+)["']"#)
+        return urls.compactMap { raw -> [String: Any]? in
+            guard let address = mediaURL(raw, provider: .pornhub) else { return nil }
+            switch address.pathExtension.lowercased() {
+            case "mp4", "m4v": return ["format": "mp4", "videoUrl": address.absoluteString]
+            case "m3u8": return ["format": "hls", "videoUrl": address.absoluteString]
+            default: return nil
+            }
+        }
+    }
+
+    /// Signed CDN media URLs frequently have no .mp4 or .m3u8 suffix.
+    /// Only a provider-declared stream on its recognized CDN is accepted;
+    /// opaque main-site URLs remain metadata endpoints to resolve separately.
+    static func pornhubDeclaredMedia(_ definition: [String: Any]) -> ResolvedMedia? {
+        guard let address = mediaURL(text(definition["videoUrl"]), provider: .pornhub),
+              let host = address.host?.lowercased() else { return nil }
+        let ext = address.pathExtension.lowercased()
+        if ["mp4", "m4v", "mov", "m3u8"].contains(ext) {
+            return ResolvedMedia(mediaUrl: address.absoluteString,
+                                 type: ext == "m3u8" ? "hls" : "video")
+        }
+        let allowedCDN = host.hasSuffix(".phncdn.com") || host == "phncdn.com" ||
+            (host.hasSuffix(".pornhub.com") && host != "www.pornhub.com")
+        guard allowedCDN else { return nil }
+        let format = text(definition["format"] ?? definition["type"]).lowercased()
+        if ["hls", "application/x-mpegurl", "application/vnd.apple.mpegurl"].contains(format) {
+            return ResolvedMedia(mediaUrl: address.absoluteString, type: "hls")
+        }
+        if ["mp4", "video", "video/mp4", "m4v"].contains(format) {
+            return ResolvedMedia(mediaUrl: address.absoluteString, type: "video")
+        }
+        return nil
+    }
 }
 
 // XMLParser handles entity escaping and malformed upstream XML safely, rather
@@ -1250,14 +1577,24 @@ extension NativeProviderAPI {
     static let archiveAcceptHeaders = ["Accept": "application/json, text/css;q=0.9, */*;q=0.5"]
 
     static func resolve(session: URLSession, credentials: ProviderCredentials, post: Post,
-                        redgifsToken: String?, havenToken: String? = nil) async throws -> ResolvedMedia {
+                        redgifsToken: String?, havenToken: String? = nil,
+                        hanimeVariant: Int = 0) async throws -> ResolvedMedia {
         // A valid direct media URL can outlive its provider metadata (for
         // example an imported/restored post with a legacy or unknown site).
         // Only use this fallback for actual file/playlist paths, never an
         // HTML post page masquerading as a downloadable video.
         let direct = mediaURL(post.mediaUrl, provider: post.providerKey)
         let directTypes: Set<String> = ["mp4", "m4v", "mov", "webm", "m3u8", "gif", "jpg", "jpeg", "png", "webp", "heic", "avif", "mp3", "m4a", "aac", "wav", "aiff", "caf", "flac", "ogg", "opus"]
-        if let direct, directTypes.contains(direct.pathExtension.lowercased()) {
+        if post.providerKey == .hanime, let direct,
+           HanimeGeneratedAPI.permittedStreamURL(direct) {
+            let isHLS = direct.path.hasPrefix("/hls/") || direct.pathExtension.lowercased() == "m3u8"
+            return ResolvedMedia(mediaUrl: direct.absoluteString, type: isHLS ? "hls" : "video")
+        }
+        // Hanime catalog posters are JPEG/WebP images, not downloadable videos.
+        // Never let the generic direct-file shortcut accept those thumbnails:
+        // resolve the first-party HLS handshake for the original post instead.
+        if post.providerKey != .hanime, let direct,
+           directTypes.contains(direct.pathExtension.lowercased()) {
             return ResolvedMedia(mediaUrl: direct.absoluteString, type: direct.pathExtension.lowercased() == "m3u8" ? "hls" : post.type)
         }
         guard let provider = post.providerKey else {
@@ -1265,7 +1602,9 @@ extension NativeProviderAPI {
         }
         // Some provider CDNs use opaque signed URLs without an extension.
         // Keep supporting those only after the provider has been identified.
-        if let direct { return ResolvedMedia(mediaUrl: direct.absoluteString, type: post.type) }
+        if provider != .hanime, let direct {
+            return ResolvedMedia(mediaUrl: direct.absoluteString, type: post.type)
+        }
         switch provider {
         case .nhentai:
             throw APIError.server("Open this manga in the full-screen reader to browse its pages.")
@@ -1311,42 +1650,61 @@ extension NativeProviderAPI {
             }
             throw APIError.server("Eporner returned no playable public stream.")
         case .hanime:
-            let response: [String: Any]
             do {
-                response = try object(await data(session: session,
-                    url: url("https://hanime.tv/api/v8/video", [.init(name: "id", value: post.id)]),
-                    provider: provider))
-            } catch APIError.providerStatus(.hanime, 403) {
-                throw APIError.server("Hanime requires browser verification for this video. Use Browse inside QuickTick or configure a Hanime API in Settings.")
+                return try await hanimeHLSResolve(session: session, post: post,
+                                                  variant: hanimeVariant)
+            } catch APIError.providerStatus(.hanime, 404) {
+                throw APIError.server("Hanime's HLS handshake was unavailable. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
+            } catch APIError.providerStatus(.hanime, 410) {
+                throw APIError.server("Hanime's HLS handshake was removed. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
             }
-            let manifest = response["videos_manifest"] as? [String: Any] ?? [:]
-            let streams = rows(manifest["servers"]).flatMap { rows($0["streams"]) }.sorted { number($0["height"]) > number($1["height"]) }
-            guard let media = streams.compactMap({ mediaURL(text($0["url"]), provider: provider) }).first else {
-                throw APIError.server("Hanime no longer provides a public playback URL for this video. Use Browse inside QuickTick or configure a Hanime API in Settings.")
-            }
-            return ResolvedMedia(mediaUrl: media.absoluteString, type: media.pathExtension == "m3u8" ? "hls" : "video")
         case .pornhub:
             let canonical = mediaURL(post.pageUrl, provider: provider)
             let page: URL
             if let canonical, ["pornhub.com", "www.pornhub.com"].contains(canonical.host ?? ""), canonical.path == "/view_video.php" {
                 page = canonical
             } else { page = try url("https://www.pornhub.com/view_video.php", [.init(name: "viewkey", value: post.id)]) }
-            let html = String(decoding: try await data(session: session, url: page, provider: provider, headers: cookieHeaders(credentials)), as: UTF8.self)
-            guard let json = jsonFragment(html, after: "mediaDefinitions"), let raw = try JSONSerialization.jsonObject(with: json) as? [[String: Any]] else { throw APIError.server("Pornhub did not expose public media. Check your provider access.") }
-            let sorted = raw.sorted { number($0["quality"]) > number($1["quality"]) }
-            for format in ["mp4", "hls"] {
-                for definition in sorted where text(definition["format"]) == format {
+            // The canonical watch URL can disappear while the first-party
+            // embed still exposes an ordinary public media definition.
+            // A 403/451 is deliberately NOT bypassed: respect provider access.
+            let encodedID = post.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? post.id
+            let pages = [page, try url("https://www.pornhub.com/embed/\(encodedID)"),
+                         try url("https://pornhub.com/embed/\(encodedID)")]
+            for candidatePage in pages {
+                let bytes: Data
+                do {
+                    bytes = try await data(session: session, url: candidatePage,
+                                           provider: provider,
+                                           headers: cookieHeaders(credentials).merging([
+                                            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.7"
+                                           ]) { _, html in html })
+                } catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 {
+                    continue
+                }
+                guard !unavailableHTML(bytes) else { continue }
+                let html = String(decoding: bytes, as: UTF8.self)
+                let raw = pornhubPlayerDefinitions(html)
+                guard !raw.isEmpty else { continue }
+                let sorted = raw.sorted { number($0["quality"]) > number($1["quality"]) }
+                // A player can label a source "hls", "HLS", "video/mp4" or
+                // omit format entirely. Trust the validated URL extension
+                // first, retaining nested first-party definitions as a fallback.
+                for definition in sorted {
+                    if let media = pornhubDeclaredMedia(definition) { return media }
                     guard let candidate = mediaURL(text(definition["videoUrl"]), provider: provider) else { continue }
-                    if ["mp4", "m3u8"].contains(candidate.pathExtension.lowercased()) { return ResolvedMedia(mediaUrl: candidate.absoluteString, type: format == "hls" ? "hls" : "video") }
                     guard candidate.host == "pornhub.com" || candidate.host?.hasSuffix(".pornhub.com") == true else { continue }
                     let details: Data
-                    do { details = try await data(session: session, url: candidate, provider: provider, headers: cookieHeaders(credentials)) }
+                    do { details = try await data(session: session, url: candidate,
+                                                      provider: provider, headers: cookieHeaders(credentials)) }
                     catch APIError.providerStatus(.pornhub, let status) where status == 404 || status == 410 { continue }
-                    let list = rows(try JSONSerialization.jsonObject(with: details)).sorted { number($0["quality"]) > number($1["quality"]) }
-                    if let media = list.compactMap({ mediaURL(text($0["videoUrl"]), provider: provider) }).first { return ResolvedMedia(mediaUrl: media.absoluteString, type: "video") }
+                    let list = rows(try JSONSerialization.jsonObject(with: details))
+                        .sorted { number($0["quality"]) > number($1["quality"]) }
+                    if let media = list.compactMap(pornhubDeclaredMedia).first {
+                        return media
+                    }
                 }
             }
-            throw APIError.server("Pornhub has no available stream for this post. It may have been removed or be unavailable in your region.")
+            throw APIError.server("Pornhub has no available public stream. The post may have been removed or be unavailable in your region.")
         }
     }
     static func quality(_ value: String) -> Int { Int(value.filter(\.isNumber)) ?? 0 }
@@ -1442,12 +1800,9 @@ enum EromePublicCatalog {
         let address = try NativeProviderAPI.url(origin.absoluteString + route, parameters)
         let html = try await pageHTML(session: session, url: address)
         let summaries = albumSummaries(html)
-        if !immersive && !summaries.isEmpty {
-            // Preserve the supplied adapter's listing-first behavior. Loading
-            // dozens of albums on every page is slow and may trigger rate limits.
-            return NativeProviderAPI.page(summaries, hasMore: hasNextPage(html) || summaries.count >= 24,
-                                          query: query, immersive: immersive)
-        }
+        // Home used to return only album posters when summaries existed,
+        // so videos were invisible until entering Immersive. Resolve a bounded
+        // set of albums in both feeds and reuse AlbumMediaCache for playback.
         // Summaries are thumbnail-only, and not every album-link has a
         // matching summary (or even a thumbnail). In particular, choosing
         // only summaries can silently discard the page's video albums.
@@ -1472,7 +1827,7 @@ enum EromePublicCatalog {
         // Hydrate only a small first deck. Requesting 32 albums (often 32
         // HTML pages plus 32 hidden browser fallbacks) made Erome painfully
         // slow to open, especially on iPad. Users can page for more clips.
-        let selected = Array(albums.prefix(immersive ? 16 : 8))
+        let selected = Array(albums.prefix(immersive ? 16 : 9))
         var items: [Post] = []
         var albumFailure: String?
         var successfulAlbums = 0
@@ -1499,6 +1854,7 @@ enum EromePublicCatalog {
             // An immersive page needs playable media, not every image in a
             // large album. Stop after a useful initial deck to save data.
             if immersive && items.count >= 3 { break }
+            if !immersive && items.filter({ $0.type == "video" }).count >= 3 { break }
         }
         try Task.checkCancellation()
         if successfulAlbums == 0, let albumFailure {
@@ -1508,7 +1864,12 @@ enum EromePublicCatalog {
             throw APIError.server("Erome's public albums did not expose playable media. Try again later or check access in Safari.")
         }
         let hasMore = hasNextPage(html) || albums.count >= 24
-        return NativeProviderAPI.page(items, hasMore: hasMore, query: query, immersive: immersive)
+        // Keep video cards ahead of photo-only albums in Home, so users see
+        // real playable clips rather than a wall of unresolved covers.
+        let ordered = immersive ? items : items.sorted { left, right in
+            (left.type == "video" ? 1 : 0) > (right.type == "video" ? 1 : 0)
+        }
+        return NativeProviderAPI.page(ordered, hasMore: hasMore, query: query, immersive: immersive)
     }
 
     static func resolve(session: URLSession, post: Post) async throws -> ResolvedMedia {

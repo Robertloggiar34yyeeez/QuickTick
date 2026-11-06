@@ -196,12 +196,22 @@ struct PassiveSkipPolicy {
 struct SessionPreferenceModel: Sendable {
     private var termsByProvider: [String: [String: Double]] = [:]
     private var lastWatchCredit: [String: Double] = [:]
+    private var lastEventByProvider: [String: Date] = [:]
+    // Monolith-inspired concept-drift policy: temporary interests lose half
+    // their strength after an hour even if the user merely keeps scrolling.
+    // Explicit selections and long-term favorites live outside this model.
+    private static let interestHalfLife: TimeInterval = 60 * 60
     private static let generic: Set<String> = [
         "solo", "video", "image", "photo", "highres", "2d", "3d",
         "animated", "animation", "rating:safe", "rating:explicit"
     ]
 
-    mutating func record(_ event: RecommendationEvent, post: Post, terms: [String]) {
+    private func freshness(provider: String, at now: Date) -> Double {
+        guard let last = lastEventByProvider[provider] else { return 1 }
+        return pow(0.5, max(0, now.timeIntervalSince(last)) / Self.interestHalfLife)
+    }
+
+    mutating func record(_ event: RecommendationEvent, post: Post, terms: [String], at now: Date = .now) {
         let reward: Double
         switch event {
         case .like: reward = 2.8
@@ -227,8 +237,9 @@ struct SessionPreferenceModel: Sendable {
         guard reward != 0, !topics.isEmpty else { return }
         let provider = post.provider.lowercased()
         var weights = termsByProvider[provider] ?? [:]
+        let timeFade = freshness(provider: provider, at: now)
         for key in Array(weights.keys) {
-            let faded = (weights[key] ?? 0) * 0.94
+            let faded = (weights[key] ?? 0) * 0.94 * timeFade
             if abs(faded) < 0.05 { weights.removeValue(forKey: key) }
             else { weights[key] = faded }
         }
@@ -244,19 +255,32 @@ struct SessionPreferenceModel: Sendable {
             weights = Dictionary(uniqueKeysWithValues: best.map { ($0.key, $0.value) })
         }
         termsByProvider[provider] = weights
+        // Passive impressions and fast skips return before this assignment,
+        // so just seeing content never refreshes an interest's lifetime.
+        lastEventByProvider[provider] = max(lastEventByProvider[provider] ?? now, now)
     }
 
-    func score(provider: String, terms: [String]) -> Double {
+    func score(provider: String, terms: [String], at now: Date = .now) -> Double {
         let weights = termsByProvider[provider] ?? [:]
         let sum = Set(terms.map(RecommendationTagRules.canonical))
             .reduce(0.0) { $0 + (weights[$1] ?? 0) }
-        return max(-11, min(9, sum * 1.6))
+        return max(-11, min(9, sum * 1.6 * freshness(provider: provider, at: now)))
     }
 
-    func strongInterests(provider: String, limit: Int = 8) -> [(String, Double)] {
-        (termsByProvider[provider] ?? [:]).filter { $0.value >= 1.5 }
-            .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
-            .prefix(limit).map { ($0.key, $0.value) }
+    func strongInterests(provider: String, limit: Int = 8, at now: Date = .now) -> [(String, Double)] {
+        let timeFade = freshness(provider: provider, at: now)
+        let weights: [String: Double] = termsByProvider[provider] ?? [:]
+        var interests: [(String, Double)] = []
+        interests.reserveCapacity(weights.count)
+        for (term, weight) in weights {
+            let fadedWeight = weight * timeFade
+            if fadedWeight >= 1.5 { interests.append((term, fadedWeight)) }
+        }
+        interests.sort { left, right in
+            if left.1 == right.1 { return left.0 < right.0 }
+            return left.1 > right.1
+        }
+        return Array(interests.prefix(max(0, limit)))
     }
 }
 
@@ -1196,6 +1220,40 @@ actor RecommendationEngine {
         let candidateFacets = ActionSemantics.facets(post)
         let reinforcedMatch = !reinforced.isDisjoint(with: observed)
             || !candidateFacets.isDisjoint(with: reinforcedFavoriteFacets[source] ?? [])
+        if source == Provider.rule34.rawValue {
+            // Rule34 supplies exact booru tags. High visual similarity, a
+            // shared broad pose or an adjacent franchise is not sufficient
+            // evidence to admit a new post to a personalized feed. The model
+            // may reorder verified matches, but cannot invent their relevance.
+            let recentAnchors = Set(sessionTaste.strongInterests(provider: source, limit: 12)
+                .filter { $0.1 >= 2.7 }.map { RecommendationTagRules.canonical($0.0) })
+            let learnedAnchors = Set(positiveTermEntries(source: source, taste: TasteChoice(),
+                limit: 16, learned: profile(for: source))
+                .filter { $0.1 >= 3.0 }.map { RecommendationTagRules.canonical($0.0) })
+            let anchors = Set(selected.union(reinforced).union(recentAnchors).union(learnedAnchors)
+                .filter { tag in
+                    !Self.genericTasteTerms.contains(tag) &&
+                    !Self.lowSignalDiscoveryTags.contains(tag) &&
+                    !Self.broadDiversityTags.contains(tag) &&
+                    !(sourcesWithFictionalCharacters.contains(source) && TasteConcepts.franchises.contains(tag))
+                })
+            guard !anchors.isEmpty else { return true } // Honest cold start.
+            if !anchors.isDisjoint(with: observed) ||
+                !ActionSemantics.facets(Array(anchors)).isDisjoint(with: candidateFacets) {
+                return true
+            }
+            // Independently reinforced co-tags can introduce a neighboring
+            // niche, but single incidental metadata overlaps cannot.
+            let profile = profile(for: source)
+            return anchors.contains { anchor in
+                (profile.related[anchor] ?? [:]).contains { entry in
+                    entry.value >= 3 && observed.contains(entry.key) &&
+                    !Self.genericTasteTerms.contains(entry.key) &&
+                    !Self.lowSignalDiscoveryTags.contains(entry.key) &&
+                    !Self.broadDiversityTags.contains(entry.key)
+                }
+            }
+        }
         // Broad format preferences such as "2d" must not open the gate for
         // *every* 2D post when a character, action or artist was selected too.
         // This was the source of many apparently unrelated recommendations.
@@ -1552,6 +1610,13 @@ actor RecommendationEngine {
             if value.hasPrefix("artist:") {
                 let term = "artist:" + TasteConcepts.canonical(String(value.dropFirst(7)))
                 if term.count > 7 && !out.contains(term) { out.append(term) }
+                continue
+            }
+            if source == Provider.redgifs.rawValue,
+               let niche = NativeProviderAPI.redgifsNicheID(value) {
+                // Store the user-facing namespace but score the provider's
+                // canonical niche ID present in actual clip metadata.
+                if !out.contains(niche) { out.append(niche) }
                 continue
             }
             for raw in value.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ").split(whereSeparator: { $0.isWhitespace }) {

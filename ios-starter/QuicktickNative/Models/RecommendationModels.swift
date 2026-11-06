@@ -279,3 +279,130 @@ struct RecommendationFeedbackResponse: Codable, Sendable, Equatable {
     var reset: Bool?
     var error: String?
 }
+
+
+/// On-device RedGIFs niche discovery. Explicit saved Likes provide anchors;
+/// co-occurrence among real RedGIFs posts suggests adjacent communities.
+/// No user history leaves the device and an unliked niche never counts as a Like.
+struct RedgifsNicheAffinity {
+    private var liked: [String: Double] = [:]
+    private var appearances: [String: Int] = [:]
+    private var overlaps: [String: [String: Int]] = [:]
+
+    var hasLikes: Bool { !liked.isEmpty }
+
+    init(liked favorites: [Post], observed: [Post]) {
+        let saved = Array(favorites.filter { $0.providerKey == .redgifs }.suffix(240))
+        for post in saved {
+            for term in Self.terms(post) { liked[term, default: 0] += 1 }
+            if let niche = post.category, !niche.isEmpty {
+                liked[Self.canonical(niche), default: 0] += 2
+            }
+        }
+        var encountered = Set<String>()
+        for post in saved + Array(observed.suffix(200)) where post.providerKey == .redgifs {
+            guard encountered.insert(post.stableID).inserted else { continue }
+            let terms = Self.terms(post)
+            for term in terms { appearances[term, default: 0] += 1 }
+            for (index, first) in terms.enumerated() {
+                for second in terms.dropFirst(index + 1) {
+                    overlaps[first, default: [:]][second, default: 0] += 1
+                    overlaps[second, default: [:]][first, default: 0] += 1
+                }
+            }
+        }
+    }
+
+    private static func canonical(_ raw: String) -> String {
+        raw.lowercased().replacingOccurrences(
+            of: #"[^a-z0-9]+"#, with: "", options: .regularExpression)
+    }
+
+    private static func terms(_ post: Post) -> [String] {
+        let ignored: Set<String> = ["redgifs", "video", "videos", "gif", "gifs", "popular", "trending"]
+        var result: [String] = [], seen = Set<String>()
+        let raw = (post.category.map { [$0] } ?? []) + post.tags
+        for value in raw.prefix(36) {
+            let term = canonical(value)
+            guard term.count >= 3, term.count <= 60,
+                  !ignored.contains(term), seen.insert(term).inserted else { continue }
+            result.append(term)
+            if result.count == 16 { break }
+        }
+        return result
+    }
+
+    private func signals(for raw: String) -> (direct: Double, related: Double) {
+        let key = Self.canonical(raw)
+        let direct = 3.0 * log1p(liked[key] ?? 0)
+        let frequency = Double(max(1, appearances[key] ?? 1))
+        var related = 0.0
+        for (neighbor, support) in overlaps[key] ?? [:] {
+            guard let affinity = liked[neighbor], affinity > 0 else { continue }
+            let neighborFrequency = Double(max(1, appearances[neighbor] ?? 1))
+            let shared = Double(support)
+            let strength = min(1.0, shared / 2) * shared / sqrt(frequency * neighborFrequency)
+            related += log1p(affinity) * min(1, strength) * 1.8
+        }
+        return (direct, min(7.0, related))
+    }
+
+    func rankNiches(_ niches: [RedgifsNiche]) -> [RedgifsNiche] {
+        guard hasLikes else { return niches }
+        let rows = niches.enumerated().map { index, niche in
+            let id = signals(for: niche.id)
+            let title = signals(for: niche.name)
+            return (index: index, niche: niche, direct: max(id.direct, title.direct),
+                    related: max(id.related, title.related))
+        }
+        func ordered(_ items: [(index: Int, niche: RedgifsNiche, direct: Double, related: Double)]) -> [RedgifsNiche] {
+            items.sorted {
+                let lhs = $0.direct + $0.related
+                let rhs = $1.direct + $1.related
+                return lhs == rhs ? $0.index < $1.index : lhs > rhs
+            }.map(\.niche)
+        }
+        var favorites = ordered(rows.filter { $0.direct > 0 })
+        var discoveries = ordered(rows.filter { $0.direct == 0 && $0.related > 0 })
+        let other = ordered(rows.filter { $0.direct == 0 && $0.related == 0 })
+        var result: [RedgifsNiche] = []
+        // Two familiar communities followed by one related new one prevents
+        // recommendations from becoming a loop of already liked niches.
+        while !favorites.isEmpty || !discoveries.isEmpty {
+            for _ in 0..<2 where !favorites.isEmpty { result.append(favorites.removeFirst()) }
+            if !discoveries.isEmpty { result.append(discoveries.removeFirst()) }
+        }
+        return result + other
+    }
+
+    /// Related tags not directly liked yet. Search these as ordinary public
+    /// RedGIFs text queries; only the real niche catalog uses niche: routes.
+    func relatedSearchTerms(limit: Int = 8) -> [String] {
+        guard hasLikes, limit > 0 else { return [] }
+        return Array(overlaps.keys.filter { liked[$0] == nil && signals(for: $0).related > 0 }
+            .sorted { left, right in
+                let a = signals(for: left).related
+                let b = signals(for: right).related
+                return a == b ? left < right : a > b
+            }.prefix(limit))
+    }
+
+    func rankPosts(_ posts: [Post]) -> [Post] {
+        guard hasLikes else { return posts }
+        let rows = posts.enumerated().map { index, post -> (index: Int, post: Post, score: Double) in
+            let strengths = Self.terms(post)
+                .map { term -> Double in let result = signals(for: term); return result.direct + result.related }
+                .sorted(by: >)
+            var score = 0.0
+            for (position, value) in strengths.prefix(5).enumerated() {
+                score += value / (1 + Double(position) * 0.7)
+            }
+            return (index, post, score)
+        }
+        return rows.sorted { left, right in
+            let l = left.score - Double(left.index) * 0.025
+            let r = right.score - Double(right.index) * 0.025
+            return l == r ? left.index < right.index : l > r
+        }.map(\.post)
+    }
+}

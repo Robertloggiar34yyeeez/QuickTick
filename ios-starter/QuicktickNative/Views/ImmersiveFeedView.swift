@@ -193,7 +193,7 @@ struct ImmersiveFeedView: View {
     }
 
     private var immersiveHeader: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
                     if let onClose {
                         Button(action: onClose) {
@@ -216,20 +216,6 @@ struct ImmersiveFeedView: View {
                                 .accessibilityLabel("Provider: \(store.selectedProvider.displayName)")
                         }
                     }
-                    if !offline && collectionTab == nil &&
-                       store.selectedProvider == .redgifs && store.queryText.hasPrefix("niche:") {
-                        Button("Return to FYP") {
-                            store.commitSearch(query: "", sort: "recommended")
-                            onClose?()
-                            Task { await store.refresh() }
-                        }
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.accent)
-                        .padding(.horizontal, 10)
-                        .frame(minHeight: 52)
-                        .background(.black.opacity(0.18), in: Capsule())
-                        .accessibilityIdentifier("redgifs-immersive-return-fyp")
-                    }
                     if !offline && collectionTab == nil {
                         Button { searchVisible.toggle() } label: {
                             Image(systemName: "magnifyingglass")
@@ -240,7 +226,25 @@ struct ImmersiveFeedView: View {
                         SettingsLauncher(isPresented: $showSettings, immersive: true)
                     }
                 }.padding(.horizontal, 14).frame(minHeight: 58)
-
+                if !offline && collectionTab == nil &&
+                   store.selectedProvider == .redgifs && store.queryText.hasPrefix("niche:") {
+                    Button {
+                        store.commitSearch(query: "", sort: "recommended")
+                        onClose?()
+                        Task { await store.refresh() }
+                    } label: {
+                        Label("Return to FYP", systemImage: "arrow.uturn.backward")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 48)
+                            .background(.black.opacity(0.16), in: Capsule())
+                            .overlay(Capsule().stroke(.white.opacity(0.24)))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 14)
+                    .accessibilityIdentifier("redgifs-immersive-return-fyp")
+                }
         }
     }
 

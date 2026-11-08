@@ -130,7 +130,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             let clear = try? HanimeHandshakeCodec.open(token)
             let input = clear.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
             let slug = input?["slug"] as? String ?? ""
-            if slug == "missing-404" {
+            if slug == "missing-404" || slug == "legacy-working" {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404,
                     httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
@@ -171,7 +171,11 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                     httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
             }
-            payload = #"{"videos_manifest":{"servers":[{"streams":[]}]}}"#
+            if id == "legacy-working" {
+                payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/videos/legacy-full.m3u8"},{"height":720,"url":"https://cdn.hanime.tv/videos/legacy-small.m3u8"},{"height":9999,"url":"https://evil.invalid/unsafe.m3u8"}]}]}}"#
+            } else {
+                payload = #"{"videos_manifest":{"servers":[{"streams":[]}]}}"#
+            }
         }
         else if host == "api.rule34.xxx", path == "/autocomplete.php" { payload = #"[{"value":"engineering","label":"engineering (12)","count":12}]"# }
         else if host == "api.rule34.xxx" {
@@ -684,6 +688,21 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(HanimeGeneratedAPI.mediaHeaders(for: URL(string: resolved.mediaUrl)!)["Referer"],
                        "https://player.hanime.tv/")
         XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v8/video" })
+    }
+
+    func testHanimeFallsBackToVerifiedLegacyStreamWhenHandshakeIsGone() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let post = Post(key: "hanime:legacy-working", id: "legacy-working", provider: "Hanime", type: "video")
+        let result = try await api.resolveMedia(post)
+        XCTAssertEqual(result.mediaUrl, "https://cdn.hanime.tv/videos/legacy-full.m3u8")
+        XCTAssertEqual(result.type, "hls")
+        let lower = try await api.resolveMedia(post, streamVariant: 1)
+        XCTAssertEqual(lower.mediaUrl, "https://cdn.hanime.tv/videos/legacy-full.m3u8")
+        let nextQuality = try await api.resolveMedia(post, streamVariant: 2)
+        XCTAssertEqual(nextQuality.mediaUrl, "https://cdn.hanime.tv/videos/legacy-small.m3u8")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v8/video" })
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.host == "evil.invalid" })
     }
 
     func testHanimeRetriesLowerQualityWithoutConsumingSignedPlaylist() async throws {

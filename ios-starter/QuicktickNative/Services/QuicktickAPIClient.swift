@@ -85,6 +85,8 @@ actor QuicktickAPIClient {
     private var eromePageTasks: [String: Task<PostPage, Error>] = [:]
     private var hanimePages: [String: (page: PostPage, expiry: Date)] = [:]
     private var hanimePageTasks: [String: Task<PostPage, Error>] = [:]
+    private var rule34WarmPage: (page: PostPage, expires: Date)?
+    private var rule34WarmTask: Task<PostPage, Error>?
     private var archivePages: [String: (page: PostPage, expiry: Date)] = [:]
     private var archivePageTasks: [String: Task<PostPage, Error>] = [:]
     private var archiveCreators: [Provider: [ArchiveCreator]] = [:]
@@ -111,8 +113,34 @@ actor QuicktickAPIClient {
         return url
     }
 
-    func setCredentials(_ value: ProviderCredentials) { credentials = value }
+    func setCredentials(_ value: ProviderCredentials) {
+        if credentials.rule34User != value.rule34User || credentials.rule34Key != value.rule34Key {
+            rule34WarmTask?.cancel()
+            rule34WarmTask = nil
+            rule34WarmPage = nil
+        }
+        credentials = value
+    }
     func setCloudSyncEnabled(_ value: Bool) { cloudSyncEnabled = value }
+
+    /// Warm only the public first Rule34 page. Never publish it as the active
+    /// provider: Home should remain on the user's last selected source.
+    func prewarmRule34() async {
+        if let warm = rule34WarmPage, warm.expires > .now { return }
+        guard rule34WarmTask == nil else { return }
+        let currentCredentials = credentials
+        let currentSession = session
+        let task = Task(priority: .background) {
+            try await NativeProviderAPI.rule34(session: currentSession, credentials: currentCredentials,
+                query: ParsedQuery(included: [], excluded: []), page: 1,
+                sort: "recommended", immersive: false)
+        }
+        rule34WarmTask = task
+        defer { rule34WarmTask = nil }
+        if let page = try? await task.value, !Task.isCancelled {
+            rule34WarmPage = (page, .now.addingTimeInterval(90))
+        }
+    }
 
     func pornhubCategories() async throws -> [String] {
         try await NativeProviderAPI.pornhubCategories(session: session, credentials: credentials)
@@ -148,7 +176,17 @@ actor QuicktickAPIClient {
 
     func posts(provider: Provider, query: ParsedQuery, page: Int, sort: String = "recommended", immersive: Bool = false) async throws -> PostPage {
         switch provider {
-        case .rule34: return try await NativeProviderAPI.rule34(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
+        case .rule34:
+            if page == 1, query.included.isEmpty, query.excluded.isEmpty,
+               sort == "recommended", !immersive {
+                if let warm = rule34WarmPage, warm.expires > .now { return warm.page }
+                if let running = rule34WarmTask, let result = try? await running.value {
+                    try Task.checkCancellation()
+                    return result
+                }
+            }
+            return try await NativeProviderAPI.rule34(session: session, credentials: credentials,
+                query: query, page: page, sort: sort, immersive: immersive)
         case .nhentai: return try await cachedNHentaiPosts(query: query, page: page, sort: sort, immersive: immersive)
         case .coomer, .kemono:
             return try await cachedArchivePosts(provider: provider, query: query, page: page, immersive: immersive)

@@ -62,6 +62,14 @@ final class FeedReliabilityTests: XCTestCase {
         let afterEmptySave = await cache.load(provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
         XCTAssertEqual(afterEmptySave.count, 1,
                        "Empty responses or temporary browsing modes must not erase the last usable Home feed")
+        let rule34Post = Post(key: "rule34:another", id: "another", provider: "Rule34",
+                              tags: ["engineering"], type: "image")
+        await cache.save([rule34Post], provider: .rule34, query: "", sort: "recommended", mediaOnly: false)
+        let restoredEporner = await cache.load(provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        let restoredRule34 = await cache.load(provider: .rule34, query: "", sort: "recommended", mediaOnly: false)
+        XCTAssertEqual(restoredEporner.map(\.stableID), [post.stableID],
+                       "Switching providers must not discard a working catalog during an outage")
+        XCTAssertEqual(restoredRule34.map(\.stableID), [rule34Post.stableID])
     }
     func testSavedMediaSearchMatchesTitlesTagsAndProvidersWithoutNetwork() {
         var liked = Post(key: "rule34:star", id: "star", provider: "Rule34",

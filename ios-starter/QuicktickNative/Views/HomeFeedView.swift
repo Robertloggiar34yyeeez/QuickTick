@@ -295,14 +295,13 @@ struct HomeFeedView: View {
                     .padding(.horizontal, 16)
                     .accessibilityIdentifier("home-active-filter")
                 }
-                if store.selectedProvider == .redgifs {
+                if store.selectedProvider == .pornhub {
+                    pornhubDiscoveryRow
+                } else if store.selectedProvider == .redgifs {
                     redgifsNicheRow
                 } else if store.selectedProvider == .hanime ||
                             (suggestedThemesEnabled && !themeSuggestions.isEmpty) {
                     suggestedThemeRow
-                }
-                if store.selectedProvider == .pornhub {
-                    homeCategoryRow
                 }
                 if store.posts.isEmpty && !store.bootstrapped {
                     RoundedRectangle(cornerRadius: 22)
@@ -815,18 +814,41 @@ struct HomeFeedView: View {
         }
     }
 
-    /// Provider categories live on Home as one-tap discovery chips. They are
-    /// intentionally not part of the Search sheet's autocomplete suggestions.
-    private var homeCategoryRow: some View {
-        let provider = store.selectedProvider
+    /// Pornhub topics and categories share one discovery rail. Independent
+    /// horizontal rows repeatedly reflowed the feed when their artwork loaded.
+    private var pornhubDiscoveryRow: some View {
+        let provider = Provider.pornhub
         let selected = ProviderSearchCategories.split(QueryParser.parse(store.queryText), provider: provider).category
+        let categories = ProviderSearchCategories.suggestions(provider: provider)
+        let knownCategories = Set(categories.map { $0.value.lowercased() })
         return VStack(alignment: .leading, spacing: 10) {
-            Text("Categories")
+            HStack(spacing: 8) {
+                Image(systemName: "square.grid.2x2.fill").foregroundStyle(AppTheme.accent)
+                Text("Topics & categories")
                 .font(.subheadline.weight(.bold))
+                Spacer()
+                Text("Explore")
+                    .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
+            }
                 .padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
-                ForEach(ProviderSearchCategories.suggestions(provider: provider)) { item in
+                if suggestedThemesEnabled {
+                    ForEach(themeSuggestions.filter { !knownCategories.contains($0.term.lowercased()) }) { theme in
+                        let active = QueryParser.parse(store.queryText).included.contains(theme.term)
+                        Button {
+                            let current = QueryParser.parse(store.queryText)
+                            store.commitSuggestedTopic(active ? nil : theme.term, excluded: current.excluded)
+                            Task { await store.refresh() }
+                        } label: {
+                            HomeArtworkChip(title: theme.label, imageURL: theme.imageURL,
+                                            selected: active, width: 174, height: 198)
+                        }
+                        .buttonStyle(QuicktickPressStyle())
+                        .accessibilityIdentifier("suggested-theme-\(theme.term)")
+                    }
+                }
+                ForEach(categories) { item in
                     let active = selected == item.value
                     let preview = pornhubCategoryPreview(item.value)
                     Button {
@@ -870,15 +892,27 @@ struct HomeFeedView: View {
         // Each category is independently verified against the first-party
         // catalog. A failed or blocked category keeps its honest placeholder.
         // Fetch serially and away from first paint to avoid a burst of calls.
+        // Publish artwork in small batches instead of invalidating the whole
+        // discovery rail after each individual thumbnail response.
         try? await Task.sleep(for: .milliseconds(1_300))
+        var discovered: [String: String] = [:]
+        var processed = 0
         for category in ProviderSearchCategories.suggestions(provider: .pornhub) {
             guard !Task.isCancelled, store.selectedProvider == .pornhub else { return }
             guard pornhubCategoryPreviews[category.value] == nil else { continue }
             if let preview = try? await store.api.pornhubCategoryPreview(token: category.value),
                URL(string: preview)?.scheme == "https" {
-                pornhubCategoryPreviews[category.value] = preview
+                discovered[category.value] = preview
+            }
+            processed += 1
+            if processed.isMultiple(of: 4), !discovered.isEmpty {
+                pornhubCategoryPreviews.merge(discovered) { _, newest in newest }
+                discovered.removeAll()
             }
             try? await Task.sleep(for: .milliseconds(350))
+        }
+        if !Task.isCancelled, store.selectedProvider == .pornhub, !discovered.isEmpty {
+            pornhubCategoryPreviews.merge(discovered) { _, newest in newest }
         }
     }
 

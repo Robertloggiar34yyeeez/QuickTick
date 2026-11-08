@@ -796,6 +796,34 @@ enum NativeProviderAPI {
         }
     }
 
+    /// Older working releases resolved the public v8 video manifest. Some
+    /// titles still expose a valid first-party HLS playlist there while their
+    /// newer v11 handshake is empty, blocked, or produces an expired token.
+    /// Use only official stream URLs and never accept a watch page as media.
+    static func hanimeLegacyMediaResolve(session: URLSession, post: Post,
+                                         variant: Int = 0) async throws -> ResolvedMedia {
+        guard post.id.count <= 160,
+              post.id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else {
+            throw APIError.invalidResponse
+        }
+        let response = try object(await data(session: session,
+            url: url("https://hanime.tv/api/v8/video", [.init(name: "id", value: post.id)]),
+            provider: .hanime))
+        let manifest = response["videos_manifest"] as? [String: Any] ?? [:]
+        let ordered = rows(manifest["servers"])
+            .flatMap { rows($0["streams"]) }
+            .sorted { number($0["height"]) > number($1["height"]) }
+        let valid = ordered.compactMap { row -> URL? in
+            guard let address = mediaURL(text(row["url"]), provider: .hanime),
+                  HanimeGeneratedAPI.permittedStreamURL(address) else { return nil }
+            return address
+        }
+        guard !valid.isEmpty else { throw APIError.server("Hanime's public video manifest has no playable stream.") }
+        let selected = valid[min(max(variant, 0), valid.count - 1)]
+        return ResolvedMedia(mediaUrl: selected.absoluteString,
+            type: ["mp4", "m4v"].contains(selected.pathExtension.lowercased()) ? "video" : "hls")
+    }
+
     private static func hanimeHLSHandshake(session: URLSession, slug: String,
                                            variant: Int = 0) async throws -> ResolvedMedia {
         let time = Int(Date().timeIntervalSince1970)
@@ -1991,13 +2019,39 @@ extension NativeProviderAPI {
             }
             throw APIError.server("Eporner returned no playable public stream.")
         case .hanime:
+            // When AVPlayer rejects the first signed playlist, the retry must
+            // be able to change transport, not merely request another token
+            // for the same failing manifest. Try the older public v8 media
+            // route before stepping down to a lower v11 HLS quality.
+            if streamVariant > 0,
+               let legacy = try? await hanimeLegacyMediaResolve(session: session,
+                                                                post: post, variant: streamVariant - 1) {
+                try Task.checkCancellation()
+                return legacy
+            }
             do {
                 return try await hanimeHLSResolve(session: session, post: post,
                                                   variant: streamVariant)
-            } catch APIError.providerStatus(.hanime, 404) {
-                throw APIError.server("Hanime's HLS handshake was unavailable. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
-            } catch APIError.providerStatus(.hanime, 410) {
-                throw APIError.server("Hanime's HLS handshake was removed. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // A successful public v8 response is an independent, ordinary
+                // provider-supported stream source. Do not try unverified CDNs
+                // or alter the user's authentication to bypass a denied route.
+                if let legacy = try? await hanimeLegacyMediaResolve(session: session, post: post) {
+                    try Task.checkCancellation()
+                    return legacy
+                }
+                if let failure = error as? APIError {
+                    switch failure {
+                    case .providerStatus(.hanime, 404):
+                        throw APIError.server("Hanime's HLS handshake was unavailable. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
+                    case .providerStatus(.hanime, 410):
+                        throw APIError.server("Hanime's HLS handshake was removed. Native playback needs an authorized stream; use Browse inside QuickTick or configure a Hanime API in Settings.")
+                    default: break
+                    }
+                }
+                throw error
             }
         case .pornhub:
             let canonical = mediaURL(post.pageUrl, provider: provider)

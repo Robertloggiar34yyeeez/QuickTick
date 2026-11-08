@@ -28,11 +28,16 @@ enum CandidatePoolMix {
 
 @MainActor
 final class AppStore: ObservableObject {
+    private static let lastProviderKey = "quicktick-last-selected-provider-v1"
+    private let persistsProviderSelection: Bool
     @Published var selectedProvider: Provider = .rule34 {
         didSet {
             // Keep saved Haven items but migrate the old picker selection to Hanime.
             if selectedProvider == .hhaven { selectedProvider = .hanime }
             guard oldValue != selectedProvider else { return }
+            if persistsProviderSelection {
+                UserDefaults.standard.set(selectedProvider.rawValue, forKey: Self.lastProviderKey)
+            }
             savedFeeds.removeAll()
             // Home category chips are scoped to one provider. Never carry a
             // category route into another provider's keyword search.
@@ -286,6 +291,16 @@ final class AppStore: ObservableObject {
     lazy var sync = QuicktickSyncService(api: api)
 
     init(api: QuicktickAPIClient = QuicktickAPIClient(), localStorage: LocalStateStore = LocalStateStore()) {
+        // Hydrate the picker before SwiftUI mounts Home. Restoring it only near
+        // the end of bootstrap visibly rendered Rule34 and then switched tabs.
+        let isProductionStorage = localStorage.url == LocalStateStore().url
+        let isUITest = ProcessInfo.processInfo.arguments.contains("--ui-testing")
+        persistsProviderSelection = isProductionStorage && !isUITest
+        if persistsProviderSelection,
+           let saved = UserDefaults.standard.string(forKey: Self.lastProviderKey),
+           let provider = Provider(rawValue: saved) {
+            selectedProvider = provider == .hhaven ? .hanime : provider
+        }
         self.localStorage = localStorage
         self.feedPreviewPersistence = FeedPreviewPersistence(directory: localStorage.url.deletingLastPathComponent())
         self.api = api
@@ -327,6 +342,24 @@ final class AppStore: ObservableObject {
             // Enable audio once on upgrade, then preserve explicit mute choices.
             muted = savedState.audioPreferenceVersion == nil ? false : savedState.muted
         } catch { restoreFailed = true; storageWarning = error.localizedDescription }
+        // Show the cached feed while recommendation state is still loading.
+        // Older installations use the snapshot only until the first explicit
+        // provider choice has been persisted independently of feed success.
+        if persistsProviderSelection,
+           UserDefaults.standard.string(forKey: Self.lastProviderKey) == nil,
+           let previousProvider = await feedPreviewPersistence.recentProvider() {
+            selectedProvider = previousProvider
+        }
+        let cached = await feedPreviewPersistence.load(provider: selectedProvider, query: queryText,
+                                                       sort: feedSort, mediaOnly: false)
+        if !cached.isEmpty {
+            let banned = exclusions + QueryParser.parse(queryText).excluded + tasteChoice(for: selectedProvider).notInto
+            let visible = cached.filter { !RecommendationTagRules.rejects($0, exclusions: banned) }
+            if !visible.isEmpty {
+                posts = visible; encountered = Set(visible.map(\.stableID))
+                warmFeedRestored = true
+            }
+        }
         if let saved = KeychainStore.get(account: "quicktick-sync-id"), (try? QuicktickSyncCrypto.parse(saved)) != nil {
             syncID = saved
         } else if cloudSyncEnabled {
@@ -357,18 +390,10 @@ final class AppStore: ObservableObject {
         local.snapshot.pornhub.auth.session = credentials.pornhubSession
         await api.setCredentials(credentials)
         downloads.onCompleted = { [weak self] post in Task { await self?.record(.download, post: post) } }
-        if let previousProvider = await feedPreviewPersistence.recentProvider() {
-            selectedProvider = previousProvider
-        }
-        let cached = await feedPreviewPersistence.load(provider: selectedProvider, query: queryText,
-                                                       sort: feedSort, mediaOnly: false)
-        if !cached.isEmpty {
-            let banned = exclusions + QueryParser.parse(queryText).excluded + tasteChoice(for: selectedProvider).notInto
-            let visible = cached.filter { !RecommendationTagRules.rejects($0, exclusions: banned) }
-            if !visible.isEmpty {
-                posts = visible; encountered = Set(visible.map(\.stableID))
-                warmFeedRestored = true
-            }
+        if selectedProvider != .rule34 {
+            // Begin Rule34's first page in the background, without selecting
+            // its tab or interrupting the user's last-used provider.
+            Task(priority: .background) { [api] in await api.prewarmRule34() }
         }
         bootstrapped = true
         visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil
@@ -550,8 +575,8 @@ final class AppStore: ObservableObject {
     }
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
-        let previousVisible = posts
-        let keepWarmFeed = warmFeedRestored && !previousVisible.isEmpty && activeTab == 0
+        var previousVisible = posts
+        var keepWarmFeed = warmFeedRestored && !previousVisible.isEmpty && activeTab == 0
         warmFeedRestored = false
         let mediaOnly = immersive || activeTab == 1
         feedMediaOnly = mediaOnly
@@ -574,6 +599,23 @@ final class AppStore: ObservableObject {
         let feedStarted = Date()
         let requestedQuery = queryText
         let provider = selectedProvider
+        if previousVisible.isEmpty, !mediaOnly, requestedQuery.isEmpty,
+           requestedSort == "recommended" {
+            // Returning to a provider should show its own last valid catalog
+            // immediately. A network failure must not erase previously
+            // verified Hanime posters or leave the entire Home screen blank.
+            let cached = await feedPreviewPersistence.load(provider: provider,
+                query: requestedQuery, sort: requestedSort, mediaOnly: false)
+            guard generation == token, !Task.isCancelled else { return }
+            let banned = exclusions + tasteChoice(for: provider).notInto
+            let visible = cached.filter { !RecommendationTagRules.rejects($0, exclusions: banned) }
+            if !visible.isEmpty {
+                previousVisible = visible
+                posts = visible
+                encountered = Set(visible.map(\.stableID))
+                keepWarmFeed = true
+            }
+        }
         // A refresh starts with a new feed, but that does not mean the user
         // wants the same character/artist cluster as the previous screen.
         let recentProviderPosts = Array(previousVisible.filter { $0.providerKey == provider }.suffix(12))

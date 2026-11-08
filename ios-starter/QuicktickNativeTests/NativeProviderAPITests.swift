@@ -4,9 +4,16 @@ import XCTest
 private final class NativeRequestLog: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [URLRequest] = []
+    private var hanimeCatalogBlocked = false
     func append(_ request: URLRequest) { lock.lock(); defer { lock.unlock() }; values.append(request) }
     func snapshot() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return values }
     func reset() { lock.lock(); defer { lock.unlock() }; values.removeAll() }
+    func blockHanimeCatalog(_ blocked: Bool) {
+        lock.lock(); defer { lock.unlock() }; hanimeCatalogBlocked = blocked
+    }
+    func isHanimeCatalogBlocked() -> Bool {
+        lock.lock(); defer { lock.unlock() }; return hanimeCatalogBlocked
+    }
 }
 
 private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
@@ -100,7 +107,15 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"<html><title>Photo set - Erome</title><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div></html>"#
         }
         else if host == "auth.hanime.tv", path == "/api/v11/search_hvs" {
+            if Self.log.isHanimeCatalogBlocked() {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
+                    httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
             payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
+        }
+        else if host == "hanime.tv", path == "/" {
+            payload = #"<html><a href="/videos/hentai/public-fantasy"><img data-src="https://cdn.hanime.tv/public.webp" alt="Public fantasy"></a><a href="https://evil.invalid/videos/hentai/fake"><img src="https://evil.invalid/fake.webp"></a></html>"#
         }
         else if host == "auth.hanime.tv", path == "/api/v11/handshake" {
             let object = (Self.requestBody(request).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
@@ -548,6 +563,32 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
             $0.url?.host == "auth.hanime.tv" && $0.url?.path == "/api/v11/search_hvs"
         }.count, 1, "Switching back to Hanime should reuse the existing catalog")
+    }
+
+    func testHanimeWebsiteFallbackShowsPublicTitlesWhenCatalogAPIIsBlocked() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        NativeProviderProtocol.log.blockHanimeCatalog(true)
+        defer { NativeProviderProtocol.log.blockHanimeCatalog(false) }
+
+        let page = try await api.posts(provider: .hanime,
+            query: ParsedQuery(included: [], excluded: []), page: 1, immersive: true)
+        XCTAssertEqual(page.items.map(\.stableID), ["hanime:public-fantasy"])
+        XCTAssertEqual(page.items.first?.thumbUrl, "https://cdn.hanime.tv/public.webp")
+        XCTAssertEqual(page.items.first?.caption, "Public fantasy")
+        XCTAssertEqual(page.hasMore, false)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.host == "hanime.tv" })
+    }
+
+    func testHanimePublicHTMLRejectsUnrelatedLinksAndPosters() throws {
+        let html = #"<a href="/videos/hentai/first-video"><img src="https://cdn.hanime.tv/first.jpg" alt="First &amp; final"></a><a href="https://evil.invalid/videos/hentai/other"><img src="https://evil.invalid/other.jpg"></a><a href="/videos/hentai/first-video">Duplicate</a><a href="https://hanime.tv/videos/hentai/second-video"><img data-src="https://evil.invalid/fake.jpg" alt="Second video"></a>"#
+        let posts = NativeProviderAPI.parseHanimeWebsiteCatalog(html)
+        XCTAssertEqual(posts.map(\.id), ["first-video", "second-video"])
+        XCTAssertEqual(posts.map(\.caption), ["First & final", "Second video"])
+        XCTAssertEqual(posts.map(\.thumbUrl), ["https://cdn.hanime.tv/first.jpg", ""])
+        XCTAssertThrowsError(try NativeProviderAPI.hanimeWebsitePage(
+            "<html><h1>Site Unavailable</h1></html>",
+            query: ParsedQuery(included: [], excluded: []), immersive: true))
     }
 
     func testHanimeArtworkPrefersVerifiedFirstPartyNestedPosterFields() {
@@ -1140,10 +1181,10 @@ final class NativeProviderAPITests: XCTestCase {
         NativeProviderProtocol.log.reset()
         let page = try await api.posts(provider: .pornhub,
             query: QueryParser.parse("category:hentai"), page: 1)
-        XCTAssertEqual(page.items.map(\.stableID), ["pornhub:ph1"])
+        XCTAssertEqual(page.items.map(\.stableID), ["pornhub:hentai-cover"])
         XCTAssertEqual(page.items.first?.previewImageURLs, [
-            "https://cdn.pornhub.com/thumb.jpg", "https://cdn.pornhub.com/thumb-small.jpg"
-        ], "If the large poster is missing or blocked, Home must still try the provider's alternate thumbnail")
+            "https://cdn.pornhub.com/verified-hentai.jpg"
+        ], "A category chip must use artwork belonging to a verified member of that category")
         let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first {
             $0.url?.path == "/webmasters/search"
         })

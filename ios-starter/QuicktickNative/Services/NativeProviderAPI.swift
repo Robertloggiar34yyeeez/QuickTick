@@ -82,6 +82,54 @@ enum HavenBrowserCatalog {
     }
 }
 
+/// When the Hanime JSON catalog is unavailable, read the same public titles a
+/// person can see on the first-party website. WebKit keeps only its own site
+/// cookies; no verification tokens, Safari state or third-party mirrors are used.
+@MainActor
+enum HanimeBrowserCatalog {
+    static func html(url: URL) async throws -> String {
+        guard url.scheme == "https", url.host == "hanime.tv" else {
+            throw APIError.invalidResponse
+        }
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let browser = WKWebView(frame: .zero, configuration: config)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        _ = browser.load(request)
+        defer { browser.stopLoading() }
+
+        var settled = 0
+        for tick in 0..<40 {
+            try Task.checkCancellation()
+            if let current = browser.url {
+                guard current.scheme == "https",
+                      ["hanime.tv", "www.hanime.tv"].contains(current.host?.lowercased() ?? "") else {
+                    throw APIError.server("Hanime redirected away from its public website.")
+                }
+                if tick.isMultiple(of: 2), let markup = await readableCatalog(in: browser) {
+                    return markup
+                }
+            }
+            settled = browser.isLoading ? 0 : settled + 1
+            if settled >= 8 { break }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        throw APIError.server("Hanime's public website did not expose a readable catalog.")
+    }
+
+    private static func readableCatalog(in browser: WKWebView) async -> String? {
+        await withCheckedContinuation { continuation in
+            browser.evaluateJavaScript(
+                #"document.querySelector('a[href*="/videos/hentai/"]') ? document.documentElement.outerHTML : ''"#
+            ) { value, _ in
+                let html = value as? String
+                continuation.resume(returning: html?.isEmpty == false ? html : nil)
+            }
+        }
+    }
+}
+
 /// Read a normal public Erome page through WebKit when URLSession receives a
 /// site-unavailable response. This uses WebKit's own first-party cookie store
 /// (not Safari's); it never fabricates verification or bypasses access controls.
@@ -707,7 +755,8 @@ enum NativeProviderAPI {
                 current = try JSONSerialization.jsonObject(with: bytes); continue
             }
             guard let object = current as? [String: Any],
-                  let next = object["hits"] ?? object["hentai_videos"] ?? object["videos"] ?? object["data"] else {
+                  let next = object["hits"] ?? object["hentai_videos"] ?? object["videos"] ??
+                    object["items"] ?? object["data"] ?? object["result"] else {
                 throw APIError.invalidResponse
             }
             current = next
@@ -861,6 +910,115 @@ enum NativeProviderAPI {
         }.first?.absoluteString ?? ""
     }
 
+    /// The public catalog is a useful read-only fallback when the first-party
+    /// JSON API returns 403, an HTML error, or an unexpectedly empty response.
+    /// Only genuine Hanime watch links are accepted; HTML is never passed to
+    /// AVPlayer as a video stream.
+    static func parseHanimeWebsiteCatalog(_ html: String) -> [Post] {
+        let pattern = #"(?i)href\s*=\s*["'](?:https://(?:www\.)?hanime\.tv)?(/videos/hentai/([a-z0-9]+(?:-[a-z0-9]+)*)/?)(?:\?[^"']*)?["']"#
+        guard let linkPattern = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let content = html as NSString
+        let links = linkPattern.matches(in: html, range: NSRange(location: 0, length: content.length))
+        let titlePattern = try? NSRegularExpression(pattern: #"(?i)(?:title|alt|aria-label)\s*=\s*["']([^"']{3,180})["']"#)
+        let imagePattern = try? NSRegularExpression(pattern: #"(?i)(?:data-src|data-original|src|poster)\s*=\s*["']([^"']+)["']"#)
+        var seen = Set<String>()
+        var posts: [Post] = []
+        for link in links.prefix(160) {
+            let slug = content.substring(with: link.range(at: 2)).lowercased()
+            guard seen.insert(slug).inserted else { continue }
+            // Limit metadata to the link's own card, so a nearby unrelated
+            // title or poster cannot be attributed to this video.
+            let segment = content.substring(with: NSRange(location: link.range.location,
+                length: min(3000, content.length - link.range.location)))
+            let anchorEnd = segment.range(of: "</a>", options: .caseInsensitive)?.upperBound
+            let anchor = String(anchorEnd.map { segment[..<$0] } ?? segment.prefix(1200))
+            let anchorRange = NSRange(location: 0, length: (anchor as NSString).length)
+            let namedTitle = titlePattern?.firstMatch(in: anchor, range: anchorRange).map {
+                (anchor as NSString).substring(with: $0.range(at: 1))
+            }
+            let inlineText = anchor.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallback = slug.replacingOccurrences(of: "-", with: " ").capitalized
+            let title = (namedTitle ?? (inlineText.count <= 180 ? inlineText : ""))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let caption = (title.isEmpty ? fallback : title)
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "&#39;", with: "'")
+            let poster = (imagePattern?.matches(in: anchor, range: anchorRange) ?? [])
+                .compactMap { match -> String? in
+                    let raw = (anchor as NSString).substring(with: match.range(at: 1))
+                    guard let url = URL(string: raw, relativeTo: origin(.hanime))?.absoluteURL,
+                          url.scheme == "https", url.user == nil, url.password == nil,
+                          let host = url.host?.lowercased(),
+                          host == "hanime.tv" || host.hasSuffix(".hanime.tv"),
+                          ["jpg", "jpeg", "png", "webp", "avif"].contains(url.pathExtension.lowercased())
+                    else { return nil }
+                    return url.absoluteString
+                }.first ?? ""
+            var post = Post(key: "hanime:\(slug)", id: slug, provider: "Hanime",
+                            tags: caption.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                                .prefix(16).map(String.init),
+                            thumbUrl: poster, pageUrl: "https://hanime.tv/videos/hentai/\(slug)",
+                            type: "video")
+            post.caption = caption
+            posts.append(post)
+        }
+        return posts
+    }
+
+    static func hanimeWebsitePage(_ html: String, query: ParsedQuery,
+                                  immersive: Bool) throws -> PostPage {
+        guard !unavailableHTML(Data(html.utf8)) else {
+            throw APIError.server("Hanime's public website returned an unavailable page.")
+        }
+        let catalog = parseHanimeWebsiteCatalog(html)
+        guard !catalog.isEmpty else {
+            throw APIError.server("Hanime's public website did not expose video links.")
+        }
+        let matched = catalog.filter { post in
+            query.included.allSatisfy { containsKeyword($0, in: post) }
+        }
+        return self.page(matched, hasMore: false, query: query, immersive: immersive)
+    }
+
+    static func hanimeWebsiteCatalog(session: URLSession, query: ParsedQuery,
+                                     page: Int, immersive: Bool) async throws -> PostPage {
+        // The public website has no verified paging contract. Do not repeat
+        // the homepage as page two or silently invent pagination URLs.
+        guard page == 1 else { return PostPage(items: [], hasMore: false) }
+        let urls = [URL(string: "https://hanime.tv/")!,
+                    URL(string: "https://hanime.tv/browse")!]
+        var sawReadableCatalog = false
+        for address in urls {
+            do {
+                let bytes = try await data(session: session, url: address, provider: .hanime,
+                    headers: ["Accept": "text/html,application/xhtml+xml;q=0.9"],
+                    maxBytes: 5 * 1024 * 1024, timeout: 8)
+                let page = try hanimeWebsitePage(String(decoding: bytes, as: UTF8.self),
+                                                 query: query, immersive: immersive)
+                if !page.items.isEmpty { return page }
+                sawReadableCatalog = true
+            } catch is CancellationError { throw CancellationError() }
+              catch { /* Try the next official catalog route. */ }
+        }
+        // The URLProtocol test session must never escape its fixtures by
+        // contacting the real website through an independent WKWebView.
+        if session.configuration.protocolClasses?.isEmpty != false {
+            for address in urls {
+                do {
+                    let html = try await HanimeBrowserCatalog.html(url: address)
+                    let page = try hanimeWebsitePage(html, query: query, immersive: immersive)
+                    if !page.items.isEmpty { return page }
+                    sawReadableCatalog = true
+                } catch is CancellationError { throw CancellationError() }
+                  catch { /* A normal verification wall stays a real failure. */ }
+            }
+        }
+        if sawReadableCatalog { return PostPage(items: [], hasMore: false) }
+        throw APIError.server("Hanime's catalog is unavailable through both its API and public website. Open Hanime in Browse to check ordinary site access, or configure an authorized Hanime API in Settings.")
+    }
+
     static func hanime(session: URLSession, query: ParsedQuery, page: Int,
                        sort: String, immersive: Bool) async throws -> PostPage {
         guard (1...1000).contains(page) else { throw APIError.invalidResponse }
@@ -875,10 +1033,23 @@ enum NativeProviderAPI {
             bytes = try await data(session: session,
                 url: url("https://auth.hanime.tv/api/v11/search_hvs"), provider: .hanime,
                 headers: headers, maxBytes: 12 * 1024 * 1024, timeout: 20)
-        } catch APIError.providerStatus(.hanime, 403) {
-            throw APIError.server("Hanime refused the native catalog request (HTTP 403). The website may still work in Safari, but its browser verification does not automatically authorize QuickTick's API requests. Try again later or configure an authorized Hanime API in Settings.")
+        } catch is CancellationError { throw CancellationError() }
+          catch APIError.rateLimited(_, let deadline) { throw APIError.rateLimited(.hanime, deadline) }
+          catch APIError.providerStatus(.hanime, 451) { throw APIError.providerStatus(.hanime, 451) }
+          catch {
+            return try await hanimeWebsiteCatalog(session: session, query: query,
+                                                  page: page, immersive: immersive)
         }
-        let raw = try hanimeRows(JSONSerialization.jsonObject(with: bytes))
+        let raw: [[String: Any]]
+        do { raw = try hanimeRows(JSONSerialization.jsonObject(with: bytes)) }
+        catch {
+            return try await hanimeWebsiteCatalog(session: session, query: query,
+                                                  page: page, immersive: immersive)
+        }
+        if raw.isEmpty, page == 1 {
+            return try await hanimeWebsiteCatalog(session: session, query: query,
+                                                  page: page, immersive: immersive)
+        }
         guard raw.count <= 20_000 else { throw APIError.invalidResponse }
         let posts: [Post] = raw.compactMap { row in
             let id = text(row["slug"] ?? row["hentai_video_slug"])
@@ -900,6 +1071,10 @@ enum NativeProviderAPI {
             post.creator = text((row["brand"] as? [String: Any])?["name"] ?? row["brand"])
             post.createdAt = number(row["released_at_unix"] ?? row["created_at_unix"])
             return post
+        }
+        if posts.isEmpty, page == 1, query.included.isEmpty {
+            return try await hanimeWebsiteCatalog(session: session, query: query,
+                                                  page: page, immersive: immersive)
         }
         let contains: (String, Post) -> Bool = { term, post in
             let needle = term.lowercased().replacingOccurrences(of: "_", with: " ")

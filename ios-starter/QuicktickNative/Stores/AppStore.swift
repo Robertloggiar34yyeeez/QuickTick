@@ -296,14 +296,14 @@ final class AppStore: ObservableObject {
         let isProductionStorage = localStorage.url == LocalStateStore().url
         let isUITest = ProcessInfo.processInfo.arguments.contains("--ui-testing")
         persistsProviderSelection = isProductionStorage && !isUITest
+        self.localStorage = localStorage
+        self.feedPreviewPersistence = FeedPreviewPersistence(directory: localStorage.url.deletingLastPathComponent())
+        self.api = api
         if persistsProviderSelection,
            let saved = UserDefaults.standard.string(forKey: Self.lastProviderKey),
            let provider = Provider(rawValue: saved) {
             selectedProvider = provider == .hhaven ? .hanime : provider
         }
-        self.localStorage = localStorage
-        self.feedPreviewPersistence = FeedPreviewPersistence(directory: localStorage.url.deletingLastPathComponent())
-        self.api = api
         players.onPlaybackStart = { [weak self] in
             self?.idleTask?.cancel()
             self?.stopActiveLearning(); self?.startActiveLearning()

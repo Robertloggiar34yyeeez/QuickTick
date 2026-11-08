@@ -470,10 +470,16 @@ final class NavigationTests: XCTestCase {
         }
         XCTAssertEqual(result, .completed, "The visible Home video must resume after tab refresh")
         app.buttons["feed-popular"].tap()
-        XCTAssertTrue(app.buttons["feed-popular"].isSelected)
+        // The store commits synchronously, but XCTest can observe the old
+        // accessibility tree for one SwiftUI rendering pass after a tap.
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == YES"),
+            object: app.buttons["feed-popular"])], timeout: 5), .completed)
         app.buttons["feed-recommended"].tap()
-        XCTAssertTrue(app.buttons["feed-recommended"].isSelected,
-                      "The second sort tap must take effect before its asynchronous refresh")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == YES"),
+            object: app.buttons["feed-recommended"])], timeout: 5), .completed,
+            "The second sort tap must take effect before its asynchronous refresh")
         XCTAssertTrue(app.buttons["inline-play-test:video"].waitForExistence(timeout: 10))
         let full = app.buttons["View full image"].firstMatch
         for _ in 0..<3 { if full.isHittable { break }; app.swipeUp() }

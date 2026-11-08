@@ -1016,12 +1016,93 @@ enum NativeProviderAPI {
             }
         }
         if sawReadableCatalog { return PostPage(items: [], hasMore: false) }
-        throw APIError.server("Hanime's catalog is unavailable through both its API and public website. Open Hanime in Browse to check ordinary site access, or configure an authorized Hanime API in Settings.")
+        throw APIError.server("Hanime's public search, member catalog, v11 API and website are all unavailable on this connection. Open Hanime in Browse to check site access, or configure an authorized Hanime API in Settings.")
+    }
+
+    /// The search index and member catalog were the working feed transports
+    /// before the v11 auth-only migration. Restore their public read routes;
+    /// the v11 handshake remains the native *playback* resolver.
+    static func hanimeSearchBody(query: ParsedQuery, page: Int, sort: String) throws -> Data {
+        let body: [String: Any] = [
+            "search_text": query.included.joined(separator: " "),
+            "tags": [], "tags_mode": "AND", "brands": [], "blacklist": [],
+            "order_by": sort == "recent" ? "released_at_unix" : "views",
+            "ordering": "desc", "page": max(0, page - 1)
+        ]
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    static func hanimeCatalogPost(_ row: [String: Any]) -> Post? {
+        let id = text(row["slug"] ?? row["hentai_video_slug"] ?? row["id"])
+        guard !id.isEmpty, id.count <= 160,
+              id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        let tags = strings(row["hentai_tags"] ?? row["tags"] ?? row["genres"])
+        var post = Post(key: "hanime:\(id)", id: id, provider: "Hanime",
+                        score: number(row["views"] ?? row["views_count"]), tags: tags,
+                        mediaUrl: hanimeCatalogStream(row), thumbUrl: hanimePosterURL(row),
+                        pageUrl: "https://hanime.tv/videos/hentai/\(id)", type: "video")
+        post.caption = text(row["name"] ?? row["title"])
+        post.creator = text((row["brand"] as? [String: Any])?["name"] ?? row["brand"])
+        post.createdAt = number(row["released_at_unix"] ?? row["created_at_unix"])
+        return post
+    }
+
+    static func hanimePublicSearch(session: URLSession, query: ParsedQuery,
+                                   page: Int, sort: String, immersive: Bool) async throws -> PostPage {
+        let bytes = try await data(session: session,
+            url: url("https://search.htv-services.com/"), provider: .hanime,
+            method: "POST", body: hanimeSearchBody(query: query, page: page, sort: sort),
+            maxBytes: 12 * 1024 * 1024, timeout: 12)
+        let result = try object(bytes)
+        let raw = try hanimeRows(result)
+        guard raw.count <= 20_000 else { throw APIError.invalidResponse }
+        let posts = raw.compactMap(hanimeCatalogPost)
+        let count = Int(number(result["nbPages"] ?? result["pages"] ?? result["total_pages"]))
+        return self.page(posts, hasMore: count > 0 ? page < count : raw.count >= 24,
+                         query: query, immersive: immersive)
+    }
+
+    static func hanimeMembersCatalog(session: URLSession, query: ParsedQuery,
+                                     page: Int, immersive: Bool) async throws -> PostPage {
+        // The member listing does not implement a reliable title search. It
+        // may only back up an unfiltered home/immersive feed.
+        guard query.included.isEmpty else { throw APIError.invalidResponse }
+        let bytes = try await data(session: session,
+            url: url("https://members.hanime.tv/rapi/v7/hentai_videos", [
+                .init(name: "source", value: "randomize"),
+                .init(name: "r", value: String(page))
+            ]), provider: .hanime, maxBytes: 12 * 1024 * 1024, timeout: 12)
+        let raw = try hanimeRows(JSONSerialization.jsonObject(with: bytes))
+        guard raw.count <= 20_000 else { throw APIError.invalidResponse }
+        return self.page(raw.compactMap(hanimeCatalogPost), hasMore: !raw.isEmpty,
+                         query: query, immersive: immersive)
     }
 
     static func hanime(session: URLSession, query: ParsedQuery, page: Int,
                        sort: String, immersive: Bool) async throws -> PostPage {
         guard (1...1000).contains(page) else { throw APIError.invalidResponse }
+        do {
+            let pageResult = try await hanimePublicSearch(session: session, query: query,
+                page: page, sort: sort, immersive: immersive)
+            if !pageResult.items.isEmpty || !query.included.isEmpty || page > 1 { return pageResult }
+        } catch is CancellationError { throw CancellationError() }
+          catch APIError.rateLimited(_, let deadline) { throw APIError.rateLimited(.hanime, deadline) }
+          catch APIError.providerStatus(.hanime, 451) { throw APIError.providerStatus(.hanime, 451) }
+          catch { try Task.checkCancellation() }
+
+        if query.included.isEmpty {
+            do {
+                let pageResult = try await hanimeMembersCatalog(session: session, query: query,
+                    page: page, immersive: immersive)
+                if !pageResult.items.isEmpty || page > 1 { return pageResult }
+            } catch is CancellationError { throw CancellationError() }
+              catch APIError.rateLimited(_, let deadline) { throw APIError.rateLimited(.hanime, deadline) }
+              catch APIError.providerStatus(.hanime, 451) { throw APIError.providerStatus(.hanime, 451) }
+              catch { try Task.checkCancellation() }
+        }
+
         // The supplied API describes the current first-party v11 catalog.
         // It may require legitimate browser verification; HTTP 403 is never bypassed.
         let claim = String(Int(Date().timeIntervalSince1970))
@@ -1051,27 +1132,7 @@ enum NativeProviderAPI {
                                                   page: page, immersive: immersive)
         }
         guard raw.count <= 20_000 else { throw APIError.invalidResponse }
-        let posts: [Post] = raw.compactMap { row in
-            let id = text(row["slug"] ?? row["hentai_video_slug"])
-            guard !id.isEmpty, id.count <= 160,
-                  id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else { return nil }
-            let tagValues = (row["hentai_tags"] ?? row["tags"] ?? row["genres"])
-            let tags = (tagValues as? [Any] ?? []).compactMap { entry -> String? in
-                if let label = entry as? String { return label }
-                guard let object = entry as? [String: Any] else { return nil }
-                return object["name"] as? String ?? object["text"] as? String ?? object["slug"] as? String
-            }
-            let safeThumb = hanimePosterURL(row)
-            let stream = hanimeCatalogStream(row)
-            var post = Post(key: "hanime:\(id)", id: id, provider: "Hanime",
-                            score: number(row["views"] ?? row["views_count"]), tags: tags,
-                            mediaUrl: stream, thumbUrl: safeThumb,
-                            pageUrl: "https://hanime.tv/videos/hentai/\(id)", type: "video")
-            post.caption = text(row["name"] ?? row["title"])
-            post.creator = text((row["brand"] as? [String: Any])?["name"] ?? row["brand"])
-            post.createdAt = number(row["released_at_unix"] ?? row["created_at_unix"])
-            return post
-        }
+        let posts = raw.compactMap(hanimeCatalogPost)
         if posts.isEmpty, page == 1, query.included.isEmpty {
             return try await hanimeWebsiteCatalog(session: session, query: query,
                                                   page: page, immersive: immersive)

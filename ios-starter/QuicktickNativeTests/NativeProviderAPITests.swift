@@ -5,6 +5,7 @@ private final class NativeRequestLog: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [URLRequest] = []
     private var hanimeCatalogBlocked = false
+    private var hanimeSearchBlocked = false
     func append(_ request: URLRequest) { lock.lock(); defer { lock.unlock() }; values.append(request) }
     func snapshot() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return values }
     func reset() { lock.lock(); defer { lock.unlock() }; values.removeAll() }
@@ -13,6 +14,12 @@ private final class NativeRequestLog: @unchecked Sendable {
     }
     func isHanimeCatalogBlocked() -> Bool {
         lock.lock(); defer { lock.unlock() }; return hanimeCatalogBlocked
+    }
+    func blockHanimeSearch(_ blocked: Bool) {
+        lock.lock(); defer { lock.unlock() }; hanimeSearchBlocked = blocked
+    }
+    func isHanimeSearchBlocked() -> Bool {
+        lock.lock(); defer { lock.unlock() }; return hanimeSearchBlocked
     }
 }
 
@@ -244,7 +251,26 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "hentaihaven.xxx", path == "/watch/no-public-stream/" {
             payload = #"<html><div class="player">Player temporarily unavailable</div></html>"#
         }
-        else if host == "search.htv-services.com" { payload = #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fixture\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"}]}]"}"# }
+        else if host == "search.htv-services.com" {
+            if Self.log.isHanimeCatalogBlocked() || Self.log.isHanimeSearchBlocked() {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
+                    httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
+            let body = Self.requestBody(request).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+            let secondPage = (body?["page"] as? Int) == 1
+            payload = secondPage
+                ? #"{"nbPages":3,"hits":"[{\"slug\":\"second-page\",\"name\":\"Another fantasy\",\"poster_url\":\"https://cdn.hanime.tv/second.webp\"}]"}"#
+                : #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fantasy at night\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"},{\"text\":\"dark skin\"}],\"views\":42}]"}"#
+        }
+        else if host == "members.hanime.tv", path == "/rapi/v7/hentai_videos" {
+            if Self.log.isHanimeCatalogBlocked() {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
+                    httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
+            payload = #"{"hentai_videos":[{"slug":"member-sample","name":"Member catalog title","poster_url":"https://cdn.hanime.tv/member.webp"}]}"#
+        }
         else if path == "/api/v8/video" { payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/full.m3u8"}]}]}}"# }
         else if path == "/webmasters/categories" {
             payload = #"{"categories":[{"category":"Cosplay"},{"category":"Vintage"},{"category":"Anal"}]}"#
@@ -535,7 +561,7 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertNil(store.lastError)
     }
 
-    func testHanimeV11CatalogSearchesTagsAndKeepsSiteHeaders() async throws {
+    func testHanimePublicCatalogSearchesTagsBeforeAuthAPI() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
         let page = try await api.posts(provider: .hanime,
@@ -543,10 +569,10 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(page.items.map(\.stableID), ["hanime:sample"])
         XCTAssertEqual(page.items.first?.tags, ["fantasy", "dark skin"])
         let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first)
-        XCTAssertEqual(request.url?.host, "auth.hanime.tv")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature-version"), "app2")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature")?.count, 64)
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "https://hanime.tv")
+        XCTAssertEqual(request.url?.host, "search.htv-services.com")
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.host == "auth.hanime.tv" })
         let filtered = try await api.posts(provider: .hanime,
             query: ParsedQuery(included: ["fantasy"], excluded: ["dark skin"]), page: 1)
         XCTAssertTrue(filtered.items.isEmpty)
@@ -561,8 +587,32 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(first.items, second.items)
         XCTAssertEqual(first.hasMore, second.hasMore)
         XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
-            $0.url?.host == "auth.hanime.tv" && $0.url?.path == "/api/v11/search_hvs"
+            $0.url?.host == "search.htv-services.com"
         }.count, 1, "Switching back to Hanime should reuse the existing catalog")
+    }
+
+    func testHanimeSearchUsesServerPaginationWithoutDoubleSkipping() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .hanime,
+            query: ParsedQuery(included: [], excluded: []), page: 2)
+        XCTAssertEqual(page.items.map(\.stableID), ["hanime:second-page"])
+        XCTAssertEqual(page.hasMore, true)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.host == "search.htv-services.com" && $0.httpMethod == "POST"
+        })
+    }
+
+    func testHanimeMemberCatalogRecoversWhenPublicSearchFails() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        NativeProviderProtocol.log.blockHanimeSearch(true)
+        defer { NativeProviderProtocol.log.blockHanimeSearch(false) }
+        let page = try await api.posts(provider: .hanime,
+            query: ParsedQuery(included: [], excluded: []), page: 1, immersive: true)
+        XCTAssertEqual(page.items.map(\.stableID), ["hanime:member-sample"])
+        XCTAssertEqual(page.items.first?.thumbUrl, "https://cdn.hanime.tv/member.webp")
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.host == "auth.hanime.tv" })
     }
 
     func testHanimeWebsiteFallbackShowsPublicTitlesWhenCatalogAPIIsBlocked() async throws {

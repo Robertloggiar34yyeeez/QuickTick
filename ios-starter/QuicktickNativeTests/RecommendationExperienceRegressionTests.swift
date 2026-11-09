@@ -229,6 +229,26 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
                      "A real-life person must not be guessed to be an anime character")
     }
 
+    func testWrappedSpotlightsUseOnlyRealLikedPostsAndHonestCounts() {
+        var recent = Post(key: "hanime:recent", id: "recent", provider: "Hanime",
+                          tags: ["fantasy"], thumbUrl: "https://cdn.hanime.tv/recent.webp", type: "video")
+        recent.caption = "A real saved video"
+        let previous = Post(key: "hanime:previous", id: "previous", provider: "Hanime",
+                            tags: ["fantasy"], thumbUrl: "https://cdn.hanime.tv/previous.webp", type: "video")
+        let photo = Post(key: "rule34:image", id: "image", provider: "Rule34",
+                         tags: ["city"], previewUrl: "https://example.invalid/photo.jpg", type: "image")
+        let favorites = [recent, previous, photo]
+        let summary = TasteWrappedSummary.make(from: favorites)
+        let spotlights = TasteWrappedSpotlights.make(from: favorites, sections: summary)
+        XCTAssertEqual(spotlights.count, 3)
+        XCTAssertEqual(spotlights.first?.headline, "You love Hanime.")
+        XCTAssertTrue(spotlights.first?.detail.contains("2 of your liked posts") == true)
+        XCTAssertTrue(spotlights.allSatisfy { favorites.contains($0.post) })
+        XCTAssertEqual(Set(spotlights.map(\.id)).count, spotlights.count,
+                       "Wrapped must never show the same post twice as a distinct favorite")
+        XCTAssertTrue(TasteWrappedSpotlights.make(from: [], sections: []).isEmpty)
+    }
+
     func testOptionalBirthdayOnlyMatchesTheCalendarDay() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

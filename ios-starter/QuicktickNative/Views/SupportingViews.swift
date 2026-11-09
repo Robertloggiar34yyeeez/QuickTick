@@ -1,5 +1,6 @@
 import SwiftUI
 import SafariServices
+import AVFoundation
 
 struct CommentsView: View {
     @EnvironmentObject private var store: AppStore
@@ -1536,6 +1537,169 @@ enum TasteWrappedSummary {
     }
 }
 
+struct TasteWrappedSpotlight: Identifiable {
+    let id: String
+    let eyebrow: String
+    let headline: String
+    let detail: String
+    let post: Post
+}
+
+enum TasteWrappedSpotlights {
+    static func make(from favorites: [Post], sections: [TasteWrappedCategory]) -> [TasteWrappedSpotlight] {
+        var items: [TasteWrappedSpotlight] = []
+        var seen = Set<String>()
+        func add(_ post: Post, eyebrow: String, headline: String, detail: String) {
+            guard seen.insert(post.stableID).inserted else { return }
+            items.append(TasteWrappedSpotlight(id: post.stableID, eyebrow: eyebrow,
+                headline: headline, detail: detail, post: post))
+        }
+        if let source = sections.first(where: { $0.id == "source" })?.moments.first {
+            add(source.sample, eyebrow: "YOUR #1 SOURCE", headline: "You love \(source.label).",
+                detail: "\(source.appearances) of your liked posts came from here.")
+        }
+        if let recent = favorites.first {
+            add(recent, eyebrow: "YOUR LATEST LOVE", headline: "This one caught your eye.",
+                detail: "One of the posts you chose to keep.")
+        }
+        if let theme = sections.first(where: { $0.id == "character" || $0.id == "theme" || $0.id == "action" })?.moments.first {
+            add(theme.sample, eyebrow: "THE PATTERN", headline: "You keep coming back to \(theme.label).",
+                detail: "\(theme.appearances) liked posts share this detail.")
+        }
+        for post in favorites where items.count < 3 {
+            add(post, eyebrow: "SAVED IN YOUR STORY", headline: "This made your favorites.",
+                detail: post.displayTitle ?? "One of your personal highlights.")
+        }
+        return Array(items.prefix(3))
+    }
+}
+
+/// Play only the currently visible Wrapped highlight. When a signed stream is
+/// unavailable, its actual saved poster stays on screen; no preview image is
+/// ever misrepresented as video playback.
+private struct WrappedVideoStage: View {
+    @EnvironmentObject private var store: AppStore
+    let post: Post
+    let active: Bool
+    @State private var player: AVPlayer?
+    @State private var ready = false
+    @State private var muted = true
+
+    var body: some View {
+        ZStack {
+            PosterView(post: post)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let player {
+                NativePlayerSurface(player: player, fill: true, ready: $ready,
+                                    accessibilityID: "wrapped-video-\(post.stableID)")
+                    .opacity(ready ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+        }
+        .clipped()
+        .overlay(alignment: .bottomTrailing) {
+            if player != nil {
+                Button {
+                    muted.toggle(); player?.isMuted = muted
+                } label: {
+                    Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 46, height: 46)
+                        .background(.black.opacity(0.50), in: Circle())
+                }
+                .accessibilityLabel(muted ? "Unmute Wrapped video" : "Mute Wrapped video")
+                .padding(22)
+            }
+        }
+        .task(id: "\(post.stableID):\(active)") {
+            guard active else { player?.pause(); player = nil; ready = false; return }
+            guard post.type.lowercased() == "video" else { return }
+            let videoURL: URL
+            if let local = URL(string: post.mediaUrl), local.isFileURL {
+                videoURL = local
+            } else {
+                guard let resolved = try? await store.resolver.resolve(post),
+                      let source = URL(string: resolved.mediaUrl), source.scheme == "https",
+                      !["jpg", "jpeg", "png", "webp", "gif", "avif"].contains(source.pathExtension.lowercased())
+                else { return }
+                videoURL = source
+            }
+            guard !Task.isCancelled && active else { return }
+            let headers = HanimeGeneratedAPI.mediaHeaders(for: videoURL)
+            let asset = headers.isEmpty ? AVURLAsset(url: videoURL)
+                : AVURLAsset(url: videoURL, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            let next = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+            next.isMuted = muted
+            next.actionAtItemEnd = .pause
+            player = next
+            next.play()
+        }
+        .onDisappear { player?.pause(); player = nil; ready = false }
+    }
+}
+
+private struct WrappedSpotlightPage: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let spotlight: TasteWrappedSpotlight
+    let active: Bool
+    @State private var revealed = false
+    @State private var drifting = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .bottomLeading) {
+                WrappedVideoStage(post: spotlight.post, active: active)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                LinearGradient(colors: [.clear, .black.opacity(0.16), .black.opacity(0.93)],
+                               startPoint: .center, endPoint: .bottom)
+                    .allowsHitTesting(false)
+                if !reduceMotion {
+                    Text("✦ YOUR TASTE  •  YOUR STORY  •  YOUR FAVORITES ✦")
+                        .font(.system(size: 12, weight: .black, design: .rounded))
+                        .tracking(3)
+                        .foregroundStyle(.white.opacity(0.55))
+                        .fixedSize()
+                        .offset(x: drifting ? -250 : 80)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(.top, 125)
+                        .clipped()
+                        .animation(.linear(duration: 11).repeatForever(autoreverses: false), value: drifting)
+                        .allowsHitTesting(false)
+                }
+                VStack(alignment: .leading, spacing: 13) {
+                    Text(spotlight.eyebrow)
+                        .font(.system(size: 12, weight: .black, design: .rounded))
+                        .tracking(2.6)
+                        .foregroundStyle(AppTheme.accent)
+                    Text(spotlight.headline)
+                        .font(.system(size: 38, weight: .black, design: .rounded))
+                        .tracking(-1.5)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.75)
+                    Text(spotlight.detail)
+                        .font(.system(size: 17, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.83))
+                        .lineLimit(3)
+                    Text(spotlight.post.provider.uppercased())
+                        .font(.caption2.weight(.black)).tracking(1.8)
+                        .padding(.horizontal, 13).padding(.vertical, 8)
+                        .background(.white.opacity(0.14), in: Capsule())
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 30)
+                .padding(.bottom, 132)
+                .opacity(revealed ? 1 : 0)
+                .offset(y: revealed ? 0 : 42)
+                .animation(reduceMotion ? nil : .spring(response: 0.75, dampingFraction: 0.85), value: revealed)
+            }
+        }
+        .onAppear { revealed = true; drifting = true }
+        .onDisappear { revealed = false; drifting = false }
+        .accessibilityIdentifier("wrapped-spotlight-\(spotlight.post.stableID)")
+    }
+}
+
 /// Daily access is available in Settings; RootView celebrates the evolving
 /// taste profile once per ISO calendar week when the app opens.
 struct TasteWrappedView: View {
@@ -1545,8 +1709,13 @@ struct TasteWrappedView: View {
     let onClose: () -> Void
     @State private var page = 0
     @State private var sections: [TasteWrappedCategory] = []
+    @State private var spotlights: [TasteWrappedSpotlight] = []
     @State private var likedCount = 0
+    @State private var videoCount = 0
+    @State private var providerCount = 0
     @State private var showingWeeklyLikes = false
+    @State private var animated = false
+    private var totalPages: Int { spotlights.count + sections.count + 2 }
 
     var body: some View {
         ZStack {
@@ -1554,12 +1723,24 @@ struct TasteWrappedView: View {
             LinearGradient(colors: [AppTheme.accent.opacity(0.28), .clear, AppTheme.palette.secondary.opacity(0.12)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
+            if !reduceMotion {
+                Circle().fill(AppTheme.accent.opacity(0.20))
+                    .frame(width: 280, height: 280).blur(radius: 65)
+                    .offset(x: animated ? 145 : -130, y: animated ? -240 : 250)
+                    .animation(.easeInOut(duration: 6).repeatForever(autoreverses: true), value: animated)
+                    .allowsHitTesting(false)
+            }
             TabView(selection: $page) {
                 introduction.tag(0)
-                ForEach(sections.indices, id: \.self) { index in
-                    wrappedPage(sections[index]).tag(index + 1)
+                ForEach(spotlights.indices, id: \.self) { index in
+                    WrappedSpotlightPage(spotlight: spotlights[index], active: page == index + 1)
+                        .tag(index + 1)
                 }
-                conclusion.tag(sections.count + 1)
+                ForEach(sections.indices, id: \.self) { index in
+                    wrappedPage(sections[index], pageIndex: spotlights.count + index + 1)
+                        .tag(spotlights.count + index + 1)
+                }
+                conclusion.tag(totalPages - 1)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             VStack {
@@ -1579,20 +1760,21 @@ struct TasteWrappedView: View {
                 }
                 Spacer()
                 HStack(spacing: 5) {
-                    ForEach(0..<(sections.count + 2), id: \.self) { index in
+                    ForEach(0..<totalPages, id: \.self) { index in
                         Capsule()
-                            .fill(index == page ? .white : .white.opacity(0.28))
+                            .fill(index <= page ? .white : .white.opacity(0.28))
                             .frame(height: 3)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: page)
                     }
                 }
                 HStack {
-                    Text("\(page + 1) / \(sections.count + 2)")
+                    Text("\(page + 1) / \(totalPages)")
                         .font(.caption2.monospacedDigit())
                     Spacer()
-                    Button(page == sections.count + 1 ? "Finish" : "Next") {
-                        if page == sections.count + 1 { onClose() }
+                    Button(page == totalPages - 1 ? "Finish" : "Next") {
+                        if page == totalPages - 1 { onClose() }
                         else {
-                            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { page += 1 }
+                            withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.83)) { page += 1 }
                         }
                     }
                     .font(.subheadline.weight(.semibold))
@@ -1611,6 +1793,10 @@ struct TasteWrappedView: View {
             let favorites = showingWeeklyLikes ? recent : store.newestFavorites
             likedCount = favorites.count
             sections = TasteWrappedSummary.make(from: favorites)
+            spotlights = TasteWrappedSpotlights.make(from: favorites, sections: sections)
+            videoCount = favorites.filter { $0.type.lowercased() == "video" }.count
+            providerCount = Set(favorites.map { $0.providerKey?.rawValue ?? $0.provider }).count
+            animated = true
         }
         .accessibilityIdentifier("taste-wrapped")
     }
@@ -1631,12 +1817,21 @@ struct TasteWrappedView: View {
                 .font(.headline.monospacedDigit())
                 .padding(.horizontal, 17).padding(.vertical, 10)
                 .background(AppTheme.elevatedSurface, in: Capsule())
+            HStack(spacing: 10) {
+                Label("\(videoCount) videos", systemImage: "play.rectangle.fill")
+                Label("\(providerCount) sources", systemImage: "square.stack.3d.up.fill")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.78))
+            Text("Swipe through your actual favorites →")
+                .font(.subheadline.weight(.bold)).foregroundStyle(AppTheme.accent)
+                .padding(.top, 10)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 30)
     }
 
-    private func wrappedPage(_ section: TasteWrappedCategory) -> some View {
+    private func wrappedPage(_ section: TasteWrappedCategory, pageIndex: Int) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             Image(systemName: section.symbol)
                 .font(.system(size: 39, weight: .light))
@@ -1651,9 +1846,7 @@ struct TasteWrappedView: View {
                 ForEach(section.moments.indices, id: \.self) { index in
                     let moment = section.moments[index]
                     HStack(spacing: 14) {
-                        CachedMediaImage(url: moment.sample.cardPreviewURL,
-                                         alternatives: moment.sample.previewImageURLs,
-                                         pixels: 240, fill: true, placeholderTitle: moment.label)
+                        PosterView(post: moment.sample)
                             .frame(width: 84, height: 108)
                             .clipShape(RoundedRectangle(cornerRadius: 15))
                         VStack(alignment: .leading, spacing: 5) {
@@ -1668,6 +1861,10 @@ struct TasteWrappedView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
                     .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 20))
+                    .opacity(page == pageIndex ? 1 : 0.48)
+                    .offset(y: page == pageIndex ? 0 : CGFloat((index + 1) * 14))
+                    .animation(reduceMotion ? nil : .spring(response: 0.6, dampingFraction: 0.85)
+                        .delay(Double(index) * 0.10), value: page)
                 }
             }
         }
@@ -1679,10 +1876,28 @@ struct TasteWrappedView: View {
         VStack(alignment: .leading, spacing: 18) {
             Image(systemName: "heart.circle.fill")
                 .font(.system(size: 66)).foregroundStyle(AppTheme.accent)
-            Text("More to discover.")
+            Text("This is so you.")
                 .font(.system(size: 42, weight: .bold, design: .rounded))
-            Text("Come back any day in Settings to see your updated tastes. A new full-screen Wrapped greets you once a week.")
+            Text("\(likedCount) posts. \(videoCount) videos. \(providerCount) sources. A story made only from what you actually liked.")
                 .font(.title3).foregroundStyle(.white.opacity(0.75))
+            if !spotlights.isEmpty {
+                HStack(spacing: -16) {
+                    ForEach(spotlights.indices, id: \.self) { index in
+                        let item = spotlights[index]
+                        PosterView(post: item.post)
+                            .frame(width: 96, height: 133)
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.25)))
+                            .rotationEffect(.degrees(Double(index - 1) * 8))
+                            .offset(y: page == totalPages - 1 ? 0 : 40)
+                            .animation(reduceMotion ? nil : .spring(response: 0.7, dampingFraction: 0.75)
+                                .delay(Double(index) * 0.12), value: page)
+                    }
+                }
+                .padding(.vertical, 20)
+            }
+            Text("Come back in Settings for your evolving Wrapped. A new weekly recap appears when your likes tell a new story.")
+                .font(.subheadline).foregroundStyle(.white.opacity(0.69))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 30)

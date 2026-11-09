@@ -154,6 +154,14 @@ final class FeedReliabilityTests: XCTestCase {
             for: post))
     }
 
+    func testHanimeOfflineStreamRetriesAreBoundedAndProviderSpecific() {
+        XCTAssertEqual(HanimeDownloadRetryPolicy.nextVariant(provider: "Hanime", attempts: 0), 1)
+        XCTAssertEqual(HanimeDownloadRetryPolicy.nextVariant(provider: "hanime", attempts: 1), 2)
+        XCTAssertNil(HanimeDownloadRetryPolicy.nextVariant(provider: "Hanime", attempts: 2))
+        XCTAssertNil(HanimeDownloadRetryPolicy.nextVariant(provider: "Pornhub", attempts: 0))
+        XCTAssertNil(HanimeDownloadRetryPolicy.nextVariant(provider: "Hanime", attempts: -1))
+    }
+
     func testLegacyHanimePreviewNeverCountsAsOfflineVideo() {
         let record = DownloadRecord(key: "hanime:sample-video", provider: "Hanime",
             postID: "sample-video", title: "Preview", tags: [],

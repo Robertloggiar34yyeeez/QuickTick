@@ -282,6 +282,23 @@ actor QuicktickAPIClient {
         defer { hanimePageTasks[key] = nil }
         do {
             let result = try await request.value
+            if page == 1 {
+                // Hanime's public search often returns just slugs and titles.
+                // Prime the first viewport's real first-party posters without
+                // delaying the feed or fetching metadata for offscreen pages.
+                let missingArtwork = Array(result.items.filter {
+                    $0.providerKey == .hanime && $0.previewImageURLs.isEmpty
+                }.prefix(8).map(\.id))
+                if !missingArtwork.isEmpty {
+                    Task(priority: .utility) {
+                        await withTaskGroup(of: Void.self) { group in
+                            for slug in missingArtwork {
+                                group.addTask { _ = await HanimeArtworkCache.shared.posterURL(slug: slug) }
+                            }
+                        }
+                    }
+                }
+            }
             // Avoid turning a transient empty first page into a cached result.
             if !result.items.isEmpty || page > 1 {
                 hanimePages[key] = (result, .now.addingTimeInterval(120))

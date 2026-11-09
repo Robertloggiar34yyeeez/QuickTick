@@ -1411,8 +1411,9 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(store.posts.map(\.stableID), ["hanime:sample"])
         XCTAssertTrue(store.posts.allSatisfy(\.isImmersiveMedia))
         await store.refresh(immersive: true)
-        XCTAssertEqual(store.posts.map(\.stableID), ["hanime:sample"],
-            "Seen clips should remain available when the finite Hanime catalog has no new matches")
+        XCTAssertFalse(store.posts.isEmpty,
+            "Unmatched WD interests must not empty Hanime when another public catalog page is available")
+        XCTAssertTrue(store.posts.allSatisfy { $0.providerKey == .hanime && $0.isImmersiveMedia })
     }
 
     func testPornhubMissingWebmasterRouteTriesFirstPartyAPIHost() async throws {
@@ -1581,6 +1582,8 @@ final class NativeProviderAPITests: XCTestCase {
         store.selectedProvider = .eporner
         // Supply distinct intentional interests without updating on-disk user
         // preferences or depending on external network responses.
+        store.tasteSetup.sources[Provider.eporner.rawValue] = TasteChoice(
+            done: true, into: ["engineering", "aerodynamics"])
         await store.recommendations.record(.like,
             post: Post(key: "eporner:liked-a", id: "liked-a", provider: "Eporner",
                        tags: ["engineering", "aerodynamics"]))

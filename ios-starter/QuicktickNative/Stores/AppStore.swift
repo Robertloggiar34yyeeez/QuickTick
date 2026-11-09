@@ -295,7 +295,14 @@ final class AppStore: ObservableObject {
         // the end of bootstrap visibly rendered Rule34 and then switched tabs.
         let isProductionStorage = localStorage.url == LocalStateStore().url
         let isUITest = ProcessInfo.processInfo.arguments.contains("--ui-testing")
-        persistsProviderSelection = isProductionStorage && !isUITest
+        // XCTest runs many AppStore instances in the same simulator process.
+        // They must start with deterministic Rule34 defaults, not whichever
+        // provider a different test selected seconds earlier. Regular app
+        // launches (including TestFlight/IPA builds) still restore the choice.
+        let isUnitTest = ProcessInfo.processInfo.environment.keys.contains {
+            $0.hasPrefix("XCTest")
+        } || NSClassFromString("XCTestCase") != nil
+        persistsProviderSelection = isProductionStorage && !isUITest && !isUnitTest
         self.localStorage = localStorage
         self.feedPreviewPersistence = FeedPreviewPersistence(directory: localStorage.url.deletingLastPathComponent())
         self.api = api

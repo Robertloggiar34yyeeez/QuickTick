@@ -1,6 +1,16 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor private func assertHomeScrolledToTop(_ app: XCUIApplication,
+                                                     file: StaticString = #filePath,
+                                                     line: UInt = #line) {
+        // The shortcut animates for 0.3 seconds. XCTest may query the
+        // accessibility tree before the title has re-entered the viewport.
+        let title = app.staticTexts["home-title"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hittable == true"), object: title)], timeout: 5),
+            .completed, "Scroll to top should restore the visible Home heading", file: file, line: line)
+    }
     @MainActor func testRecommendationProfileCanBePreparedForNativeSharing() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         app.buttons["open-settings"].tap()
@@ -163,7 +173,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(restoredMedia.frame.midX, app.frame.midX, accuracy: 2,
                        "The pinned iPad sidebar must overlay the feed, not shift posts off center")
         app.buttons["home-scroll-top"].tap()
-        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+        assertHomeScrolledToTop(app)
     }
 
     @MainActor func testSwipeRightFromImmersiveEdgeReturnsToHome() {
@@ -208,7 +218,7 @@ final class NavigationTests: XCTestCase {
                           "Scroll to top must be entirely above the floating iPhone dock")
         XCTAssertTrue(top.isHittable)
         top.tap()
-        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+        assertHomeScrolledToTop(app)
         app.buttons["open-settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()
@@ -231,7 +241,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(scrollTop.waitForExistence(timeout: 5))
         XCTAssertLessThan(scrollTop.frame.midX, app.frame.width / 2)
         scrollTop.tap()
-        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+        assertHomeScrolledToTop(app)
     }
     @MainActor func testCreateStudioFirstRunAndReturnToFeed() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()

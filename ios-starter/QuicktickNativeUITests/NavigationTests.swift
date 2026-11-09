@@ -472,7 +472,17 @@ final class NavigationTests: XCTestCase {
         closeVideo.tap()
         expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
         waitForExpectations(timeout: 10)
-        app.buttons["tab-Immersive"].tap(); app.buttons["tab-Home"].tap()
+        let immersiveTab = app.buttons["tab-Immersive"]
+        immersiveTab.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == YES"), object: immersiveTab)],
+            timeout: 8), .completed, "Immersive must mount its iPad side dock before switching back")
+        let homeTab = app.buttons["tab-Home"]
+        XCTAssertTrue(homeTab.waitForExistence(timeout: 8))
+        homeTab.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == YES"), object: homeTab)],
+            timeout: 8), .completed, "The return tap must select Home, not remain on Immersive")
         let resumed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Playing"), object: playback)
         let result = XCTWaiter.wait(for: [resumed], timeout: 10)
         if result != .completed {

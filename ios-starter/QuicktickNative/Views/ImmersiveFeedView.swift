@@ -1194,17 +1194,19 @@ struct PosterView: View {
     let alternatives: [String]
     let title: String
     let provider: String
+    let hanimeSlug: String
     let decodePixels: Int
     var onDecoded: ((DecodedMediaImage) -> Void)?
 
     init(url: String, onDecoded: ((DecodedMediaImage) -> Void)? = nil) {
-        self.url = url; alternatives = []; title = ""; provider = ""; decodePixels = 1024; self.onDecoded = onDecoded
+        self.url = url; alternatives = []; title = ""; provider = ""; hanimeSlug = ""; decodePixels = 1024; self.onDecoded = onDecoded
     }
     init(post: Post, onDecoded: ((DecodedMediaImage) -> Void)? = nil) {
         url = post.cardPreviewURL
         alternatives = post.previewImageURLs.filter { $0 != post.cardPreviewURL }
         title = post.caption ?? ""
         provider = post.provider
+        hanimeSlug = post.providerKey == .hanime ? post.id : ""
         // Erome album listings are thumbnail-centric. Their 1024px decoded
         // textures cost noticeably more memory than needed in a fast card
         // feed; keep other providers' preview quality untouched.
@@ -1213,6 +1215,7 @@ struct PosterView: View {
     }
     var body: some View {
         CachedMediaImage(url: url, alternatives: alternatives, pixels: decodePixels,
+                         hanimeSlug: hanimeSlug,
                          placeholderTitle: title, placeholderProvider: provider, onDecoded: onDecoded)
     }
 }
@@ -1224,17 +1227,20 @@ struct CachedMediaImage: View {
     var pixels = 1024
     var comic = false
     var fill = false
+    var hanimeSlug = ""
     var placeholderTitle = ""
     var placeholderProvider = ""
     var onDecoded: ((DecodedMediaImage) -> Void)?
     @State private var decoded: DecodedMediaImage?
     @State private var previewDecoded: DecodedMediaImage?
     @State private var imageRequestKey = ""
+    @State private var resolvedHanimeURL = ""
     @State private var failed = false
     @State private var offscreenClearTask: Task<Void, Never>?
     var body: some View {
+        let activeURL = resolvedHanimeURL.isEmpty ? url : resolvedHanimeURL
         Group {
-            if imageRequestKey == "\(url):\(pixels):\(comic)", let image = decoded ?? previewDecoded {
+            if imageRequestKey == "\(activeURL):\(pixels):\(comic)", let image = decoded ?? previewDecoded {
                 Image(uiImage: UIImage(cgImage: image.image))
                     .resizable().aspectRatio(contentMode: fill ? .fill : .fit)
                     .transition(.opacity)
@@ -1259,8 +1265,8 @@ struct CachedMediaImage: View {
             }
         }
         .animation(.easeOut(duration: 0.16), value: decoded != nil || previewDecoded != nil)
-        .task(id: "\(url):\(pixels):\(comic)") {
-            let key = "\(url):\(pixels):\(comic)"
+        .task(id: "\(activeURL):\(pixels):\(comic)") {
+            let key = "\(activeURL):\(pixels):\(comic)"
             if imageRequestKey != key {
                 imageRequestKey = key
                 decoded = nil; previewDecoded = nil
@@ -1268,15 +1274,28 @@ struct CachedMediaImage: View {
             failed = false
             // Rehydrate instantly from the bounded shared cache after lazy
             // rows are recycled. This avoids a second black/placeholder flash.
-            if decoded == nil, let cached = await MediaImagePipeline.shared.cachedPreview(raw: url), !Task.isCancelled {
+            if decoded == nil, let cached = await MediaImagePipeline.shared.cachedPreview(raw: activeURL), !Task.isCancelled {
                 decoded = cached
             }
-            do { let image = try await MediaImagePipeline.shared.image(raw: url, pixels: pixels, comicPreview: comic); try Task.checkCancellation(); decoded = image; onDecoded?(image) }
-            catch { if !Task.isCancelled { failed = true } }
+            do {
+                let image = try await MediaImagePipeline.shared.image(raw: activeURL, pixels: pixels, comicPreview: comic)
+                try Task.checkCancellation(); decoded = image; onDecoded?(image)
+            } catch {
+                guard !Task.isCancelled else { return }
+                if !hanimeSlug.isEmpty && resolvedHanimeURL.isEmpty {
+                    let officialPoster = await HanimeArtworkCache.shared.posterURL(slug: hanimeSlug)
+                    guard !Task.isCancelled else { return }
+                    if !officialPoster.isEmpty && officialPoster != activeURL {
+                        resolvedHanimeURL = officialPoster
+                        return
+                    }
+                }
+                failed = true
+            }
         }
-        .task(id: "\(url):\(preview):\(alternatives.joined(separator: "|"))") {
+        .task(id: "\(activeURL):\(preview):\(alternatives.joined(separator: "|"))") {
             previewDecoded = nil
-            let options = ([preview] + alternatives).filter { !$0.isEmpty && $0 != url }
+            let options = ([preview] + alternatives).filter { !$0.isEmpty && $0 != activeURL }
             var tried = Set<String>()
             for candidate in options where tried.insert(candidate).inserted {
                 guard !Task.isCancelled else { return }
@@ -1330,6 +1349,15 @@ struct CachedMediaImage: View {
             guard !Task.isCancelled, retained.contains(key) else { return }
             images[key] = UIImage(cgImage: decoded.image)
             return
+        }
+        if post.providerKey == .hanime, !Task.isCancelled, retained.contains(key) {
+            let poster = await HanimeArtworkCache.shared.posterURL(slug: post.id)
+            if !poster.isEmpty, !Task.isCancelled, retained.contains(key),
+               let decoded = try? await MediaImagePipeline.shared.image(raw: poster, pixels: 384),
+               !Task.isCancelled, retained.contains(key) {
+                images[key] = UIImage(cgImage: decoded.image)
+                return
+            }
         }
         // Keep the tinted poster surface if the provider has no thumbnail.
     }

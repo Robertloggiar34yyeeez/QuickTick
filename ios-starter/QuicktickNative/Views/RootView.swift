@@ -358,8 +358,9 @@ struct RootView: View {
                     .frame(maxWidth: 350).padding(.bottom, 10)
             }
         }
-        .animation(reduceMotion ? nil : .spring(response: 0.48, dampingFraction: 0.84),
-                   value: sideNavigation)
+        // Switch the iPad dock placement in the same render as the selected
+        // feed. Animating the entire dock between bottom and side made fast
+        // Home↔Immersive taps land on a departing view and get discarded.
     }
 
     private func dockDrag(vertical: Bool, axisLength: CGFloat) -> some Gesture {

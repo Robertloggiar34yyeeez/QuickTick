@@ -124,6 +124,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "hanime.tv", path == "/" {
             payload = #"<html><a href="/videos/hentai/public-fantasy"><img data-src="https://cdn.hanime.tv/public.webp" alt="Public fantasy"></a><a href="https://evil.invalid/videos/hentai/fake"><img src="https://evil.invalid/fake.webp"></a></html>"#
         }
+        else if host == "hanime.tv", path == "/videos/hentai/web-only" {
+            payload = #"<html><head><meta content="https://cdn.hanime.tv/web-only.webp?size=large&amp;v=2" property="og:image"></head></html>"#
+        }
         else if host == "auth.hanime.tv", path == "/api/v11/handshake" {
             let object = (Self.requestBody(request).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
             let token = object?["token"] as? String ?? ""
@@ -166,7 +169,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             // Test both a removed endpoint and an empty legacy manifest.
             let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                 .first(where: { $0.name == "id" })?.value
-            if id == "missing-404" {
+            if id == "missing-404" || id == "web-only" {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404,
                     httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
@@ -174,7 +177,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             if id == "legacy-working" {
                 payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/videos/legacy-full.m3u8"},{"height":720,"url":"https://cdn.hanime.tv/videos/legacy-small.m3u8"},{"height":9999,"url":"https://evil.invalid/unsafe.m3u8"}]}]}}"#
             } else {
-                payload = #"{"videos_manifest":{"servers":[{"streams":[]}]}}"#
+                payload = #"{"hentai_video":{"poster_url":"https://cdn.hanime.tv/official-poster.webp","cover_url":"https://cdn.hanime.tv/official-cover.jpg"},"videos_manifest":{"servers":[{"streams":[]}]}}"#
             }
         }
         else if host == "api.rule34.xxx", path == "/autocomplete.php" { payload = #"[{"value":"engineering","label":"engineering (12)","count":12}]"# }
@@ -658,6 +661,34 @@ final class NativeProviderAPITests: XCTestCase {
         ]), "", "Topic artwork must never come from an unrelated image host")
         XCTAssertEqual(HanimeGeneratedAPI.mediaHeaders(for:
             URL(string: "https://img.hanime.tv/poster.webp")!)["Referer"], "https://hanime.tv/")
+        XCTAssertEqual(NativeProviderAPI.hanimePosterURL([
+            "data": ["hentai_video": ["poster_url": "https://cdn.hanime.tv/nested.webp"]]
+        ]), "https://cdn.hanime.tv/nested.webp")
+        XCTAssertEqual(NativeProviderAPI.hanimeWatchPosterURL(
+            #"<meta content="https://evil.invalid/untrusted.jpg" property="og:image"><meta content="https://cdn.hanime.tv/real.jpg" property="og:image">"#),
+            "https://cdn.hanime.tv/real.jpg")
+    }
+
+    func testHanimeMissingSearchCoverLoadsOnlyRequestedTitleArtwork() async throws {
+        let (_, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let bare = try XCTUnwrap(NativeProviderAPI.hanimeCatalogPost([
+            "slug": "sample", "name": "Only a title in search"
+        ]))
+        XCTAssertTrue(bare.thumbUrl.isEmpty)
+        let artwork = await NativeProviderAPI.hanimeArtworkURL(session: session, slug: bare.id)
+        XCTAssertEqual(artwork, "https://cdn.hanime.tv/official-poster.webp")
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().compactMap(\.url).map(\.path), ["/api/v8/video"])
+
+        NativeProviderProtocol.log.reset()
+        let websiteArtwork = await NativeProviderAPI.hanimeArtworkURL(session: session, slug: "web-only")
+        XCTAssertEqual(websiteArtwork, "https://cdn.hanime.tv/web-only.webp?size=large&v=2")
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().compactMap(\.url).map(\.path),
+                       ["/api/v8/video", "/videos/hentai/web-only"])
+        NativeProviderProtocol.log.reset()
+        let unsafeArtwork = await NativeProviderAPI.hanimeArtworkURL(session: session, slug: "https://evil.invalid")
+        XCTAssertEqual(unsafeArtwork, "")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().isEmpty)
     }
 
     func testHanimeMissingPublicStreamSuggestsSupportedPlaybackOptions() async throws {

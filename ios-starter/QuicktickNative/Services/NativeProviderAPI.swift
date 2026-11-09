@@ -25,6 +25,27 @@ actor ProviderRequestGate {
     }
 }
 
+/// One request per visible Hanime title, shared by Home and Immersive. Failed
+/// lookups cool down briefly so blocked providers don't cause scroll jank.
+actor HanimeArtworkCache {
+    static let shared = HanimeArtworkCache()
+
+    private var saved: [String: (url: String, expiry: Date)] = [:]
+    private var pending: [String: Task<String, Never>] = [:]
+
+    func posterURL(slug: String) async -> String {
+        if let entry = saved[slug], entry.expiry > .now { return entry.url }
+        if let task = pending[slug] { return await task.value }
+        let task = Task { await NativeProviderAPI.hanimeArtworkURL(session: .shared, slug: slug) }
+        pending[slug] = task
+        let result = await task.value
+        pending[slug] = nil
+        if saved.count > 300 { saved = saved.filter { $0.value.expiry > .now } }
+        saved[slug] = (result, .now.addingTimeInterval(result.isEmpty ? 90 : 900))
+        return result
+    }
+}
+
 /// Website-driven fallback inspired by API Anything's read-only browser tier.
 /// The public page is rendered with iOS WebKit when the first-party API and a
 /// plain HTTP catalog read fail. Nothing here bypasses a sign-in or access wall:
@@ -918,15 +939,26 @@ enum NativeProviderAPI {
         let keys = ["poster_url", "cover_url", "thumbnail_url", "posterUrl", "coverUrl",
                     "thumbnail", "poster", "cover", "images"]
         var candidates: [String] = []
-        for key in keys {
-            if let raw = row[key] as? String { candidates.append(raw) }
-            if let values = row[key] as? [String: Any] {
-                for field in ["large", "original", "url", "src", "medium", "thumbnail"] {
-                    if let raw = values[field] as? String { candidates.append(raw) }
+        // The public search only guarantees slug/name, whereas video details
+        // wrap their real poster in `hentai_video` (sometimes under `data`).
+        // Traverse only known artwork and title containers to avoid picking a
+        // stream, an ad, or an unrelated recommended title as the cover.
+        func collect(_ record: [String: Any], depth: Int) {
+            guard depth <= 3 else { return }
+            for key in keys {
+                if let raw = record[key] as? String { candidates.append(raw) }
+                if let values = record[key] as? [String: Any] {
+                    for field in ["large", "original", "url", "src", "medium", "thumbnail"] {
+                        if let raw = values[field] as? String { candidates.append(raw) }
+                    }
                 }
+                if let values = record[key] as? [String] { candidates.append(contentsOf: values) }
             }
-            if let values = row[key] as? [String] { candidates.append(contentsOf: values) }
+            for key in ["hentai_video", "data"] {
+                if let nested = record[key] as? [String: Any] { collect(nested, depth: depth + 1) }
+            }
         }
+        collect(row, depth: 0)
         return candidates.compactMap { raw -> URL? in
             guard let url = URL(string: raw, relativeTo: origin(.hanime))?.absoluteURL,
                   url.scheme == "https", url.user == nil, url.password == nil,
@@ -936,6 +968,50 @@ enum NativeProviderAPI {
             }
             return url
         }.first?.absoluteString ?? ""
+    }
+
+    /// Request artwork for one *visible* title only. Search index entries can
+    /// have no images at all; fetching metadata as part of every feed request
+    /// would block scrolling behind dozens of unrelated network operations.
+    static func hanimeArtworkURL(session: URLSession, slug: String) async -> String {
+        guard slug.count <= 160,
+              slug.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else { return "" }
+        if let detailURL = try? url("https://hanime.tv/api/v8/video", [.init(name: "id", value: slug)]),
+           let bytes = try? await data(session: session, url: detailURL, provider: .hanime,
+                                       maxBytes: 1024 * 1024, timeout: 5),
+           let record = try? object(bytes) {
+            let poster = hanimePosterURL(record)
+            if !poster.isEmpty { return poster }
+        }
+        // Some catalog deployments remove the v8 route but retain the public
+        // watch page's Open Graph image. Inspect only the requested title page.
+        guard let watchURL = URL(string: "https://hanime.tv/videos/hentai/\(slug)"),
+              let bytes = try? await data(session: session, url: watchURL, provider: .hanime,
+                                          headers: ["Accept": "text/html,application/xhtml+xml"],
+                                          maxBytes: 2 * 1024 * 1024, timeout: 5) else { return "" }
+        return hanimeWatchPosterURL(String(decoding: bytes, as: UTF8.self))
+    }
+
+    static func hanimeWatchPosterURL(_ html: String) -> String {
+        let pattern = #"(?is)<meta\b[^>]*>"#
+        guard let metaPattern = try? NSRegularExpression(pattern: pattern) else { return "" }
+        let content = html as NSString
+        for match in metaPattern.matches(in: html, range: NSRange(location: 0, length: content.length)).prefix(200) {
+            let tag = content.substring(with: match.range)
+            let attributes = #"(?i)([a-z-]+)\s*=\s*[\"']([^\"']+)[\"']"#
+            guard let attributePattern = try? NSRegularExpression(pattern: attributes) else { continue }
+            let source = tag as NSString
+            var values: [String: String] = [:]
+            for attribute in attributePattern.matches(in: tag, range: NSRange(location: 0, length: source.length)) {
+                values[source.substring(with: attribute.range(at: 1)).lowercased()] =
+                    source.substring(with: attribute.range(at: 2))
+            }
+            guard ["og:image", "twitter:image"].contains((values["property"] ?? values["name"] ?? "").lowercased()),
+                  let image = values["content"] else { continue }
+            let result = hanimePosterURL(["poster_url": image.replacingOccurrences(of: "&amp;", with: "&")])
+            if !result.isEmpty { return result }
+        }
+        return ""
     }
 
     /// The public catalog is a useful read-only fallback when the first-party

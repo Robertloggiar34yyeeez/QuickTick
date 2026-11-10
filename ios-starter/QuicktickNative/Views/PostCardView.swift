@@ -232,7 +232,7 @@ struct PostCardView: View {
                     playing = false
                     store.players.release(post.stableID)
                     if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
-                       mediaStreamRetry < (post.providerKey == .hanime ? 2 : 1),
+                       mediaStreamRetry < (post.providerKey == .hanime ? 2 : 3),
                        store.inlinePlaybackID == post.stableID {
                         // A short-lived signed playlist may expire between
                         // prewarming and the first frame. Retry once with a
@@ -454,7 +454,7 @@ struct PostCardView: View {
                 resolved = ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type)
             } else { resolved = try await store.resolver.resolve(post,
                 refresh: mediaStreamRetry > 0,
-                hanimeVariant: post.providerKey == .hanime ? mediaStreamRetry : 0) }
+                streamVariant: mediaStreamRetry) }
             guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, let url = URL(string: resolved.mediaUrl) else { return }
             if post.type.lowercased() == "gif" {
                 gifURL = url; playing = store.pausedPlaybackID != post.stableID; preparing = false

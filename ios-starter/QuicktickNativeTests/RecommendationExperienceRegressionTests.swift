@@ -229,6 +229,52 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
                      "A real-life person must not be guessed to be an anime character")
     }
 
+    func testWrappedSpotlightsUseOnlyRealLikedPostsAndHonestCounts() {
+        var recent = Post(key: "hanime:recent", id: "recent", provider: "Hanime",
+                          tags: ["fantasy"], thumbUrl: "https://cdn.hanime.tv/recent.webp", type: "video")
+        recent.caption = "A real saved video"
+        let previous = Post(key: "hanime:previous", id: "previous", provider: "Hanime",
+                            tags: ["fantasy"], thumbUrl: "https://cdn.hanime.tv/previous.webp", type: "video")
+        let photo = Post(key: "rule34:image", id: "image", provider: "Rule34",
+                         tags: ["city"], previewUrl: "https://example.invalid/photo.jpg", type: "image")
+        let favorites = [recent, previous, photo]
+        let summary = TasteWrappedSummary.make(from: favorites)
+        let spotlights = TasteWrappedSpotlights.make(from: favorites, sections: summary)
+        XCTAssertEqual(spotlights.count, 3)
+        XCTAssertEqual(spotlights.first?.headline, "You love Hanime.")
+        XCTAssertTrue(spotlights.first?.detail.contains("2 of your liked posts") == true)
+        XCTAssertTrue(spotlights.allSatisfy { favorites.contains($0.post) })
+        XCTAssertEqual(Set(spotlights.map(\.id)).count, spotlights.count,
+                       "Wrapped must never show the same post twice as a distinct favorite")
+        XCTAssertTrue(TasteWrappedSpotlights.make(from: [], sections: []).isEmpty)
+    }
+
+    func testWrappedActivityUsesOnlyRecordedProviderEvents() {
+        var state = RecommendationState()
+        var hanime = RecommendationProfile()
+        hanime.stats.watchSeconds = 3_675
+        hanime.stats.replays = 2
+        hanime.stats.completions = 1
+        hanime.stats.downloads = 4
+        state.profiles["hanime"] = hanime
+        var redgifs = RecommendationProfile()
+        redgifs.stats.watchSeconds = 125
+        redgifs.stats.replays = 3
+        redgifs.stats.completions = 2
+        redgifs.stats.downloads = 1
+        state.profiles["redgifs"] = redgifs
+        // Scoped interests are subdivisions of these sources; counting them
+        // again would double-report the user's playback history.
+        state.scopedProfiles["hanime:fantasy"] = hanime
+
+        let activity = TasteWrappedActivity.make(from: state)
+        XCTAssertEqual(activity.watchSeconds, 3_800)
+        XCTAssertEqual(activity.watchTime, "1 hr 3 min")
+        XCTAssertEqual(activity.replays, 5)
+        XCTAssertEqual(activity.completed, 3)
+        XCTAssertEqual(activity.downloads, 5)
+    }
+
     func testOptionalBirthdayOnlyMatchesTheCalendarDay() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

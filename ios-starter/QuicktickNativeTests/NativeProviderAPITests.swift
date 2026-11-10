@@ -4,9 +4,23 @@ import XCTest
 private final class NativeRequestLog: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [URLRequest] = []
+    private var hanimeCatalogBlocked = false
+    private var hanimeSearchBlocked = false
     func append(_ request: URLRequest) { lock.lock(); defer { lock.unlock() }; values.append(request) }
     func snapshot() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return values }
     func reset() { lock.lock(); defer { lock.unlock() }; values.removeAll() }
+    func blockHanimeCatalog(_ blocked: Bool) {
+        lock.lock(); defer { lock.unlock() }; hanimeCatalogBlocked = blocked
+    }
+    func isHanimeCatalogBlocked() -> Bool {
+        lock.lock(); defer { lock.unlock() }; return hanimeCatalogBlocked
+    }
+    func blockHanimeSearch(_ blocked: Bool) {
+        lock.lock(); defer { lock.unlock() }; hanimeSearchBlocked = blocked
+    }
+    func isHanimeSearchBlocked() -> Bool {
+        lock.lock(); defer { lock.unlock() }; return hanimeSearchBlocked
+    }
 }
 
 private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
@@ -74,7 +88,14 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"{"pages":1,"gifs":[{"id":"gamingclip","type":"g","tags":["gaming"],"urls":{"hd":"https://media.redgifs.com/gamingclip.mp4","poster":"https://media.redgifs.com/gamingclip.jpg"}}]}"#
         }
         else if host == "api.redgifs.com", path == "/v2/niches/cosplay/gifs" {
-            payload = #"{"pages":2,"gifs":[{"id":"nicheclip","type":"g","title":"Cosplay clip title","tags":["cosplay"],"urls":{"hd":"https://media.redgifs.com/nicheclip.mp4","poster":"https://media.redgifs.com/nicheclip.jpg"}}]}"#
+            payload = #"{"pages":2,"gifs":[{"id":"nicheclip","type":"g","title":"Cosplay clip title","tags":["cosplay"],"niches":["cosplay"],"urls":{"hd":"https://media.redgifs.com/nicheclip.mp4","poster":"https://media.redgifs.com/nicheclip.jpg"}},{"id":"wrongclip","type":"g","niches":["gaming"],"urls":{"hd":"https://media.redgifs.com/wrongclip.mp4","poster":"https://media.redgifs.com/wrongclip.jpg"}}]}"#
+        }
+        else if host == "api.redgifs.com", path == "/v2/niches/empty-top/gifs" {
+            let order = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "order" })?.value
+            payload = order == "top"
+                ? #"{"pages":1,"gifs":[{"id":"still","type":"i","niches":["empty-top"],"urls":{"poster":"https://media.redgifs.com/still.jpg"}}]}"#
+                : #"{"pages":1,"gifs":[{"id":"usable","type":"g","niches":["empty-top"],"urls":{"hd":"https://media.redgifs.com/usable.mp4","poster":"https://media.redgifs.com/usable.jpg"}}]}"#
         }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
         else if host == "www.erome.com", ["/explore", "/explore/new", "/search"].contains(path) {
@@ -93,7 +114,18 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"<html><title>Photo set - Erome</title><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div></html>"#
         }
         else if host == "auth.hanime.tv", path == "/api/v11/search_hvs" {
+            if Self.log.isHanimeCatalogBlocked() {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
+                    httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
             payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
+        }
+        else if host == "hanime.tv", path == "/" {
+            payload = #"<html><a href="/videos/hentai/public-fantasy"><img data-src="https://cdn.hanime.tv/public.webp" alt="Public fantasy"></a><a href="https://evil.invalid/videos/hentai/fake"><img src="https://evil.invalid/fake.webp"></a></html>"#
+        }
+        else if host == "hanime.tv", path == "/videos/hentai/web-only" {
+            payload = #"<html><head><meta content="https://hanime-cdn.com/images/covers/web-only.webp?size=large&amp;v=2" property="og:image"></head></html>"#
         }
         else if host == "auth.hanime.tv", path == "/api/v11/handshake" {
             let object = (Self.requestBody(request).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
@@ -101,7 +133,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             let clear = try? HanimeHandshakeCodec.open(token)
             let input = clear.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
             let slug = input?["slug"] as? String ?? ""
-            if slug == "missing-404" {
+            if slug == "missing-404" || slug == "legacy-working" {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404,
                     httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
@@ -111,11 +143,16 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 result = #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"}]}"#
             } else if slug == "alternate-stream" {
                 result = #"{"sources":[{"kind":"normal","src":"/hls/broken","height":1080},{"kind":"normal","src":"/hls/alternate","height":720}]}"#
+            } else if slug == "plain-json" {
+                result = #"{"sources":[{"kind":"normal","src":"https://cdn.hanime.tv/hls/signed-opaque?token=abc","height":720}]}"#
             } else {
                 result = #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"},{"kind":"normal","src":"/hls/42/fixture-token","height":1080,"type":"application/vnd.apple.mpegurl"}]}"#
             }
-            responseHeaders["x-token"] = try? HanimeHandshakeCodec.seal(Data(result.utf8))
-            payload = #"{"ok":true}"#
+            if slug == "plain-json" { payload = result }
+            else {
+                responseHeaders["x-token"] = try? HanimeHandshakeCodec.seal(Data(result.utf8))
+                payload = #"{"ok":true}"#
+            }
         }
         else if host == "hanime.tv", path == "/hls/broken" {
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
@@ -132,12 +169,16 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             // Test both a removed endpoint and an empty legacy manifest.
             let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                 .first(where: { $0.name == "id" })?.value
-            if id == "missing-404" {
+            if id == "missing-404" || id == "web-only" {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404,
                     httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
             }
-            payload = #"{"videos_manifest":{"servers":[{"streams":[]}]}}"#
+            if id == "legacy-working" {
+                payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/videos/legacy-full.m3u8"},{"height":720,"url":"https://cdn.hanime.tv/videos/legacy-small.m3u8"},{"height":9999,"url":"https://evil.invalid/unsafe.m3u8"}]}]}}"#
+            } else {
+                payload = #"{"hentai_video":{"poster_url":"https://cdn.hanime.tv/official-poster.webp","cover_url":"https://cdn.hanime.tv/official-cover.jpg"},"videos_manifest":{"servers":[{"streams":[]}]}}"#
+            }
         }
         else if host == "api.rule34.xxx", path == "/autocomplete.php" { payload = #"[{"value":"engineering","label":"engineering (12)","count":12}]"# }
         else if host == "api.rule34.xxx" {
@@ -217,14 +258,35 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "hentaihaven.xxx", path == "/watch/no-public-stream/" {
             payload = #"<html><div class="player">Player temporarily unavailable</div></html>"#
         }
-        else if host == "search.htv-services.com" { payload = #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fixture\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"}]}]"}"# }
+        else if host == "search.htv-services.com" {
+            if Self.log.isHanimeCatalogBlocked() || Self.log.isHanimeSearchBlocked() {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
+                    httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
+            let body = Self.requestBody(request).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+            let secondPage = (body?["page"] as? Int) == 1
+            payload = secondPage
+                ? #"{"nbPages":3,"hits":"[{\"slug\":\"second-page\",\"name\":\"Another fantasy\",\"poster_url\":\"https://cdn.hanime.tv/second.webp\"}]"}"#
+                : #"{"nbPages":3,"hits":"[{\"slug\":\"sample\",\"name\":\"Fantasy at night\",\"poster_url\":\"https://cdn.hanime.tv/thumb.jpg\",\"hentai_tags\":[{\"text\":\"fantasy\"},{\"text\":\"dark skin\"}],\"views\":42}]"}"#
+        }
+        else if host == "members.hanime.tv", path == "/rapi/v7/hentai_videos" {
+            if Self.log.isHanimeCatalogBlocked() {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
+                    httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
+            payload = #"{"hentai_videos":[{"slug":"member-sample","name":"Member catalog title","poster_url":"https://cdn.hanime.tv/member.webp"}]}"#
+        }
         else if path == "/api/v8/video" { payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/full.m3u8"}]}]}}"# }
         else if path == "/webmasters/categories" {
             payload = #"{"categories":[{"category":"Cosplay"},{"category":"Vintage"},{"category":"Anal"}]}"#
         }
         else if path == "/webmasters/search" || path == "/webmasters/search/" {
-            let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            let params = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let search = params
                 .first(where: { $0.name == "search" })?.value
+            let category = params.first(where: { $0.name == "category" })?.value
             if search == "unavailable-route" || search == "public-html" ||
                search == "browse-missing-first" || search == "browse-soft404" ||
                search == "browse-filter-404" ||
@@ -233,7 +295,9 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocolDidFinishLoading(self); return
             }
-            payload = search == "filtered-terms"
+            payload = category == "hentai" && search == nil
+                ? #"{"videos":[{"video_id":"hentai-cover","categories":[{"category":"Hentai"}],"hd_thumb":"https://cdn.pornhub.com/verified-hentai.jpg"}]}"#
+                : search == "filtered-terms"
                 ? #"{"videos":[{"video_id":"allowed","title":"First","duration":"15:00","production":"homemade","categories":[{"category":"Cosplay"}]},{"video_id":"blocked","title":"Second","duration":"04:00","production":"professional","categories":[{"category":"Vintage"}]}]}"#
                 : search == "html-response"
                 ? "<html><head><title>404 Not Found</title></head><body>The requested URL was not found on this server.</body></html>"
@@ -257,7 +321,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "www.pornhub.com", path == "/categories/cosplay" {
             payload = #"<html><ul><li class="videoblock videoBox" data-video-vkey="phcos"><a href="/view_video.php?viewkey=phcos" title="Costume category entry"><img data-thumb_url="https://cdn.pornhub.com/category-cosplay.jpg"></a></li></ul></html>"#
         }
-        else if host == "www.pornhub.com", path == "/categories/hentai" {
+        else if host == "www.pornhub.com", ["/categories/hentai", "/categories/vintage"].contains(path) {
             payload = "<html><title>404 Not Found</title><body>The requested URL was not found on this server.</body></html>"
         }
         else if path == "/view_video.php" {
@@ -269,9 +333,14 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             }
             let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
             let opaque = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "opaque" } == true
+            let multi = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "multi" } == true
             payload = fallback ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://www.pornhub.com/removed-definition"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/valid.m3u8"}]};</script>"#
                 : opaque ? #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"1080","videoUrl":"https://vid-cdn.phncdn.com/signed/abc123?expires=123&token=xyz"}]};</script>"#
+                : multi ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/first-1080.mp4"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/second-720.m3u8"}]};</script>"#
                 : #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/full.mp4"}]};</script>"#
+        }
+        else if path == "/embed/multi" {
+            payload = #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/first-1080.mp4"},{"format":"mp4","quality":"480","videoUrl":"https://cdn.pornhub.com/third-480.mp4"}]};</script>"#
         }
         else if path == "/embed/watch-missing" {
             payload = #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/embed-valid.m3u8"}]};</script>"#
@@ -425,6 +494,8 @@ final class NativeProviderAPITests: XCTestCase {
             query: ParsedQuery(included: ["niche:cosplay"], excluded: []),
             page: 1, sort: "popular", immersive: true)
         XCTAssertEqual(page.items.map(\.id), ["nicheclip"])
+        XCTAssertFalse(page.items.contains { $0.id == "wrongclip" },
+                       "An explicitly different niche membership must not be relabeled as the selected niche")
         XCTAssertEqual(page.items.first?.mediaUrl, "https://media.redgifs.com/nicheclip.mp4")
         XCTAssertEqual(page.items.first?.caption, "Cosplay clip title")
         XCTAssertEqual(page.items.first?.category, "cosplay",
@@ -442,6 +513,20 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(routes.contains { $0.url?.path == "/v2/niches/gaming/gifs" })
         XCTAssertTrue(routes.filter { $0.url?.path.hasPrefix("/v2/niches/") == true }
             .allSatisfy { $0.value(forHTTPHeaderField: "Referer") == "https://www.redgifs.com/" })
+    }
+
+    func testRedgifsNicheTriesLatestWhenTopContainsNoPlayableVideo() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .redgifs,
+            query: ParsedQuery(included: ["niche:empty-top"], excluded: []),
+            page: 1, sort: "popular", immersive: true)
+        XCTAssertEqual(page.items.map(\.id), ["usable"])
+        XCTAssertEqual(page.items.first?.category, "empty-top")
+        let orders = NativeProviderProtocol.log.snapshot().filter { $0.url?.path == "/v2/niches/empty-top/gifs" }
+            .compactMap { URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "order" })?.value }
+        XCTAssertEqual(orders, ["top", "latest"])
     }
 
     func testRedgifsShowAllNichesPaginatesAndUsesRealPopularPosters() async throws {
@@ -483,7 +568,7 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertNil(store.lastError)
     }
 
-    func testHanimeV11CatalogSearchesTagsAndKeepsSiteHeaders() async throws {
+    func testHanimePublicCatalogSearchesTagsBeforeAuthAPI() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
         let page = try await api.posts(provider: .hanime,
@@ -491,10 +576,10 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(page.items.map(\.stableID), ["hanime:sample"])
         XCTAssertEqual(page.items.first?.tags, ["fantasy", "dark skin"])
         let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first)
-        XCTAssertEqual(request.url?.host, "auth.hanime.tv")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature-version"), "app2")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature")?.count, 64)
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "https://hanime.tv")
+        XCTAssertEqual(request.url?.host, "search.htv-services.com")
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.host == "auth.hanime.tv" })
         let filtered = try await api.posts(provider: .hanime,
             query: ParsedQuery(included: ["fantasy"], excluded: ["dark skin"]), page: 1)
         XCTAssertTrue(filtered.items.isEmpty)
@@ -509,8 +594,118 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(first.items, second.items)
         XCTAssertEqual(first.hasMore, second.hasMore)
         XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
-            $0.url?.host == "auth.hanime.tv" && $0.url?.path == "/api/v11/search_hvs"
+            $0.url?.host == "search.htv-services.com"
         }.count, 1, "Switching back to Hanime should reuse the existing catalog")
+    }
+
+    func testHanimeSearchUsesServerPaginationWithoutDoubleSkipping() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .hanime,
+            query: ParsedQuery(included: [], excluded: []), page: 2)
+        XCTAssertEqual(page.items.map(\.stableID), ["hanime:second-page"])
+        XCTAssertEqual(page.hasMore, true)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.host == "search.htv-services.com" && $0.httpMethod == "POST"
+        })
+    }
+
+    func testHanimeMemberCatalogRecoversWhenPublicSearchFails() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        NativeProviderProtocol.log.blockHanimeSearch(true)
+        defer { NativeProviderProtocol.log.blockHanimeSearch(false) }
+        let page = try await api.posts(provider: .hanime,
+            query: ParsedQuery(included: [], excluded: []), page: 1, immersive: true)
+        XCTAssertEqual(page.items.map(\.stableID), ["hanime:member-sample"])
+        XCTAssertEqual(page.items.first?.thumbUrl, "https://cdn.hanime.tv/member.webp")
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.host == "auth.hanime.tv" })
+    }
+
+    func testHanimeWebsiteFallbackShowsPublicTitlesWhenCatalogAPIIsBlocked() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        NativeProviderProtocol.log.blockHanimeCatalog(true)
+        defer { NativeProviderProtocol.log.blockHanimeCatalog(false) }
+
+        let page = try await api.posts(provider: .hanime,
+            query: ParsedQuery(included: [], excluded: []), page: 1, immersive: true)
+        XCTAssertEqual(page.items.map(\.stableID), ["hanime:public-fantasy"])
+        XCTAssertEqual(page.items.first?.thumbUrl, "https://cdn.hanime.tv/public.webp")
+        XCTAssertEqual(page.items.first?.caption, "Public fantasy")
+        XCTAssertEqual(page.hasMore, false)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.host == "hanime.tv" })
+    }
+
+    func testHanimePublicHTMLRejectsUnrelatedLinksAndPosters() throws {
+        let html = #"<a href="/videos/hentai/first-video"><img src="https://cdn.hanime.tv/first.jpg" alt="First &amp; final"></a><a href="https://evil.invalid/videos/hentai/other"><img src="https://evil.invalid/other.jpg"></a><a href="/videos/hentai/first-video">Duplicate</a><a href="https://hanime.tv/videos/hentai/second-video"><img data-src="https://evil.invalid/fake.jpg" alt="Second video"></a>"#
+        let posts = NativeProviderAPI.parseHanimeWebsiteCatalog(html)
+        XCTAssertEqual(posts.map(\.id), ["first-video", "second-video"])
+        XCTAssertEqual(posts.map(\.caption), ["First & final", "Second video"])
+        XCTAssertEqual(posts.map(\.thumbUrl), ["https://cdn.hanime.tv/first.jpg", ""])
+        XCTAssertThrowsError(try NativeProviderAPI.hanimeWebsitePage(
+            "<html><h1>Site Unavailable</h1></html>",
+            query: ParsedQuery(included: [], excluded: []), immersive: true))
+        let official = NativeProviderAPI.parseHanimeWebsiteCatalog(
+            #"<a href="/videos/hentai/doura-4"><img alt="Doura 4 HD cover image" src="https://hanime-cdn.com/images/covers/doura-4-cover_1794219216.webp"></a>"#)
+        XCTAssertEqual(official.map(\.id), ["doura-4"])
+        XCTAssertEqual(official.first?.thumbUrl,
+                       "https://hanime-cdn.com/images/covers/doura-4-cover_1794219216.webp")
+    }
+
+    func testHanimeArtworkPrefersVerifiedFirstPartyNestedPosterFields() {
+        let row: [String: Any] = [
+            "poster_url": "",
+            "cover": ["large": "https://cdn.hanime.tv/cover-original.webp"],
+            "thumbnail": "https://unrelated.example.com/unverified.jpg"
+        ]
+        XCTAssertEqual(NativeProviderAPI.hanimePosterURL(row),
+                       "https://cdn.hanime.tv/cover-original.webp")
+        XCTAssertEqual(NativeProviderAPI.hanimePosterURL([
+            "thumbnail": "https://unrelated.example.com/unverified.jpg"
+        ]), "", "Topic artwork must never come from an unrelated image host")
+        XCTAssertEqual(HanimeGeneratedAPI.mediaHeaders(for:
+            URL(string: "https://img.hanime.tv/poster.webp")!)["Referer"], "https://hanime.tv/")
+        XCTAssertEqual(NativeProviderAPI.hanimePosterURL([
+            "data": ["hentai_video": ["poster_url": "https://cdn.hanime.tv/nested.webp"]]
+        ]), "https://cdn.hanime.tv/nested.webp")
+        XCTAssertEqual(NativeProviderAPI.hanimeWatchPosterURL(
+            #"<meta content="https://evil.invalid/untrusted.jpg" property="og:image"><meta content="https://cdn.hanime.tv/real.jpg" property="og:image">"#),
+            "https://cdn.hanime.tv/real.jpg")
+        let officialCover = "https://hanime-cdn.com/images/covers/doura-4-cover_1794219216.webp"
+        XCTAssertEqual(NativeProviderAPI.hanimePosterURL(["cover_url": officialCover]), officialCover)
+        XCTAssertTrue(HanimeGeneratedAPI.permittedArtworkURL(URL(string: officialCover)!))
+        XCTAssertEqual(HanimeGeneratedAPI.mediaHeaders(for: URL(string: officialCover)!)["Referer"],
+                       "https://hanime.tv/")
+        XCTAssertFalse(HanimeGeneratedAPI.permittedArtworkURL(
+            URL(string: "https://hanime-cdn.com.evil.invalid/images/covers/doura.webp")!))
+        XCTAssertFalse(HanimeGeneratedAPI.permittedArtworkURL(
+            URL(string: "https://hanime-cdn.com/ads/overlay.webp")!))
+        XCTAssertEqual(NativeProviderAPI.hanimeWatchPosterURL(
+            #"<img src="https://evil.invalid/advert.jpg" alt="ad"><img alt="Doura 4 HD cover image" src="https://hanime-cdn.com/images/covers/doura-4.webp">"#),
+            "https://hanime-cdn.com/images/covers/doura-4.webp")
+    }
+
+    func testHanimeMissingSearchCoverLoadsOnlyRequestedTitleArtwork() async throws {
+        let (_, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let bare = try XCTUnwrap(NativeProviderAPI.hanimeCatalogPost([
+            "slug": "sample", "name": "Only a title in search"
+        ]))
+        XCTAssertTrue(bare.thumbUrl.isEmpty)
+        let artwork = await NativeProviderAPI.hanimeArtworkURL(session: session, slug: bare.id)
+        XCTAssertEqual(artwork, "https://cdn.hanime.tv/official-poster.webp")
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().compactMap(\.url).map(\.path), ["/api/v8/video"])
+
+        NativeProviderProtocol.log.reset()
+        let websiteArtwork = await NativeProviderAPI.hanimeArtworkURL(session: session, slug: "web-only")
+        XCTAssertEqual(websiteArtwork, "https://hanime-cdn.com/images/covers/web-only.webp?size=large&v=2")
+        XCTAssertEqual(NativeProviderProtocol.log.snapshot().compactMap(\.url).map(\.path),
+                       ["/api/v8/video", "/videos/hentai/web-only"])
+        NativeProviderProtocol.log.reset()
+        let unsafeArtwork = await NativeProviderAPI.hanimeArtworkURL(session: session, slug: "https://evil.invalid")
+        XCTAssertEqual(unsafeArtwork, "")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().isEmpty)
     }
 
     func testHanimeMissingPublicStreamSuggestsSupportedPlaybackOptions() async throws {
@@ -543,16 +738,39 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v8/video" })
     }
 
+    func testHanimeFallsBackToVerifiedLegacyStreamWhenHandshakeIsGone() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let post = Post(key: "hanime:legacy-working", id: "legacy-working", provider: "Hanime", type: "video")
+        let result = try await api.resolveMedia(post)
+        XCTAssertEqual(result.mediaUrl, "https://cdn.hanime.tv/videos/legacy-full.m3u8")
+        XCTAssertEqual(result.type, "hls")
+        let lower = try await api.resolveMedia(post, streamVariant: 1)
+        XCTAssertEqual(lower.mediaUrl, "https://cdn.hanime.tv/videos/legacy-full.m3u8")
+        let nextQuality = try await api.resolveMedia(post, streamVariant: 2)
+        XCTAssertEqual(nextQuality.mediaUrl, "https://cdn.hanime.tv/videos/legacy-small.m3u8")
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v8/video" })
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.host == "evil.invalid" })
+    }
+
     func testHanimeRetriesLowerQualityWithoutConsumingSignedPlaylist() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let post = Post(key: "hanime:alternate-stream", id: "alternate-stream", provider: "Hanime", type: "video")
         let initial = try await api.resolveMedia(post)
         XCTAssertEqual(initial.mediaUrl, "https://hanime.tv/hls/broken")
-        let resolved = try await api.resolveMedia(post, hanimeVariant: 1)
+        let resolved = try await api.resolveMedia(post, streamVariant: 1)
         XCTAssertEqual(resolved.mediaUrl, "https://hanime.tv/hls/alternate")
         XCTAssertEqual(resolved.type, "hls")
         let requests = NativeProviderProtocol.log.snapshot().filter { $0.url?.host == "hanime.tv" && $0.url?.path.hasPrefix("/hls/") == true }
         XCTAssertTrue(requests.isEmpty, "The native player must receive signed HLS URLs before any extra GET request")
+    }
+    func testHanimeAcceptsAuthorizedPlainJSONStreamOnOfficialSignedCDN() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "hanime:plain-json", id: "plain-json", provider: "Hanime", type: "video")
+        let resolved = try await api.resolveMedia(post)
+        XCTAssertEqual(resolved.mediaUrl, "https://cdn.hanime.tv/hls/signed-opaque?token=abc")
+        XCTAssertEqual(resolved.type, "hls")
+        XCTAssertTrue(HanimeGeneratedAPI.permittedStreamURL(URL(string: resolved.mediaUrl)!))
     }
 
     func testHanimeHandshakeCodecAuthenticatesEnvelope() throws {
@@ -1080,10 +1298,10 @@ final class NativeProviderAPITests: XCTestCase {
         NativeProviderProtocol.log.reset()
         let page = try await api.posts(provider: .pornhub,
             query: QueryParser.parse("category:hentai"), page: 1)
-        XCTAssertEqual(page.items.map(\.stableID), ["pornhub:ph1"])
+        XCTAssertEqual(page.items.map(\.stableID), ["pornhub:hentai-cover"])
         XCTAssertEqual(page.items.first?.previewImageURLs, [
-            "https://cdn.pornhub.com/thumb.jpg", "https://cdn.pornhub.com/thumb-small.jpg"
-        ], "If the large poster is missing or blocked, Home must still try the provider's alternate thumbnail")
+            "https://cdn.pornhub.com/verified-hentai.jpg"
+        ], "A category chip must use artwork belonging to a verified member of that category")
         let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first {
             $0.url?.path == "/webmasters/search"
         })
@@ -1207,7 +1425,7 @@ final class NativeProviderAPITests: XCTestCase {
         })
     }
 
-    func testPornhubCategoryArtworkUsesActualCategoryPageOnly() async throws {
+    func testPornhubCategoryArtworkUsesFirstPartyPageOrVerifiedCategoryMetadata() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
         let preview = try await api.pornhubCategoryPreview(token: "category:cosplay")
@@ -1215,10 +1433,16 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
             $0.url?.path == "/categories/cosplay"
         })
-        let unavailable = try await api.pornhubCategoryPreview(token: "category:hentai")
+        let verified = try await api.pornhubCategoryPreview(token: "category:hentai")
+        XCTAssertEqual(verified, "https://cdn.pornhub.com/verified-hentai.jpg",
+                       "A category API result may supply a cover when its metadata confirms membership")
+        let unavailable = try await api.pornhubCategoryPreview(token: "category:vintage")
         XCTAssertNil(unavailable, "An unavailable category must never borrow a generic video's poster")
         let invalid = try await api.pornhubCategoryPreview(token: "category:../wrong")
         XCTAssertNil(invalid)
+        XCTAssertEqual(NativeProviderAPI.pornhubImageHeaders(for:
+            URL(string: "https://thumbs.phncdn.com/cosplay.webp")!)["Referer"],
+            "https://www.pornhub.com/")
     }
 
     @MainActor func testHanimeImmersiveKeepsVideosWithUnmatchedWDInterests() async throws {
@@ -1235,8 +1459,9 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(store.posts.map(\.stableID), ["hanime:sample"])
         XCTAssertTrue(store.posts.allSatisfy(\.isImmersiveMedia))
         await store.refresh(immersive: true)
-        XCTAssertEqual(store.posts.map(\.stableID), ["hanime:sample"],
-            "Seen clips should remain available when the finite Hanime catalog has no new matches")
+        XCTAssertFalse(store.posts.isEmpty,
+            "Unmatched WD interests must not empty Hanime when another public catalog page is available")
+        XCTAssertTrue(store.posts.allSatisfy { $0.providerKey == .hanime && $0.isImmersiveMedia })
     }
 
     func testPornhubMissingWebmasterRouteTriesFirstPartyAPIHost() async throws {
@@ -1405,6 +1630,8 @@ final class NativeProviderAPITests: XCTestCase {
         store.selectedProvider = .eporner
         // Supply distinct intentional interests without updating on-disk user
         // preferences or depending on external network responses.
+        store.tasteSetup.sources[Provider.eporner.rawValue] = TasteChoice(
+            done: true, into: ["engineering", "aerodynamics"])
         await store.recommendations.record(.like,
             post: Post(key: "eporner:liked-a", id: "liked-a", provider: "Eporner",
                        tags: ["engineering", "aerodynamics"]))
@@ -1471,6 +1698,24 @@ final class NativeProviderAPITests: XCTestCase {
         let media = try await api.resolveMedia(post)
         XCTAssertEqual(media.mediaUrl, "https://vid-cdn.phncdn.com/signed/abc123?expires=123&token=xyz")
         XCTAssertEqual(media.type, "hls")
+    }
+    func testPornhubPlaybackRetryStepsDownQualityAndAvoidsDuplicateEmbedSources() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "pornhub:multi", id: "multi", provider: "Pornhub",
+                        pageUrl: "https://www.pornhub.com/view_video.php?viewkey=multi", type: "video")
+        let highest = try await api.resolveMedia(post)
+        let lower = try await api.resolveMedia(post, streamVariant: 1)
+        let embed = try await api.resolveMedia(post, streamVariant: 2)
+        XCTAssertEqual(highest.mediaUrl, "https://cdn.pornhub.com/first-1080.mp4")
+        XCTAssertEqual(lower.mediaUrl, "https://cdn.pornhub.com/second-720.m3u8")
+        XCTAssertEqual(embed.mediaUrl, "https://cdn.pornhub.com/third-480.mp4")
+    }
+    func testPornhubParsesFlashvarsEscapedMediaDefinitions() throws {
+        let html = #"<script>window.flashvars={"mediaDefinitions":"[{\"format\":\"hls\",\"quality\":\"720\",\"videoUrl\":\"https:\/\/cdn.pornhub.com\/escaped.m3u8\"}]"};</script>"#
+        let definitions = NativeProviderAPI.pornhubPlayerDefinitions(html)
+        let stream = try XCTUnwrap(definitions.first)
+        XCTAssertEqual(NativeProviderAPI.pornhubDeclaredMedia(stream)?.mediaUrl,
+                       "https://cdn.pornhub.com/escaped.m3u8")
     }
     func testRule34BatchIsSmallAndStillIncludesNextPageMetadata() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }

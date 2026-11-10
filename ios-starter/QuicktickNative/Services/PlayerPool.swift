@@ -107,8 +107,24 @@ final class PlayerPool: ObservableObject {
         release(key)
         let mediaHeaders = HanimeGeneratedAPI.mediaHeaders(for: url)
             .merging(EromeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
-        let asset = mediaHeaders.isEmpty ? AVURLAsset(url: url)
-            : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": mediaHeaders])
+        var assetOptions: [String: Any] = [:]
+        if !mediaHeaders.isEmpty {
+            assetOptions["AVURLAssetHTTPHeaderFieldsKey"] = mediaHeaders
+        }
+        if HanimeGeneratedAPI.permittedStreamURL(url) {
+            // HLS variant playlists, segments and keys may be requested from
+            // different first-party hosts. AVFoundation documents explicitly
+            // supplementing cookies for these subrequests when necessary.
+            // Never attach unrelated provider or third-party session cookies.
+            let firstPartyCookies = (HTTPCookieStorage.shared.cookies ?? []).filter { cookie in
+                let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                return domain == "hanime.tv" || domain.hasSuffix(".hanime.tv")
+            }
+            if !firstPartyCookies.isEmpty {
+                assetOptions[AVURLAssetHTTPCookiesKey] = firstPartyCookies
+            }
+        }
+        let asset = AVURLAsset(url: url, options: assetOptions)
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 3
         let player = AVPlayer(playerItem: item)

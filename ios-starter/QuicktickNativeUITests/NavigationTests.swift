@@ -1,6 +1,16 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor private func assertHomeScrolledToTop(_ app: XCUIApplication,
+                                                     file: StaticString = #filePath,
+                                                     line: UInt = #line) {
+        // The shortcut animates for 0.3 seconds. XCTest may query the
+        // accessibility tree before the title has re-entered the viewport.
+        let title = app.staticTexts["home-title"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hittable == true"), object: title)], timeout: 5),
+            .completed, "Scroll to top should restore the visible Home heading", file: file, line: line)
+    }
     @MainActor func testRecommendationProfileCanBePreparedForNativeSharing() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
         app.buttons["open-settings"].tap()
@@ -163,7 +173,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(restoredMedia.frame.midX, app.frame.midX, accuracy: 2,
                        "The pinned iPad sidebar must overlay the feed, not shift posts off center")
         app.buttons["home-scroll-top"].tap()
-        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+        assertHomeScrolledToTop(app)
     }
 
     @MainActor func testSwipeRightFromImmersiveEdgeReturnsToHome() {
@@ -208,7 +218,7 @@ final class NavigationTests: XCTestCase {
                           "Scroll to top must be entirely above the floating iPhone dock")
         XCTAssertTrue(top.isHittable)
         top.tap()
-        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+        assertHomeScrolledToTop(app)
         app.buttons["open-settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()
@@ -231,7 +241,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(scrollTop.waitForExistence(timeout: 5))
         XCTAssertLessThan(scrollTop.frame.midX, app.frame.width / 2)
         scrollTop.tap()
-        XCTAssertTrue(app.staticTexts["home-title"].isHittable)
+        assertHomeScrolledToTop(app)
     }
     @MainActor func testCreateStudioFirstRunAndReturnToFeed() {
         let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
@@ -462,7 +472,17 @@ final class NavigationTests: XCTestCase {
         closeVideo.tap()
         expectation(for: NSPredicate(format: "value == %@", "Playing"), evaluatedWith: playback)
         waitForExpectations(timeout: 10)
-        app.buttons["tab-Immersive"].tap(); app.buttons["tab-Home"].tap()
+        let immersiveTab = app.buttons["tab-Immersive"]
+        immersiveTab.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == YES"), object: immersiveTab)],
+            timeout: 8), .completed, "Immersive must mount its iPad side dock before switching back")
+        let homeTab = app.buttons["tab-Home"]
+        XCTAssertTrue(homeTab.waitForExistence(timeout: 8))
+        homeTab.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == YES"), object: homeTab)],
+            timeout: 8), .completed, "The return tap must select Home, not remain on Immersive")
         let resumed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Playing"), object: playback)
         let result = XCTWaiter.wait(for: [resumed], timeout: 10)
         if result != .completed {
@@ -470,10 +490,16 @@ final class NavigationTests: XCTestCase {
         }
         XCTAssertEqual(result, .completed, "The visible Home video must resume after tab refresh")
         app.buttons["feed-popular"].tap()
-        XCTAssertTrue(app.buttons["feed-popular"].isSelected)
+        // The store commits synchronously, but XCTest can observe the old
+        // accessibility tree for one SwiftUI rendering pass after a tap.
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == YES"),
+            object: app.buttons["feed-popular"])], timeout: 5), .completed)
         app.buttons["feed-recommended"].tap()
-        XCTAssertTrue(app.buttons["feed-recommended"].isSelected,
-                      "The second sort tap must take effect before its asynchronous refresh")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == YES"),
+            object: app.buttons["feed-recommended"])], timeout: 5), .completed,
+            "The second sort tap must take effect before its asynchronous refresh")
         XCTAssertTrue(app.buttons["inline-play-test:video"].waitForExistence(timeout: 10))
         let full = app.buttons["View full image"].firstMatch
         for _ in 0..<3 { if full.isHittable { break }; app.swipeUp() }

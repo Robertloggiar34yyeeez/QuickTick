@@ -9,12 +9,23 @@ enum HanimeGeneratedAPI {
     static func mediaHeaders(for url: URL) -> [String: String] {
         guard url.scheme == "https" else { return [:] }
         let isStream = permittedStreamURL(url)
-        let isPoster = url.host == "cdn.hanime.tv" &&
-            ["jpg", "jpeg", "png", "webp", "avif"].contains(url.pathExtension.lowercased())
+        let isPoster = permittedArtworkURL(url)
         if isStream {
             return ["Referer": "https://player.hanime.tv/", "Origin": "https://player.hanime.tv"]
         }
         return isPoster ? ["Referer": "https://hanime.tv/"] : [:]
+    }
+
+    /// Hanime's current website serves title covers through hanime-cdn.com,
+    /// not exclusively through *.hanime.tv. This exact artwork CDN is visible
+    /// on official watch pages; keep other images and media hosts excluded.
+    static func permittedArtworkURL(_ url: URL) -> Bool {
+        guard url.scheme == "https", url.user == nil, url.password == nil,
+              let host = url.host?.lowercased(),
+              ["jpg", "jpeg", "png", "webp", "avif"].contains(url.pathExtension.lowercased()) else { return false }
+        if host == "hanime.tv" || host.hasSuffix(".hanime.tv") { return true }
+        return (host == "hanime-cdn.com" || host.hasSuffix(".hanime-cdn.com")) &&
+            url.path.hasPrefix("/images/")
     }
 
     /// Self-hosted adapters may return either Hanime's HLS path or a signed
@@ -24,7 +35,8 @@ enum HanimeGeneratedAPI {
         guard url.scheme == "https", url.user == nil, url.password == nil else { return false }
         if url.host == "hanime.tv", url.path.hasPrefix("/hls/") { return true }
         return url.host == "cdn.hanime.tv" &&
-            ["m3u8", "mp4", "m4v"].contains(url.pathExtension.lowercased())
+            (url.path.hasPrefix("/hls/") ||
+                ["m3u8", "mp4", "m4v"].contains(url.pathExtension.lowercased()))
     }
 
     static var configuredURL: URL? {

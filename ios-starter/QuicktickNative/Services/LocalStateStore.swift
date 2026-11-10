@@ -50,10 +50,14 @@ actor FeedPreviewPersistence {
     }
 
     func load(provider: Provider, query: String, sort: String, mediaOnly: Bool) -> [Post] {
-        guard let snapshot = validSnapshot(),
+        guard let snapshot = validSnapshot(at: providerURL(provider)) ?? validSnapshot(),
               snapshot.provider == provider, snapshot.query == query,
               snapshot.sort == sort, snapshot.mediaOnly == mediaOnly else { return [] }
         return Array(snapshot.posts.prefix(48))
+    }
+
+    private func providerURL(_ provider: Provider) -> URL {
+        url.deletingLastPathComponent().appendingPathComponent("feed-preview-v1-\(provider.rawValue).json")
     }
 
     func recentProvider() -> Provider? {
@@ -63,9 +67,13 @@ actor FeedPreviewPersistence {
     }
 
     private func validSnapshot() -> FeedPreviewSnapshot? {
-        guard let data = try? Data(contentsOf: url),
+        validSnapshot(at: url)
+    }
+
+    private func validSnapshot(at path: URL) -> FeedPreviewSnapshot? {
+        guard let data = try? Data(contentsOf: path),
               let snapshot = try? JSONDecoder().decode(FeedPreviewSnapshot.self, from: data),
-              snapshot.savedAt > Date().addingTimeInterval(-7 * 24 * 60 * 60) else { return nil }
+              snapshot.savedAt > Date().addingTimeInterval(-30 * 24 * 60 * 60) else { return nil }
         return snapshot
     }
 
@@ -79,7 +87,11 @@ actor FeedPreviewPersistence {
                                            posts: Array(posts.prefix(48)))
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(snapshot).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            let bytes = try JSONEncoder().encode(snapshot)
+            try bytes.write(to: providerURL(provider), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            // Retain the legacy last-successful snapshot for existing installs
+            // and old builds. New builds also keep each provider independently.
+            try bytes.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         } catch {
             // A temporary disk/file-protection failure must never make a
             // healthy network feed fail to render on its first paint.

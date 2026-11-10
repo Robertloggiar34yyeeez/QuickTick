@@ -116,6 +116,7 @@ actor MediaImagePipeline {
                 var request = URLRequest(url: url); request.timeoutInterval = 20
                 let sourceHeaders = EromeGeneratedAPI.mediaHeaders(for: url)
                     .merging(HanimeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
+                    .merging(NativeProviderAPI.pornhubImageHeaders(for: url)) { _, new in new }
                 for (header, value) in sourceHeaders {
                     request.setValue(value, forHTTPHeaderField: header)
                 }

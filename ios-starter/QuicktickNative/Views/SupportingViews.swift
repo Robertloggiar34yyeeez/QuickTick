@@ -1574,6 +1574,113 @@ enum TasteWrappedSpotlights {
     }
 }
 
+/// Recap metrics come from locally recorded playback and download events.
+/// Profile stats are split by provider, so each event is summed once. Unlike
+/// liked-post spotlights these totals describe all-time activity even in the
+/// weekly recap; no inferred viewing counts are fabricated from favorites.
+struct TasteWrappedActivity: Equatable {
+    let watchSeconds: Int
+    let replays: Int
+    let completed: Int
+    let downloads: Int
+
+    static func make(from state: RecommendationState) -> Self {
+        let values = state.profiles.values.map(\.stats)
+        return TasteWrappedActivity(
+            watchSeconds: Int(values.reduce(0.0) { $0 + max(0, $1.watchSeconds) }),
+            replays: values.reduce(0) { $0 + max(0, $1.replays) },
+            completed: values.reduce(0) { $0 + max(0, $1.completions) },
+            downloads: values.reduce(0) { $0 + max(0, $1.downloads) })
+    }
+
+    var watchTime: String {
+        if watchSeconds >= 3_600 { return "\(watchSeconds / 3_600) hr \((watchSeconds % 3_600) / 60) min" }
+        if watchSeconds >= 60 { return "\(watchSeconds / 60) min" }
+        return "\(watchSeconds) sec"
+    }
+}
+
+private struct WrappedActivityPage: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let activity: TasteWrappedActivity
+    let active: Bool
+    @State private var drifting = false
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            LinearGradient(colors: [AppTheme.accent.opacity(0.32), .clear],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                .ignoresSafeArea()
+            if !reduceMotion {
+                Text("PLAY  •  REPLAY  •  REMEMBER  •  YOUR STORY  •")
+                    .font(.system(size: 16, weight: .black, design: .rounded))
+                    .tracking(3)
+                    .fixedSize()
+                    .foregroundStyle(.white.opacity(0.23))
+                    .offset(x: drifting ? -480 : 120)
+                    .padding(.top, 106)
+                    .animation(.linear(duration: 12).repeatForever(autoreverses: false), value: drifting)
+                    .allowsHitTesting(false)
+            }
+            VStack(alignment: .leading, spacing: 22) {
+                Text("YOUR ACTIVITY / ALL TIME")
+                    .font(.system(size: 12, weight: .black, design: .rounded))
+                    .tracking(2.6)
+                    .foregroundStyle(AppTheme.accent)
+                Text("Every replay\ntells a story.")
+                    .font(.system(size: 40, weight: .black, design: .rounded))
+                    .tracking(-1.7)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Your real playback and save history, tracked privately on this device.")
+                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.74))
+                VStack(spacing: 12) {
+                    HStack(spacing: 12) {
+                        metric(activity.watchTime, label: "Time watched", icon: "clock.arrow.circlepath", order: 0)
+                        metric("\(activity.replays)", label: "Replays", icon: "repeat", order: 1)
+                    }
+                    HStack(spacing: 12) {
+                        metric("\(activity.completed)", label: "Completed views", icon: "checkmark.circle.fill", order: 2)
+                        metric("\(activity.downloads)", label: "Save events", icon: "arrow.down.circle.fill", order: 3)
+                    }
+                }
+                Text("Numbers are recorded activity, not estimates of your entire watching history.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .padding(.horizontal, 27)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        }
+        .onAppear { drifting = active }
+        .onChange(of: active) { _, now in drifting = now }
+        .accessibilityIdentifier("wrapped-activity")
+    }
+
+    private func metric(_ value: String, label: String, icon: String, order: Int) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundStyle(AppTheme.accent)
+            Text(value)
+                .font(.system(size: 29, weight: .black, design: .rounded))
+                .minimumScaleFactor(0.65)
+                .lineLimit(1)
+                .contentTransition(.numericText())
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.67))
+        }
+        .frame(maxWidth: .infinity, minHeight: 128, alignment: .leading)
+        .padding(16)
+        .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(.white.opacity(0.14)))
+        .opacity(active ? 1 : 0.25)
+        .offset(y: active ? 0 : CGFloat(20 + order * 9))
+        .animation(reduceMotion ? nil : .spring(response: 0.6, dampingFraction: 0.82)
+            .delay(Double(order) * 0.10), value: active)
+    }
+}
+
 /// Play only the currently visible Wrapped highlight. When a signed stream is
 /// unavailable, its actual saved poster stays on screen; no preview image is
 /// ever misrepresented as video playback.
@@ -1713,9 +1820,10 @@ struct TasteWrappedView: View {
     @State private var likedCount = 0
     @State private var videoCount = 0
     @State private var providerCount = 0
+    @State private var activity = TasteWrappedActivity(watchSeconds: 0, replays: 0, completed: 0, downloads: 0)
     @State private var showingWeeklyLikes = false
     @State private var animated = false
-    private var totalPages: Int { spotlights.count + sections.count + 2 }
+    private var totalPages: Int { spotlights.count + sections.count + 3 }
 
     var body: some View {
         ZStack {
@@ -1736,9 +1844,11 @@ struct TasteWrappedView: View {
                     WrappedSpotlightPage(spotlight: spotlights[index], active: page == index + 1)
                         .tag(index + 1)
                 }
+                WrappedActivityPage(activity: activity, active: page == spotlights.count + 1)
+                    .tag(spotlights.count + 1)
                 ForEach(sections.indices, id: \.self) { index in
-                    wrappedPage(sections[index], pageIndex: spotlights.count + index + 1)
-                        .tag(spotlights.count + index + 1)
+                    wrappedPage(sections[index], pageIndex: spotlights.count + index + 2)
+                        .tag(spotlights.count + index + 2)
                 }
                 conclusion.tag(totalPages - 1)
             }
@@ -1797,6 +1907,10 @@ struct TasteWrappedView: View {
             videoCount = favorites.filter { $0.type.lowercased() == "video" }.count
             providerCount = Set(favorites.map { $0.providerKey?.rawValue ?? $0.provider }).count
             animated = true
+        }
+        .task {
+            let history = await store.recommendations.snapshot()
+            activity = TasteWrappedActivity.make(from: history)
         }
         .accessibilityIdentifier("taste-wrapped")
     }

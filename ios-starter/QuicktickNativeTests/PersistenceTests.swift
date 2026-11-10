@@ -202,6 +202,27 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(manager.records[0].state, .complete)
     }
 
+    @MainActor func testLegacyHanimeImageMisnamedMP4IsRecoverableNotCompleted() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("hanime_clip")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let disguised = folder.appendingPathComponent("media.mp4")
+        try Data([0xFF, 0xD8, 0xFF, 0xE0, 0, 1, 2]).write(to: disguised)
+        let record = DownloadRecord(key: "hanime:clip", provider: "Hanime", postID: "clip",
+            title: "Old preview", tags: [], thumbnailRemoteURL: "", localMediaPath: disguised.path,
+            kind: .file, state: .complete, progress: 1, createdAt: .now)
+        try JSONEncoder().encode([record]).write(to: root.appendingPathComponent("downloads.json"))
+
+        let manager = DownloadManager(resolver: MediaResolver(api: QuicktickAPIClient()), directory: root)
+        let recovered = try XCTUnwrap(manager.records.first)
+        XCTAssertEqual(recovered.state, .failed)
+        XCTAssertNil(recovered.offlinePost)
+        XCTAssertNil(recovered.exportURL)
+        XCTAssertTrue(try XCTUnwrap(recovered.errorMessage).contains("full Hanime video"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: disguised.path), "Keep the old preview until retry.")
+    }
+
     func testSystemManagedHLSPathsRebaseWithoutMovingPackage() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: base) }

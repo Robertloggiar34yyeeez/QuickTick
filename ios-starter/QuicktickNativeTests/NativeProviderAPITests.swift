@@ -125,7 +125,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"<html><a href="/videos/hentai/public-fantasy"><img data-src="https://cdn.hanime.tv/public.webp" alt="Public fantasy"></a><a href="https://evil.invalid/videos/hentai/fake"><img src="https://evil.invalid/fake.webp"></a></html>"#
         }
         else if host == "hanime.tv", path == "/videos/hentai/web-only" {
-            payload = #"<html><head><meta content="https://cdn.hanime.tv/web-only.webp?size=large&amp;v=2" property="og:image"></head></html>"#
+            payload = #"<html><head><meta content="https://hanime-cdn.com/images/covers/web-only.webp?size=large&amp;v=2" property="og:image"></head></html>"#
         }
         else if host == "auth.hanime.tv", path == "/api/v11/handshake" {
             let object = (Self.requestBody(request).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
@@ -646,6 +646,11 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertThrowsError(try NativeProviderAPI.hanimeWebsitePage(
             "<html><h1>Site Unavailable</h1></html>",
             query: ParsedQuery(included: [], excluded: []), immersive: true))
+        let official = NativeProviderAPI.parseHanimeWebsiteCatalog(
+            #"<a href="/videos/hentai/doura-4"><img alt="Doura 4 HD cover image" src="https://hanime-cdn.com/images/covers/doura-4-cover_1794219216.webp"></a>"#)
+        XCTAssertEqual(official.map(\.id), ["doura-4"])
+        XCTAssertEqual(official.first?.thumbUrl,
+                       "https://hanime-cdn.com/images/covers/doura-4-cover_1794219216.webp")
     }
 
     func testHanimeArtworkPrefersVerifiedFirstPartyNestedPosterFields() {
@@ -667,6 +672,18 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(NativeProviderAPI.hanimeWatchPosterURL(
             #"<meta content="https://evil.invalid/untrusted.jpg" property="og:image"><meta content="https://cdn.hanime.tv/real.jpg" property="og:image">"#),
             "https://cdn.hanime.tv/real.jpg")
+        let officialCover = "https://hanime-cdn.com/images/covers/doura-4-cover_1794219216.webp"
+        XCTAssertEqual(NativeProviderAPI.hanimePosterURL(["cover_url": officialCover]), officialCover)
+        XCTAssertTrue(HanimeGeneratedAPI.permittedArtworkURL(URL(string: officialCover)!))
+        XCTAssertEqual(HanimeGeneratedAPI.mediaHeaders(for: URL(string: officialCover)!)["Referer"],
+                       "https://hanime.tv/")
+        XCTAssertFalse(HanimeGeneratedAPI.permittedArtworkURL(
+            URL(string: "https://hanime-cdn.com.evil.invalid/images/covers/doura.webp")!))
+        XCTAssertFalse(HanimeGeneratedAPI.permittedArtworkURL(
+            URL(string: "https://hanime-cdn.com/ads/overlay.webp")!))
+        XCTAssertEqual(NativeProviderAPI.hanimeWatchPosterURL(
+            #"<img src="https://evil.invalid/advert.jpg" alt="ad"><img alt="Doura 4 HD cover image" src="https://hanime-cdn.com/images/covers/doura-4.webp">"#),
+            "https://hanime-cdn.com/images/covers/doura-4.webp")
     }
 
     func testHanimeMissingSearchCoverLoadsOnlyRequestedTitleArtwork() async throws {
@@ -682,7 +699,7 @@ final class NativeProviderAPITests: XCTestCase {
 
         NativeProviderProtocol.log.reset()
         let websiteArtwork = await NativeProviderAPI.hanimeArtworkURL(session: session, slug: "web-only")
-        XCTAssertEqual(websiteArtwork, "https://cdn.hanime.tv/web-only.webp?size=large&v=2")
+        XCTAssertEqual(websiteArtwork, "https://hanime-cdn.com/images/covers/web-only.webp?size=large&v=2")
         XCTAssertEqual(NativeProviderProtocol.log.snapshot().compactMap(\.url).map(\.path),
                        ["/api/v8/video", "/videos/hentai/web-only"])
         NativeProviderProtocol.log.reset()

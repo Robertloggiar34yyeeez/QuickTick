@@ -16,6 +16,18 @@ final class ImmersiveMediaTests: XCTestCase {
                              "A nested niche feed on iPad must clear the bottom dock, not assume a side dock")
     }
 
+    func testFullscreenRedgifsNicheDoesNotReserveHiddenHomeTabBar() {
+        let regular = ImmersiveChromeLayout.bottomClearance(
+            viewportWidth: 393, safeAreaBottom: 34,
+            backgroundAudioVisible: true, sideNavigation: false)
+        let niche = ImmersiveChromeLayout.bottomClearance(
+            viewportWidth: 393, safeAreaBottom: 34,
+            backgroundAudioVisible: true, sideNavigation: false, rootDockVisible: false)
+        XCTAssertEqual(regular, 186)
+        XCTAssertEqual(niche, 44)
+        XCTAssertEqual(regular - niche, 142)
+    }
+
     func testFullscreenDoubleTapSeekClampsAndRespectsSettingsInterval() {
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: true, interval: 10), 52)
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: false, interval: 10), 32)

@@ -961,9 +961,7 @@ enum NativeProviderAPI {
         collect(row, depth: 0)
         return candidates.compactMap { raw -> URL? in
             guard let url = URL(string: raw, relativeTo: origin(.hanime))?.absoluteURL,
-                  url.scheme == "https", url.user == nil, url.password == nil,
-                  let host = url.host?.lowercased(),
-                  host == "hanime.tv" || host.hasSuffix(".hanime.tv") else {
+                  HanimeGeneratedAPI.permittedArtworkURL(url) else {
                 return nil
             }
             return url
@@ -993,10 +991,10 @@ enum NativeProviderAPI {
     }
 
     static func hanimeWatchPosterURL(_ html: String) -> String {
-        let pattern = #"(?is)<meta\b[^>]*>"#
+        let pattern = #"(?is)<(?:meta|img)\b[^>]*>"#
         guard let metaPattern = try? NSRegularExpression(pattern: pattern) else { return "" }
         let content = html as NSString
-        for match in metaPattern.matches(in: html, range: NSRange(location: 0, length: content.length)).prefix(200) {
+        for match in metaPattern.matches(in: html, range: NSRange(location: 0, length: content.length)).prefix(400) {
             let tag = content.substring(with: match.range)
             let attributes = #"(?i)([a-z-]+)\s*=\s*[\"']([^\"']+)[\"']"#
             guard let attributePattern = try? NSRegularExpression(pattern: attributes) else { continue }
@@ -1006,8 +1004,15 @@ enum NativeProviderAPI {
                 values[source.substring(with: attribute.range(at: 1)).lowercased()] =
                     source.substring(with: attribute.range(at: 2))
             }
-            guard ["og:image", "twitter:image"].contains((values["property"] ?? values["name"] ?? "").lowercased()),
-                  let image = values["content"] else { continue }
+            let isMetadata = ["og:image", "twitter:image"].contains(
+                (values["property"] ?? values["name"] ?? "").lowercased())
+            // The current website puts its real cover in an <img> element
+            // with an accessible "HD cover image" label, even when its old
+            // v8 JSON API and Open Graph metadata are unavailable.
+            let isCoverImage = tag.lowercased().hasPrefix("<img") &&
+                (values["alt"] ?? "").lowercased().contains("cover")
+            guard isMetadata || isCoverImage,
+                  let image = isMetadata ? values["content"] : (values["src"] ?? values["data-src"]) else { continue }
             let result = hanimePosterURL(["poster_url": image.replacingOccurrences(of: "&amp;", with: "&")])
             if !result.isEmpty { return result }
         }
@@ -1053,10 +1058,7 @@ enum NativeProviderAPI {
                 .compactMap { match -> String? in
                     let raw = (anchor as NSString).substring(with: match.range(at: 1))
                     guard let url = URL(string: raw, relativeTo: origin(.hanime))?.absoluteURL,
-                          url.scheme == "https", url.user == nil, url.password == nil,
-                          let host = url.host?.lowercased(),
-                          host == "hanime.tv" || host.hasSuffix(".hanime.tv"),
-                          ["jpg", "jpeg", "png", "webp", "avif"].contains(url.pathExtension.lowercased())
+                          HanimeGeneratedAPI.permittedArtworkURL(url)
                     else { return nil }
                     return url.absoluteString
                 }.first ?? ""

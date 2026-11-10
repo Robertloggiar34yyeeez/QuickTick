@@ -249,6 +249,32 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertTrue(TasteWrappedSpotlights.make(from: [], sections: []).isEmpty)
     }
 
+    func testWrappedActivityUsesOnlyRecordedProviderEvents() {
+        var state = RecommendationState()
+        var hanime = RecommendationProfile()
+        hanime.stats.watchSeconds = 3_675
+        hanime.stats.replays = 2
+        hanime.stats.completions = 1
+        hanime.stats.downloads = 4
+        state.profiles["hanime"] = hanime
+        var redgifs = RecommendationProfile()
+        redgifs.stats.watchSeconds = 125
+        redgifs.stats.replays = 3
+        redgifs.stats.completions = 2
+        redgifs.stats.downloads = 1
+        state.profiles["redgifs"] = redgifs
+        // Scoped interests are subdivisions of these sources; counting them
+        // again would double-report the user's playback history.
+        state.scopedProfiles["hanime:fantasy"] = hanime
+
+        let activity = TasteWrappedActivity.make(from: state)
+        XCTAssertEqual(activity.watchSeconds, 3_800)
+        XCTAssertEqual(activity.watchTime, "1 hr 3 min")
+        XCTAssertEqual(activity.replays, 5)
+        XCTAssertEqual(activity.completed, 3)
+        XCTAssertEqual(activity.downloads, 5)
+    }
+
     func testOptionalBirthdayOnlyMatchesTheCalendarDay() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

@@ -6,15 +6,16 @@ import UIKit
 enum ImmersiveChromeLayout {
     static func bottomClearance(viewportWidth: CGFloat, safeAreaBottom: CGFloat,
                                 backgroundAudioVisible: Bool,
-                                sideNavigation: Bool) -> CGFloat {
+                                sideNavigation: Bool,
+                                rootDockVisible: Bool = true) -> CGFloat {
         // The media fills the physical display, but the timeline must sit
         // *above* the root tab dock and home indicator. The fullscreen
         // GeometryReader may report zero safe-area insets after
         // ignoresSafeArea, so retain a conservative device inset.
         let sideDock = viewportWidth > 600 && sideNavigation
         let deviceInset = max(safeAreaBottom, sideDock ? 20 : 34)
-        let tabDockHeight: CGFloat = sideDock ? 0 : 62
-        let audioControlsHeight: CGFloat = backgroundAudioVisible ? 80 : 0
+        let tabDockHeight: CGFloat = !rootDockVisible || sideDock ? 0 : 62
+        let audioControlsHeight: CGFloat = rootDockVisible && backgroundAudioVisible ? 80 : 0
         return deviceInset + tabDockHeight + audioControlsHeight + 10
     }
 }
@@ -671,7 +672,8 @@ private struct ImmersiveItemView: View {
                 viewportWidth: geo.size.width,
                 safeAreaBottom: geo.safeAreaInsets.bottom,
                 backgroundAudioVisible: store.audio.currentPost != nil,
-                sideNavigation: store.activeTab == 1 || collection || ipadSidebarEnabled)
+                sideNavigation: store.activeTab == 1 || collection || ipadSidebarEnabled,
+                rootDockVisible: playbackOwner != "home-immersive")
             ZStack(alignment: .center) {
                 AppTheme.canvas
                 if post.type.lowercased() != "image" && gifURL == nil {

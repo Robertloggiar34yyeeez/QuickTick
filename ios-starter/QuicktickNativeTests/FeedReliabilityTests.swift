@@ -185,6 +185,12 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertNil(DownloadResponseValidator.failure(
             response: opaque, header: Data([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70]),
             expectedVideo: true))
+        XCTAssertTrue(DownloadResponseValidator.isPreviewImage(header:
+            Data("RIFF0000WEBPVP8 ".utf8)))
+        XCTAssertTrue(DownloadResponseValidator.isPreviewImage(header:
+            Data([0, 0, 0, 28] + Array("ftypavif".utf8))))
+        XCTAssertFalse(DownloadResponseValidator.isPreviewImage(header:
+            Data([0, 0, 0, 28] + Array("ftypisom".utf8))))
     }
 
     @MainActor func testRecommendedContinuesPastPageRemovedByNegativePreferences() async {

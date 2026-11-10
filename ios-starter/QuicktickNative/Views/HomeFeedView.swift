@@ -144,6 +144,16 @@ struct HomeFeedView: View {
         .fullScreenCover(item: $presentedFullImage) { selection in
             FullComicView(url: selection.url, previewURL: selection.previewURL)
         }
+        .fullScreenCover(isPresented: $immersive) {
+            // A niche opened from Home must use the same physical viewport
+            // as the Immersive tab. Pushing through NavigationStack reserved
+            // top/bottom navigation insets and shrank every RedGIFs clip.
+            ImmersiveFeedView(posts: store.posts, offline: false,
+                              activePostID: $immersivePostID,
+                              onClose: { immersive = false }, showSettings: $showSettings)
+                .environmentObject(store)
+                .ignoresSafeArea()
+        }
         .fullScreenCover(isPresented: $showAllRedgifsNiches) {
             RedgifsNicheBrowserView(featured: redgifsNiches, showSettings: $showSettings,
                                     onReturnToFYP: {
@@ -580,7 +590,6 @@ struct HomeFeedView: View {
 
         // Refresh is deliberately owned by the top-origin drag above. Native
         // .refreshable also treats a swipe arriving at the top as a refresh.
-        .navigationDestination(isPresented: $immersive) { ImmersiveFeedView(posts: store.posts, offline: false, activePostID: $immersivePostID, onClose: { immersive = false }, showSettings: $showSettings) }
         .onChange(of: immersive) { _, showing in if showing { store.inlinePlaybackID = nil } }
         .sheet(isPresented: $showSearch) { NativeSearchBar() }
         // Break the independent async discovery lanes into separate view
@@ -1074,7 +1083,9 @@ private struct RedgifsNicheBrowserView: View {
                                   showSettings: $showSettings)
                     .id(selectedNiche.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
                     .background(AppTheme.canvas.ignoresSafeArea())
+                    .accessibilityIdentifier("redgifs-niche-immersive")
             } else {
                 NavigationStack {
                     directoryView

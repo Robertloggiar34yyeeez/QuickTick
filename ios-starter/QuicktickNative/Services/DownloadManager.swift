@@ -82,11 +82,15 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 } else { savedRecords = try JSONDecoder().decode([DownloadRecord].self, from: data) }
                 let paths = DownloadPathStorage(root: root)
                 records = Self.newestFirst(savedRecords.map { paths.restore($0) })
-                for index in records.indices where records[index].isHanimePosterOnly &&
-                    records[index].state == .complete {
-                    // Older versions saved the cover as the video. Preserve
-                    // that file, but make the record retryable so the user can
-                    // replace it with a real HLS/MP4 download.
+                for index in records.indices where records[index].provider.lowercased() == Provider.hanime.rawValue &&
+                    records[index].state == .complete && records[index].kind == .file &&
+                    (records[index].isHanimePosterOnly ||
+                     records[index].localMediaPath.map { DownloadResponseValidator.isPreviewImage(at: URL(fileURLWithPath: $0)) } == true) {
+                    // Older releases also stored image bytes *named media.mp4*.
+                    // Check the file signature once while restoring metadata;
+                    // don't read files repeatedly on the scrolling hot path.
+                    // Preserve the preview for recovery, but never expose it
+                    // as a completed offline movie.
                     records[index].state = .failed
                     records[index].progress = 0
                     records[index].errorMessage = "Only the old preview was saved. Retry to download the full Hanime video."
@@ -502,17 +506,32 @@ enum DownloadSourcePolicy {
 }
 
 enum DownloadResponseValidator {
+    static func isPreviewImage(header: Data) -> Bool {
+        if header.starts(with: [0xFF, 0xD8, 0xFF]) ||
+           header.starts(with: [0x89, 0x50, 0x4E, 0x47]) ||
+           header.starts(with: Array("GIF8".utf8)) { return true }
+        if header.count >= 12, header.prefix(4) == Data("RIFF".utf8),
+           header.dropFirst(8).prefix(4) == Data("WEBP".utf8) { return true }
+        if header.count >= 12, header.dropFirst(4).prefix(4) == Data("ftyp".utf8) {
+            let brand = String(decoding: header.dropFirst(8).prefix(4), as: UTF8.self).lowercased()
+            return ["avif", "avis", "heic", "heix", "mif1"].contains(brand)
+        }
+        return false
+    }
+
+    static func isPreviewImage(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        return isPreviewImage(header: handle.readData(ofLength: 32))
+    }
+
     static func failure(response: HTTPURLResponse?, header: Data, expectedVideo: Bool = false) -> String? {
         guard let response else { return "The download server returned no HTTP response." }
         guard (200..<300).contains(response.statusCode) else {
             return "The media server returned HTTP \(response.statusCode). The source may have expired or be unavailable in your region."
         }
         let mime = response.mimeType?.lowercased() ?? ""
-        if expectedVideo && (mime.hasPrefix("image/") ||
-                             header.starts(with: [0xFF, 0xD8, 0xFF]) ||
-                             header.starts(with: [0x89, 0x50, 0x4E, 0x47]) ||
-                             header.starts(with: Array("GIF8".utf8)) ||
-                             (header.count >= 12 && String(decoding: header.prefix(12), as: UTF8.self).contains("WEBP"))) {
+        if expectedVideo && (mime.hasPrefix("image/") || isPreviewImage(header: header)) {
             return "The media server returned only a preview image, not the Hanime video. Retry to resolve its stream."
         }
         let prefix = String(decoding: header, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

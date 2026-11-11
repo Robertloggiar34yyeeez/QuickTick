@@ -1116,18 +1116,27 @@ actor RecommendationEngine {
             let overall = effectiveTermScore(source: source, term: term, taste: taste, learned: general)
             // Learn from the medium-specific context while respecting global
             // negative presentation feedback even on previously unseen contexts.
+            let incidentalR34 = source == Provider.rule34.rawValue && !into.contains(canonical) &&
+                (Self.genericTasteTerms.contains(canonical) ||
+                 Self.lowSignalDiscoveryTags.contains(canonical) ||
+                 Self.broadDiversityTags.contains(canonical))
+            // A legacy, provider-level character preference should still
+            // count when that subject has never appeared in the newer
+            // context-specific profile. Without this fallback the weight of
+            // one real character is diluted below several generic hair/gaze
+            // descriptors learned alongside it.
+            let missingContext = p.terms[term] == nil && p.termEvidence[term] == nil
+            let globalWeight = source == Provider.rule34.rawValue &&
+                !incidentalR34 && missingContext ? 0.95 : 0.28
             let own = overall < -0.5 ? min(contextual, overall) :
-                (contextualRanking ? contextual * 0.72 + overall * 0.28 : overall)
+                (contextualRanking ? contextual * (1 - globalWeight) +
+                                      overall * globalWeight : overall)
             let genericMedium = ["2d", "3d", "3d_animation", "animation", "animated"].contains(canonical)
             // Rule34 posts carry dozens of incidental booru descriptors.
             // Their co-occurrence with a liked character is not independent
             // evidence that *any* image with the same hair/gaze is relevant.
             // An explicitly selected descriptor still has its full weight,
             // and negative feedback is never weakened by this calibration.
-            let incidentalR34 = source == Provider.rule34.rawValue && !into.contains(canonical) &&
-                (Self.genericTasteTerms.contains(canonical) ||
-                 Self.lowSignalDiscoveryTags.contains(canonical) ||
-                 Self.broadDiversityTags.contains(canonical))
             let multiplier: Double = own > 0 && incidentalR34 ? 0.08 :
                 (contextualRanking && genericMedium && own > 0 && !into.contains(canonical) ? 0.15 : 1.7)
             score += own * multiplier
@@ -1404,11 +1413,10 @@ actor RecommendationEngine {
                 !RecommendationQualityModel.rejects(visual: visualScores[post.stableID]) &&
                 (!strict || matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]))
             }
-            let scored = allowed.enumerated().map { offset, post in
-                (post: post, value: 0.0, offset: offset,
-                 topics: diversityTopics(for: post))
-            }
-            return diversifyFast(scored, recent: recent)
+            // Until this provider has learned preferences, preserve the
+            // provider's native ordering. Arbitrary diversity penalties can
+            // otherwise reshuffle adjacent posts without relevant evidence.
+            return allowed
         }
         let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
         var scored: [(post: Post, value: Double, offset: Int, topics: Set<String>)] = []

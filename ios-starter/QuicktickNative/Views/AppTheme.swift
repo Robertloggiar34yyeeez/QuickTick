@@ -625,17 +625,13 @@ struct ActionIcon: View {
     var body: some View {
         Button(action: action) {
             if AppTheme.premium {
-                VStack(spacing: 5) {
-                    Image(systemName: symbol)
-                        .font(.system(size: 19, weight: .semibold))
-                        .symbolEffect(.bounce, value: selected)
-                        .accessibilityHidden(true)
-                    Text(title)
-                        .font(.system(size: 10, weight: .semibold, design: .default))
-                }
-                .foregroundStyle(selected ? AppTheme.accent : .white.opacity(0.74))
-                .frame(maxWidth: .infinity, minHeight: 52)
-                .contentShape(Rectangle())
+                Image(systemName: symbol)
+                    .font(.system(size: 23, weight: .semibold))
+                    .symbolEffect(.bounce, value: selected)
+                    .accessibilityHidden(true)
+                    .foregroundStyle(selected ? AppTheme.accent : .white.opacity(0.84))
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .contentShape(Rectangle())
             } else {
             Image(systemName: symbol)
                 .font(.system(size: 20, weight: .semibold))

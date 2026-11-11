@@ -541,19 +541,19 @@ private struct FeedDownloadControl: View {
             }
         } label: {
             Group {
-                if working { InfinityLoader(size: 22) }
+                if working { InfinityLoader(size: 25) }
                 else {
                     Image(systemName: saved ? "checkmark" : failed ? "arrow.clockwise" : "arrow.down.to.line")
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 25, weight: .semibold))
                         .symbolEffect(.bounce, value: taps)
                         .accessibilityHidden(true)
                 }
             }
             .foregroundStyle(saved ? AppTheme.accent : .white.opacity(0.9))
-            .frame(width: 42, height: 42)
+            .frame(width: 52, height: 52)
             .background(saved ? AppTheme.accent.opacity(0.16) : .white.opacity(0.065), in: Circle())
             .overlay(Circle().strokeBorder(saved ? AppTheme.accent.opacity(0.42) : .white.opacity(0.11), lineWidth: 1))
-            .frame(maxWidth: .infinity, minHeight: 50)
+            .frame(maxWidth: .infinity, minHeight: 58)
             .contentShape(Rectangle())
         }
         .buttonStyle(QuicktickPressStyle())

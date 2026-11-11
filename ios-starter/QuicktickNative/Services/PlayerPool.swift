@@ -168,7 +168,7 @@ final class PlayerPool: ObservableObject {
         p.automaticallyWaitsToMinimizeStalling = !url.isFileURL
         // Favor first frame latency for swipe-through playback. Longer
         // buffering remains AVFoundation's responsibility after startup.
-        p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : 1.5
+        p.currentItem?.preferredForwardBufferDuration = url.isFileURL ? 0 : (HanimeGeneratedAPI.permittedStreamURL(url) ? 0.75 : 1.5)
         activeKey = key; activeOwner = owner; p.isMuted = muted
         p.volume = feedVolumeScale
         let provider = String(key.split(separator: ":", maxSplits: 1).first ?? "")
@@ -201,7 +201,15 @@ final class PlayerPool: ObservableObject {
                       self.activeKey == key, player.currentItem === item,
                       self.introAttempts[key] == attempt, item.status == .readyToPlay else { return }
                 self.introObservers.removeValue(forKey: key)
-                let loadedDuration = (try? await item.asset.load(.duration))?.seconds ?? 0
+                // Prefer the already-loaded AVPlayerItem metadata over another
+                // network-dependent HLS asset load on the visible swipe.
+                let itemDuration = item.duration.seconds
+                let loadedDuration: Double
+                if itemDuration.isFinite && itemDuration > 0 {
+                    loadedDuration = itemDuration
+                } else {
+                    loadedDuration = (try? await item.asset.load(.duration))?.seconds ?? 0
+                }
                 // A VOD HLS playlist can initially report an indefinite
                 // asset duration. Its seekable range still gives the intro
                 // skip a safe end bound once AVPlayerItem is ready.
@@ -236,7 +244,7 @@ final class PlayerPool: ObservableObject {
                     // while the poster stays on screen; cap the wait for
                     // servers that do not report meaningful time ranges.
                     if let url = self.urls[key], !url.isFileURL {
-                        let deadline = Date().addingTimeInterval(5)
+                        let deadline = Date().addingTimeInterval(VideoIntroPolicy.isHanime(provider) ? 1.2 : 2.5)
                         while self.players[key] === player, self.activeKey == key,
                               self.introAttempts[key] == attempt, Date() < deadline,
                               !VideoIntroPolicy.bufferedFrom(start,
@@ -258,7 +266,7 @@ final class PlayerPool: ObservableObject {
                 // Waiting for .readyToPlay or seek completion alone can still
                 // expose the old 0:00 frame. Only reveal once playback advances
                 // from the target time; the loop exits when the post deactivates.
-                let revealDeadline = Date().addingTimeInterval(8)
+                let revealDeadline = Date().addingTimeInterval(VideoIntroPolicy.isHanime(provider) ? 2.5 : 4)
                 while self.players[key] === player, self.activeKey == key,
                       self.introAttempts[key] == attempt, Date() < revealDeadline {
                     let seconds = player.currentTime().seconds

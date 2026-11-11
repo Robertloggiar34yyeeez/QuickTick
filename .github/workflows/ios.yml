@@ -128,7 +128,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p logs
-          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination 'generic/platform=iOS' -archivePath build/QuicktickNative.xcarchive -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive | tee logs/xcodebuild-archive.txt
+          # Keep logs small, include stderr, and print compiler diagnostics if
+          # archiving fails. This also makes the always-uploaded log usable.
+          if ! xcodebuild -quiet -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination 'generic/platform=iOS' -archivePath build/QuicktickNative.xcarchive -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive > logs/xcodebuild-archive.txt 2>&1; then
+            echo "::group::Xcode archive compiler errors"
+            grep -nE 'error:|fatal error:|BUILD FAILED|The following build commands failed|unable to type-check' logs/xcodebuild-archive.txt | tail -n 100 || true
+            tail -n 100 logs/xcodebuild-archive.txt
+            echo "::endgroup::"
+            exit 1
+          fi
       - name: Package unsigned IPA from verified Xcode archive
         id: ipa-package
         shell: bash

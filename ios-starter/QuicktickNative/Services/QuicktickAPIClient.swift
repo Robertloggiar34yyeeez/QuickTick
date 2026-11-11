@@ -288,7 +288,7 @@ actor QuicktickAPIClient {
                 // delaying the feed or fetching metadata for offscreen pages.
                 let missingArtwork = Array(result.items.filter {
                     $0.providerKey == .hanime && $0.previewImageURLs.isEmpty
-                }.prefix(8).map(\.id))
+                }.prefix(4).map(\.id))
                 if !missingArtwork.isEmpty {
                     Task(priority: .utility) {
                         await withTaskGroup(of: Void.self) { group in

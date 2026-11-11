@@ -1020,10 +1020,10 @@ private struct ImmersiveItemView: View {
     private func railButton(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 23, weight: .semibold))
+                .font(.system(size: 26, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(selected ? AppTheme.accent : .white)
-                .frame(width: 52, height: 52).contentShape(Circle())
+                .frame(width: 58, height: 58).contentShape(Circle())
                 .background(.black.opacity(0.16), in: Circle())
                 .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.8) : .white.opacity(0.25), lineWidth: 1))
                 .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
@@ -1173,9 +1173,9 @@ private struct ImmersiveDownloadControl: View {
             else { manager.download(post) }
         } label: {
             Group {
-                if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 28) }
-                else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 23, weight: .semibold)) }
-            }.foregroundStyle(.white).frame(width: 52, height: 52).contentShape(Circle())
+                if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 30) }
+                else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 26, weight: .semibold)) }
+            }.foregroundStyle(.white).frame(width: 58, height: 58).contentShape(Circle())
                 .background(.black.opacity(0.16), in: Circle())
                 .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
                 .shadow(color: .black.opacity(0.23), radius: 6, y: 2)

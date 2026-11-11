@@ -14,6 +14,8 @@ actor MediaResolver {
     init(api: QuicktickAPIClient) { self.api = api }
 
     private func identity(_ post: Post) -> String { "\(post.stableID)|\(post.mediaUrl)|\(post.type)" }
+    // Signed Hanime playlists expire faster than ordinary provider media.
+    private func cacheSeconds(for post: Post) -> TimeInterval { post.providerKey == .hanime ? 40 : 180 }
     func resolve(_ post: Post, refresh: Bool = false,
                  streamVariant: Int = 0) async throws -> ResolvedMedia {
         let key = identity(post)
@@ -30,7 +32,7 @@ actor MediaResolver {
             cache[key] = (value, .now)
             return value
         }
-        if let (media,date) = cache[key], Date().timeIntervalSince(date) < 180 { return media }
+        if let (media,date) = cache[key], Date().timeIntervalSince(date) < cacheSeconds(for: post) { return media }
         let task: Task<ResolvedMedia,Error>
         if let shared = inFlight[key] { task = shared }
         else { task = Task { try await self.fetch(post) }; inFlight[key] = task }
@@ -49,7 +51,7 @@ actor MediaResolver {
     }
 
     private func fetch(_ post: Post, streamVariant: Int = 0) async throws -> ResolvedMedia {
-        if let (media, date) = cache[identity(post)], Date().timeIntervalSince(date) < 180 { return media }
+        if let (media, date) = cache[identity(post)], Date().timeIntervalSince(date) < cacheSeconds(for: post) { return media }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing"), URL(string: post.mediaUrl)?.isFileURL == true { return ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type) }
         #endif

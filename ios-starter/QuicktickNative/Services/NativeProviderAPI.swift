@@ -864,7 +864,7 @@ enum NativeProviderAPI {
         var request = URLRequest(url: address)
         request.httpMethod = "POST"
         request.httpBody = body
-        request.timeoutInterval = 25
+        request.timeoutInterval = 14
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

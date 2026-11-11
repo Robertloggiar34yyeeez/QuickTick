@@ -626,23 +626,23 @@ struct ActionIcon: View {
         Button(action: action) {
             if AppTheme.premium {
                 Image(systemName: symbol)
-                    .font(.system(size: 23, weight: .semibold))
+                    .font(.system(size: 26, weight: .semibold))
                     .symbolEffect(.bounce, value: selected)
                     .accessibilityHidden(true)
                     .foregroundStyle(selected ? AppTheme.accent : .white.opacity(0.84))
-                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .frame(maxWidth: .infinity, minHeight: 58)
                     .contentShape(Rectangle())
             } else {
             Image(systemName: symbol)
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 25, weight: .semibold))
                 .accessibilityHidden(true) // The enclosing button supplies a meaningful action label.
                 .symbolRenderingMode(.hierarchical)
                 .symbolEffect(.bounce, value: selected)
                 .foregroundStyle(selected ? AppTheme.accent : .white.opacity(0.9))
-                .frame(width: 42, height: 42)
+                .frame(width: 52, height: 52)
                 .background(selected ? AppTheme.accent.opacity(0.16) : .white.opacity(0.065), in: Circle())
                 .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.42) : .white.opacity(0.11), lineWidth: 1))
-            .frame(maxWidth: .infinity, minHeight: 50)
+            .frame(maxWidth: .infinity, minHeight: 58)
             .contentShape(Rectangle())
             }
         }

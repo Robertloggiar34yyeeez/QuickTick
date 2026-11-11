@@ -1088,7 +1088,10 @@ actor RecommendationEngine {
         // recommender. Avoid saturated +12 boosts that collapsed variation.
         let savedWeights = savedFavoriteAffinity[source] ?? [:]
         let savedScore = Set(postTerms).reduce(0.0) { sum, term in
-            let generic = Self.genericTasteTerms.contains(RecommendationTagRules.canonical(term))
+            let canonical = RecommendationTagRules.canonical(term)
+            let generic = Self.genericTasteTerms.contains(canonical) ||
+                (source == Provider.rule34.rawValue &&
+                 (Self.lowSignalDiscoveryTags.contains(canonical) || Self.broadDiversityTags.contains(canonical)))
             return sum + (savedWeights[term] ?? 0) * (generic ? 0.08 : 1)
         }
         score += min(3.0, log1p(savedScore) * 0.9)
@@ -1108,17 +1111,29 @@ actor RecommendationEngine {
 
         let topPositive = positiveTermEntries(source: source, taste: taste, limit: 8, learned: p)
         for term in postTerms {
+            let canonical = RecommendationTagRules.canonical(term)
             let contextual = effectiveTermScore(source: source, term: term, taste: taste, learned: p)
             let overall = effectiveTermScore(source: source, term: term, taste: taste, learned: general)
             // Learn from the medium-specific context while respecting global
             // negative presentation feedback even on previously unseen contexts.
             let own = overall < -0.5 ? min(contextual, overall) :
                 (contextualRanking ? contextual * 0.72 + overall * 0.28 : overall)
-            let genericMedium = ["2d", "3d", "3d_animation", "animation", "animated"].contains(RecommendationTagRules.canonical(term))
-            score += own * (contextualRanking && genericMedium && own > 0 && !into.contains(term) ? 0.15 : 1.7)
+            let genericMedium = ["2d", "3d", "3d_animation", "animation", "animated"].contains(canonical)
+            // Rule34 posts carry dozens of incidental booru descriptors.
+            // Their co-occurrence with a liked character is not independent
+            // evidence that *any* image with the same hair/gaze is relevant.
+            // An explicitly selected descriptor still has its full weight,
+            // and negative feedback is never weakened by this calibration.
+            let incidentalR34 = source == Provider.rule34.rawValue && !into.contains(canonical) &&
+                (Self.genericTasteTerms.contains(canonical) ||
+                 Self.lowSignalDiscoveryTags.contains(canonical) ||
+                 Self.broadDiversityTags.contains(canonical))
+            let multiplier: Double = own > 0 && incidentalR34 ? 0.08 :
+                (contextualRanking && genericMedium && own > 0 && !into.contains(canonical) ? 0.15 : 1.7)
+            score += own * multiplier
             if into.contains(term) { score += 8 }
             if notInto.contains(term) { score -= 22 }
-            if abs(own) < 0.05 {
+            if abs(own) < 0.05 && !incidentalR34 {
                 for (anchor, anchorScore) in topPositive {
                     let edge = p.related[anchor]?[term] ?? 0
                     if edge > 0 { score += min(6.5, edge * 0.62 + sqrt(max(0, anchorScore)) * 0.1) }
@@ -1333,6 +1348,7 @@ actor RecommendationEngine {
             var bestScore = -Double.infinity
             for index in 0..<lookAhead {
                 let topics = pool[index].topics
+                let rule34 = pool[index].post.providerKey == .rule34
                 var closeMatches = 0
                 var exactMatches = 0
                 var closest = 0.0
@@ -1345,7 +1361,8 @@ actor RecommendationEngine {
                 }
                 // Repeated near-identical subjects incur a growing cost, not
                 // merely the previous post's once-off overlap penalty.
-                let saturation = min(66.0, Double(closeMatches) * 8.0 + Double(exactMatches) * 5.0)
+                let saturation = min(rule34 ? 24.0 : 66.0,
+                                     Double(closeMatches) * 8.0 + Double(exactMatches) * 5.0)
                 // Franchise/character concentration compounds across the
                 // whole recent window, even when each image has different
                 // generic tags. This is a soft penalty, never a hard block.
@@ -1356,9 +1373,15 @@ actor RecommendationEngine {
                 let repeatCount = preceding.reduce(0) { total, seen in
                     total + (anchors.isDisjoint(with: seen) ? 0 : 1)
                 }
-                let identitySaturation = min(100.0, Double(repeatCount * repeatCount) * 1.8)
-                let novelty = closest < 0.35 ? 11.0 : 0.0
-                let adjusted = pool[index].value - closest * 10 - saturation - identitySaturation
+                let identitySaturation = min(rule34 ? 30.0 : 100.0,
+                                             Double(repeatCount * repeatCount) * 1.8)
+                let novelty = closest < 0.35 ? (rule34 ? 4.0 : 11.0) : 0.0
+                // For booru content, relevance takes precedence over novelty.
+                // Variety still breaks ties among genuinely similar matches,
+                // but must not bury a selected character/artist for a merely
+                // different image with weaker learned support.
+                let adjusted = pool[index].value - closest * (rule34 ? 5.0 : 10.0)
+                    - saturation - identitySaturation
                     + (discoverySlot ? novelty : 0)
                 if adjusted > bestScore { bestScore = adjusted; bestIndex = index }
             }

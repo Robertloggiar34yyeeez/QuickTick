@@ -65,6 +65,15 @@ enum MediaSizing {
         return CGSize(width: width, height: max(1, height))
     }
 
+    /// Offline media is rendered at its original ratio and available width,
+    /// not the Home preview's bounded/cropped height. Long comics are
+    /// clamped by the card caller and remain full size in the reader.
+    static func offlineCard(aspect: CGFloat, available: CGSize) -> CGSize {
+        let ratio = aspect.isFinite && aspect > 0 ? aspect : CGFloat(4) / 3
+        let width = max(1, min(available.width, 680))
+        return CGSize(width: width, height: max(1, width / ratio))
+    }
+
     // Full viewing canvas: deliberately separate from the bounded Home cards.
     static func immersive(aspect: CGFloat, available: CGSize) -> CGSize {
         let ratio = aspect.isFinite && aspect > 0 ? aspect : 16 / 9

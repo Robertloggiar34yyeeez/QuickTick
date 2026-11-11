@@ -354,6 +354,16 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             if record.kind == .file { try? FileManager.default.removeItem(at: location) }
             return
         }
+        if record.kind == .file, record.provider.lowercased() == Provider.hanime.rawValue,
+           record.mediaType?.lowercased() == "video" {
+            // A completed download must be decodable video, not a thumbnail
+            // or an HTML error document disguised as an MP4.
+            let playable = (try? await AVURLAsset(url: location).load(.isPlayable)) ?? false
+            guard playable else {
+                failedTransfer(key, reason: "Hanime did not save a playable full video. Retry with a fresh stream.")
+                return
+            }
+        }
         if record.kind == .hlsPackage {
             var isDirectory: ObjCBool = false
             guard location.pathExtension.lowercased() == "movpkg",
@@ -523,7 +533,8 @@ enum DownloadSourcePolicy {
             // An image can be a useful poster, but it must never be marked as
             // the completed offline video. Hanime requires first-party media.
             guard HanimeGeneratedAPI.permittedStreamURL(url),
-                  isHLS || ["mp4", "m4v"].contains(fileType) else {
+                  isHLS || ["mp4", "m4v"].contains(fileType) ||
+                    (fileType.isEmpty && media.type.lowercased() == "video") else {
                 throw APIError.server("Hanime returned a preview instead of a video stream. Retry to resolve the HLS source.")
             }
         }

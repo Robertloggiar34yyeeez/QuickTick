@@ -829,11 +829,16 @@ enum NativeProviderAPI {
             url: url("https://hanime.tv/api/v8/video", [.init(name: "id", value: post.id)]),
             provider: .hanime))
         let manifest = response["videos_manifest"] as? [String: Any] ?? [:]
-        let ordered = rows(manifest["servers"])
-            .flatMap { rows($0["streams"]) }
+        let ordered = (rows(manifest["servers"]).flatMap { rows($0["streams"]) } +
+                       rows(manifest["streams"]) + rows(response["sources"]))
+            .filter {
+                let kind = text($0["kind"]).lowercased()
+                return kind.isEmpty || kind == "normal"
+            }
             .sorted { number($0["height"]) > number($1["height"]) }
         let valid = ordered.compactMap { row -> URL? in
-            guard let address = mediaURL(text(row["url"]), provider: .hanime),
+            let raw = text(row["src"] ?? row["url"])
+            guard let address = URL(string: raw, relativeTo: origin(.hanime))?.absoluteURL,
                   HanimeGeneratedAPI.permittedStreamURL(address) else { return nil }
             return address
         }
@@ -893,7 +898,7 @@ enum NativeProviderAPI {
             .filter { text($0["kind"]).lowercased() == "normal" }
             .sorted { number($0["height"]) > number($1["height"]) }
         let playable = streams.compactMap { source -> URL? in
-            let raw = text(source["src"])
+            let raw = text(source["src"] ?? source["url"])
             guard !raw.isEmpty,
                   let address = URL(string: raw, relativeTo: origin(.hanime))?.absoluteURL,
                   HanimeGeneratedAPI.permittedStreamURL(address) else { return nil }

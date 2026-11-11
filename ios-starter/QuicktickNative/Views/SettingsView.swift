@@ -848,7 +848,7 @@ private struct SettingsPaletteSelector: View {
         for palette in [current, .deSlopified, .oledBlack, .galaxy, .darkCosmos] where !featured.contains(palette) {
             featured.append(palette)
         }
-        return Array(featured.prefix(3))
+        return Array(featured.prefix(4))
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
@@ -1077,7 +1077,7 @@ private struct SettingsGroup<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: AppTheme.premium ? 12 : 16) {
             HStack(spacing: 11) {
                 Image(systemName: icon)
                     .font(.system(size: 16, weight: .semibold))
@@ -1093,7 +1093,7 @@ private struct SettingsGroup<Content: View>: View {
                     .foregroundStyle(.white)
                 Spacer(minLength: 0)
             }
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: AppTheme.premium ? 10 : 14) {
                 content
             }
             .font(.subheadline)
@@ -1102,7 +1102,7 @@ private struct SettingsGroup<Content: View>: View {
             .tint(AppTheme.accent)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(AppTheme.premium || AppTheme.isDeSlopified ? AppTheme.contentMargin : 18)
+        .padding(AppTheme.premium ? 15 : (AppTheme.isDeSlopified ? AppTheme.contentMargin : 18))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
         .modifier(SettingsCardOutline(radius: AppTheme.panelRadius))

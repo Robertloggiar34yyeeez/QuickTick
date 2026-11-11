@@ -105,12 +105,23 @@ final class PlayerPool: ObservableObject {
         activeKey = nil; activeOwner = nil
     }
 
+    /// Playback and downloads use the same public origin for official
+    /// Pornhub CDN media. No account cookies or third-party proxy are used.
+    private static func pornhubPlaybackHeaders(for url: URL) -> [String: String] {
+        guard url.scheme == "https", let host = url.host?.lowercased(),
+              host == "phncdn.com" || host.hasSuffix(".phncdn.com") ||
+              host == "pornhub.com" || host.hasSuffix(".pornhub.com") else { return [:] }
+        return ["Referer": "https://www.pornhub.com/",
+                "User-Agent": NativeProviderAPI.userAgent]
+    }
+
     func player(for key: String, url: URL) -> AVPlayer {
         if let existing = players[key], urls[key] == url,
            existing.status != .failed, existing.currentItem?.status != .failed { touch(key); return existing }
         release(key)
         let mediaHeaders = HanimeGeneratedAPI.mediaHeaders(for: url)
             .merging(EromeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
+            .merging(Self.pornhubPlaybackHeaders(for: url)) { _, new in new }
         var assetOptions: [String: Any] = [:]
         if !mediaHeaders.isEmpty {
             assetOptions["AVURLAssetHTTPHeaderFieldsKey"] = mediaHeaders

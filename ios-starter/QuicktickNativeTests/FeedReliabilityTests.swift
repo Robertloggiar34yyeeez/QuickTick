@@ -149,9 +149,52 @@ final class FeedReliabilityTests: XCTestCase {
             media: ResolvedMedia(mediaUrl: "https://cdn.hanime.tv/sample-video.mp4", type: "hls"),
             for: post)
         XCTAssertFalse(mp4.isHLS, "MP4 must be stored as a video file, not an HLS playlist package.")
+        let signed = try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://cdn.hanime.tv/video?token=signed", type: "video"),
+            for: post)
+        XCTAssertFalse(signed.isHLS, "Signed first-party MP4 streams may have opaque URLs.")
         XCTAssertThrowsError(try DownloadSourcePolicy.validate(
             media: ResolvedMedia(mediaUrl: "https://example.com/sample-video.mp4", type: "video"),
             for: post))
+    }
+
+    func testOfflineImagePreservesSavedPortraitAndLandscapeRatios() {
+        let screen = CGSize(width: 390, height: 844)
+        let portrait = MediaSizing.offlineCard(aspect: 9.0 / 16.0, available: screen)
+        let landscape = MediaSizing.offlineCard(aspect: 16.0 / 9.0, available: screen)
+        XCTAssertEqual(portrait.width, 390, accuracy: 0.1)
+        XCTAssertEqual(portrait.height, 390 * 16.0 / 9.0, accuracy: 0.1)
+        XCTAssertEqual(landscape.width, 390, accuracy: 0.1)
+        XCTAssertEqual(landscape.height, 390 * 9.0 / 16.0, accuracy: 0.1)
+    }
+
+    func testOfflineRecordKeepsOriginalDimensions() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        var record = DownloadRecord(key: "rule34:portrait", provider: "Rule34",
+            postID: "portrait", title: "Saved portrait", tags: [],
+            thumbnailRemoteURL: "", localMediaPath: file.path,
+            kind: .file, state: .complete, progress: 1, createdAt: .now)
+        record.mediaType = "image"
+        record.pixelWidth = 900
+        record.pixelHeight = 1600
+        XCTAssertEqual(record.offlinePost?.width, 900)
+        XCTAssertEqual(record.offlinePost?.height, 1600)
+    }
+
+    @MainActor func testProviderSwitchKeepsNicheSearchOutOfBooruTags() {
+        let store = AppStore()
+        store.selectedProvider = .redgifs
+        store.commitSearch(query: "niche:favorite-community", sort: "popular")
+        store.selectedProvider = .rule34
+        XCTAssertFalse(store.queryText.contains("niche:"))
+        store.commitSearch(query: "favorite_character", sort: "recommended")
+        store.selectedProvider = .redgifs
+        XCTAssertEqual(store.queryText, "niche:favorite-community")
+        store.selectedProvider = .rule34
+        XCTAssertEqual(store.queryText, "favorite_character")
     }
 
     func testHanimeOfflineStreamRetriesAreBoundedAndProviderSpecific() {

@@ -34,9 +34,18 @@ enum HanimeGeneratedAPI {
     static func permittedStreamURL(_ url: URL) -> Bool {
         guard url.scheme == "https", url.user == nil, url.password == nil else { return false }
         if url.host == "hanime.tv", url.path.hasPrefix("/hls/") { return true }
-        return url.host == "cdn.hanime.tv" &&
-            (url.path.hasPrefix("/hls/") ||
-                ["m3u8", "mp4", "m4v"].contains(url.pathExtension.lowercased()))
+        guard url.host == "cdn.hanime.tv" else { return false }
+        if url.path.hasPrefix("/hls/") ||
+            ["m3u8", "mp4", "m4v"].contains(url.pathExtension.lowercased()) {
+            return true
+        }
+        // Signed first-party MP4 endpoints may use opaque paths with no file
+        // extension. Narrow this to named video routes with a signed query;
+        // random CDN images and watch-page HTML are never treated as video.
+        let path = url.path.lowercased()
+        return url.pathExtension.isEmpty && url.query != nil &&
+            (path == "/video" || path.hasPrefix("/video/") ||
+             path == "/stream" || path.hasPrefix("/stream/"))
     }
 
     static var configuredURL: URL? {

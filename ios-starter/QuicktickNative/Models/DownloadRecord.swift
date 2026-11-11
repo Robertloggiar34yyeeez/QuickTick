@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 
 enum DownloadState: String, Codable, Sendable { case queued, downloading, paused, complete, failed, cancelled }
 enum DownloadMediaKind: String, Codable, Sendable { case file, hlsPackage }
@@ -26,6 +27,9 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var remoteURL: String?
     var errorMessage: String?
     var mediaType: String?
+    /// Preserve original geometry through offline restoration.
+    var pixelWidth: Int?
+    var pixelHeight: Int?
     /// Retain the canonical provider post URL for signed-media retries.
     /// Older saved catalogs decode this optional field as nil.
     var pageURL: String?
@@ -69,6 +73,15 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         var post = Post(key: key, id: postID, provider: provider, tags: tags, mediaUrl: media.absoluteString,
                         previewUrl: type == "image" ? media.absoluteString : thumbnail, thumbUrl: thumbnail, type: type)
         post.caption = title
+        if let pixelWidth, let pixelHeight, pixelWidth > 0, pixelHeight > 0 {
+            post.width = pixelWidth
+            post.height = pixelHeight
+        } else if type == "image",
+                  let source = CGImageSourceCreateWithURL(media as CFURL, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as NSDictionary? {
+            post.width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue
+            post.height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue
+        }
         return post
     }
 }

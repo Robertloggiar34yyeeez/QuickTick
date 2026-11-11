@@ -57,7 +57,10 @@ struct PostCardView: View {
             kind == "image" && $0.height > $0.width * 4
                 ? CGFloat(2) / 3 : $0.width / $0.height
         }) ?? defaultAspect
-        return fullBleed || (offline && playbackTab == 3)
+        if offline && playbackTab == 3 {
+            return MediaSizing.offlineCard(aspect: aspect, available: available)
+        }
+        return fullBleed
             ? MediaSizing.feedCard(aspect: aspect, available: available)
             : MediaSizing.size(native: post.nativeSize, aspect: aspect, available: available)
     }
@@ -315,7 +318,7 @@ struct PostCardView: View {
                 // A 3x card decode produced ~16 MB textures on iPad and
                 // evicted adjacent previews from the shared 32 MB cache.
                 CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl,
-                                 pixels: min(1280, Int(mediaSize.width * 2)), comic: true, fill: true) { decoded in
+                                 pixels: min(1280, Int(mediaSize.width * 2)), comic: true, fill: !offline) { decoded in
                     store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
                 }
             } else { PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }

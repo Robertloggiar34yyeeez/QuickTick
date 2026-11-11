@@ -115,9 +115,22 @@ private struct TopicArtworkGallery: View {
     @State private var searchText = ""
 
     private var filtered: [HomeThemeSuggestion] {
-        searchText.isEmpty ? topics : topics.filter {
-            $0.label.localizedCaseInsensitiveContains(searchText)
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return topics }
+        var results = topics.filter {
+            $0.label.localizedCaseInsensitiveContains(query) ||
+                $0.term.localizedCaseInsensitiveContains(query)
         }
+        // Direct search is available before the full catalog is paginated.
+        if query.count >= 2, !results.contains(where: {
+            $0.term.caseInsensitiveCompare(query) == .orderedSame ||
+                $0.label.caseInsensitiveCompare(query) == .orderedSame
+        }) {
+            let term = query.lowercased().replacingOccurrences(of: " ", with: "_")
+            results.insert(HomeThemeSuggestion(term: term,
+                label: "Search: \(query)", imageURL: ""), at: 0)
+        }
+        return results
     }
 
     var body: some View {
@@ -380,6 +393,48 @@ struct HomeFeedView: View {
                 })
                 .padding(.top, 14)
                 .padding(.horizontal, 16)
+                if AppTheme.premium {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Provider.allCases) { provider in
+                                let selected = provider == store.selectedProvider
+                                Button {
+                                    guard provider != store.selectedProvider else { return }
+                                    store.selectedProvider = provider
+                                    Task { await store.refresh() }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Text(provider.monogram)
+                                            .font(.system(size: 11, weight: .black, design: .rounded))
+                                            .foregroundStyle(selected ? Color.black : AppTheme.accent)
+                                            .frame(width: 29, height: 29)
+                                            .background(selected ? Color.white : AppTheme.elevatedSurface,
+                                                        in: RoundedRectangle(cornerRadius: 9))
+                                        Text(provider.displayName)
+                                            .font(.system(size: 13, weight: .bold))
+                                            .lineLimit(1)
+                                        if selected {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 10, weight: .black))
+                                        }
+                                    }
+                                    .foregroundStyle(selected ? Color.white : AppTheme.secondaryLabel)
+                                    .padding(.horizontal, 11)
+                                    .frame(minHeight: 48)
+                                    .background(selected ? AppTheme.accent : AppTheme.surface,
+                                                in: RoundedRectangle(cornerRadius: 14))
+                                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(
+                                        selected ? AppTheme.accent : AppTheme.border))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("home-provider-\(provider.rawValue)")
+                                .accessibilityAddTraits(selected ? .isSelected : [])
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                    }
+                    .accessibilityIdentifier("home-provider-selector")
+                }
                 HStack(spacing: 10) {
                     HStack(spacing: 3) {
                         ForEach([("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in
@@ -734,11 +789,20 @@ struct HomeFeedView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 6) {
                     Menu { ForEach(Provider.allCases) { p in Button(p.displayName) { store.selectedProvider = p; Task { await store.refresh() } } } } label: {
-                        ProviderLogoView(provider: store.selectedProvider)
-                            .frame(width: 52, height: 44)
-                            .background(AppTheme.surface, in: Capsule())
-                            .overlay(Capsule().stroke(.white.opacity(0.15)))
-                            .accessibilityLabel("Provider: \(store.selectedProvider.displayName)")
+                        HStack(spacing: 5) {
+                            ProviderLogoView(provider: store.selectedProvider)
+                                .frame(width: 28, height: 28)
+                            Text(store.selectedProvider.displayName)
+                                .font(.caption.weight(.bold))
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 44)
+                        .background(AppTheme.surface, in: Capsule())
+                        .overlay(Capsule().stroke(AppTheme.border))
+                        .accessibilityLabel("Switch provider, currently \(store.selectedProvider.displayName)")
                     }
                     SettingsLauncher(isPresented: $showSettings)
                 }
@@ -1339,7 +1403,16 @@ private struct RedgifsNicheBrowserView: View {
                                     topics: filtered.map { niche in
                     HomeThemeSuggestion(term: niche.id, label: niche.name, imageURL: niche.imageURL)
                 }, onClose: { dismiss() }, onSelect: { theme in
-                    if let niche = niches.first(where: { $0.id == theme.term }) { openNiche(niche) }
+                    if let niche = niches.first(where: { $0.id == theme.term }) {
+                        openNiche(niche)
+                    } else {
+                        let slug = theme.term.lowercased().replacingOccurrences(of: "_", with: "-")
+                        if let id = NativeProviderAPI.redgifsNicheID("niche:" + slug) {
+                            openNiche(RedgifsNiche(id: id,
+                                name: slug.replacingOccurrences(of: "-", with: " ").capitalized,
+                                imageURL: "", postCount: 0))
+                        }
+                    }
                 }, onReturnToFYP: onReturnToFYP, canLoadMore: hasMore, isLoading: loading,
                    onLoadMore: { Task { await loadNextPage() } })
                     .accessibilityIdentifier("redgifs-niches-gallery")

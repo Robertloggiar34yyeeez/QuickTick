@@ -74,13 +74,13 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
                         previewUrl: type == "image" ? media.absoluteString : thumbnail, thumbUrl: thumbnail, type: type)
         post.caption = title
         if let pixelWidth, let pixelHeight, pixelWidth > 0, pixelHeight > 0 {
-            post.width = pixelWidth
-            post.height = pixelHeight
+            post.width = Double(pixelWidth)
+            post.height = Double(pixelHeight)
         } else if type == "image",
                   let source = CGImageSourceCreateWithURL(media as CFURL, nil),
                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as NSDictionary? {
-            post.width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue
-            post.height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue
+            post.width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue
+            post.height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue
         }
         return post
     }

@@ -258,12 +258,12 @@ enum AppTheme {
     }
     static var navigationSurface: Color {
         if premium { return premiumNavigation }
-        switch palette {
+        return switch palette {
         case .galaxy: Color(red: 0.040, green: 0.031, blue: 0.114)
         case .darkCosmos: Color(red: 0.020, green: 0.025, blue: 0.061)
         case .auroraNight: Color(red: 0.015, green: 0.069, blue: 0.077)
         case .solarEclipse: Color(red: 0.078, green: 0.026, blue: 0.047)
-        case .oledBlack: .black
+        case .oledBlack: Color.black
         case .graphite: Color(red: 0.052, green: 0.058, blue: 0.071)
         case .midnightBlue: Color(red: 0.022, green: 0.046, blue: 0.090)
         case .emeraldNoir: Color(red: 0.016, green: 0.055, blue: 0.045)

@@ -187,8 +187,7 @@ struct HomeFeedView: View {
                             subtitle: store.feedSort == "recommended"
                                 ? "Your personal collection of discoveries"
                                 : "What's popular across your sources",
-                            icon: "square.stack.3d.up.fill")
-                            .accessibilityIdentifier("home-title")
+                            icon: "square.stack.3d.up.fill", titleIdentifier: "home-title")
                     } else {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(store.feedSort == "recommended" ? "For you" : "Trending")

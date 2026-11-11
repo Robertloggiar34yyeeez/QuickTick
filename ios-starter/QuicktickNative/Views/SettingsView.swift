@@ -290,11 +290,7 @@ struct SettingsView: View {
                             .foregroundStyle(AppTheme.accent)
                         Text("Interface style").font(.subheadline.weight(.semibold))
                     }
-                    Picker("Interface style", selection: $modernUI) {
-                        Text("New UI").tag(true)
-                        Text("Original UI").tag(false)
-                    }
-                    .pickerStyle(.segmented)
+                    InterfaceStyleChooser(premium: $modernUI)
                     .accessibilityIdentifier("interface-style-picker")
                     Text(modernUI
                          ? "Premium matte surfaces, simpler navigation and cinematic Wrapped. No blur or glass."
@@ -1034,6 +1030,38 @@ private struct PersistentExclusionEditor: View {
             .filter { !$0.isEmpty && $0.count <= 80 })).sorted().prefix(128)
         store.setExclusions(Array(normalized))
         Task { await store.refresh(immersive: store.activeTab == 1) }
+    }
+}
+
+/// Explicit opaque controls avoid iOS's system frosted segmented-picker
+/// appearance. Selection writes only the existing style preference.
+private struct InterfaceStyleChooser: View {
+    @Binding var premium: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            option("New UI", icon: "square.grid.2x2.fill", value: true, identifier: "interface-style-new")
+            option("Original UI", icon: "square.stack.3d.up", value: false, identifier: "interface-style-original")
+        }
+        .padding(5)
+        .background(AppTheme.navigationSurface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(AppTheme.border))
+    }
+
+    private func option(_ title: String, icon: String, value: Bool, identifier: String) -> some View {
+        Button { premium = value } label: {
+            Label(title, systemImage: icon)
+                .font(.system(size: 13, weight: .semibold, design: .default))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, minHeight: 46)
+                .foregroundStyle(premium == value ? Color.white : AppTheme.secondaryLabel)
+                .background(premium == value ? AppTheme.accent : AppTheme.surface,
+                            in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier)
+        .accessibilityAddTraits(premium == value ? .isSelected : [])
     }
 }
 

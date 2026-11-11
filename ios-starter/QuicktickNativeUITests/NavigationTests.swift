@@ -6,22 +6,22 @@ final class NavigationTests: XCTestCase {
         func stylePicker() -> XCUIElement {
             let change = app.buttons["settings-change-theme"]
             if change.isHittable { change.tap() }
-            let picker = app.segmentedControls["interface-style-picker"]
+            let picker = app.buttons["interface-style-original"]
             for _ in 0..<8 { if picker.isHittable { break }; app.swipeUp() }
             return picker
         }
         app.buttons["open-settings"].tap()
         let picker = stylePicker()
         XCTAssertTrue(picker.waitForExistence(timeout: 10))
-        picker.buttons["Original UI"].tap()
-        XCTAssertTrue(picker.buttons["Original UI"].isSelected)
+        app.buttons["interface-style-original"].tap()
+        XCTAssertTrue(app.buttons["interface-style-original"].isSelected)
         app.buttons["Done"].tap()
         XCTAssertTrue(app.buttons["tab-Home"].waitForExistence(timeout: 10))
         app.buttons["open-settings"].tap()
-        let reopened = stylePicker()
-        XCTAssertTrue(reopened.buttons["Original UI"].isSelected)
-        reopened.buttons["New UI"].tap()
-        XCTAssertTrue(reopened.buttons["New UI"].isSelected)
+        _ = stylePicker()
+        XCTAssertTrue(app.buttons["interface-style-original"].isSelected)
+        app.buttons["interface-style-new"].tap()
+        XCTAssertTrue(app.buttons["interface-style-new"].isSelected)
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "Persistent original and premium interface switch"
         capture.lifetime = .keepAlways

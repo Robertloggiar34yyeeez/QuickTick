@@ -436,6 +436,7 @@ struct PremiumPageHeader: View {
     let eyebrow: String
     let subtitle: String
     let icon: String
+    var titleIdentifier: String = "premium-page-title"
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
@@ -455,6 +456,7 @@ struct PremiumPageHeader: View {
                     .foregroundStyle(.white)
                     .lineLimit(2)
                     .minimumScaleFactor(0.82)
+                    .accessibilityIdentifier(titleIdentifier)
                 Text(subtitle)
                     .font(.system(size: 13, weight: .medium, design: .default))
                     .foregroundStyle(AppTheme.secondaryLabel)
@@ -469,7 +471,6 @@ struct PremiumPageHeader: View {
                 .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(AppTheme.border))
                 .accessibilityHidden(true)
         }
-        .accessibilityElement(children: .combine)
     }
 }
 

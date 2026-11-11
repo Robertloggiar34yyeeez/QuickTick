@@ -305,7 +305,7 @@ enum AppTheme {
     // backdrop is enabled. All cards and controls keep opaque readable chrome.
     static var canvas: Color {
         if premium { return background }
-        UserDefaults.standard.bool(forKey: BackgroundArtworkStore.enabledKey)
+        return UserDefaults.standard.bool(forKey: BackgroundArtworkStore.enabledKey)
             ? background.opacity(0.58) : background
     }
     static let small: CGFloat = 8

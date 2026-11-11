@@ -342,6 +342,13 @@ private struct DownloadContent: View {
                 ScrollViewReader { scrollProxy in
                 ScrollView {
                 LazyVStack(spacing: 18) {
+                    if AppTheme.premium {
+                        PremiumPageHeader(title: "Downloads", eyebrow: "QUICKTICK / OFFLINE",
+                                          subtitle: collectionSubtitle, icon: "arrow.down.to.line")
+                            .padding(.horizontal, AppTheme.contentMargin)
+                            .padding(.top, 16)
+                            .id("downloads-feed-top")
+                    } else {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Saved offline")
@@ -365,6 +372,7 @@ private struct DownloadContent: View {
                     .padding(.top, 2)
                     .padding(.horizontal, AppTheme.contentMargin)
                     .id("downloads-feed-top")
+                    }
                     CollectionSearchField(text: $searchText, placeholder: "Search downloads",
                                           identifier: "downloads-search", isSearching: searching)
                         .padding(.horizontal, AppTheme.contentMargin)
@@ -466,7 +474,7 @@ private struct DownloadContent: View {
                         .padding(.horizontal, AppTheme.contentMargin)
                         .padding(.vertical, 9)
                         .frame(maxWidth: .infinity)
-                        .background(.ultraThinMaterial)
+                        .background(AppTheme.chrome)
                         .overlay(alignment: .top) { Rectangle().fill(AppTheme.border).frame(height: 1) }
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
@@ -626,23 +634,55 @@ private struct DownloadTransferRow: View {
             HStack {
                 if let path = record.thumbnailLocalPath {
                     CachedMediaImage(url: URL(fileURLWithPath: path).absoluteString, pixels: 216)
-                        .frame(width: 72, height: 72).clipped()
+                        .frame(width: 72, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.premium ? 12 : 0))
+                } else if AppTheme.premium {
+                    Image(systemName: record.kind == .hlsPackage ? "film.stack" : "arrow.down.to.line")
+                        .font(.system(size: 23, weight: .semibold))
+                        .foregroundStyle(AppTheme.accent)
+                        .frame(width: 72, height: 72)
+                        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        if record.state == .downloading { InfinityLoader(size: 27) }
-                        Text(record.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                        if record.state == .downloading {
+                            if AppTheme.premium {
+                                Image(systemName: "arrow.down.circle.fill")
+                                    .font(.system(size: 19, weight: .semibold))
+                                    .foregroundStyle(AppTheme.accent)
+                            } else {
+                                InfinityLoader(size: 27)
+                            }
+                        }
+                        Text(record.title).font(.subheadline.weight(AppTheme.premium ? .bold : .semibold)).lineLimit(2)
                     }
-                    Text("\(record.provider) · \(record.state.rawValue)")
+                    Text("\(record.provider) · \(transferStatus(record))")
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     Text(record.formattedSize).font(.caption.monospacedDigit())
-                    ProgressView(value: record.progress).tint(AppTheme.accent)
+                    if record.state == .queued {
+                        ProgressView().tint(AppTheme.accent)
+                            .accessibilityLabel("Resolving the video source")
+                    } else {
+                        HStack(spacing: 8) {
+                            ProgressView(value: max(0, min(1, record.progress))).tint(AppTheme.accent)
+                            if AppTheme.premium && (record.state == .downloading || record.state == .paused) {
+                                Text("\(Int((record.progress * 100).rounded()))%")
+                                    .font(.caption2.monospacedDigit().weight(.semibold))
+                                    .foregroundStyle(AppTheme.secondaryLabel)
+                            }
+                        }
+                    }
                     if let error = record.errorMessage {
-                        Text(error).foregroundStyle(.orange).font(.caption)
+                        Label(error, systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.orange).font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
             HStack {
+                if record.state == .queued {
+                    Button("Cancel", systemImage: "xmark.circle") { manager.cancel(record) }
+                }
                 if record.state == .downloading {
                     Button("Pause") { manager.pause(record) }
                     Button("Cancel") { manager.cancel(record) }
@@ -661,9 +701,10 @@ private struct DownloadTransferRow: View {
             }
             .buttonStyle(.bordered)
         }
-        .padding(14)
-        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(AppTheme.border))
+        .padding(AppTheme.premium ? 16 : 14)
+        .background(AppTheme.premium ? AppTheme.surface : AppTheme.elevatedSurface,
+                    in: RoundedRectangle(cornerRadius: AppTheme.cardRadius))
+        .overlay(RoundedRectangle(cornerRadius: AppTheme.cardRadius).stroke(AppTheme.border))
         .overlay {
             if selecting {
                 Button(action: onSelect) {
@@ -682,6 +723,19 @@ private struct DownloadTransferRow: View {
                 .accessibilityLabel("\(selected ? "Deselect" : "Select") \(record.title)")
                 .accessibilityIdentifier("select-download-\(record.key)")
             }
+        }
+        .accessibilityIdentifier("download-transfer-\(record.key)")
+    }
+
+    private func transferStatus(_ record: DownloadRecord) -> String {
+        guard AppTheme.premium else { return record.state.rawValue }
+        switch record.state {
+        case .queued: return "Preparing video"
+        case .downloading: return record.kind == .hlsPackage ? "Saving HLS video" : "Downloading file"
+        case .paused: return "Paused"
+        case .complete: return "Available offline"
+        case .failed: return "Needs attention"
+        case .cancelled: return "Cancelled"
         }
     }
 }

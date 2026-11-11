@@ -180,6 +180,16 @@ struct HomeFeedView: View {
         let scrollContent = ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 12) {
+                    if AppTheme.premium {
+                        PremiumPageHeader(
+                            title: store.feedSort == "recommended" ? "For you" : "Trending now",
+                            eyebrow: "QUICKTICK / DISCOVER",
+                            subtitle: store.feedSort == "recommended"
+                                ? "Your personal collection of discoveries"
+                                : "What's popular across your sources",
+                            icon: "square.stack.3d.up.fill")
+                            .accessibilityIdentifier("home-title")
+                    } else {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(store.feedSort == "recommended" ? "For you" : "Trending")
                             .font(.system(size: AppTheme.isDeSlopified ? 26 : 33,
@@ -190,6 +200,7 @@ struct HomeFeedView: View {
                             .font(.subheadline)
                             .foregroundStyle(AppTheme.secondaryLabel)
                             .accessibilityIdentifier("home-title")
+                    }
                     }
                     Spacer()
                     Button { Task { await refreshFromGesture() } } label: {
@@ -206,7 +217,7 @@ struct HomeFeedView: View {
                     .disabled(pullRefreshInFlight)
                     .accessibilityLabel("Refresh feed")
                     .accessibilityIdentifier("home-refresh")
-                    if !AppTheme.isDeSlopified {
+                    if !AppTheme.premium && !AppTheme.isDeSlopified {
                     Image(systemName: store.feedSort == "recommended" ? "sparkles" : "flame.fill")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.white)

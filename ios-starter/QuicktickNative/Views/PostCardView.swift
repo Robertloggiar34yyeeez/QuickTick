@@ -412,7 +412,7 @@ struct PostCardView: View {
                     HStack(spacing: 8) {
                         if preparing { InfinityLoader(size: 24) } else { Image(systemName: playing ? "pause.fill" : "play.fill") }
                         Text(playing ? "Pause" : "Play")
-                    }.font(.subheadline.weight(.semibold)).padding(12).frame(minHeight: 44).background(.ultraThinMaterial, in: Capsule())
+                    }.font(.subheadline.weight(.semibold)).padding(12).frame(minHeight: 44).background(AppTheme.chrome, in: Capsule())
                 }.disabled(preparing).buttonStyle(.plain).padding(10)
                     .accessibilityIdentifier("inline-play-\(post.stableID)")
                     .accessibilityLabel(playing ? "Pause media" : "Play media")
@@ -420,7 +420,7 @@ struct PostCardView: View {
             } else {
                 Button { openMediaFullscreen() } label: {
                     Label(post.providerKey == .nhentai ? "Read manga" : "View full", systemImage: post.providerKey == .nhentai ? "book.fill" : "arrow.up.left.and.arrow.down.right")
-                        .font(.caption.weight(.semibold)).padding(12).background(.ultraThinMaterial, in: Capsule())
+                        .font(.caption.weight(.semibold)).padding(12).background(AppTheme.chrome, in: Capsule())
                 }.buttonStyle(.plain).padding(10).accessibilityLabel("View full image")
             }
         }
@@ -794,7 +794,7 @@ struct FullComicView: View {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 19, weight: .semibold))
                             .frame(width: 48, height: 48)
-                            .background(.ultraThinMaterial, in: Circle())
+                            .background(AppTheme.chrome, in: Circle())
                     }
                     .accessibilityLabel("Share downloaded image")
                     .accessibilityIdentifier("fullscreen-download-share")
@@ -804,7 +804,7 @@ struct FullComicView: View {
                     // cannot reliably resolve the implicit symbol label here.
                     Text("×").font(.system(size: 30, weight: .medium, design: .rounded))
                         .frame(width: 48, height: 48)
-                        .background(.ultraThinMaterial, in: Circle())
+                        .background(AppTheme.chrome, in: Circle())
                 }.accessibilityLabel("Close full image")
             }.buttonStyle(.plain).padding(12)
         }
@@ -969,7 +969,7 @@ struct MangaReaderView: View {
                         Image(systemName: "xmark")
                             .font(.system(size: 15, weight: .bold))
                             .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial, in: Circle())
+                            .background(AppTheme.chrome, in: Circle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Close manga")

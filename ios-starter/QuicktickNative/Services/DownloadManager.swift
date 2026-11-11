@@ -43,6 +43,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     nonisolated let root: URL
     private var tasks: [String: URLSessionTask] = [:]
     private var preparing = Set<String>()
+    private var preparationTasks: [String: Task<Void, Never>] = [:]
+    private var preparationIDs: [String: UUID] = [:]
     private var refreshedPornhubTransfers = Set<String>()
     private var hanimeStreamRetries: [String: Int] = [:]
     nonisolated private let progressGate = DownloadProgressGate()
@@ -132,6 +134,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         guard !metadataFailed, tasks[post.stableID] == nil, !preparing.contains(post.stableID), records.first(where: { $0.key == post.stableID })?.state != .complete else { return }
         if post.providerKey == .hanime && streamVariant == 0 { hanimeStreamRetries[post.stableID] = nil }
         preparing.insert(post.stableID)
+        let preparationID = UUID()
+        preparationIDs[post.stableID] = preparationID
         // Publish the queued state *before* any resolver/network await. Home and
         // Immersive can animate the tap immediately, even on a slow provider.
         let pending: DownloadRecord = {
@@ -144,8 +148,14 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             return record
         }()
         upsert(pending)
-        Task {
-            defer { preparing.remove(post.stableID) }
+        let work = Task {
+            defer {
+                if preparationIDs[post.stableID] == preparationID {
+                    preparationIDs.removeValue(forKey: post.stableID)
+                    preparationTasks.removeValue(forKey: post.stableID)
+                    preparing.remove(post.stableID)
+                }
+            }
             do {
                 // Each Hanime transfer needs a newly issued signed playlist.
                 // Catalog previews and an AVPlayer's cached URL are not valid
@@ -153,6 +163,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 let media = try await resolver.resolve(post,
                     refresh: refreshSource || post.providerKey == .hanime,
                     streamVariant: post.providerKey == .hanime ? streamVariant : 0)
+                try Task.checkCancellation()
+                // A user can cancel while the provider issues a signed URL.
+                // The URL must never start a background transfer afterward.
+                guard preparationIDs[post.stableID] == preparationID,
+                      records.first(where: { $0.key == post.stableID })?.state == .queued else { return }
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--ui-testing"), let file = URL(string: media.mediaUrl), file.isFileURL {
                     let dir = root.appendingPathComponent(Self.safeName(post.stableID))
@@ -169,6 +184,9 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 let source = try DownloadSourcePolicy.validate(media: media, for: post)
                 let url = source.url
                 if let host = url.host, let provider = post.providerKey { try await ProviderRequestGate.shared.wait(host: host, provider: provider) }
+                try Task.checkCancellation()
+                guard preparationIDs[post.stableID] == preparationID,
+                      records.first(where: { $0.key == post.stableID })?.state == .queued else { return }
                 let hls = source.isHLS
                 var record = pending
                 record.kind = hls ? .hlsPackage : .file
@@ -205,15 +223,23 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 record.mediaType = "video" == post.type.lowercased() && hls ? "video" : media.type
                 tasks[record.key] = task; upsert(record); task.resume()
                 await cacheThumbnail(record)
+            } catch is CancellationError {
+                // Cancel is a user decision, never a failed download.
             } catch {
+                guard !Task.isCancelled, preparationIDs[post.stableID] == preparationID else { return }
                 var record = records.first { $0.key == post.stableID } ?? DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: post.tags.first ?? post.provider, tags: post.tags, thumbnailRemoteURL: post.thumbUrl, kind: .file, state: .failed, progress: 0, createdAt: .now)
+                guard record.state != .cancelled else { return }
                 record.state = .failed; record.errorMessage = error.localizedDescription; upsert(record)
             }
         }
+        preparationTasks[post.stableID] = work
     }
     func pause(_ record: DownloadRecord) { tasks[record.key]?.suspend(); update(record.key) { $0.state = .paused } }
     func resume(_ record: DownloadRecord) { tasks[record.key]?.resume(); update(record.key) { $0.state = .downloading } }
     func cancel(_ record: DownloadRecord) {
+        preparationTasks.removeValue(forKey: record.key)?.cancel()
+        preparationIDs.removeValue(forKey: record.key)
+        preparing.remove(record.key)
         tasks.removeValue(forKey: record.key)?.cancel()
         progressGate.clear(key: record.key)
         update(record.key) { $0.state = .cancelled }

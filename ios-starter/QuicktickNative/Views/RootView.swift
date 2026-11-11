@@ -311,7 +311,7 @@ struct RootView: View {
         let pinnedSideNavigation = ipadSidebarEnabled && size.width > 600
         let immersiveCanvas = store.activeTab == 1 || collectionImmersive
         let sideNavigation = size.width > 600 && (immersiveCanvas || pinnedSideNavigation)
-        let bottomLength = max(1, size.width - CGFloat((modernUI ? 8 : 4) * 2))
+        let bottomLength = max(1, size.width - CGFloat((modernUI ? 10 : 4) * 2))
         // Keep the dock geometry as Int arithmetic until the final conversion.
         // A single mixed overloaded expression here exceeded Swift's type-check budget.
         let dockItemCount: Int = visibleTabIndices.count
@@ -375,7 +375,8 @@ struct RootView: View {
             current: store.activeTab, translation: navigationDrag, vertical: false,
             axisLength: axisLength, visibleIndices: visibleTabIndices, accelerated: fastDockEnabled)
         return RoundedRectangle(cornerRadius: modernUI ? 18 : 12, style: .continuous)
-            .fill(AppTheme.gradient)
+            .fill(modernUI ? AnyShapeStyle(AppTheme.accent.opacity(0.16))
+                           : AnyShapeStyle(AppTheme.gradient))
             .frame(width: slotWidth, height: 54)
             .offset(x: center - slotWidth / 2)
             .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86),
@@ -413,15 +414,15 @@ struct RootView: View {
             .contentShape(Rectangle())
             .background(alignment: .leading) { bottomSelectionIndicator(axisLength: axisLength) }
             .highPriorityGesture(dockDrag(vertical: false, axisLength: axisLength))
-            .padding(.horizontal, modernUI ? 8 : 4)
-            .padding(.top, modernUI ? 8 : 4)
+            .padding(.horizontal, modernUI ? 10 : 4)
+            .padding(.top, modernUI ? 9 : 4)
             .padding(.bottom, 0)
             .background {
-                if floating {
+                if modernUI {
+                    AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
+                } else if floating {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .fill(AppTheme.prefersOpaqueChrome ? AnyShapeStyle(AppTheme.navigationSurface) : AnyShapeStyle(Material.ultraThinMaterial))
-                } else if modernUI && !AppTheme.prefersOpaqueChrome {
-                    Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(edges: .bottom)
                 } else {
                     AppTheme.navigationSurface.ignoresSafeArea(edges: .bottom)
                 }
@@ -431,7 +432,7 @@ struct RootView: View {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .stroke(AppTheme.border, lineWidth: 1)
                 } else if modernUI {
-                    Rectangle().fill(.white.opacity(0.15)).frame(height: 0.5)
+                    Rectangle().fill(AppTheme.border).frame(height: 1)
                 } else {
                     AppTheme.gradient.frame(height: 1).opacity(0.55)
                 }
@@ -441,7 +442,7 @@ struct RootView: View {
             .padding(.bottom, floating ? 8 : 0)
             .overlay(alignment: .top) { dockDestinationHint(vertical: false, axisLength: axisLength) }
             .sensoryFeedback(.selection,
-                trigger: swipePreview(vertical: false, axisLength: axisLength) ?? store.activeTab)
+                trigger: modernUI ? store.activeTab : (swipePreview(vertical: false, axisLength: axisLength) ?? store.activeTab))
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("bottom-navigation-bar")
             .id(aiTabVisible ? "five-tabs" : "four-tabs")
@@ -521,9 +522,9 @@ struct RootView: View {
                     }
                         .foregroundStyle(.white)
                         .frame(width: vertical ? (brieflyNamedTab == nil ? 62 : 138) : 54, height: vertical ? 68 : 52)
-                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: modernUI ? 20 : 17, style: .continuous))
+                        .background(AppTheme.gradient, in: RoundedRectangle(cornerRadius: modernUI ? 15 : 17, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 17).stroke(.white.opacity(0.25)))
-                        .shadow(color: AppTheme.accent.opacity(AppTheme.isDeSlopified ? 0 : (modernUI ? 0.36 : 0.28)), radius: modernUI ? 18 : 13, y: 3)
+                        .shadow(color: AppTheme.accent.opacity(modernUI || AppTheme.isDeSlopified ? 0 : 0.28), radius: modernUI ? 0 : 13, y: 3)
                         .frame(maxWidth: vertical ? nil : .infinity)
                 }
                 .buttonStyle(QuicktickPressStyle())
@@ -561,6 +562,16 @@ struct RootView: View {
                             refreshSpinner
                             .accessibilityLabel("Refreshing feed")
                             .transition(.opacity.combined(with: .scale(scale: 0.65)))
+                        } else if modernUI && !vertical {
+                            VStack(spacing: 3) {
+                                Image(systemName: tabs[index].1)
+                                    .font(.system(size: 19, weight: highlightedTab == tabID ? .semibold : .medium))
+                                    .symbolVariant(highlightedTab == tabID ? .fill : .none)
+                                Text(tabs[index].0)
+                                    .font(.system(size: 9, weight: highlightedTab == tabID ? .bold : .medium))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.78)
+                            }
                         } else if highlightedTab == tabID && brieflyNamedTab == tabID {
                             Text(tabs[index].0)
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -572,7 +583,8 @@ struct RootView: View {
                                 .transition(.opacity)
                         }
                     }
-                    .foregroundStyle(highlightedTab == tabID ? .white : .white.opacity(0.62))
+                    .foregroundStyle(modernUI && highlightedTab == tabID ? AppTheme.accent :
+                                     (highlightedTab == tabID ? .white : .white.opacity(0.62)))
                     .frame(width: vertical ? (brieflyNamedTab == nil ? 62 : 138) : nil, height: vertical ? 62 : 54)
                     .frame(maxWidth: vertical ? nil : .infinity)
                     .contentShape(Rectangle())
@@ -607,7 +619,7 @@ struct RootView: View {
         if tabID == 3 { downloadsScrollToTop &+= 1 }
         let isRefresh = tabID < 2 && previous == tabID
         tabSelectionTask?.cancel()
-        if previous != tabID, !reduceMotion {
+        if previous != tabID, !reduceMotion && !modernUI {
             tabEntranceOpacity = 0.94
         } else {
             tabEntranceOpacity = 1
@@ -627,7 +639,7 @@ struct RootView: View {
             refreshSpinDegrees = 0
         }
         tabSelectionTask = Task { @MainActor in
-            if previous != tabID {
+            if previous != tabID && !modernUI {
                 await Task.yield()
                 guard !Task.isCancelled else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {

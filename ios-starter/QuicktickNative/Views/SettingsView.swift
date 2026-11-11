@@ -284,11 +284,25 @@ struct SettingsView: View {
                     .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
             }.id(SettingsDestination.navigation.rawValue)
             SettingsGroup(title: "Appearance", icon: "paintbrush.pointed") {
-                Toggle("Modern interface", isOn: $modernUI)
-                    .modifier(SettingsControlRow())
-                    .accessibilityIdentifier("modern-ui-toggle")
-                Text(modernUI ? "Rounded surfaces, compact chips and animated navigation." : "Previous QuickTick interface restored.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 11) {
+                    HStack(spacing: 9) {
+                        Image(systemName: "rectangle.on.rectangle.angled")
+                            .foregroundStyle(AppTheme.accent)
+                        Text("Interface style").font(.subheadline.weight(.semibold))
+                    }
+                    Picker("Interface style", selection: $modernUI) {
+                        Text("New UI").tag(true)
+                        Text("Original UI").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("interface-style-picker")
+                    Text(modernUI
+                         ? "Premium matte surfaces, simpler navigation and cinematic Wrapped. No blur or glass."
+                         : "The familiar QuickTick interface, with every account, favorite and download preserved.")
+                        .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
+                }
+                .modifier(SettingsControlRow())
+                .accessibilityIdentifier("modern-ui-toggle")
                 Label("Color theme", systemImage: "paintpalette.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
                 SettingsPaletteSelector(selected: $accentPalette)
@@ -721,7 +735,12 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var settingsHero: some View {
-        if AppTheme.isDeSlopified {
+        if AppTheme.premium {
+            PremiumPageHeader(title: "Make it yours", eyebrow: "QUICKTICK / SETTINGS",
+                              subtitle: "Your space, your rules, your privacy.", icon: "slider.horizontal.3")
+                .padding(.top, 16)
+                .padding(.bottom, 6)
+        } else if AppTheme.isDeSlopified {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Settings")
                     .font(.system(size: 26, weight: .semibold))
@@ -1036,13 +1055,13 @@ private struct SettingsGroup<Content: View>: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(AppTheme.accent)
                     .frame(width: 36, height: 36)
-                    .background(AppTheme.isDeSlopified ? Color.clear : AppTheme.accent.opacity(0.13),
+                    .background(AppTheme.premium || AppTheme.isDeSlopified ? Color.clear : AppTheme.accent.opacity(0.13),
                                 in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12)
                         .strokeBorder(AppTheme.accent.opacity(0.22), lineWidth: 0.8))
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold,
-                                  design: AppTheme.isDeSlopified ? .default : .rounded))
+                    .font(.system(size: AppTheme.premium ? 17 : 16, weight: .semibold,
+                                  design: AppTheme.premium || AppTheme.isDeSlopified ? .default : .rounded))
                     .foregroundStyle(.white)
                 Spacer(minLength: 0)
             }
@@ -1055,7 +1074,7 @@ private struct SettingsGroup<Content: View>: View {
             .tint(AppTheme.accent)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(AppTheme.isDeSlopified ? AppTheme.contentMargin : 18)
+        .padding(AppTheme.premium || AppTheme.isDeSlopified ? AppTheme.contentMargin : 18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
         .modifier(SettingsCardOutline(radius: AppTheme.panelRadius))
@@ -1073,7 +1092,10 @@ private struct SettingsCardOutline: ViewModifier {
         content
             .overlay {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(LinearGradient(colors: highlighted
+                    .strokeBorder(LinearGradient(colors: AppTheme.premium
+                        ? [highlighted ? AppTheme.accent.opacity(0.70) : AppTheme.border,
+                           highlighted ? AppTheme.accent.opacity(0.70) : AppTheme.border]
+                        : highlighted
                         ? [AppTheme.accent.opacity(0.83), .white.opacity(0.43), AppTheme.accent.opacity(0.32)]
                         : [.white.opacity(0.17), AppTheme.accent.opacity(0.12), .white.opacity(0.055)],
                         startPoint: .topLeading, endPoint: .bottomTrailing),

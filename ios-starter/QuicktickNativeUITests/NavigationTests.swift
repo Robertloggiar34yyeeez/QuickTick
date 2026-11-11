@@ -1,6 +1,32 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testInterfaceStylePersistsAcrossSettingsPresentation() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        func stylePicker() -> XCUIElement {
+            let change = app.buttons["settings-change-theme"]
+            if change.isHittable { change.tap() }
+            let picker = app.segmentedControls["interface-style-picker"]
+            for _ in 0..<8 { if picker.isHittable { break }; app.swipeUp() }
+            return picker
+        }
+        app.buttons["open-settings"].tap()
+        let picker = stylePicker()
+        XCTAssertTrue(picker.waitForExistence(timeout: 10))
+        picker.buttons["Original UI"].tap()
+        XCTAssertTrue(picker.buttons["Original UI"].isSelected)
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons["tab-Home"].waitForExistence(timeout: 10))
+        app.buttons["open-settings"].tap()
+        let reopened = stylePicker()
+        XCTAssertTrue(reopened.buttons["Original UI"].isSelected)
+        reopened.buttons["New UI"].tap()
+        XCTAssertTrue(reopened.buttons["New UI"].isSelected)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Persistent original and premium interface switch"
+        capture.lifetime = .keepAlways
+        add(capture)
+    }
     @MainActor private func assertHomeScrolledToTop(_ app: XCUIApplication,
                                                      file: StaticString = #filePath,
                                                      line: UInt = #line) {

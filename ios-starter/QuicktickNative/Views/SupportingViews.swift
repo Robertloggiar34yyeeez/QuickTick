@@ -1265,6 +1265,13 @@ struct FavoritesView: View {
                     ScrollViewReader { scrollProxy in
                     ScrollView {
                         LazyVStack(spacing: 18) {
+                            if AppTheme.premium {
+                                PremiumPageHeader(title: "Your favorites", eyebrow: "QUICKTICK / LIBRARY",
+                                                  subtitle: collectionSubtitle, icon: "heart.fill")
+                                    .padding(.horizontal, 16)
+                                    .padding(.top, 16)
+                                    .id("favorites-feed-top")
+                            } else {
                             HStack(spacing: 12) {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Your collection")
@@ -1283,6 +1290,7 @@ struct FavoritesView: View {
                             .padding(.horizontal, 16)
                             .padding(.top, 14)
                             .id("favorites-feed-top")
+                            }
                             CollectionSearchField(text: $searchText, placeholder: "Search likes",
                                                   identifier: "favorites-search", isSearching: searching)
                                 .padding(.horizontal, 16)
@@ -1807,6 +1815,97 @@ private struct WrappedSpotlightPage: View {
     }
 }
 
+/// Exported only when the user deliberately shares it. Avoid titles, tags,
+/// artwork, URLs, account IDs and source history on the recap card: those can
+/// be sensitive even when the underlying favorites are local to the device.
+private struct WrappedRecapCard: View {
+    let year: Int
+    let period: String
+    let likes: Int
+    let videos: Int
+    let sources: Int
+    let activity: TasteWrappedActivity
+
+    var body: some View {
+        ZStack {
+            Color(red: 0.038, green: 0.047, blue: 0.059)
+            Circle()
+                .strokeBorder(AppTheme.accent.opacity(0.33), lineWidth: 2)
+                .frame(width: 560, height: 560)
+                .offset(x: 260, y: -320)
+            Circle()
+                .strokeBorder(.white.opacity(0.10), lineWidth: 2)
+                .frame(width: 480, height: 480)
+                .offset(x: 260, y: -320)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 11) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 26, weight: .black))
+                        .foregroundStyle(AppTheme.accent)
+                    Text("QUICKTICK")
+                        .font(.system(size: 18, weight: .black, design: .default))
+                        .tracking(4)
+                    Spacer()
+                    Text("\(year)")
+                        .font(.system(size: 19, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.58))
+                }
+                Spacer()
+                Text("YOUR\nTASTE.\nYOUR STORY.")
+                    .font(.system(size: 66, weight: .black, design: .default))
+                    .tracking(-3)
+                    .lineSpacing(-7)
+                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: false, vertical: true)
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(AppTheme.accent)
+                    .frame(width: 90, height: 5)
+                    .padding(.top, 28)
+                Text(period)
+                    .font(.system(size: 14, weight: .bold, design: .default))
+                    .tracking(3.5)
+                    .foregroundStyle(.white.opacity(0.65))
+                    .padding(.top, 30)
+                HStack(alignment: .top, spacing: 19) {
+                    recapStat("\(likes)", "LIKED POSTS")
+                    recapStat("\(videos)", "VIDEOS")
+                    recapStat("\(sources)", "SOURCES")
+                }
+                .padding(.top, 22)
+                RoundedRectangle(cornerRadius: 1).fill(.white.opacity(0.16))
+                    .frame(height: 1).padding(.vertical, 26)
+                HStack {
+                    Label(activity.watchTime + " watched (all-time)", systemImage: "play.circle.fill")
+                    Spacer()
+                    Text("MADE FOR ME")
+                        .tracking(1.3)
+                }
+                .font(.system(size: 13, weight: .bold, design: .default))
+                .foregroundStyle(.white.opacity(0.70))
+                .padding(.bottom, 18)
+            }
+            .padding(49)
+            .foregroundStyle(.white)
+        }
+        .frame(width: 540, height: 960)
+        .clipped()
+    }
+
+    private func recapStat(_ value: String, _ caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(value)
+                .font(.system(size: 43, weight: .heavy, design: .rounded))
+                .minimumScaleFactor(0.65)
+                .lineLimit(1)
+            Text(caption)
+                .font(.system(size: 10, weight: .bold, design: .default))
+                .tracking(1.3)
+                .foregroundStyle(AppTheme.accent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// Daily access is available in Settings; RootView celebrates the evolving
 /// taste profile once per ISO calendar week when the app opens.
 struct TasteWrappedView: View {
@@ -1823,6 +1922,7 @@ struct TasteWrappedView: View {
     @State private var activity = TasteWrappedActivity(watchSeconds: 0, replays: 0, completed: 0, downloads: 0)
     @State private var showingWeeklyLikes = false
     @State private var animated = false
+    @State private var shareImage: Image?
     private var totalPages: Int { spotlights.count + sections.count + 3 }
 
     var body: some View {
@@ -1831,7 +1931,7 @@ struct TasteWrappedView: View {
             LinearGradient(colors: [AppTheme.accent.opacity(0.28), .clear, AppTheme.palette.secondary.opacity(0.12)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
-            if !reduceMotion {
+            if !reduceMotion && !AppTheme.premium {
                 Circle().fill(AppTheme.accent.opacity(0.20))
                     .frame(width: 280, height: 280).blur(radius: 65)
                     .offset(x: animated ? 145 : -130, y: animated ? -240 : 250)
@@ -1853,6 +1953,7 @@ struct TasteWrappedView: View {
                 conclusion.tag(totalPages - 1)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            .sensoryFeedback(.selection, trigger: page)
             VStack {
                 HStack {
                     Text("QUICKTICK / WRAPPED")
@@ -1912,10 +2013,25 @@ struct TasteWrappedView: View {
             let history = await store.recommendations.snapshot()
             activity = TasteWrappedActivity.make(from: history)
         }
+        .task(id: "\(page):\(likedCount):\(activity.watchSeconds)") {
+            guard page == totalPages - 1 else { return }
+            // Rendering a share image only when the final story becomes
+            // visible avoids allocating a 1080×1920 bitmap during feed scroll.
+            let renderer = ImageRenderer(content: WrappedRecapCard(
+                year: Calendar.current.component(.year, from: .now),
+                period: showingWeeklyLikes ? "THIS WEEK'S LIKES" : "ALL-TIME PROFILE",
+                likes: likedCount, videos: videoCount, sources: providerCount,
+                activity: activity))
+            renderer.scale = 2
+            if let rendered = renderer.uiImage { shareImage = Image(uiImage: rendered) }
+        }
         .accessibilityIdentifier("taste-wrapped")
     }
 
-    private var introduction: some View {
+    @ViewBuilder private var introduction: some View {
+        if AppTheme.premium {
+            premiumIntroduction
+        } else {
         VStack(alignment: .leading, spacing: 22) {
             Image(systemName: "sparkles.rectangle.stack.fill")
                 .font(.system(size: 65, weight: .light))
@@ -1943,6 +2059,49 @@ struct TasteWrappedView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 30)
+        }
+    }
+
+    private var premiumIntroduction: some View {
+        ZStack(alignment: .bottomLeading) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("QUICKTICK  /  \(Calendar.current.component(.year, from: .now))")
+                    .font(.system(size: 12, weight: .black, design: .default))
+                    .tracking(3)
+                    .foregroundStyle(AppTheme.accent)
+                    .padding(.bottom, 26)
+                Text("THIS IS\nYOUR\nSTORY.")
+                    .font(.system(size: 57, weight: .black, design: .default))
+                    .tracking(-2.8)
+                    .lineSpacing(-3)
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .opacity(page == 0 ? 1 : 0.3)
+                    .offset(y: page == 0 ? 0 : 28)
+                    .animation(reduceMotion ? nil : .spring(response: 0.8, dampingFraction: 0.85), value: page)
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(AppTheme.accent)
+                    .frame(width: 92, height: 5)
+                    .padding(.vertical, 32)
+                Text("\(likedCount)")
+                    .font(.system(size: 90, weight: .black, design: .rounded))
+                    .tracking(-5)
+                    .contentTransition(.numericText())
+                    .foregroundStyle(.white)
+                Text(showingWeeklyLikes ? "POSTS YOU LOVED THIS WEEK" : "POSTS YOU CHOSE TO KEEP")
+                    .font(.system(size: 13, weight: .bold, design: .default))
+                    .tracking(2.1)
+                    .foregroundStyle(AppTheme.accent)
+                Text("Real favorites. Real patterns. A story nobody else could make.")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .padding(.top, 26)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 32)
+            .padding(.bottom, 140)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        }
     }
 
     private func wrappedPage(_ section: TasteWrappedCategory, pageIndex: Int) -> some View {
@@ -2012,6 +2171,23 @@ struct TasteWrappedView: View {
             }
             Text("Come back in Settings for your evolving Wrapped. A new weekly recap appears when your likes tell a new story.")
                 .font(.subheadline).foregroundStyle(.white.opacity(0.69))
+            if let shareImage {
+                ShareLink(item: shareImage,
+                          preview: SharePreview("My QuickTick Wrapped", image: shareImage)) {
+                    Label("Share a recap card", systemImage: "square.and.arrow.up")
+                        .font(.system(size: 15, weight: .bold))
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                        .foregroundStyle(.white)
+                        .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .accessibilityIdentifier("wrapped-share-recap")
+            } else {
+                ProgressView("Preparing your recap card…")
+                    .tint(AppTheme.accent)
+            }
+            Text("Sharing is optional. The card uses counts only, never private posts, titles or account details.")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.55))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 30)

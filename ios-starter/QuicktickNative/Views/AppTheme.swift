@@ -157,9 +157,16 @@ enum AppTheme {
         }
     }
     static var modernUI: Bool { (UserDefaults.standard.object(forKey: "quicktick-modern-ui-v1") as? Bool) ?? true }
+    /// Existing persisted preference remains the sole UI switch. No accounts,
+    /// collections, media, or recommendation state is tied to this choice.
+    static var premium: Bool { modernUI }
+    static let premiumInk = Color(red: 0.035, green: 0.043, blue: 0.055)
+    static let premiumPanel = Color(red: 0.073, green: 0.086, blue: 0.105)
+    static let premiumRaised = Color(red: 0.105, green: 0.123, blue: 0.146)
+    static let premiumNavigation = Color(red: 0.054, green: 0.065, blue: 0.080)
     static var isGalaxy: Bool { palette == .galaxy }
     static var isDeSlopified: Bool { palette == .deSlopified }
-    static var prefersOpaqueChrome: Bool { isCosmic || isSeasonal || isDeSlopified }
+    static var prefersOpaqueChrome: Bool { premium || isCosmic || isSeasonal || isDeSlopified }
     static var isSeasonal: Bool {
         palette.isSeasonalPalette
     }
@@ -172,6 +179,7 @@ enum AppTheme {
     // Galaxy changes the actual surfaces across menus, not just button tint.
     // Fixed colors avoid animated shaders or heavy effects on feed scrolling.
     static var background: Color {
+        if premium { return premiumInk }
         switch palette {
         case .galaxy: return Color(red: 0.020, green: 0.021, blue: 0.074)
         case .darkCosmos: return Color(red: 0.009, green: 0.012, blue: 0.036)
@@ -197,6 +205,7 @@ enum AppTheme {
         return modernUI ? Color(red: 0.035, green: 0.035, blue: 0.065) : .black
     }
     static var surface: Color {
+        if premium { return premiumPanel }
         switch palette {
         case .galaxy: return Color(red: 0.065, green: 0.052, blue: 0.143)
         case .darkCosmos: return Color(red: 0.035, green: 0.041, blue: 0.093)
@@ -222,6 +231,7 @@ enum AppTheme {
         return modernUI ? Color(red: 0.073, green: 0.073, blue: 0.11) : Color(white: 0.055)
     }
     static var elevatedSurface: Color {
+        if premium { return premiumRaised }
         switch palette {
         case .galaxy: return Color(red: 0.110, green: 0.078, blue: 0.212)
         case .darkCosmos: return Color(red: 0.067, green: 0.067, blue: 0.160)
@@ -247,6 +257,7 @@ enum AppTheme {
         return modernUI ? Color(red: 0.10, green: 0.095, blue: 0.15) : Color(red: 0.09, green: 0.09, blue: 0.13)
     }
     static var navigationSurface: Color {
+        if premium { return premiumNavigation }
         switch palette {
         case .galaxy: Color(red: 0.040, green: 0.031, blue: 0.114)
         case .darkCosmos: Color(red: 0.020, green: 0.025, blue: 0.061)
@@ -270,19 +281,30 @@ enum AppTheme {
         default: Color(red: 0.045, green: 0.04, blue: 0.075)
         }
     }
+    /// No live material rendering in New UI, including fullscreen controls.
+    /// Original UI retains its previous native material treatments.
+    static var chrome: AnyShapeStyle {
+        premium ? AnyShapeStyle(navigationSurface.opacity(0.96))
+                : AnyShapeStyle(Material.ultraThinMaterial)
+    }
     static var border: Color {
+        if premium { return Color.white.opacity(0.095) }
         if isDeSlopified { return Color.white.opacity(0.11) }
         return palette == .oledBlack ? Color.white.opacity(0.13) : (isCosmic ? palette.primary.opacity(0.30) : Color.white.opacity(0.12))
     }
-    static var secondaryLabel: Color { Color.white.opacity(prefersOpaqueChrome ? 0.72 : 0.58) }
+    static var secondaryLabel: Color { Color.white.opacity(premium ? 0.67 : (prefersOpaqueChrome ? 0.72 : 0.58)) }
     static let spring = Animation.spring(response: 0.38, dampingFraction: 0.82)
     static var accent: Color { palette.primary }
     static var gradient: LinearGradient {
-        LinearGradient(colors: palette.gradientColors, startPoint: .topLeading, endPoint: .bottomTrailing)
+        // A single confident accent replaces decorative gradients in the
+        // premium interface. The original palette treatment remains intact.
+        LinearGradient(colors: premium ? [accent, accent] : palette.gradientColors,
+                       startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     // Feed backgrounds are deliberately translucent only while a user-picked
     // backdrop is enabled. All cards and controls keep opaque readable chrome.
     static var canvas: Color {
+        if premium { return background }
         UserDefaults.standard.bool(forKey: BackgroundArtworkStore.enabledKey)
             ? background.opacity(0.58) : background
     }
@@ -290,9 +312,9 @@ enum AppTheme {
     static let contentMargin: CGFloat = 16
     static let sectionGap: CGFloat = 24
     static let controlHeight: CGFloat = 44
-    static var controlRadius: CGFloat { isDeSlopified ? 10 : 14 }
-    static var cardRadius: CGFloat { isDeSlopified ? 14 : 22 }
-    static var panelRadius: CGFloat { isDeSlopified ? 14 : 22 }
+    static var controlRadius: CGFloat { premium ? 12 : (isDeSlopified ? 10 : 14) }
+    static var cardRadius: CGFloat { premium ? 18 : (isDeSlopified ? 14 : 22) }
+    static var panelRadius: CGFloat { premium ? 20 : (isDeSlopified ? 14 : 22) }
     static let feedWidth: CGFloat = 680
 }
 
@@ -382,7 +404,7 @@ struct ThemeBackdrop: View {
         GeometryReader { geometry in
             ZStack {
                 AppTheme.background
-                if !enabled && AppTheme.isSeasonal {
+                if !AppTheme.premium && !enabled && AppTheme.isSeasonal {
                     SeasonalBackdropMotif()
                 }
                 if enabled, let artwork {
@@ -390,7 +412,7 @@ struct ThemeBackdrop: View {
                         .resizable().scaledToFill()
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .clipped()
-                        .overlay(.black.opacity(0.18))
+                        .overlay(.black.opacity(AppTheme.premium ? 0.82 : 0.18))
                 }
             }
         }
@@ -404,6 +426,70 @@ struct ThemeBackdrop: View {
             artwork = saved.flatMap(UIImage.init(data:))
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// The same information hierarchy is used across Home, Library, Search and
+/// Settings. It is intentionally static, fully matte and inexpensive to draw.
+struct PremiumPageHeader: View {
+    let title: String
+    let eyebrow: String
+    let subtitle: String
+    let icon: String
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 7) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(AppTheme.accent)
+                        .frame(width: 14, height: 3)
+                    Text(eyebrow.uppercased())
+                        .font(.system(size: 10, weight: .bold, design: .default))
+                        .tracking(2.2)
+                        .foregroundStyle(AppTheme.accent)
+                }
+                Text(title)
+                    .font(.system(size: 32, weight: .bold, design: .default))
+                    .tracking(-1.1)
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
+                Text(subtitle)
+                    .font(.system(size: 13, weight: .medium, design: .default))
+                    .foregroundStyle(AppTheme.secondaryLabel)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(AppTheme.accent)
+                .frame(width: 48, height: 48)
+                .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 15))
+                .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(AppTheme.border))
+                .accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct PremiumSectionHeading: View {
+    let title: String
+    var detail: String? = nil
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(title)
+                .font(.system(size: 19, weight: .bold, design: .default))
+                .tracking(-0.35)
+                .foregroundStyle(.white)
+            Spacer(minLength: 0)
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppTheme.secondaryLabel)
+            }
+        }
     }
 }
 
@@ -537,6 +623,19 @@ struct ActionIcon: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
+            if AppTheme.premium {
+                VStack(spacing: 5) {
+                    Image(systemName: symbol)
+                        .font(.system(size: 19, weight: .semibold))
+                        .symbolEffect(.bounce, value: selected)
+                        .accessibilityHidden(true)
+                    Text(title)
+                        .font(.system(size: 10, weight: .semibold, design: .default))
+                }
+                .foregroundStyle(selected ? AppTheme.accent : .white.opacity(0.74))
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .contentShape(Rectangle())
+            } else {
             Image(systemName: symbol)
                 .font(.system(size: 20, weight: .semibold))
                 .accessibilityHidden(true) // The enclosing button supplies a meaningful action label.
@@ -548,6 +647,7 @@ struct ActionIcon: View {
                 .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.42) : .white.opacity(0.11), lineWidth: 1))
             .frame(maxWidth: .infinity, minHeight: 50)
             .contentShape(Rectangle())
+            }
         }
         .buttonStyle(QuicktickPressStyle())
         .accessibilityLabel(title)

@@ -848,12 +848,12 @@ private struct ImmersiveItemView: View {
                             Button("Open original in QuickTick browser") { browsePornhub = true }
                                 .frame(minHeight: 44)
                         }
-                    }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
+                    }.padding(12).background(AppTheme.chrome, in: RoundedRectangle(cornerRadius: 12)).padding()
                 }
                 if active, !offline, !collection, let message = store.lastError {
                     Button { Task { await store.loadMore(immersive: true) } } label: {
                         VStack { Text(message); Text("Load more").bold() }.font(.caption).padding(12)
-                    }.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
+                    }.background(AppTheme.chrome, in: RoundedRectangle(cornerRadius: 12)).padding()
                 }
             }
             .overlay {
@@ -1111,7 +1111,7 @@ private struct ImmersiveTimeline: View {
                     .offset(x: max(0, min(geo.size.width - 6, geo.size.width * progress - 3)))
                 if scrubbing {
                     Text("\(timeLabel(duration * progress)) / \(timeLabel(duration))")
-                        .font(.caption.monospacedDigit()).padding(8).background(.ultraThinMaterial, in: Capsule())
+                        .font(.caption.monospacedDigit()).padding(8).background(AppTheme.chrome, in: Capsule())
                         .frame(maxWidth: .infinity).offset(y: -30)
                 }
             }.frame(height: 44).contentShape(Rectangle())

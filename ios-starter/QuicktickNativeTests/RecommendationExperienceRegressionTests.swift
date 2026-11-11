@@ -275,6 +275,25 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertEqual(activity.downloads, 5)
     }
 
+    func testInterfaceSwitchUsesExistingPersistentKeyWithoutTouchingPersonalData() {
+        let defaults = UserDefaults.standard
+        let key = "quicktick-modern-ui-v1"
+        let original = defaults.object(forKey: key)
+        let favoriteFixture = "quicktick-test-interface-preserves-liked-ids"
+        let previousFixture = defaults.object(forKey: favoriteFixture)
+        defer {
+            if let original { defaults.set(original, forKey: key) } else { defaults.removeObject(forKey: key) }
+            if let previousFixture { defaults.set(previousFixture, forKey: favoriteFixture) }
+            else { defaults.removeObject(forKey: favoriteFixture) }
+        }
+        defaults.set(["hanime:favorite", "rule34:favorite"], forKey: favoriteFixture)
+        defaults.set(true, forKey: key)
+        XCTAssertTrue(AppTheme.premium)
+        defaults.set(false, forKey: key)
+        XCTAssertFalse(AppTheme.premium)
+        XCTAssertEqual(defaults.stringArray(forKey: favoriteFixture), ["hanime:favorite", "rule34:favorite"])
+    }
+
     func testOptionalBirthdayOnlyMatchesTheCalendarDay() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

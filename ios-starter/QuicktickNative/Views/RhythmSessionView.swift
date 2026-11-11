@@ -428,7 +428,7 @@ struct RhythmSessionView: View {
             }
         }
         .padding(13)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 23, style: .continuous))
+        .background(AppTheme.chrome, in: RoundedRectangle(cornerRadius: 23, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 23).stroke(AppTheme.accent.opacity(0.35)))
         .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
     }
@@ -482,7 +482,9 @@ struct RhythmSessionView: View {
                     // can enlarge the whole ZStack on narrow iPhones.
                     CachedMediaImage(url: post.cardPreviewURL, pixels: 700, comic: false, fill: true)
                         .frame(width: viewport.size.width, height: viewport.size.height)
-                        .blur(radius: 34).scaleEffect(1.12).opacity(0.68)
+                        .blur(radius: AppTheme.premium ? 0 : 34)
+                        .scaleEffect(AppTheme.premium ? 1 : 1.12)
+                        .opacity(AppTheme.premium ? 0.12 : 0.68)
                         .clipped()
                     Color.black.opacity(0.26)
                     fittedMedia(for: post, viewport: viewport.size)

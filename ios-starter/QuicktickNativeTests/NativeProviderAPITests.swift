@@ -80,9 +80,14 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "api.redgifs.com", path == "/v2/niches" {
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let number = query.first(where: { $0.name == "page" })?.value ?? "1"
-            payload = number == "2"
-                ? #"{"pages":2,"niches":[{"id":"gaming","name":"Gaming","gifs":54,"thumbnail":"https://media.redgifs.com/gaming.jpg"}]}"#
-                : #"{"pages":2,"niches":[{"id":"cosplay","name":"Cosplay","gifs":200,"thumbnail":"https://media.redgifs.com/niche.jpg"}]}"#
+            payload = number == "3"
+                ? #"{"pages":3,"niches":[{"id":"no-cover","name":"No Cover","gifs":18}]}"#
+                : (number == "2"
+                    ? #"{"pages":2,"niches":[{"id":"gaming","name":"Gaming","gifs":54,"thumbnail":"https://media.redgifs.com/gaming.jpg"}]}"#
+                    : #"{"pages":2,"niches":[{"id":"cosplay","name":"Cosplay","gifs":200,"thumbnail":"https://media.redgifs.com/niche.jpg"}]}"#)
+        }
+        else if host == "api.redgifs.com", path == "/v2/niches/no-cover/gifs" {
+            payload = #"{"pages":1,"gifs":[]}"#
         }
         else if host == "api.redgifs.com", path == "/v2/niches/gaming/gifs" {
             payload = #"{"pages":1,"gifs":[{"id":"gamingclip","type":"g","tags":["gaming"],"urls":{"hd":"https://media.redgifs.com/gamingclip.mp4","poster":"https://media.redgifs.com/gamingclip.jpg"}}]}"#
@@ -543,6 +548,14 @@ final class NativeProviderAPITests: XCTestCase {
             URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
                 .contains(where: { $0.name == "page" && $0.value == "2" }) == true
         })
+    }
+
+    func testRedgifsNicheWithoutArtworkIsStillAvailableToBrowse() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let page = try await api.redgifsNichesPage(page: 3, limit: 24)
+        XCTAssertEqual(page.items.map(\.id), ["no-cover"])
+        XCTAssertEqual(page.items.first?.imageURL, "")
+        XCTAssertFalse(page.hasMore)
     }
 
     @MainActor func testRedgifsExplicitNicheSelectionReplacesFeedAndKeepsLikedClips() async throws {

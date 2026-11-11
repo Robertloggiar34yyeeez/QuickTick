@@ -1320,15 +1320,15 @@ actor RecommendationEngine {
                                recent: [Post]) -> [Post] {
         var pool = scored
         var chosen: [Post] = []
-        var window = recent.suffix(16).map { diversityTopics(for: $0) }
-        // The first paint needs a high-quality screenful, not a full 96-item
+        var window = recent.suffix(24).map { diversityTopics(for: $0) }
+        // The first paint needs a high-quality screenful, not a full candidate
         // quadratic diversity pass. The remaining sorted candidates stay in
         // the output and can be consumed during pagination.
-        let target = min(48, pool.count)
+        let target = min(64, pool.count)
         while chosen.count < target {
             let lookAhead = min(160, pool.count)
-            let preceding = Array(window.suffix(16))
-            let discoverySlot = (chosen.count + recent.count) % 6 == 5
+            let preceding = Array(window.suffix(24))
+            let discoverySlot = (chosen.count + recent.count) % 4 == 3
             var bestIndex = 0
             var bestScore = -Double.infinity
             for index in 0..<lookAhead {
@@ -1345,7 +1345,7 @@ actor RecommendationEngine {
                 }
                 // Repeated near-identical subjects incur a growing cost, not
                 // merely the previous post's once-off overlap penalty.
-                let saturation = min(48.0, Double(closeMatches) * 6.5 + Double(exactMatches) * 3.5)
+                let saturation = min(66.0, Double(closeMatches) * 8.0 + Double(exactMatches) * 5.0)
                 // Franchise/character concentration compounds across the
                 // whole recent window, even when each image has different
                 // generic tags. This is a soft penalty, never a hard block.
@@ -1356,8 +1356,8 @@ actor RecommendationEngine {
                 let repeatCount = preceding.reduce(0) { total, seen in
                     total + (anchors.isDisjoint(with: seen) ? 0 : 1)
                 }
-                let identitySaturation = min(75.0, Double(repeatCount * repeatCount) * 1.4)
-                let novelty = closest < 0.35 ? 8.0 : 0.0
+                let identitySaturation = min(100.0, Double(repeatCount * repeatCount) * 1.8)
+                let novelty = closest < 0.35 ? 11.0 : 0.0
                 let adjusted = pool[index].value - closest * 10 - saturation - identitySaturation
                     + (discoverySlot ? novelty : 0)
                 if adjusted > bestScore { bestScore = adjusted; bestIndex = index }

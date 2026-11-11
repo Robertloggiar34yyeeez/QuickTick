@@ -634,37 +634,35 @@ enum NativeProviderAPI {
                                       postCount: Int(number(item["gifs"] ?? item["count"]))))
             if chosen.count >= limit { break }
         }
+        // Do not gate an entire niche directory behind one extra request per
+        // category. Enrich only the leading cards; the API's own thumbnails
+        // remain usable while the user scrolls the rest of the catalog.
         var covers: [Int: String] = [:]
-        for start in stride(from: 0, to: chosen.count, by: 4) {
-            try Task.checkCancellation()
-            let indices = Array(start..<min(start + 4, chosen.count))
-            let collected = await withTaskGroup(of: (Int, String?).self) { group in
-                for index in indices {
-                    let id = chosen[index].id
-                    group.addTask {
-                        do {
-                            let sample = try object(await data(session: session,
-                                url: url("https://api.redgifs.com/v2/niches/\(id)/gifs",
-                                    [.init(name: "order", value: "top"), .init(name: "page", value: "1"), .init(name: "count", value: "4")]),
-                                provider: .redgifs, headers: redgifsHeaders(token: token)))
-                            let image = rows(sample["gifs"]).compactMap { gif -> String? in
-                                let urls = gif["urls"] as? [String: Any] ?? [:]
-                                let value = redgifsPreview(text(urls["poster"] ?? urls["thumbnail"] ?? urls["vthumbnail"]))
-                                return value.isEmpty ? nil : value
-                            }.first
-                            return (index, image)
-                        } catch { return (index, nil) }
-                    }
+        let collected = await withTaskGroup(of: (Int, String?).self) { group in
+            for index in 0..<min(2, chosen.count) {
+                let id = chosen[index].id
+                group.addTask {
+                    do {
+                        let sample = try object(await data(session: session,
+                            url: url("https://api.redgifs.com/v2/niches/\(id)/gifs",
+                                [.init(name: "order", value: "top"), .init(name: "page", value: "1"), .init(name: "count", value: "4")]),
+                            provider: .redgifs, headers: redgifsHeaders(token: token)))
+                        let image = rows(sample["gifs"]).compactMap { gif -> String? in
+                            let urls = gif["urls"] as? [String: Any] ?? [:]
+                            let value = redgifsPreview(text(urls["poster"] ?? urls["thumbnail"] ?? urls["vthumbnail"]))
+                            return value.isEmpty ? nil : value
+                        }.first
+                        return (index, image)
+                    } catch { return (index, nil) }
                 }
-                var result: [(Int, String?)] = []
-                for await entry in group { result.append(entry) }
-                return result
             }
-            for (index, image) in collected { if let image { covers[index] = image } }
+            var result: [(Int, String?)] = []
+            for await entry in group { result.append(entry) }
+            return result
         }
-        let enriched = chosen.enumerated().compactMap { index, niche -> RedgifsNiche? in
+        for (index, image) in collected { if let image { covers[index] = image } }
+        let enriched = chosen.enumerated().map { index, niche -> RedgifsNiche in
             let image = covers[index] ?? niche.imageURL
-            guard !image.isEmpty else { return nil }
             return RedgifsNiche(id: niche.id, name: niche.name, imageURL: image, postCount: niche.postCount)
         }
         let declaredPages = Int(number(response["pages"] ?? response["total_pages"]))

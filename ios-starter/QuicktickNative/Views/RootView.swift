@@ -406,6 +406,16 @@ struct RootView: View {
                 .overlay(Capsule().stroke(AppTheme.border))
                 .offset(y: -40)
                 .allowsHitTesting(false)
+        } else if !vertical, modernUI, let selected = brieflyNamedTab {
+            Text(feedName(selected))
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 15).padding(.vertical, 9)
+                .background(AppTheme.elevatedSurface, in: Capsule())
+                .overlay(Capsule().strokeBorder(AppTheme.border))
+                .offset(y: -48)
+                .transition(.opacity.combined(with: .offset(y: 5)))
+                .allowsHitTesting(false)
         }
     }
 
@@ -563,15 +573,9 @@ struct RootView: View {
                             .accessibilityLabel("Refreshing feed")
                             .transition(.opacity.combined(with: .scale(scale: 0.65)))
                         } else if modernUI && !vertical {
-                            VStack(spacing: 3) {
-                                Image(systemName: tabs[index].1)
-                                    .font(.system(size: 19, weight: highlightedTab == tabID ? .semibold : .medium))
-                                    .symbolVariant(highlightedTab == tabID ? .fill : .none)
-                                Text(tabs[index].0)
-                                    .font(.system(size: 9, weight: highlightedTab == tabID ? .bold : .medium))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.78)
-                            }
+                            Image(systemName: tabs[index].1)
+                                .font(.system(size: 24, weight: highlightedTab == tabID ? .semibold : .medium))
+                                .symbolVariant(highlightedTab == tabID ? .fill : .none)
                         } else if highlightedTab == tabID && brieflyNamedTab == tabID {
                             Text(tabs[index].0)
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))

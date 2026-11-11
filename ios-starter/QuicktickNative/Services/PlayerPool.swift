@@ -4,6 +4,9 @@ import Combine
 
 enum VideoIntroPolicy {
     static let hanimeSettingKey = "quicktick-skip-hanime-intros-v1"
+    static func hanimeEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: hanimeSettingKey) as? Bool ?? true
+    }
 
     static func isPornhub(_ provider: String) -> Bool {
         provider.lowercased() == "pornhub"
@@ -23,8 +26,9 @@ enum VideoIntroPolicy {
     }
 
     static func startTime(duration: Double, enabled: Bool, provider: String) -> Double {
-        enabled && (isPornhub(provider) || isHaven(provider) || isHanime(provider)) &&
-            duration.isFinite && duration > 12 ? 10 : 0
+        guard enabled, duration.isFinite, duration > 12 else { return 0 }
+        if isHanime(provider) { return min(60, max(0, duration - 8)) }
+        return isPornhub(provider) || isHaven(provider) ? 10 : 0
     }
 
     static func bufferedFrom(_ start: Double, ranges: [CMTimeRange], requiredSeconds: Double = 0.7) -> Bool {
@@ -160,7 +164,7 @@ final class PlayerPool: ObservableObject {
         let skipIntro = VideoIntroPolicy.enabled(provider: provider,
             pornhub: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
             haven: UserDefaults.standard.object(forKey: "quicktick-skip-hhaven-intros-v1") as? Bool ?? true,
-            hanime: UserDefaults.standard.bool(forKey: VideoIntroPolicy.hanimeSettingKey))
+            hanime: VideoIntroPolicy.hanimeEnabled())
         if skipIntro, !introSkipped.contains(key),
            p.currentItem != nil {
             // Crucially: never decode 0:00 and seek a playing video afterward.

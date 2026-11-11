@@ -136,6 +136,17 @@ final class FastFeedVisualTests: XCTestCase {
         let selected = QueryParser.formatted(ParsedQuery(included: [chips[0].term], excluded: []))
         XCTAssertEqual(QueryParser.parse(selected).included, ["dark skin"])
     }
+    func testHanimeTopicsUseDistinctArtworkAcrossOverlappingTags() {
+        let shared = Post(key: "hanime:one", id: "one", provider: "Hanime",
+            tags: ["fantasy", "romance"], thumbUrl: "https://cdn.example.test/one.jpg", type: "video")
+        let alternate = Post(key: "hanime:two", id: "two", provider: "Hanime",
+            tags: ["romance", "magic"], thumbUrl: "https://cdn.example.test/two.jpg", type: "video")
+        let chips = HomeThemeSuggestions.make(provider: .hanime, learned: [], chosen: [], visual: [],
+            favorites: [], posts: [shared, alternate], excluded: [], limit: 7)
+        let images = chips.map(\.imageURL).filter { !$0.isEmpty }
+        XCTAssertEqual(Set(images).count, images.count,
+            "Two topics must not reuse the same Hanime cover")
+    }
     func testDislikedChunLiPresentationPreservesIdentityAndContext() {
         let liked = VisualFeatures.metadata(post("liked", tags: ["chun_li", "qipao", "watercolor"]))!
         let disliked = VisualFeatures.metadata(post("bad", tags: ["chun_li", "jacket", "sketch"]))!

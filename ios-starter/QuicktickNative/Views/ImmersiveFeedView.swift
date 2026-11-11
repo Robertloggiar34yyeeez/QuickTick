@@ -584,7 +584,7 @@ private struct ImmersiveItemView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
-    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = true
     @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
     @AppStorage("quicktick-ipad-side-navigation-v1") private var ipadSidebarEnabled = false
     let post: Post

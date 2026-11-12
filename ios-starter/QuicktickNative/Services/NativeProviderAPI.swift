@@ -2037,7 +2037,9 @@ extension NativeProviderAPI {
         let directTypes: Set<String> = ["mp4", "m4v", "mov", "webm", "m3u8", "gif", "jpg", "jpeg", "png", "webp", "heic", "avif", "mp3", "m4a", "aac", "wav", "aiff", "caf", "flac", "ogg", "opus"]
         if post.providerKey == .hanime, let direct,
            HanimeGeneratedAPI.permittedStreamURL(direct) {
-            let isHLS = direct.path.hasPrefix("/hls/") || direct.pathExtension.lowercased() == "m3u8"
+            let extensionName = direct.pathExtension.lowercased()
+            let isHLS = !["mp4", "m4v", "mov"].contains(extensionName) &&
+                (direct.path.hasPrefix("/hls/") || extensionName == "m3u8")
             return ResolvedMedia(mediaUrl: direct.absoluteString, type: isHLS ? "hls" : "video")
         }
         // Hanime catalog posters are JPEG/WebP images, not downloadable videos.

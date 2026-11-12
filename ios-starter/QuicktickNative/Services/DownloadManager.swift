@@ -551,8 +551,12 @@ enum DownloadSourcePolicy {
             throw URLError(.badURL)
         }
         let fileType = url.pathExtension.lowercased()
-        let isHLS = fileType == "m3u8" || url.path.hasPrefix("/hls/") ||
-            (media.type == "hls" && !["mp4", "m4v", "mov"].contains(fileType))
+        // An MP4 served from /hls/ is still a file, not an HLS playlist.
+        // Routing those to AVAssetDownloadURLSession silently fails or
+        // produces incomplete offline packages on some providers.
+        let isVideoFile = ["mp4", "m4v", "mov"].contains(fileType)
+        let isHLS = !isVideoFile && (fileType == "m3u8" ||
+            url.path.hasPrefix("/hls/") || media.type == "hls")
         if post.providerKey == .hanime {
             // An image can be a useful poster, but it must never be marked as
             // the completed offline video. Hanime requires first-party media.

@@ -149,6 +149,10 @@ final class FeedReliabilityTests: XCTestCase {
             media: ResolvedMedia(mediaUrl: "https://cdn.hanime.tv/sample-video.mp4", type: "hls"),
             for: post)
         XCTAssertFalse(mp4.isHLS, "MP4 must be stored as a video file, not an HLS playlist package.")
+        let mp4UnderHLSPath = try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://cdn.hanime.tv/hls/full-video.mp4", type: "hls"),
+            for: post)
+        XCTAssertFalse(mp4UnderHLSPath.isHLS, "An MP4 within /hls/ remains a direct video transfer.")
         let signed = try DownloadSourcePolicy.validate(
             media: ResolvedMedia(mediaUrl: "https://cdn.hanime.tv/video?token=signed", type: "video"),
             for: post)

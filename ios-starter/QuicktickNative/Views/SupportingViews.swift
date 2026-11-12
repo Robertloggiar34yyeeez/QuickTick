@@ -1657,7 +1657,7 @@ private struct WrappedMotionBackdrop: View {
                     let post = items[index]
                     Group {
                         if index < 2 && post.type.lowercased() == "video" {
-                            WrappedVideoStage(post: post, active: active)
+                            WrappedVideoStage(post: post, active: active, showsMuteControl: false)
                         } else {
                             PosterView(post: post)
                         }
@@ -1787,6 +1787,7 @@ private struct WrappedVideoStage: View {
     @EnvironmentObject private var store: AppStore
     let post: Post
     let active: Bool
+    var showsMuteControl = true
     @State private var player: AVPlayer?
     @State private var ready = false
     @State private var muted = true
@@ -1812,7 +1813,7 @@ private struct WrappedVideoStage: View {
         }
         .clipped()
         .overlay(alignment: .bottomTrailing) {
-            if player != nil {
+            if player != nil && showsMuteControl {
                 Button {
                     muted.toggle(); player?.isMuted = muted
                 } label: {
@@ -1908,7 +1909,11 @@ private struct WrappedSpotlightPage: View {
                 .animation(reduceMotion ? nil : .spring(response: 0.75, dampingFraction: 0.85), value: revealed)
             }
         }
-        .onAppear { revealed = true; drifting = true }
+        .onAppear { revealed = active; drifting = active }
+        .onChange(of: active) { _, isActive in
+            revealed = isActive
+            drifting = isActive
+        }
         .onDisappear { revealed = false; drifting = false }
         .accessibilityIdentifier("wrapped-spotlight-\(spotlight.post.stableID)")
     }

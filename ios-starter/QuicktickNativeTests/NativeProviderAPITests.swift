@@ -150,6 +150,8 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 result = #"{"sources":[{"kind":"normal","src":"/hls/broken","height":1080},{"kind":"normal","src":"/hls/alternate","height":720}]}"#
             } else if slug == "plain-json" {
                 result = #"{"sources":[{"kind":"normal","src":"https://cdn.hanime.tv/hls/signed-opaque?token=abc","height":720}]}"#
+            } else if slug == "download-file" {
+                result = #"{"sources":[{"kind":"normal","src":"https://cdn.hanime.tv/videos/high-quality.m3u8","height":1080},{"kind":"normal","src":"https://cdn.hanime.tv/videos/download-full.mp4","height":720}]}"#
             } else {
                 result = #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"},{"kind":"normal","src":"/hls/42/fixture-token","height":1080,"type":"application/vnd.apple.mpegurl"}]}"#
             }
@@ -733,6 +735,19 @@ final class NativeProviderAPITests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("Browse inside QuickTick"))
             XCTAssertTrue(error.localizedDescription.contains("Hanime API"))
         }
+    }
+
+    func testHanimeDownloadSelectsFullVideoWhenFirstPartyPlayerAlsoOffersHLS() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "hanime:download-file", id: "download-file", provider: "Hanime", type: "video")
+        let playback = try await api.resolveMedia(post)
+        XCTAssertEqual(playback.type, "hls")
+        XCTAssertEqual(playback.mediaUrl, "https://cdn.hanime.tv/videos/high-quality.m3u8")
+        let download = try await api.resolveMedia(post, forDownload: true)
+        XCTAssertEqual(download.type, "video")
+        XCTAssertEqual(download.mediaUrl, "https://cdn.hanime.tv/videos/download-full.mp4")
+        let result = try DownloadSourcePolicy.validate(media: download, for: post)
+        XCTAssertFalse(result.isHLS)
     }
 
     func testHanimeNativeHLSResolvesCurrentV11Handshake() async throws {

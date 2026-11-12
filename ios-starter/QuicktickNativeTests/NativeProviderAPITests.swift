@@ -339,9 +339,11 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
             let opaque = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "opaque" } == true
             let multi = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "multi" } == true
+            let downloadPriority = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "download-priority" } == true
             payload = fallback ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://www.pornhub.com/removed-definition"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/valid.m3u8"}]};</script>"#
                 : opaque ? #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"1080","videoUrl":"https://vid-cdn.phncdn.com/signed/abc123?expires=123&token=xyz"}]};</script>"#
                 : multi ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/first-1080.mp4"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/second-720.m3u8"}]};</script>"#
+                : downloadPriority ? #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"1080","videoUrl":"https://cdn.pornhub.com/priority-1080.m3u8"},{"format":"mp4","quality":"720","videoUrl":"https://cdn.pornhub.com/offline-720.mp4"}]};</script>"#
                 : #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/full.mp4"}]};</script>"#
         }
         else if path == "/embed/multi" {
@@ -1413,6 +1415,18 @@ final class NativeProviderAPITests: XCTestCase {
             $0.url?.query?.contains("search=browse-filter-404") == true &&
             $0.url?.query?.contains("min_duration") != true
         }, "An unsupported filter must not permanently break a valid search")
+    }
+
+    func testPornhubOfflineResolutionPrefersFullMP4OverHLS() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "pornhub:download-priority", id: "download-priority",
+                        provider: "Pornhub", type: "video")
+        let playback = try await api.resolveMedia(post)
+        XCTAssertEqual(playback.type, "hls")
+        XCTAssertEqual(playback.mediaUrl, "https://cdn.pornhub.com/priority-1080.m3u8")
+        let offline = try await api.resolveMedia(post, forDownload: true)
+        XCTAssertEqual(offline.type, "video")
+        XCTAssertEqual(offline.mediaUrl, "https://cdn.pornhub.com/offline-720.mp4")
     }
 
     func testPornhubWatchPage404FallsBackToFirstPartyEmbedMedia() async throws {

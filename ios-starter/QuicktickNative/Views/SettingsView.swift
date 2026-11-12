@@ -261,28 +261,6 @@ struct SettingsView: View {
                 settingsQuickActions(scroll: scroll)
                 settingsNavigationGrid(scroll: scroll)
             if let storageWarning = store.storageWarning { SettingsGroup(title: "Storage needs attention", icon: "exclamationmark.triangle") { Text(storageWarning).foregroundStyle(.orange) } }
-            SettingsGroup(title: "Navigation", icon: "square.grid.2x2") {
-                HStack(spacing: 12) {
-                    Text("Show AI tab")
-                    Spacer(minLength: 8)
-                    // Keep the switch's accessible frame on the actual
-                    // control, rather than the entire scroll-view row. UI
-                    // automation and normal taps now hit the same target.
-                    Toggle("Show AI tab", isOn: $showAITab)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .accessibilityIdentifier("show-ai-tab-toggle")
-                        .frame(minWidth: 52, minHeight: 44)
-                }
-                .modifier(SettingsControlRow())
-                Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Toggle("Use a wider iPad sidebar", isOn: $ipadSidebarEnabled)
-                    .modifier(SettingsControlRow())
-                    .accessibilityIdentifier("ipad-sidebar-toggle")
-                Text("Moves the Home bar to a larger vertical rail on the left across every iPad feed. On iPhone the bottom bar stays unchanged.")
-                    .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
-            }.id(SettingsDestination.navigation.rawValue)
             SettingsGroup(title: "Appearance", icon: "paintbrush.pointed") {
                 VStack(alignment: .leading, spacing: 11) {
                     HStack(spacing: 9) {
@@ -349,6 +327,28 @@ struct SettingsView: View {
                 }
                 if let backgroundError { Text(backgroundError).font(.caption).foregroundStyle(.orange) }
             }.id(SettingsDestination.appearance.rawValue)
+            SettingsGroup(title: "Navigation", icon: "square.grid.2x2") {
+                HStack(spacing: 12) {
+                    Text("Show AI tab")
+                    Spacer(minLength: 8)
+                    // Keep the switch's accessible frame on the actual
+                    // control, rather than the entire scroll-view row. UI
+                    // automation and normal taps now hit the same target.
+                    Toggle("Show AI tab", isOn: $showAITab)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .accessibilityIdentifier("show-ai-tab-toggle")
+                        .frame(minWidth: 52, minHeight: 44)
+                }
+                .modifier(SettingsControlRow())
+                Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Toggle("Use a wider iPad sidebar", isOn: $ipadSidebarEnabled)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("ipad-sidebar-toggle")
+                Text("Moves the Home bar to a larger vertical rail on the left across every iPad feed. On iPhone the bottom bar stays unchanged.")
+                    .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
+            }.id(SettingsDestination.navigation.rawValue)
             SettingsGroup(title: "Your name & birthday", icon: "gift") {
                 BirthdayProfileEditor()
                 Text("A private birthday animation appears once a year. Your profile is optional and stays on this device.")

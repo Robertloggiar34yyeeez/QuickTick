@@ -1143,8 +1143,13 @@ final class AppStore: ObservableObject {
                 await recommendations.advanceCandidatePage(context: b.key, nextPage: b.page + 1)
             }
         }
+        let firstItems = firstPage?.items ?? []
+        let secondItems = secondPage?.items ?? []
+        let consecutiveUnfiltered = a.query.included.isEmpty && b.query.included.isEmpty &&
+            a.page + 1 == b.page
         let combined = PostPage(
-            items: CandidatePoolMix.interleave(firstPage?.items ?? [], secondPage?.items ?? []),
+            items: consecutiveUnfiltered ? firstItems + secondItems :
+                CandidatePoolMix.interleave(firstItems, secondItems),
             hasMore: (firstPage?.hasMore ?? false) || (secondPage?.hasMore ?? false))
         if provider == .eporner, parsed.included.isEmpty, combined.items.isEmpty,
            a.page > 1 || b.page > 1, generation == requestedGeneration {

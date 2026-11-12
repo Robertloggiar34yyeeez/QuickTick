@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AVFoundation
 
 /// Local-only search for saved media. Every word must match somewhere in the
 /// title, provider, creator, tags or ID; underscores and case are normalized.
@@ -306,7 +307,25 @@ private struct DownloadContent: View {
             let built = await Task.detached(priority: .utility) {
                 var posts: [String: Post] = [:]
                 for record in records where record.state == .complete {
-                    if let post = record.offlinePost { posts[record.key] = post }
+                    guard var post = record.offlinePost else { continue }
+                    // Older saved videos lack pixel metadata. Read natural
+                    // track geometry and rotate into display orientation,
+                    // keeping portrait media portrait in the offline feed.
+                    if post.nativeSize == nil, post.type.lowercased() == "video",
+                       let localURL = URL(string: post.mediaUrl), localURL.isFileURL {
+                        let asset = AVURLAsset(url: localURL)
+                        if let track = (try? await asset.loadTracks(withMediaType: .video))?.first,
+                           let natural = try? await track.load(.naturalSize),
+                           let transform = try? await track.load(.preferredTransform) {
+                            let oriented = natural.applying(transform)
+                            let width = abs(oriented.width), height = abs(oriented.height)
+                            if width > 0, height > 0 {
+                                post.width = Double(width)
+                                post.height = Double(height)
+                            }
+                        }
+                    }
+                    posts[record.key] = post
                 }
                 return posts
             }.value

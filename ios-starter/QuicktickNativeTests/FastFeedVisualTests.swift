@@ -59,7 +59,9 @@ final class FastFeedVisualTests: XCTestCase {
         let store = AppStore()
         store.queryText = "long_hair -jacket sort:random rating:general score:>=25"
         store.selectedProvider = .eporner
-        XCTAssertEqual(store.queryText, "long_hair -jacket")
+        XCTAssertEqual(store.queryText, "", "Provider-specific Rule34 filters must not carry to Eporner.")
+        store.selectedProvider = .rule34
+        XCTAssertTrue(store.queryText.contains("long_hair"), "Returning to Rule34 restores its own search.")
         store.startManualVisualRefresh(); store.handleMemoryPressure()
         XCTAssertFalse(store.isManualVisualScanRunning)
     }

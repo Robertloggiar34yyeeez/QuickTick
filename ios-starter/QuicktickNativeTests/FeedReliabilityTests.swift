@@ -158,6 +158,30 @@ final class FeedReliabilityTests: XCTestCase {
             for: post))
     }
 
+    func testPornhubDownloadsRejectPostersButAcceptDeclaredVideo() throws {
+        let post = Post(key: "pornhub:123", id: "123", provider: "Pornhub", type: "video")
+        XCTAssertThrowsError(try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://cdn.example.test/poster.jpg", type: "video"),
+            for: post))
+        let stream = try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://cdn.example.test/video.m3u8", type: "hls"),
+            for: post)
+        XCTAssertTrue(stream.isHLS)
+    }
+
+    func testWrappedMotionRotatesSavedVideosBetweenChapters() {
+        let posts = (0..<16).map { index in
+            Post(key: "redgifs:" + String(index), id: String(index), provider: "RedGIFs",
+                 type: index < 10 ? "video" : "image")
+        }
+        let first = WrappedMotionSelection.select(posts, chapter: 0)
+        let later = WrappedMotionSelection.select(posts, chapter: 1)
+        XCTAssertEqual(first.count, 6)
+        XCTAssertEqual(Set(first.map(\.stableID)).count, 6)
+        XCTAssertNotEqual(first.map(\.stableID), later.map(\.stableID))
+        XCTAssertGreaterThanOrEqual(later.filter { $0.type == "video" }.count, 2)
+    }
+
     func testOfflineImagePreservesSavedPortraitAndLandscapeRatios() {
         let screen = CGSize(width: 390, height: 844)
         let portrait = MediaSizing.offlineCard(aspect: 9.0 / 16.0, available: screen)

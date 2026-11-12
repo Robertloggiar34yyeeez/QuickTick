@@ -1611,16 +1611,43 @@ struct TasteWrappedActivity: Equatable {
 /// Cinematic layer shared by *every* New UI Wrapped chapter. Actual saved
 /// favorites drift through the frame; at most two native players run, and
 /// nothing from this private layer is included in the share card.
+enum WrappedMotionSelection {
+    static func select(_ posts: [Post], chapter: Int, limit: Int = 6) -> [Post] {
+        var seen = Set<String>()
+        let unique = posts.filter { seen.insert($0.stableID).inserted }
+        guard !unique.isEmpty, limit > 0 else { return [] }
+        let videos = unique.filter { $0.type.lowercased() == "video" }
+        let images = unique.filter { $0.type.lowercased() != "video" }
+        var chosen: [Post] = []
+        func take(_ pool: [Post], start: Int, count: Int) {
+            guard !pool.isEmpty, count > 0 else { return }
+            for offset in 0..<min(count, pool.count) {
+                let post = pool[(start + offset) % pool.count]
+                if !chosen.contains(where: { $0.stableID == post.stableID }) {
+                    chosen.append(post)
+                }
+            }
+        }
+        let page = max(0, chapter)
+        take(videos, start: (page * 2) % max(1, videos.count), count: 2)
+        take(images, start: (page * 4) % max(1, images.count), count: limit - chosen.count)
+        if chosen.count < limit {
+            take(unique, start: (page * limit) % unique.count, count: unique.count)
+        }
+        return Array(chosen.prefix(limit))
+    }
+}
+
 private struct WrappedMotionBackdrop: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let posts: [Post]
     let active: Bool
+    let chapter: Int
     @State private var drifting = false
 
     var body: some View {
         GeometryReader { geometry in
-            let items = Array((posts.filter { $0.type.lowercased() == "video" } +
-                               posts.filter { $0.type.lowercased() != "video" }).prefix(6))
+            let items = WrappedMotionSelection.select(posts, chapter: chapter)
             let width = max(120, min(225, geometry.size.width * 0.49))
             let height = max(175, min(330, geometry.size.height * 0.38))
             ZStack {
@@ -1661,12 +1688,13 @@ private struct WrappedActivityPage: View {
     let activity: TasteWrappedActivity
     let active: Bool
     let mediaPosts: [Post]
+    let chapter: Int
     @State private var drifting = false
 
     var body: some View {
         GeometryReader { geometry in
         ZStack(alignment: .topLeading) {
-            WrappedMotionBackdrop(posts: mediaPosts, active: active)
+            WrappedMotionBackdrop(posts: mediaPosts, active: active, chapter: chapter)
                 .opacity(mediaPosts.isEmpty ? 0 : 0.38)
                 .allowsHitTesting(false)
             LinearGradient(colors: [AppTheme.background.opacity(0.45), AppTheme.accent.opacity(0.33),
@@ -2007,7 +2035,7 @@ struct TasteWrappedView: View {
                         .tag(index + 1)
                 }
                 WrappedActivityPage(activity: activity, active: page == spotlights.count + 1,
-                                    mediaPosts: motionPosts)
+                                    mediaPosts: motionPosts, chapter: spotlights.count + 1)
                     .tag(spotlights.count + 1)
                 ForEach(sections.indices, id: \.self) { index in
                     wrappedPage(sections[index], pageIndex: spotlights.count + index + 2)
@@ -2068,7 +2096,7 @@ struct TasteWrappedView: View {
             likedCount = favorites.count
             sections = TasteWrappedSummary.make(from: favorites)
             spotlights = TasteWrappedSpotlights.make(from: favorites, sections: sections)
-            motionPosts = Array(favorites.prefix(12))
+            motionPosts = favorites.shuffled()
             videoCount = favorites.filter { $0.type.lowercased() == "video" }.count
             providerCount = Set(favorites.map { $0.providerKey?.rawValue ?? $0.provider }).count
             animated = true
@@ -2173,7 +2201,7 @@ struct TasteWrappedView: View {
         if AppTheme.premium {
             GeometryReader { geometry in
                 ZStack(alignment: .bottomLeading) {
-                    WrappedMotionBackdrop(posts: motionPosts, active: page == pageIndex)
+                    WrappedMotionBackdrop(posts: motionPosts, active: page == pageIndex, chapter: pageIndex)
                         .opacity(0.72).allowsHitTesting(false)
                     LinearGradient(colors: [.black.opacity(0.06), AppTheme.background.opacity(0.55),
                                             AppTheme.background.opacity(0.97)],

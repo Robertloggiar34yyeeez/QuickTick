@@ -341,13 +341,12 @@ struct HomeFeedView: View {
             LazyVStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 12) {
                     if AppTheme.premium {
-                        PremiumPageHeader(
-                            title: store.feedSort == "recommended" ? "For you" : "Trending now",
-                            eyebrow: "QUICKTICK / DISCOVER",
-                            subtitle: store.feedSort == "recommended"
-                                ? "Your personal collection of discoveries"
-                                : "What's popular across your sources",
-                            icon: "square.stack.3d.up.fill", titleIdentifier: "home-title")
+                        Text(store.feedSort == "recommended" ? "For you" : "Trending")
+                            .font(.system(size: 27, weight: .bold))
+                            .tracking(-0.65)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("home-title")
                     } else {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(store.feedSort == "recommended" ? "For you" : "Trending")
@@ -391,50 +390,8 @@ struct HomeFeedView: View {
                     Color.clear.preference(key: HomeTopOffsetPreference.self,
                                            value: origin.frame(in: .named("home-viewport")).minY)
                 })
-                .padding(.top, 14)
+                .padding(.top, 8)
                 .padding(.horizontal, 16)
-                if AppTheme.premium {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(Provider.allCases) { provider in
-                                let selected = provider == store.selectedProvider
-                                Button {
-                                    guard provider != store.selectedProvider else { return }
-                                    store.selectedProvider = provider
-                                    Task { await store.refresh() }
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Text(provider.monogram)
-                                            .font(.system(size: 11, weight: .black, design: .rounded))
-                                            .foregroundStyle(selected ? Color.black : AppTheme.accent)
-                                            .frame(width: 29, height: 29)
-                                            .background(selected ? Color.white : AppTheme.elevatedSurface,
-                                                        in: RoundedRectangle(cornerRadius: 9))
-                                        Text(provider.displayName)
-                                            .font(.system(size: 13, weight: .bold))
-                                            .lineLimit(1)
-                                        if selected {
-                                            Image(systemName: "checkmark")
-                                                .font(.system(size: 10, weight: .black))
-                                        }
-                                    }
-                                    .foregroundStyle(selected ? Color.white : AppTheme.secondaryLabel)
-                                    .padding(.horizontal, 11)
-                                    .frame(minHeight: 48)
-                                    .background(selected ? AppTheme.accent : AppTheme.surface,
-                                                in: RoundedRectangle(cornerRadius: 14))
-                                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(
-                                        selected ? AppTheme.accent : AppTheme.border))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityIdentifier("home-provider-\(provider.rawValue)")
-                                .accessibilityAddTraits(selected ? .isSelected : [])
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                    .accessibilityIdentifier("home-provider-selector")
-                }
                 HStack(spacing: 10) {
                     HStack(spacing: 3) {
                         ForEach([("Recommended", "recommended"), ("Popular", "popular")], id: \.1) { title, mode in

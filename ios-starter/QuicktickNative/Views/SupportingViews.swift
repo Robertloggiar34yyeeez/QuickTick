@@ -2207,31 +2207,45 @@ struct TasteWrappedView: View {
                                             AppTheme.background.opacity(0.97)],
                                    startPoint: .top, endPoint: .bottom)
                         .allowsHitTesting(false)
-                    VStack(alignment: .leading, spacing: 15) {
-                        HStack(spacing: 9) {
+                    VStack(alignment: .leading, spacing: 11) {
+                        HStack(spacing: 8) {
                             Image(systemName: section.symbol)
-                            Text("YOUR YEAR / YOUR FAVORITES")
-                                .tracking(2)
+                            Text("CHAPTER \(pageIndex - spotlights.count - 1) / \(sections.count)")
+                                .tracking(1.6)
+                            Spacer(minLength: 8)
+                            Text("YOUR FAVORITES")
+                                .tracking(1.2)
+                                .foregroundStyle(.white.opacity(0.64))
                         }
-                        .font(.system(size: 11, weight: .black))
+                        .font(.system(size: 10, weight: .black))
                         .foregroundStyle(AppTheme.accent)
                         Text(section.heading)
-                            .font(.system(size: 43, weight: .black))
-                            .tracking(-1.8)
-                            .lineLimit(3)
-                            .minimumScaleFactor(0.7)
-                        if section.moments.isEmpty {
-                            Text("Your next chapter is still unfolding.")
-                                .font(.title3.weight(.semibold))
-                        } else {
-                            Text(section.moments[0].label)
-                                .font(.system(size: 28, weight: .black))
-                                .lineLimit(3)
-                                .minimumScaleFactor(0.75)
-                                .foregroundStyle(.white)
-                            Text("\(section.moments[0].appearances) of your liked posts feature this.")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.white.opacity(0.8))
+                            .font(.system(size: 35, weight: .black, design: .rounded))
+                            .tracking(-1.2)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.72)
+                        if let top = section.moments.first {
+                            HStack(spacing: 13) {
+                                PosterView(post: top.sample)
+                                    .frame(width: 75, height: 92)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("MOST LIKED")
+                                        .font(.system(size: 10, weight: .black))
+                                        .tracking(1.5)
+                                        .foregroundStyle(AppTheme.accent)
+                                    Text(top.label)
+                                        .font(.system(size: 23, weight: .bold, design: .rounded))
+                                        .lineLimit(2)
+                                        .minimumScaleFactor(0.8)
+                                    Text("\(top.appearances) liked posts")
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.white.opacity(0.75))
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(10)
+                            .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 17))
                             ForEach(0..<min(3, section.moments.count), id: \.self) { index in
                                 let moment = section.moments[index]
                                 HStack(spacing: 12) {
@@ -2239,22 +2253,22 @@ struct TasteWrappedView: View {
                                         .font(.caption.monospacedDigit().weight(.black))
                                         .foregroundStyle(AppTheme.accent)
                                     Text(moment.label).lineLimit(1)
-                                        .font(.subheadline.weight(.bold))
-                                    Spacer(minLength: 4)
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer(minLength: 5)
                                     Text("\(moment.appearances)")
-                                        .font(.subheadline.monospacedDigit().weight(.black))
+                                        .font(.subheadline.monospacedDigit().weight(.bold))
                                 }
                                 .padding(.vertical, 5)
-                                .overlay(alignment: .bottom) {
-                                    Rectangle().fill(.white.opacity(0.15)).frame(height: 1)
-                                }
                             }
+                        } else {
+                            Text("Keep liking posts to unlock this chapter.")
+                                .font(.subheadline.weight(.medium))
                         }
                     }
                     .foregroundStyle(.white)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 105)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 28)
-                    .padding(.bottom, 108)
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .clipped()

@@ -713,7 +713,10 @@ enum NativeProviderAPI {
             for path in ["https://api.redgifs.com/v2/gifs/search", "https://api.redgifs.com/v2/search/gifs"] {
                 do {
                     let object = try Self.object(await data(session: session, url: url(path, items), provider: .redgifs, headers: redgifsHeaders(token: token)))
-                    guard object["gifs"] is [[String: Any]] else { throw APIError.invalidResponse }
+                    let nested = object["data"] as? [String: Any] ?? [:]
+                    guard object["gifs"] is [Any] || nested["gifs"] is [Any] else {
+                        throw APIError.invalidResponse
+                    }
                     found = object; break
                 } catch is CancellationError { throw CancellationError() } catch {
                     if (error as? APIError)?.retryAfter != nil { throw error }
@@ -1195,7 +1198,9 @@ enum NativeProviderAPI {
         do {
             let pageResult = try await hanimePublicSearch(session: session, query: query,
                 page: page, sort: sort, immersive: immersive)
-            if !pageResult.items.isEmpty || !query.included.isEmpty || page > 1 { return pageResult }
+            if !pageResult.items.isEmpty || page > 1 { return pageResult }
+            // A blank search response can be an incomplete index, not proof
+            // that the other authorized catalog/search routes have no match.
         } catch is CancellationError { throw CancellationError() }
           catch APIError.rateLimited(_, let deadline) { throw APIError.rateLimited(.hanime, deadline) }
           catch APIError.providerStatus(.hanime, 451) { throw APIError.providerStatus(.hanime, 451) }
@@ -1718,7 +1723,7 @@ enum NativeProviderAPI {
                 query: query, page: page, sort: sort, immersive: immersive)
         }
         let raw = rows(result["videos"])
-        if raw.isEmpty, page == 1, selection.keywords.isEmpty {
+        if raw.isEmpty, page == 1 {
             return try await pornhubPublicCatalog(session: session, credentials: credentials,
                 query: query, page: page, sort: sort, immersive: immersive)
         }
@@ -2675,7 +2680,7 @@ extension NativeProviderAPI {
         let normalized = raw.flatMap { archiveItems($0, provider: provider) }
         // A fallback without server-side `q` must still honor the user's
         // search. Otherwise a recoverable 404 silently becomes a wrong feed.
-        let visible = usedFallback && creator == nil
+        let visible = creator == nil && !query.included.isEmpty
             ? normalized.filter { post in query.included.allSatisfy { containsKeyword($0, in: post) } }
             : normalized
         let total = (decoded as? [String: Any]).map { number($0["true_count"]) } ?? 0

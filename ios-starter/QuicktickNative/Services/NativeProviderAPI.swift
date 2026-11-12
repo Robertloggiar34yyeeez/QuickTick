@@ -823,7 +823,8 @@ enum NativeProviderAPI {
     /// newer v11 handshake is empty, blocked, or produces an expired token.
     /// Use only official stream URLs and never accept a watch page as media.
     static func hanimeLegacyMediaResolve(session: URLSession, post: Post,
-                                         variant: Int = 0) async throws -> ResolvedMedia {
+                                         variant: Int = 0,
+                                         preferFile: Bool = false) async throws -> ResolvedMedia {
         guard post.id.count <= 160,
               post.id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else {
             throw APIError.invalidResponse
@@ -846,7 +847,14 @@ enum NativeProviderAPI {
             return address
         }
         guard !valid.isEmpty else { throw APIError.server("Hanime's public video manifest has no playable stream.") }
-        let selected = valid[min(max(variant, 0), valid.count - 1)]
+        // A full MP4 is simpler and more portable for offline storage than an
+        // HLS package. Prefer one when the provider itself advertises it.
+        let candidates = preferFile ? valid.sorted {
+            let leftFile = ["mp4", "m4v"].contains($0.pathExtension.lowercased())
+            let rightFile = ["mp4", "m4v"].contains($1.pathExtension.lowercased())
+            return leftFile && !rightFile
+        } : valid
+        let selected = candidates[min(max(variant, 0), candidates.count - 1)]
         return ResolvedMedia(mediaUrl: selected.absoluteString,
             type: ["mp4", "m4v"].contains(selected.pathExtension.lowercased()) ? "video" : "hls")
     }
@@ -2033,7 +2041,7 @@ extension NativeProviderAPI {
 
     static func resolve(session: URLSession, credentials: ProviderCredentials, post: Post,
                         redgifsToken: String?, havenToken: String? = nil,
-                        streamVariant: Int = 0) async throws -> ResolvedMedia {
+                        streamVariant: Int = 0, forDownload: Bool = false) async throws -> ResolvedMedia {
         // A valid direct media URL can outlive its provider metadata (for
         // example an imported/restored post with a legacy or unknown site).
         // Only use this fallback for actual file/playlist paths, never an
@@ -2107,6 +2115,16 @@ extension NativeProviderAPI {
             }
             throw APIError.server("Eporner returned no playable public stream.")
         case .hanime:
+            if forDownload {
+                // For offline media try the provider's verified full file
+                // variants first, retaining the signed v11 HLS fallback.
+                if let fileOrHLS = try? await hanimeLegacyMediaResolve(
+                    session: session, post: post, variant: streamVariant, preferFile: true) {
+                    try Task.checkCancellation()
+                    return fileOrHLS
+                }
+                try Task.checkCancellation()
+            }
             // When AVPlayer rejects the first signed playlist, the retry must
             // be able to change transport, not merely request another token
             // for the same failing manifest. Try the older public v8 media
@@ -2175,7 +2193,14 @@ extension NativeProviderAPI {
                 let html = String(decoding: bytes, as: UTF8.self)
                 let raw = pornhubPlayerDefinitions(html)
                 guard !raw.isEmpty else { continue }
-                let sorted = raw.sorted { number($0["quality"]) > number($1["quality"]) }
+                let sorted = raw.sorted { lhs, rhs in
+                    if forDownload {
+                        let firstIsFile = pornhubDeclaredMedia(lhs)?.type == "video"
+                        let secondIsFile = pornhubDeclaredMedia(rhs)?.type == "video"
+                        if firstIsFile != secondIsFile { return firstIsFile && !secondIsFile }
+                    }
+                    return number(lhs["quality"]) > number(rhs["quality"])
+                }
                 // A player can label a source "hls", "HLS", "video/mp4" or
                 // omit format entirely. Trust the validated URL extension
                 // first, retaining nested first-party definitions as a fallback.

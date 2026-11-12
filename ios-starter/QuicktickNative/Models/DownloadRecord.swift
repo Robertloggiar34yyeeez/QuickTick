@@ -47,15 +47,24 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
             .contains(URL(fileURLWithPath: path).pathExtension.lowercased())
     }
 
+    // An old download may contain a poster named as media, not full video.
+    var isProviderVideoPoster: Bool {
+        guard kind == .file, ["hanime", "pornhub"].contains(provider.lowercased()),
+              let path = localMediaPath else { return false }
+        return ["jpg", "jpeg", "png", "webp", "avif", "heic", "gif"]
+            .contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+            && (provider.lowercased() == "hanime" || mediaType?.lowercased() == "video")
+    }
+
     // The share sheet exports the existing file/package without decoding or copying it.
     var exportURL: URL? {
-        guard !isHanimePosterOnly, state == .complete, let path = localMediaPath,
+        guard !isProviderVideoPoster, state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }
         return URL(fileURLWithPath: path)
     }
 
     var offlinePost: Post? {
-        guard !isHanimePosterOnly, state == .complete, let path = localMediaPath,
+        guard !isProviderVideoPoster, state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }
         let media = URL(fileURLWithPath: path)
         let type: String

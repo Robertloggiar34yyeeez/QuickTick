@@ -13,12 +13,14 @@ actor MediaResolver {
     private var inFlight: [String: Task<ResolvedMedia, Error>] = [:]
     init(api: QuicktickAPIClient) { self.api = api }
 
-    private func identity(_ post: Post) -> String { "\(post.stableID)|\(post.mediaUrl)|\(post.type)" }
+    private func identity(_ post: Post, forDownload: Bool = false) -> String {
+        "\(post.stableID)|\(post.mediaUrl)|\(post.type)|\(forDownload ? "offline" : "playback")"
+    }
     // Signed Hanime playlists expire faster than ordinary provider media.
     private func cacheSeconds(for post: Post) -> TimeInterval { post.providerKey == .hanime ? 40 : 180 }
     func resolve(_ post: Post, refresh: Bool = false,
-                 streamVariant: Int = 0) async throws -> ResolvedMedia {
-        let key = identity(post)
+                 streamVariant: Int = 0, forDownload: Bool = false) async throws -> ResolvedMedia {
+        let key = identity(post, forDownload: forDownload)
         if refresh {
             // Do not coalesce a user retry with an old signed URL resolution.
             var fresh = post
@@ -26,8 +28,9 @@ actor MediaResolver {
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ui-testing"), URL(string: post.mediaUrl)?.isFileURL == true { fresh = post }
             #endif
-            cache.removeValue(forKey: identity(fresh))
-            let value = try await fetch(fresh, streamVariant: streamVariant)
+            cache.removeValue(forKey: identity(fresh, forDownload: forDownload))
+            let value = try await fetch(fresh, streamVariant: streamVariant,
+                                        forDownload: forDownload)
             try Task.checkCancellation()
             cache[key] = (value, .now)
             return value
@@ -35,7 +38,7 @@ actor MediaResolver {
         if let (media,date) = cache[key], Date().timeIntervalSince(date) < cacheSeconds(for: post) { return media }
         let task: Task<ResolvedMedia,Error>
         if let shared = inFlight[key] { task = shared }
-        else { task = Task { try await self.fetch(post) }; inFlight[key] = task }
+        else { task = Task { try await self.fetch(post, forDownload: forDownload) }; inFlight[key] = task }
         let waiter = UUID();waiters[key,default:[]].insert(waiter)
         return try await withTaskCancellationHandler {
             defer { finish(key,waiter:waiter,cancel:false) }
@@ -50,13 +53,16 @@ actor MediaResolver {
         }
     }
 
-    private func fetch(_ post: Post, streamVariant: Int = 0) async throws -> ResolvedMedia {
-        if let (media, date) = cache[identity(post)], Date().timeIntervalSince(date) < cacheSeconds(for: post) { return media }
+    private func fetch(_ post: Post, streamVariant: Int = 0,
+                       forDownload: Bool = false) async throws -> ResolvedMedia {
+        let key = identity(post, forDownload: forDownload)
+        if let (media, date) = cache[key], Date().timeIntervalSince(date) < cacheSeconds(for: post) { return media }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing"), URL(string: post.mediaUrl)?.isFileURL == true { return ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type) }
         #endif
-        let media = try await api.resolveMedia(post, streamVariant: streamVariant)
-        cache[identity(post)] = (media, .now)
+        let media = try await api.resolveMedia(post, streamVariant: streamVariant,
+                                               forDownload: forDownload)
+        cache[key] = (media, .now)
         if cache.count > 40 { cache.removeValue(forKey: cache.min { $0.value.1 < $1.value.1 }!.key) }
         return media
     }

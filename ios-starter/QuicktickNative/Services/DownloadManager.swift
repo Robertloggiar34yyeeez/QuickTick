@@ -84,10 +84,14 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 } else { savedRecords = try JSONDecoder().decode([DownloadRecord].self, from: data) }
                 let paths = DownloadPathStorage(root: root)
                 records = Self.newestFirst(savedRecords.map { paths.restore($0) })
-                for index in records.indices where records[index].provider.lowercased() == Provider.hanime.rawValue &&
+                for index in records.indices where
+                    [Provider.hanime.rawValue, Provider.pornhub.rawValue].contains(records[index].provider.lowercased()) &&
                     records[index].state == .complete && records[index].kind == .file &&
-                    (records[index].isHanimePosterOnly ||
-                     records[index].localMediaPath.map { DownloadResponseValidator.isPreviewImage(at: URL(fileURLWithPath: $0)) } == true) {
+                    (records[index].isProviderVideoPoster ||
+                     (records[index].mediaType?.lowercased() == "video" &&
+                      records[index].localMediaPath.map {
+                        DownloadResponseValidator.isPreviewImage(at: URL(fileURLWithPath: $0))
+                      } == true)) {
                     // Older releases also stored image bytes *named media.mp4*.
                     // Check the file signature once while restoring metadata;
                     // don't read files repeatedly on the scrolling hot path.
@@ -95,7 +99,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     // as a completed offline movie.
                     records[index].state = .failed
                     records[index].progress = 0
-                    records[index].errorMessage = "Only the old preview was saved. Retry to download the full Hanime video."
+                    records[index].errorMessage = "Only a preview was saved. Retry to fetch the complete provider video."
                 }
                 // Older builds serialized the app container's absolute UUID path.
                 // iOS can change that UUID on an update even though the files survive.
@@ -169,7 +173,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     // Signed playback URLs may expire before transfer starts.
                     refresh: refreshSource || post.providerKey == .hanime || post.providerKey == .pornhub,
                     streamVariant: (post.providerKey == .hanime || post.providerKey == .pornhub)
-                        ? streamVariant : 0)
+                        ? streamVariant : 0,
+                    forDownload: true)
                 try Task.checkCancellation()
                 // A user can cancel while the provider issues a signed URL.
                 // The URL must never start a background transfer afterward.
@@ -430,7 +435,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             let file = dir.appendingPathComponent("thumbnail.jpg")
             try data.write(to: file, options: .atomic)
             update(record.key) { $0.thumbnailLocalPath = file.path }
-        } catch { update(record.key) { $0.errorMessage = "Thumbnail: \(error.localizedDescription)" } }
+        } catch {
+            // A missing poster must not be reported as a failed video
+            // transfer; thumbnails are optional display-only metadata.
+        }
     }
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         guard let key = downloadTask.taskDescription else { return }

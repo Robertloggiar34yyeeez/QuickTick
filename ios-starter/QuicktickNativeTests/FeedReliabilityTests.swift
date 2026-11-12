@@ -162,6 +162,17 @@ final class FeedReliabilityTests: XCTestCase {
             for: post))
     }
 
+    func testPornhubPosterOnlyRecordIsNeverACompletedVideo() {
+        var record = DownloadRecord(key: "pornhub:fixture", provider: "Pornhub",
+            postID: "fixture", title: "Poster", tags: [], thumbnailRemoteURL: "",
+            localMediaPath: "/tmp/quicktick-legacy-poster.jpg", kind: .file,
+            state: .complete, progress: 1, createdAt: .now)
+        record.mediaType = "video"
+        XCTAssertTrue(record.isProviderVideoPoster)
+        XCTAssertNil(record.offlinePost)
+        XCTAssertNil(record.exportURL)
+    }
+
     func testPornhubDownloadsRejectPostersButAcceptDeclaredVideo() throws {
         let post = Post(key: "pornhub:123", id: "123", provider: "Pornhub", type: "video")
         XCTAssertThrowsError(try DownloadSourcePolicy.validate(

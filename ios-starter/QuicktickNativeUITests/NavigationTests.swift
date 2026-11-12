@@ -380,8 +380,11 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(offlineCard.waitForExistence(timeout: 10))
         XCTAssertEqual(offlineCard.frame.width, homeWidth, accuracy: 2,
                        "Downloaded media cards must use the same edge-to-edge width as Home")
-        let full = app.buttons["View full image"].firstMatch
-        for _ in 0..<5 { if full.isHittable { break }; app.swipeUp() }
+        // The full-bleed comic now uses a stable media action identifier,
+        // rather than a label that is different between the two UI styles.
+        let full = app.buttons["fullscreen-test:image"]
+        XCTAssertTrue(full.waitForExistence(timeout: 10))
+        for _ in 0..<10 { if full.isHittable { break }; app.swipeUp() }
         XCTAssertTrue(full.isHittable); full.tap()
         let close = app.buttons["Close full image"]
         XCTAssertTrue(close.waitForExistence(timeout: 10))

@@ -50,10 +50,16 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     // An old download may contain a poster named as media, not full video.
     var isProviderVideoPoster: Bool {
         guard kind == .file, ["hanime", "pornhub"].contains(provider.lowercased()),
-              let path = localMediaPath else { return false }
-        return ["jpg", "jpeg", "png", "webp", "avif", "heic", "gif"]
-            .contains(URL(fileURLWithPath: path).pathExtension.lowercased())
-            && (provider.lowercased() == "hanime" || mediaType?.lowercased() == "video")
+              let path = localMediaPath,
+              provider.lowercased() == "hanime" || mediaType?.lowercased() == "video" else {
+            return false
+        }
+        let location = URL(fileURLWithPath: path)
+        if ["jpg", "jpeg", "png", "webp", "avif", "heic", "gif"]
+            .contains(location.pathExtension.lowercased()) { return true }
+        // Old versions wrote JPEGs under the filename media.mp4. A filename
+        // cannot prove that video data was downloaded; inspect the signature.
+        return DownloadResponseValidator.isPreviewImage(at: location)
     }
 
     // The share sheet exports the existing file/package without decoding or copying it.

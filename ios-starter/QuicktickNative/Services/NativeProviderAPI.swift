@@ -791,13 +791,13 @@ enum NativeProviderAPI {
     /// stream. This uses the same guest transport as the official web player,
     /// and never treats 403/verification HTML as an authorized stream.
     static func hanimeHLSResolve(session: URLSession, post: Post,
-                                 variant: Int = 0) async throws -> ResolvedMedia {
+                                 variant: Int = 0, preferFile: Bool = false) async throws -> ResolvedMedia {
         guard post.id.count <= 160,
               post.id.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil else {
             throw APIError.invalidResponse
         }
         do {
-            return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
+            return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant, preferFile: preferFile)
         } catch APIError.providerStatus(.hanime, 403) {
             // A normal first-party page visit can establish an ordinary guest
             // session cookie. No challenge solving or access bypass is used.
@@ -806,7 +806,7 @@ enum NativeProviderAPI {
                                     maxBytes: 1024 * 1024, timeout: 8)
             }
             do {
-                return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
+                return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant, preferFile: preferFile)
             } catch APIError.providerStatus(.hanime, 403) {
                 throw APIError.server("Hanime refused the native HLS handshake (HTTP 403). Open the original video in the browser or configure an authorized Hanime API in Settings.")
             }
@@ -814,7 +814,7 @@ enum NativeProviderAPI {
             // Signed HLS paths can expire between the handshake and the first
             // request. Retry the legitimate first-party handshake once before
             // surfacing an unavailable stream to native playback.
-            return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
+            return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant, preferFile: preferFile)
         }
     }
 
@@ -860,7 +860,8 @@ enum NativeProviderAPI {
     }
 
     private static func hanimeHLSHandshake(session: URLSession, slug: String,
-                                           variant: Int = 0) async throws -> ResolvedMedia {
+                                           variant: Int = 0,
+                                           preferFile: Bool = false) async throws -> ResolvedMedia {
         let time = Int(Date().timeIntervalSince1970)
         let timestamp = String(time)
         let signature = SHA256.hash(data: Data(
@@ -925,7 +926,12 @@ enum NativeProviderAPI {
         // After a genuine AVPlayer failure, request a fresh handshake and
         // step down through the advertised variants without probing/using up
         // the playlist URL. Normal first playback still picks best quality.
-        let selected = playable[min(max(0, variant), playable.count - 1)]
+        let candidates = preferFile ? playable.sorted {
+            let firstIsFile = ["mp4", "m4v"].contains($0.pathExtension.lowercased())
+            let secondIsFile = ["mp4", "m4v"].contains($1.pathExtension.lowercased())
+            return firstIsFile && !secondIsFile
+        } : playable
+        let selected = candidates[min(max(0, variant), candidates.count - 1)]
         let extensionName = selected.pathExtension.lowercased()
         return ResolvedMedia(mediaUrl: selected.absoluteString,
                              type: ["mp4", "m4v"].contains(extensionName) ? "video" : "hls")
@@ -2116,14 +2122,19 @@ extension NativeProviderAPI {
             throw APIError.server("Eporner returned no playable public stream.")
         case .hanime:
             if forDownload {
-                // For offline media try the provider's verified full file
-                // variants first, retaining the signed v11 HLS fallback.
-                if let fileOrHLS = try? await hanimeLegacyMediaResolve(
-                    session: session, post: post, variant: streamVariant, preferFile: true) {
-                    try Task.checkCancellation()
-                    return fileOrHLS
-                }
+                // Independent authorized source manifests can expose
+                // different qualities and containers. Favor real MP4 files,
+                // fall back to HLS only when neither source advertises one.
+                let legacy = try? await hanimeLegacyMediaResolve(
+                    session: session, post: post, variant: streamVariant, preferFile: true)
                 try Task.checkCancellation()
+                if let legacy, legacy.type == "video" { return legacy }
+                let current = try? await hanimeHLSResolve(
+                    session: session, post: post, variant: streamVariant, preferFile: true)
+                try Task.checkCancellation()
+                if let current, current.type == "video" { return current }
+                if let current { return current }
+                if let legacy { return legacy }
             }
             // When AVPlayer rejects the first signed playlist, the retry must
             // be able to change transport, not merely request another token

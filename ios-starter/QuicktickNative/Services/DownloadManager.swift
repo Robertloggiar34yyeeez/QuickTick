@@ -65,6 +65,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }()
     private lazy var hlsSession: AVAssetDownloadURLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: "com.quicktick.downloads.hls")
+        // A signed HLS URL has a short lifetime. This is always a user-initiated
+        // download, so never defer its first request until the token expires.
+        config.isDiscretionary = false
+        config.sessionSendsLaunchEvents = true
         return AVAssetDownloadURLSession(configuration: config, assetDownloadDelegate: self, delegateQueue: transferDelegateQueue)
     }()
 
@@ -99,7 +103,9 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     // as a completed offline movie.
                     records[index].state = .failed
                     records[index].progress = 0
-                    records[index].errorMessage = "Only a preview was saved. Retry to fetch the complete provider video."
+                    records[index].errorMessage = records[index].provider.lowercased() == Provider.hanime.rawValue
+                        ? "Only the old preview was saved. Retry to download the full Hanime video."
+                        : "Only the old preview was saved. Retry to download the full Pornhub video."
                 }
                 // Older builds serialized the app container's absolute UUID path.
                 // iOS can change that UUID on an update even though the files survive.
@@ -612,7 +618,7 @@ enum DownloadResponseValidator {
         }
         let mime = response.mimeType?.lowercased() ?? ""
         if expectedVideo && (mime.hasPrefix("image/") || isPreviewImage(header: header)) {
-            return "The media server returned only a preview image, not the Hanime video. Retry to resolve its stream."
+            return "The media server returned an image rather than video bytes. Retry to resolve the full stream."
         }
         let prefix = String(decoding: header, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if mime.contains("text/") || mime.contains("json") || mime.contains("html") ||

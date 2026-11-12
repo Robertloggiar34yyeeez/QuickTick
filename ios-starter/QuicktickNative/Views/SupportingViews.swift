@@ -1647,9 +1647,11 @@ private struct WrappedMotionBackdrop: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let items = WrappedMotionSelection.select(posts, chapter: chapter)
-            let width = max(120, min(225, geometry.size.width * 0.49))
-            let height = max(175, min(330, geometry.size.height * 0.38))
+            // Two staggered frames create a film-reel journey without
+            // six stacked posters covering the playing video.
+            let items = WrappedMotionSelection.select(posts, chapter: chapter, limit: 2)
+            let width = max(135, min(265, geometry.size.width * 0.62))
+            let height = max(185, min(380, geometry.size.height * 0.43))
             ZStack {
                 ForEach(items.indices, id: \.self) { index in
                     let post = items[index]
@@ -1665,11 +1667,11 @@ private struct WrappedMotionBackdrop: View {
                     .clipShape(RoundedRectangle(cornerRadius: 19))
                     .overlay(RoundedRectangle(cornerRadius: 19)
                         .strokeBorder(.white.opacity(0.28), lineWidth: 1))
-                    .rotationEffect(.degrees(Double((index % 3) - 1) * 7))
-                    .position(x: geometry.size.width * ([0.24, 0.76, 0.51, 0.20, 0.79, 0.50][index]),
-                              y: geometry.size.height * ([0.22, 0.31, 0.50, 0.68, 0.76, 0.96][index]))
-                    .offset(x: reduceMotion ? 0 : (drifting ? CGFloat(18 + index * 7) : CGFloat(-28 - index * 4)),
-                            y: reduceMotion ? 0 : (drifting ? -15 : 18))
+                    .rotationEffect(.degrees(index == 0 ? -5 : 5))
+                    .position(x: geometry.size.width * (index == 0 ? 0.34 : 0.69),
+                              y: geometry.size.height * (index == 0 ? 0.29 : 0.72))
+                    .offset(x: reduceMotion ? 0 : (drifting ? CGFloat(10 + index * 8) : CGFloat(-14 - index * 4)),
+                            y: reduceMotion ? 0 : (drifting ? -12 : 12))
                     .animation(reduceMotion ? nil :
                         .easeInOut(duration: Double(7 + index)).repeatForever(autoreverses: true),
                         value: drifting)
@@ -1791,13 +1793,21 @@ private struct WrappedVideoStage: View {
 
     var body: some View {
         ZStack {
-            PosterView(post: post)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Color.black
             if let player {
                 NativePlayerSurface(player: player, fill: true, ready: $ready,
                                     accessibilityID: "wrapped-video-\(post.stableID)")
                     .opacity(ready ? 1 : 0)
                     .allowsHitTesting(false)
+                if !ready {
+                    ProgressView().tint(.white)
+                        .accessibilityLabel("Preparing the full video")
+                }
+            } else {
+                // Once a real player is present the poster is removed from
+                // the hierarchy, never alpha-composited over the video.
+                PosterView(post: post)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .clipped()
@@ -2047,7 +2057,11 @@ struct TasteWrappedView: View {
             .sensoryFeedback(.selection, trigger: page)
             VStack {
                 HStack {
-                    Text("QUICKTICK / WRAPPED")
+                    Text(page == 0 ? "PROLOGUE / YOUR JOURNEY" :
+                         page == totalPages - 1 ? "FINALE / THE NEXT CHAPTER" :
+                         page <= spotlights.count ? "ACT I / YOUR MOMENTS" :
+                         page == spotlights.count + 1 ? "ACT II / YOUR ACTIVITY" :
+                         "ACT III / THE PATTERNS")
                         .font(.system(size: 11, weight: .bold, design: .rounded))
                         .tracking(2)
                         .foregroundStyle(.white.opacity(0.86))
@@ -2070,7 +2084,7 @@ struct TasteWrappedView: View {
                     }
                 }
                 HStack {
-                    Text("\(page + 1) / \(totalPages)")
+                    Text("SCENE \(String(format: "%02d", page + 1)) / \(String(format: "%02d", totalPages))")
                         .font(.caption2.monospacedDigit())
                     Spacer()
                     Button(page == totalPages - 1 ? "Finish" : "Next") {
@@ -2156,13 +2170,22 @@ struct TasteWrappedView: View {
 
     private var premiumIntroduction: some View {
         ZStack(alignment: .bottomLeading) {
+            WrappedMotionBackdrop(posts: motionPosts, active: page == 0, chapter: 0)
+                .opacity(0.60)
+                .allowsHitTesting(false)
+            LinearGradient(colors: [.black.opacity(0.25),
+                                    AppTheme.background.opacity(0.48),
+                                    AppTheme.background.opacity(0.98)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
             VStack(alignment: .leading, spacing: 0) {
-                Text("QUICKTICK  /  \(Calendar.current.component(.year, from: .now))")
+                Text("QUICKTICK  /  A YEAR IN MOTION  /  \(Calendar.current.component(.year, from: .now))")
                     .font(.system(size: 12, weight: .black, design: .default))
                     .tracking(3)
                     .foregroundStyle(AppTheme.accent)
                     .padding(.bottom, 26)
-                Text("THIS IS\nYOUR\nSTORY.")
+                Text("YOUR YEAR.\nYOUR JOURNEY.")
                     .font(.system(size: 57, weight: .black, design: .default))
                     .tracking(-2.8)
                     .lineSpacing(-3)
@@ -2226,9 +2249,10 @@ struct TasteWrappedView: View {
                             .minimumScaleFactor(0.72)
                         if let top = section.moments.first {
                             HStack(spacing: 13) {
-                                PosterView(post: top.sample)
-                                    .frame(width: 75, height: 92)
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                Image(systemName: section.symbol)
+                                    .font(.system(size: 28, weight: .semibold))
+                                    .foregroundStyle(AppTheme.accent)
+                                    .frame(width: 56, height: 78)
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text("MOST LIKED")
                                         .font(.system(size: 10, weight: .black))

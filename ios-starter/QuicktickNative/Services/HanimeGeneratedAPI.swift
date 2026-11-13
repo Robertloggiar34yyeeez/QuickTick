@@ -127,11 +127,13 @@ enum HanimeHandshakeCodec {
                                       authenticating: associatedData)
         let envelope: [String: Any] = [
             "v": 1, "alg": "AES-256-GCM",
-            "iv": nonce.withUnsafeBytes { Data($0) }.base64EncodedString(),
-            "tag": sealed.tag.base64EncodedString(),
-            "data": sealed.ciphertext.base64EncodedString()
+            "iv": nonce.withUnsafeBytes { encodeBase64URL(Data($0)) },
+            "tag": encodeBase64URL(sealed.tag),
+            "data": encodeBase64URL(sealed.ciphertext)
         ]
-        return try JSONSerialization.data(withJSONObject: envelope).base64EncodedString()
+        // The official site expects URL-safe, unpadded Base64 both for each
+        // AES-GCM field and for the encrypted JSON envelope.
+        return encodeBase64URL(try JSONSerialization.data(withJSONObject: envelope))
     }
 
     static func open(_ token: String) throws -> Data {
@@ -148,6 +150,13 @@ enum HanimeHandshakeCodec {
         let nonce = try AES.GCM.Nonce(data: iv)
         let box = try AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag)
         return try AES.GCM.open(box, using: key, authenticating: associatedData)
+    }
+
+    private static func encodeBase64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 
     private static func decodeBase64(_ token: String) -> Data? {

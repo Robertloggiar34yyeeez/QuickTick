@@ -611,6 +611,7 @@ private struct ImmersiveItemView: View {
     @State private var automaticProviderRetry = 0
     @State private var browseHanime = false
     @State private var browsePornhub = false
+    @State private var browseXvideos = false
     @State private var showComments = false
     @State private var showTags = false
     @State private var gifURL: URL?
@@ -634,6 +635,10 @@ private struct ImmersiveItemView: View {
               let url = URL(string: post.pageUrl), url.scheme == "https",
               ["hanime.tv", "www.hanime.tv"].contains(url.host ?? "") else { return nil }
         return url
+    }
+    private var xvideosPage: URL? {
+        guard post.providerKey == .xvideos else { return nil }
+        return NativeProviderAPI.xvideosWatchURL(post.pageUrl)
     }
     private var pornhubPage: URL? {
         guard post.providerKey == .pornhub,
@@ -848,6 +853,10 @@ private struct ImmersiveItemView: View {
                             Button("Open original in QuickTick browser") { browsePornhub = true }
                                 .frame(minHeight: 44)
                         }
+                        if xvideosPage != nil {
+                            Button("Open XVideos in QuickTick browser") { browseXvideos = true }
+                                .frame(minHeight: 44)
+                        }
                     }.padding(12).background(AppTheme.chrome, in: RoundedRectangle(cornerRadius: 12)).padding()
                 }
                 if active, !offline, !collection, let message = store.lastError {
@@ -876,6 +885,9 @@ private struct ImmersiveItemView: View {
         .sheet(isPresented: $browsePornhub) {
             if let url = pornhubPage { SourceWebsiteView(url: url).ignoresSafeArea() }
         }
+        .sheet(isPresented: $browseXvideos) {
+            if let url = xvideosPage { SourceWebsiteView(url: url).ignoresSafeArea() }
+        }
         .task(id: likePulse) {
             guard likePulse else { return }
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
@@ -900,7 +912,7 @@ private struct ImmersiveItemView: View {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if let player {
                     if player.currentItem?.status == .failed {
-                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
+                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .xvideos),
                            automaticProviderRetry < (post.providerKey == .hanime ? 2 : 3) {
                             automaticProviderRetry += 1
                             store.players.release(post.stableID)
@@ -931,7 +943,7 @@ private struct ImmersiveItemView: View {
                     else { stalledSeconds = 0; if player.timeControlStatus == .playing { error = nil } }
                     lastTime = seconds
                     if stalledSeconds >= 12, !offline,
-                       (post.providerKey == .hanime || post.providerKey == .pornhub),
+                       (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .xvideos),
                        automaticProviderRetry < (post.providerKey == .hanime ? 2 : 3) {
                         automaticProviderRetry += 1
                         store.players.release(post.stableID)

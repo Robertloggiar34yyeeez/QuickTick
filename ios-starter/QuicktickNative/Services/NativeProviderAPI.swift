@@ -728,7 +728,8 @@ enum NativeProviderAPI {
         let expanded = raw.hasPrefix("//") ? "https:" + raw : raw
         guard let address = URL(string: expanded, relativeTo: origin(.xvideos))?.absoluteURL,
               address.scheme == "https",
-              ["www.xvideos.com", "xvideos.com"].contains(address.host?.lowercased() ?? ""),
+              let host = address.host?.lowercased(),
+              (host == "xvideos.com" || host.hasSuffix(".xvideos.com")),
               matches(address.path, #"^/video(?:\.|/)?([a-z0-9]+)(?:/|$)"#).first != nil else {
             return nil
         }
@@ -739,7 +740,9 @@ enum NativeProviderAPI {
         let cleaned = raw.replacingOccurrences(of: "\\/", with: "/")
             .replacingOccurrences(of: "\\u0026", with: "&")
             .replacingOccurrences(of: "&amp;", with: "&")
-        guard let media = URL(string: cleaned), media.scheme == "https",
+        let normalized = cleaned.lowercased().hasPrefix("https%3a")
+            ? (cleaned.removingPercentEncoding ?? cleaned) : cleaned
+        guard let media = URL(string: normalized), media.scheme == "https",
               media.user == nil, media.password == nil,
               let host = media.host?.lowercased() else { return nil }
         // Actual video must be hosted on XVideos' own media infrastructure.

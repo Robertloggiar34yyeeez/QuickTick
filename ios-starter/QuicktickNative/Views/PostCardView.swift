@@ -23,6 +23,7 @@ struct PostCardView: View {
     @State private var tags = false
     @State private var havenBrowser = false
     @State private var pornhubBrowser = false
+    @State private var xvideosBrowser = false
     @State private var creditedArtists: [String] = []
     @State private var fullImage = false
     @State private var readingManga = false
@@ -101,6 +102,15 @@ struct PostCardView: View {
                             Label("Watch in QuickTick browser", systemImage: "play.rectangle.on.rectangle")
                                 .font(.caption.weight(.semibold))
                                 .padding(.horizontal, 14).frame(minHeight: 38)
+                                .background(AppTheme.elevatedSurface, in: Capsule())
+                        }
+                    }
+                    if post.providerKey == .xvideos,
+                       NativeProviderAPI.xvideosWatchURL(post.pageUrl) != nil {
+                        Button { xvideosBrowser = true } label: {
+                            Label("Open XVideos in QuickTick browser", systemImage: "safari")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 14).frame(minHeight: 44)
                                 .background(AppTheme.elevatedSurface, in: Capsule())
                         }
                     }
@@ -190,6 +200,11 @@ struct PostCardView: View {
             }
             .sheet(isPresented: $pornhubBrowser) {
                 if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
+            }
+            .sheet(isPresented: $xvideosBrowser) {
+                if let url = NativeProviderAPI.xvideosWatchURL(post.pageUrl) {
+                    SourceWebsiteView(url: url).ignoresSafeArea()
+                }
             }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
                 previewURL: post.cardPreviewURL) }

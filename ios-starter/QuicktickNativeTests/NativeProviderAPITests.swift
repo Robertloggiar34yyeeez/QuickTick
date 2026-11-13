@@ -1376,8 +1376,11 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(Provider.identifyPage("https://www.xvideos.com/video.abc123/example"), .xvideos)
         XCTAssertTrue(Provider.allCases.contains(.xvideos))
         XCTAssertNotNil(NativeProviderAPI.xvideosWatchURL("/video.abc123/example"))
+        XCTAssertNotNil(NativeProviderAPI.xvideosWatchURL("https://de.xvideos.com/video4588838/example"))
         XCTAssertNil(NativeProviderAPI.xvideosWatchURL("https://evil.invalid/video.abc123/example"))
         XCTAssertNotNil(NativeProviderAPI.xvideosPlayerMediaURL("https://cdn77.xvideos-cdn.com/video.mp4"))
+        XCTAssertNotNil(NativeProviderAPI.xvideosPlayerMediaURL(
+            "https%3A%2F%2Fcdn77.xvideos-cdn.com%2Fvideo.mp4"))
         XCTAssertNil(NativeProviderAPI.xvideosPlayerMediaURL("https://evil.invalid/preview.mp4"))
         XCTAssertNil(NativeProviderAPI.xvideosPlayerMediaURL("https://img-cf.xvideos-cdn.com/video.jpg"))
     }

@@ -46,6 +46,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     private var preparationTasks: [String: Task<Void, Never>] = [:]
     private var preparationIDs: [String: UUID] = [:]
     private var refreshedPornhubTransfers = Set<String>()
+    private var refreshedXvideosTransfers = Set<String>()
     private var hanimeStreamRetries: [String: Int] = [:]
     nonisolated private let progressGate = DownloadProgressGate()
     private var metadataFailed = false
@@ -146,6 +147,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         guard !metadataFailed, tasks[post.stableID] == nil, !preparing.contains(post.stableID), records.first(where: { $0.key == post.stableID })?.state != .complete else { return }
         if post.providerKey == .hanime && streamVariant == 0 { hanimeStreamRetries[post.stableID] = nil }
         if post.providerKey == .pornhub && streamVariant == 0 { refreshedPornhubTransfers.remove(post.stableID) }
+        if post.providerKey == .xvideos && streamVariant == 0 { refreshedXvideosTransfers.remove(post.stableID) }
         preparing.insert(post.stableID)
         let preparationID = UUID()
         preparationIDs[post.stableID] = preparationID
@@ -177,8 +179,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 // substitutes for a downloadable video package.
                 let media = try await resolver.resolve(post,
                     // Signed playback URLs may expire before transfer starts.
-                    refresh: refreshSource || post.providerKey == .hanime || post.providerKey == .pornhub,
-                    streamVariant: (post.providerKey == .hanime || post.providerKey == .pornhub)
+                    refresh: refreshSource || post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .xvideos,
+                    streamVariant: (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .xvideos)
                         ? streamVariant : 0,
                     forDownload: true)
                 try Task.checkCancellation()
@@ -215,6 +217,9 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 if hls {
                     var mediaHeaders = HanimeGeneratedAPI.mediaHeaders(for: url)
                         .merging(EromeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
+                    if post.providerKey == .xvideos {
+                        mediaHeaders["Referer"] = "https://www.xvideos.com/"
+                    }
                     if post.providerKey == .pornhub {
                         mediaHeaders["Referer"] = "https://www.pornhub.com/"
                         mediaHeaders["User-Agent"] = NativeProviderAPI.userAgent
@@ -243,11 +248,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                             request.setValue(value, forHTTPHeaderField: header)
                         }
                     }
-                    if post.providerKey == .pornhub || post.providerKey == .erome {
+                    if post.providerKey == .pornhub || post.providerKey == .erome || post.providerKey == .xvideos {
                         // Some media CDNs check the public source-page origin.
                         // No account cookies or third-party proxy are used.
                         request.setValue(NativeProviderAPI.userAgent, forHTTPHeaderField: "User-Agent")
-                        request.setValue(post.providerKey == .erome ? "https://www.erome.com/" : "https://www.pornhub.com/", forHTTPHeaderField: "Referer")
+                        request.setValue(post.providerKey == .erome ? "https://www.erome.com/" : (post.providerKey == .xvideos ? "https://www.xvideos.com/" : "https://www.pornhub.com/"), forHTTPHeaderField: "Referer")
                         request.setValue("video/*, application/octet-stream;q=0.9, */*;q=0.7", forHTTPHeaderField: "Accept")
                     }
                     task = directSession.downloadTask(with: request)
@@ -389,7 +394,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             return
         }
         if record.kind == .file,
-           [Provider.hanime.rawValue, Provider.pornhub.rawValue].contains(record.provider.lowercased()),
+           [Provider.hanime.rawValue, Provider.pornhub.rawValue, Provider.xvideos.rawValue].contains(record.provider.lowercased()),
            record.mediaType?.lowercased() == "video" {
             // A completed download must be decodable video, not a thumbnail
             // or an HTML error document disguised as an MP4.
@@ -465,7 +470,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             let header = handle.readData(ofLength: 256)
             try? handle.close()
             if let reason = DownloadResponseValidator.failure(response: response, header: header,
-                                                              expectedVideo: key.hasPrefix("hanime:") || key.hasPrefix("pornhub:")) {
+                                                              expectedVideo: key.hasPrefix("hanime:") || key.hasPrefix("pornhub:") || key.hasPrefix("xvideos:")) {
                 Task { @MainActor in self.failedTransfer(key, reason: reason) }
                 return
             }
@@ -494,6 +499,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             refreshedPornhubTransfers.insert(key)
             // Try the next distinct declared stream rather than replaying
             // the same expired CDN URL.
+            retry(record, streamVariant: 1)
+        } else if record.provider.lowercased() == Provider.xvideos.rawValue,
+                  !refreshedXvideosTransfers.contains(key) {
+            refreshedXvideosTransfers.insert(key)
             retry(record, streamVariant: 1)
         } else {
             update(key) { $0.state = .failed; $0.errorMessage = reason }

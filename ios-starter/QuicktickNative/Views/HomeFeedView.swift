@@ -491,7 +491,7 @@ struct HomeFeedView: View {
                 } else if let error = store.lastError, store.posts.isEmpty, store.bootstrapped, !store.isLoading {
                     ContentUnavailableView { Label("Could not load feed", systemImage: "wifi.exclamationmark") } description: { Text(error) } actions: {
                         Button("Try again") { Task { await store.refresh() } }
-                        if [.nhentai, .kemono, .coomer, .erome, .hanime, .pornhub].contains(store.selectedProvider) {
+                        if [.nhentai, .kemono, .coomer, .erome, .hanime, .pornhub, .xvideos].contains(store.selectedProvider) {
                             Button("Browse inside QuickTick") { showProviderWebsite = true }
                         }
                         if store.selectedProvider == .hanime,

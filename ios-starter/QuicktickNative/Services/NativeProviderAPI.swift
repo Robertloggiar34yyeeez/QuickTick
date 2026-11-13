@@ -232,6 +232,7 @@ enum NativeProviderAPI {
         case .eporner: URL(string: "https://www.eporner.com")!
         case .erome: URL(string: "https://www.erome.com")!
         case .pornhub: URL(string: "https://www.pornhub.com")!
+        case .xvideos: URL(string: "https://www.xvideos.com")!
         case .hanime: URL(string: "https://hanime.tv")!
         case .hhaven: URL(string: "https://hentaihaven.xxx")!
         case .coomer: URL(string: "https://coomer.st")!
@@ -580,6 +581,169 @@ enum NativeProviderAPI {
             return post
         }
         return self.page(posts, hasMore: page < Int(number(object["total_pages"])), query: query, immersive: immersive)
+    }
+
+
+    // MARK: XVideos public first-party discovery and media
+
+    static func xvideosPageURL(query: ParsedQuery, page: Int, sort: String) throws -> URL {
+        guard (1...100).contains(page) else { throw APIError.invalidResponse }
+        if !query.included.isEmpty {
+            // The public search uses zero-indexed p and the "k" keyword.
+            let q = query.included.joined(separator: " ")
+            return try url("https://www.xvideos.com/", [
+                .init(name: "k", value: q), .init(name: "p", value: String(page - 1))
+            ])
+        }
+        if sort == "popular" {
+            return try url("https://www.xvideos.com/best/" + String(page - 1))
+        }
+        if sort == "recent" {
+            return try url("https://www.xvideos.com/new/" + String(page - 1))
+        }
+        return page == 1 ? try url("https://www.xvideos.com/") :
+            try url("https://www.xvideos.com/", [.init(name: "p", value: String(page - 1))])
+    }
+
+    static func xvideosWatchURL(_ raw: String) -> URL? {
+        let expanded = raw.hasPrefix("//") ? "https:" + raw : raw
+        guard let address = URL(string: expanded, relativeTo: origin(.xvideos))?.absoluteURL,
+              address.scheme == "https",
+              ["www.xvideos.com", "xvideos.com"].contains(address.host?.lowercased() ?? ""),
+              matches(address.path, #"^/video(?:\\.|/)?([a-z0-9]+)(?:/|$)"#).first != nil else {
+            return nil
+        }
+        return address
+    }
+
+    static func xvideosPlayerMediaURL(_ raw: String) -> URL? {
+        let cleaned = raw.replacingOccurrences(of: "\\/", with: "/")
+            .replacingOccurrences(of: "\\u0026", with: "&")
+            .replacingOccurrences(of: "&amp;", with: "&")
+        guard let media = URL(string: cleaned), media.scheme == "https",
+              media.user == nil, media.password == nil,
+              let host = media.host?.lowercased() else { return nil }
+        // Actual video must be hosted on XVideos' own media infrastructure.
+        let official = host == "xvideos.com" || host.hasSuffix(".xvideos.com") ||
+            host == "xvideos-cdn.com" || host.hasSuffix(".xvideos-cdn.com")
+        guard official, ["mp4", "m4v", "mov", "m3u8"].contains(media.pathExtension.lowercased()) else {
+            return nil
+        }
+        return media
+    }
+
+    static func xvideosPlayerSources(_ html: String) -> [ResolvedMedia] {
+        // Read the real first-party HTML5 player source declarations, never
+        // image thumbnails, advertisements, or arbitrary script URLs.
+        let declarations: [(String, String)] = [
+            (#"html5player\\.setVideoUrlHigh\\(\\s*['"]([^'"]+)['"]"#, "video"),
+            (#"html5player\\.setVideoUrlLow\\(\\s*['"]([^'"]+)['"]"#, "video"),
+            (#"html5player\\.setVideoHLS\\(\\s*['"]([^'"]+)['"]"#, "hls")
+        ]
+        var seen = Set<String>()
+        var sources: [ResolvedMedia] = []
+        for (pattern, mediaType) in declarations {
+            for token in matches(html, pattern) {
+                guard let media = xvideosPlayerMediaURL(token),
+                      seen.insert(media.absoluteString).inserted else { continue }
+                sources.append(ResolvedMedia(mediaUrl: media.absoluteString,
+                    type: media.pathExtension.lowercased() == "m3u8" ? "hls" : mediaType))
+            }
+        }
+        return sources
+    }
+
+    static func xvideosHTMLPosts(_ html: String) -> [Post] {
+        guard !unavailableHTML(Data(html.utf8)) else { return [] }
+        // Keep a bounded card region so the title/thumbnail always belong
+        // to the selected video. Both classic thumb-block and newer cards.
+        let cards = matches(html,
+            #"(?is)<div\\b(?=[^>]*\\bclass\\s*=\\s*["'][^"']*(?:thumb-block|video-item)[^"']*["'])[^>]*>.*?(?=<div\\b(?=[^>]*\\bclass\\s*=\\s*["'][^"']*(?:thumb-block|video-item)[^"']*["'])|\\z)"#,
+            group: 0)
+        let fallback = cards.isEmpty ? matches(html,
+            #"(?is)<a\\b[^>]*\\bhref\\s*=\\s*["'][^"']*/video(?:\\.|/)?[a-z0-9]+[^"']*["'][^>]*>.*?</a>"#,
+            group: 0) : cards
+        var seen = Set<String>()
+        return Array(fallback.prefix(100).compactMap { card -> Post? in
+            guard let link = matches(card,
+                    #"\\bhref\\s*=\\s*["']([^"']*/video(?:\\.|/)?[a-z0-9]+[^"']*)["']"#).first,
+                  let watch = xvideosWatchURL(link),
+                  let id = matches(watch.path, #"^/video(?:\\.|/)?([a-z0-9]+)(?:/|$)"#).first,
+                  seen.insert(id).inserted else { return nil }
+            let titleToken = [
+                #"\\btitle\\s*=\\s*["']([^"']+)["']"#,
+                #"<p[^>]*>.*?<a[^>]*>([^<]+)</a>"#,
+                #"\\balt\\s*=\\s*["']([^"']+)["']"#
+            ].compactMap { matches(card, $0).first }.first ?? ""
+            let title = titleToken
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "&#39;", with: "'")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let poster = [
+                #"\\bdata-src\\s*=\\s*["']([^"']+)["']"#,
+                #"\\bdata-thumb_url\\s*=\\s*["']([^"']+)["']"#,
+                #"\\bdata-thumb\\s*=\\s*["']([^"']+)["']"#,
+                #"<img\\b[^>]*\\bsrc\\s*=\\s*["']([^"']+)["']"#
+            ].compactMap { matches(card, $0).first }
+                .compactMap { raw -> URL? in
+                    let decoded = raw.replacingOccurrences(of: "&amp;", with: "&")
+                    guard let link = mediaURL(decoded, provider: .xvideos),
+                          let host = link.host?.lowercased(),
+                          host == "xvideos.com" || host.hasSuffix(".xvideos.com") ||
+                          host == "xvideos-cdn.com" || host.hasSuffix(".xvideos-cdn.com") else {
+                        return nil
+                    }
+                    return link
+                }.first?.absoluteString ?? ""
+            var post = Post(key: "xvideos:" + id, id: id, provider: Provider.xvideos.rawValue,
+                tags: title.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init),
+                previewUrl: poster, thumbUrl: poster, pageUrl: watch.absoluteString, type: "video")
+            post.caption = title
+            return post
+        })
+    }
+
+    static func xvideos(session: URLSession, query: ParsedQuery, page: Int,
+                        sort: String, immersive: Bool) async throws -> PostPage {
+        let listing = try xvideosPageURL(query: query, page: page, sort: sort)
+        let bytes = try await data(session: session, url: listing,
+            provider: .xvideos, headers: ["Accept": "text/html,application/xhtml+xml;q=0.9"],
+            maxBytes: 3 * 1024 * 1024)
+        guard !unavailableHTML(bytes) else {
+            throw APIError.server("XVideos returned an unavailable listing page. Check provider access in Browse.")
+        }
+        let posts = xvideosHTMLPosts(String(decoding: bytes, as: UTF8.self))
+        guard !posts.isEmpty else {
+            // Never return fabricated or unrelated posts when a site blocks
+            // or changes its HTML listing.
+            throw APIError.server("XVideos returned no readable video cards. Open its first-party website in Browse.")
+        }
+        return self.page(posts, hasMore: posts.count >= 20, query: query, immersive: immersive)
+    }
+
+    static func xvideosResolve(session: URLSession, post: Post,
+                               streamVariant: Int = 0, forDownload: Bool = false) async throws -> ResolvedMedia {
+        let page: URL
+        if let link = xvideosWatchURL(post.pageUrl) { page = link }
+        else {
+            guard post.id.range(of: #"^[a-z0-9]+$"#, options: .regularExpression) != nil,
+                  post.id.count <= 48 else { throw APIError.invalidResponse }
+            page = try url("https://www.xvideos.com/video." + post.id)
+        }
+        let bytes = try await data(session: session, url: page,
+            provider: .xvideos, headers: ["Accept": "text/html,application/xhtml+xml;q=0.9"],
+            maxBytes: 3 * 1024 * 1024)
+        guard !unavailableHTML(bytes) else {
+            throw APIError.server("XVideos did not return a playable video page.")
+        }
+        let sources = xvideosPlayerSources(String(decoding: bytes, as: UTF8.self))
+        guard !sources.isEmpty else {
+            throw APIError.server("XVideos did not expose a playable public stream for this video.")
+        }
+        // Both playback and offline downloads prefer full MP4, with HLS as
+        // the fallback. Signed CDNs are re-resolved when retrying.
+        return sources[min(max(0, streamVariant), sources.count - 1)]
     }
 
     static func erome(session: URLSession, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
@@ -2170,6 +2334,8 @@ extension NativeProviderAPI {
                 }
                 throw error
             }
+        case .xvideos:
+            return try await xvideosResolve(session: session, post: post, streamVariant: streamVariant, forDownload: forDownload)
         case .pornhub:
             let canonical = mediaURL(post.pageUrl, provider: provider)
             let page: URL

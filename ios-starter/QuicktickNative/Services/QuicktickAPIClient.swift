@@ -198,6 +198,7 @@ actor QuicktickAPIClient {
             }
             return try await cachedEromePosts(query: query, page: page, sort: sort, immersive: immersive)
         case .pornhub: return try await NativeProviderAPI.pornhub(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
+        case .xvideos: return try await NativeProviderAPI.xvideos(session: session, query: query, page: page, sort: sort, immersive: immersive)
         case .hanime:
             if let base = HanimeGeneratedAPI.configuredURL {
                 return try await HanimeGeneratedAPI.posts(session: session, base: base,

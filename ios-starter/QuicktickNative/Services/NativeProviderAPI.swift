@@ -617,8 +617,8 @@ enum NativeProviderAPI {
     }
 
     static func xvideosPlayerMediaURL(_ raw: String) -> URL? {
-        let cleaned = raw.replacingOccurrences(of: "\/", with: "/")
-            .replacingOccurrences(of: "\u0026", with: "&")
+        let cleaned = raw.replacingOccurrences(of: "\\/", with: "/")
+            .replacingOccurrences(of: "\\u0026", with: "&")
             .replacingOccurrences(of: "&amp;", with: "&")
         guard let media = URL(string: cleaned), media.scheme == "https",
               media.user == nil, media.password == nil,

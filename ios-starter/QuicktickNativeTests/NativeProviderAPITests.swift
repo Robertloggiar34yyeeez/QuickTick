@@ -103,6 +103,32 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 : #"{"pages":1,"gifs":[{"id":"usable","type":"g","niches":["empty-top"],"urls":{"hd":"https://media.redgifs.com/usable.mp4","poster":"https://media.redgifs.com/usable.jpg"}}]}"#
         }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
+        else if host == "www.xvideos.com", path == "/" || path.hasPrefix("/best/") || path.hasPrefix("/new/") {
+            let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "k" })?.value ?? ""
+            if search == "empty" {
+                payload = #"<html><div>No matches</div></html>"#
+            } else {
+                payload = #"""
+                <html><div class="thumb-block">
+                    <div class="thumb"><a href="/video.abc123/first-story">
+                    <img data-src="https://img-cf.xvideos-cdn.com/videos/first.jpg"></a></div>
+                    <p><a href="/video.abc123/first-story" title="First story">First story</a></p>
+                </div><div class="thumb-block"><div class="thumb">
+                    <a href="/video.def456/second-story"><img data-src="https://img-cf.xvideos-cdn.com/videos/second.jpg"></a>
+                </div><p><a href="/video.def456/second-story" title="Second story">Second story</a></p></div></html>
+                """#
+            }
+        }
+        else if host == "www.xvideos.com", path.hasPrefix("/video.") {
+            payload = #"""
+            <html><script>
+            html5player.setVideoUrlHigh('https://cdn77.xvideos-cdn.com/videos/full-hd.mp4?token=valid');
+            html5player.setVideoUrlLow('https://cdn77.xvideos-cdn.com/videos/full-sd.mp4');
+            html5player.setVideoHLS('https://cdn77.xvideos-cdn.com/videos/full-hls.m3u8');
+            </script></html>
+            """#
+        }
         else if host == "www.erome.com", ["/explore", "/explore/new", "/search"].contains(path) {
             let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                 .first(where: { $0.name == "q" })?.value
@@ -1321,6 +1347,52 @@ final class NativeProviderAPITests: XCTestCase {
             chosen: [], visual: [], favorites: [liked], posts: [liked],
             popular: popular, excluded: ["pokemon"], limit: 3, mode: .franchises)
         XCTAssertFalse(excluded.contains(where: { $0.term == "pokemon" }))
+    }
+
+    func testXVideosProviderIdentityAndSafeURLs() throws {
+        XCTAssertEqual(Provider.identify("XVideos.com"), .xvideos)
+        XCTAssertEqual(Provider.identifyPage("https://www.xvideos.com/video.abc123/example"), .xvideos)
+        XCTAssertTrue(Provider.allCases.contains(.xvideos))
+        XCTAssertNotNil(NativeProviderAPI.xvideosWatchURL("/video.abc123/example"))
+        XCTAssertNil(NativeProviderAPI.xvideosWatchURL("https://evil.invalid/video.abc123/example"))
+        XCTAssertNotNil(NativeProviderAPI.xvideosPlayerMediaURL("https://cdn77.xvideos-cdn.com/video.mp4"))
+        XCTAssertNil(NativeProviderAPI.xvideosPlayerMediaURL("https://evil.invalid/preview.mp4"))
+        XCTAssertNil(NativeProviderAPI.xvideosPlayerMediaURL("https://img-cf.xvideos-cdn.com/video.jpg"))
+    }
+
+    func testXVideosFeedSearchAndPlaybackUseFirstPartyPages() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .xvideos,
+            query: QueryParser.parse("first story"), page: 1, sort: "popular")
+        XCTAssertEqual(page.items.map(\.stableID), ["xvideos:abc123", "xvideos:def456"])
+        XCTAssertEqual(page.items.first?.caption, "First story")
+        XCTAssertEqual(page.items.first?.thumbUrl,
+            "https://img-cf.xvideos-cdn.com/videos/first.jpg")
+        XCTAssertEqual(page.items.first?.type, "video")
+        let search = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first { $0.url?.host == "www.xvideos.com" })
+        let params = URLComponents(url: try XCTUnwrap(search.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(params.first(where: { $0.name == "k" })?.value, "first story")
+        let post = try XCTUnwrap(page.items.first)
+        let first = try await api.resolveMedia(post)
+        XCTAssertEqual(first.mediaUrl, "https://cdn77.xvideos-cdn.com/videos/full-hd.mp4?token=valid")
+        XCTAssertEqual(first.type, "video")
+        let next = try await api.resolveMedia(post, streamVariant: 1, forDownload: true)
+        XCTAssertEqual(next.mediaUrl, "https://cdn77.xvideos-cdn.com/videos/full-sd.mp4")
+        let hls = try await api.resolveMedia(post, streamVariant: 2)
+        XCTAssertEqual(hls.type, "hls")
+        XCTAssertTrue(try DownloadSourcePolicy.validate(media: hls, for: post).isHLS)
+    }
+
+    func testXVideosUnavailableSearchNeverInventsPosts() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        do {
+            _ = try await api.posts(provider: .xvideos,
+                query: QueryParser.parse("empty"), page: 1)
+            XCTFail("A blank provider search should not manufacture unrelated video cards.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("XVideos"))
+        }
     }
 
     func testPornhubHomeCategoryUsesActualCategoryParameter() async throws {

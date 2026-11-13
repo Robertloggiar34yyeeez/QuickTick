@@ -1390,7 +1390,8 @@ final class NativeProviderAPITests: XCTestCase {
         NativeProviderProtocol.log.reset()
         let page = try await api.posts(provider: .xvideos,
             query: QueryParser.parse("first story"), page: 1, sort: "popular")
-        XCTAssertEqual(page.items.map(\.stableID), ["xvideos:abc123", "xvideos:def456"])
+        XCTAssertEqual(page.items.map(\.stableID), ["xvideos:abc123"],
+                       "XVideos search must not include unrelated promoted cards.")
         XCTAssertEqual(page.items.first?.caption, "First story")
         XCTAssertEqual(page.items.first?.thumbUrl,
             "https://img-cf.xvideos-cdn.com/videos/first.jpg")

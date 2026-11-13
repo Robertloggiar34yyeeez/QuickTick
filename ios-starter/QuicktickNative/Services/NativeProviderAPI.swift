@@ -841,7 +841,12 @@ enum NativeProviderAPI {
             // or changes its HTML listing.
             throw APIError.server("XVideos returned no readable video cards. Open its first-party website in Browse.")
         }
-        return self.page(posts, hasMore: posts.count >= 20, query: query, immersive: immersive)
+        // Public searches sometimes append unrelated promoted cards. Match
+        // visible title metadata when a keyword was explicitly entered.
+        let visible = query.included.isEmpty ? posts : posts.filter { post in
+            query.included.allSatisfy { containsKeyword($0, in: post) }
+        }
+        return self.page(visible, hasMore: posts.count >= 20, query: query, immersive: immersive)
     }
 
     static func xvideosResolve(session: URLSession, post: Post,

@@ -610,15 +610,15 @@ enum NativeProviderAPI {
         guard let address = URL(string: expanded, relativeTo: origin(.xvideos))?.absoluteURL,
               address.scheme == "https",
               ["www.xvideos.com", "xvideos.com"].contains(address.host?.lowercased() ?? ""),
-              matches(address.path, #"^/video(?:\\.|/)?([a-z0-9]+)(?:/|$)"#).first != nil else {
+              matches(address.path, #"^/video(?:\.|/)?([a-z0-9]+)(?:/|$)"#).first != nil else {
             return nil
         }
         return address
     }
 
     static func xvideosPlayerMediaURL(_ raw: String) -> URL? {
-        let cleaned = raw.replacingOccurrences(of: "\\/", with: "/")
-            .replacingOccurrences(of: "\\u0026", with: "&")
+        let cleaned = raw.replacingOccurrences(of: "\/", with: "/")
+            .replacingOccurrences(of: "\u0026", with: "&")
             .replacingOccurrences(of: "&amp;", with: "&")
         guard let media = URL(string: cleaned), media.scheme == "https",
               media.user == nil, media.password == nil,
@@ -636,9 +636,9 @@ enum NativeProviderAPI {
         // Read the real first-party HTML5 player source declarations, never
         // image thumbnails, advertisements, or arbitrary script URLs.
         let declarations: [(String, String)] = [
-            (#"html5player\\.setVideoUrlHigh\\(\\s*['"]([^'"]+)['"]"#, "video"),
-            (#"html5player\\.setVideoUrlLow\\(\\s*['"]([^'"]+)['"]"#, "video"),
-            (#"html5player\\.setVideoHLS\\(\\s*['"]([^'"]+)['"]"#, "hls")
+            (#"html5player\.setVideoUrlHigh\(\s*['"]([^'"]+)['"]"#, "video"),
+            (#"html5player\.setVideoUrlLow\(\s*['"]([^'"]+)['"]"#, "video"),
+            (#"html5player\.setVideoHLS\(\s*['"]([^'"]+)['"]"#, "hls")
         ]
         var seen = Set<String>()
         var sources: [ResolvedMedia] = []
@@ -658,22 +658,22 @@ enum NativeProviderAPI {
         // Keep a bounded card region so the title/thumbnail always belong
         // to the selected video. Both classic thumb-block and newer cards.
         let cards = matches(html,
-            #"(?is)<div\\b(?=[^>]*\\bclass\\s*=\\s*["'][^"']*(?:thumb-block|video-item)[^"']*["'])[^>]*>.*?(?=<div\\b(?=[^>]*\\bclass\\s*=\\s*["'][^"']*(?:thumb-block|video-item)[^"']*["'])|\\z)"#,
+            #"(?is)<div\b(?=[^>]*\bclass\s*=\s*["'][^"']*(?:thumb-block|video-item)[^"']*["'])[^>]*>.*?(?=<div\b(?=[^>]*\bclass\s*=\s*["'][^"']*(?:thumb-block|video-item)[^"']*["'])|\z)"#,
             group: 0)
         let fallback = cards.isEmpty ? matches(html,
-            #"(?is)<a\\b[^>]*\\bhref\\s*=\\s*["'][^"']*/video(?:\\.|/)?[a-z0-9]+[^"']*["'][^>]*>.*?</a>"#,
+            #"(?is)<a\b[^>]*\bhref\s*=\s*["'][^"']*/video(?:\.|/)?[a-z0-9]+[^"']*["'][^>]*>.*?</a>"#,
             group: 0) : cards
         var seen = Set<String>()
         return Array(fallback.prefix(100).compactMap { card -> Post? in
             guard let link = matches(card,
-                    #"\\bhref\\s*=\\s*["']([^"']*/video(?:\\.|/)?[a-z0-9]+[^"']*)["']"#).first,
+                    #"\bhref\s*=\s*["']([^"']*/video(?:\.|/)?[a-z0-9]+[^"']*)["']"#).first,
                   let watch = xvideosWatchURL(link),
-                  let id = matches(watch.path, #"^/video(?:\\.|/)?([a-z0-9]+)(?:/|$)"#).first,
+                  let id = matches(watch.path, #"^/video(?:\.|/)?([a-z0-9]+)(?:/|$)"#).first,
                   seen.insert(id).inserted else { return nil }
             let titleToken = [
-                #"\\btitle\\s*=\\s*["']([^"']+)["']"#,
+                #"\btitle\s*=\s*["']([^"']+)["']"#,
                 #"<p[^>]*>.*?<a[^>]*>([^<]+)</a>"#,
-                #"\\balt\\s*=\\s*["']([^"']+)["']"#
+                #"\balt\s*=\s*["']([^"']+)["']"#
             ].compactMap { matches(card, $0).first }.first ?? ""
             let title = titleToken
                 .replacingOccurrences(of: "&amp;", with: "&")
@@ -681,10 +681,10 @@ enum NativeProviderAPI {
                 .replacingOccurrences(of: "&#39;", with: "'")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let poster = [
-                #"\\bdata-src\\s*=\\s*["']([^"']+)["']"#,
-                #"\\bdata-thumb_url\\s*=\\s*["']([^"']+)["']"#,
-                #"\\bdata-thumb\\s*=\\s*["']([^"']+)["']"#,
-                #"<img\\b[^>]*\\bsrc\\s*=\\s*["']([^"']+)["']"#
+                #"\bdata-src\s*=\s*["']([^"']+)["']"#,
+                #"\bdata-thumb_url\s*=\s*["']([^"']+)["']"#,
+                #"\bdata-thumb\s*=\s*["']([^"']+)["']"#,
+                #"<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#
             ].compactMap { matches(card, $0).first }
                 .compactMap { raw -> URL? in
                     let decoded = raw.replacingOccurrences(of: "&amp;", with: "&")

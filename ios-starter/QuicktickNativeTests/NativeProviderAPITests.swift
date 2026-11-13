@@ -829,6 +829,28 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(HanimeGeneratedAPI.permittedStreamURL(URL(string: resolved.mediaUrl)!))
     }
 
+    func testHanimeHandshakeTokensUseURLSafeUnpaddedBase64() throws {
+        let payload = Data(#"{"slug":"example","directive":"htv_player_handshake"}"#.utf8)
+        for _ in 0..<12 {
+            let token = try HanimeHandshakeCodec.seal(payload)
+            XCTAssertFalse(token.contains("="))
+            XCTAssertFalse(token.contains("+"))
+            XCTAssertFalse(token.contains("/"))
+            let normalized = token.replacingOccurrences(of: "-", with: "+")
+                .replacingOccurrences(of: "_", with: "/")
+            let padded = normalized + String(repeating: "=", count: (4 - normalized.count % 4) % 4)
+            let bytes = try XCTUnwrap(Data(base64Encoded: padded))
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+            for field in ["iv", "tag", "data"] {
+                let encoded = try XCTUnwrap(envelope[field] as? String)
+                XCTAssertFalse(encoded.contains("="))
+                XCTAssertFalse(encoded.contains("+"))
+                XCTAssertFalse(encoded.contains("/"))
+            }
+            XCTAssertEqual(try HanimeHandshakeCodec.open(token), payload)
+        }
+    }
+
     func testHanimeHandshakeCodecAuthenticatesEnvelope() throws {
         let value = Data(#"{"slug":"sample","directive":"htv_player_handshake"}"#.utf8)
         let token = try HanimeHandshakeCodec.seal(value)

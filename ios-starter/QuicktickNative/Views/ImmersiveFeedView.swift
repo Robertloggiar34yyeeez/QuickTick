@@ -584,7 +584,7 @@ private struct ImmersiveItemView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
-    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = true
     @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
     @AppStorage("quicktick-ipad-side-navigation-v1") private var ipadSidebarEnabled = false
     let post: Post
@@ -611,6 +611,7 @@ private struct ImmersiveItemView: View {
     @State private var automaticProviderRetry = 0
     @State private var browseHanime = false
     @State private var browsePornhub = false
+    @State private var browseXvideos = false
     @State private var showComments = false
     @State private var showTags = false
     @State private var gifURL: URL?
@@ -634,6 +635,10 @@ private struct ImmersiveItemView: View {
               let url = URL(string: post.pageUrl), url.scheme == "https",
               ["hanime.tv", "www.hanime.tv"].contains(url.host ?? "") else { return nil }
         return url
+    }
+    private var xvideosPage: URL? {
+        guard post.providerKey == .xvideos else { return nil }
+        return NativeProviderAPI.xvideosWatchURL(post.pageUrl)
     }
     private var pornhubPage: URL? {
         guard post.providerKey == .pornhub,
@@ -848,12 +853,16 @@ private struct ImmersiveItemView: View {
                             Button("Open original in QuickTick browser") { browsePornhub = true }
                                 .frame(minHeight: 44)
                         }
-                    }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
+                        if xvideosPage != nil {
+                            Button("Open XVideos in QuickTick browser") { browseXvideos = true }
+                                .frame(minHeight: 44)
+                        }
+                    }.padding(12).background(AppTheme.chrome, in: RoundedRectangle(cornerRadius: 12)).padding()
                 }
                 if active, !offline, !collection, let message = store.lastError {
                     Button { Task { await store.loadMore(immersive: true) } } label: {
                         VStack { Text(message); Text("Load more").bold() }.font(.caption).padding(12)
-                    }.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
+                    }.background(AppTheme.chrome, in: RoundedRectangle(cornerRadius: 12)).padding()
                 }
             }
             .overlay {
@@ -875,6 +884,9 @@ private struct ImmersiveItemView: View {
         }
         .sheet(isPresented: $browsePornhub) {
             if let url = pornhubPage { SourceWebsiteView(url: url).ignoresSafeArea() }
+        }
+        .sheet(isPresented: $browseXvideos) {
+            if let url = xvideosPage { SourceWebsiteView(url: url).ignoresSafeArea() }
         }
         .task(id: likePulse) {
             guard likePulse else { return }
@@ -900,7 +912,7 @@ private struct ImmersiveItemView: View {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if let player {
                     if player.currentItem?.status == .failed {
-                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
+                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .xvideos),
                            automaticProviderRetry < (post.providerKey == .hanime ? 2 : 3) {
                             automaticProviderRetry += 1
                             store.players.release(post.stableID)
@@ -931,7 +943,7 @@ private struct ImmersiveItemView: View {
                     else { stalledSeconds = 0; if player.timeControlStatus == .playing { error = nil } }
                     lastTime = seconds
                     if stalledSeconds >= 12, !offline,
-                       (post.providerKey == .hanime || post.providerKey == .pornhub),
+                       (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .xvideos),
                        automaticProviderRetry < (post.providerKey == .hanime ? 2 : 3) {
                         automaticProviderRetry += 1
                         store.players.release(post.stableID)
@@ -977,7 +989,7 @@ private struct ImmersiveItemView: View {
     }
 
     private var actionRail: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 4) {
             railButton("Like", symbol: "heart.fill", selected: store.favorites[post.stableID] != nil) {
                 interacted = true; store.toggleFavorite(post)
             }.accessibilityValue(store.favorites[post.stableID] == nil ? "Not liked" : "Liked")
@@ -999,9 +1011,10 @@ private struct ImmersiveItemView: View {
                     } label: {
                         Image(systemName: "paintbrush.pointed.fill")
                             .font(.system(size: 21, weight: .semibold))
-                            .frame(width: 52, height: 52)
-                            .background(.black.opacity(0.16), in: Circle())
-                            .overlay(Circle().strokeBorder(.white.opacity(0.24)))
+                            .frame(width: 58, height: 58)
+                            .background(.black.opacity(0.10), in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(0.32)))
+                            .frame(width: 64, height: 64).contentShape(Rectangle())
                     }
                     .accessibilityLabel("More from this artist")
                 }
@@ -1020,13 +1033,13 @@ private struct ImmersiveItemView: View {
     private func railButton(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 23, weight: .semibold))
+                .font(.system(size: 26, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(selected ? AppTheme.accent : .white)
-                .frame(width: 52, height: 52).contentShape(Circle())
-                .background(.black.opacity(0.16), in: Circle())
-                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.8) : .white.opacity(0.25), lineWidth: 1))
-                .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
+                .frame(width: 58, height: 58)
+                .background(.black.opacity(0.10), in: Circle())
+                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.9) : .white.opacity(0.32), lineWidth: 1))
+                .frame(width: 64, height: 64).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(title)
             .accessibilityIdentifier(active ? "immersive-\(title)" : "inactive-\(title)-\(post.stableID)")
     }
@@ -1111,7 +1124,7 @@ private struct ImmersiveTimeline: View {
                     .offset(x: max(0, min(geo.size.width - 6, geo.size.width * progress - 3)))
                 if scrubbing {
                     Text("\(timeLabel(duration * progress)) / \(timeLabel(duration))")
-                        .font(.caption.monospacedDigit()).padding(8).background(.ultraThinMaterial, in: Capsule())
+                        .font(.caption.monospacedDigit()).padding(8).background(AppTheme.chrome, in: Capsule())
                         .frame(maxWidth: .infinity).offset(y: -30)
                 }
             }.frame(height: 44).contentShape(Rectangle())
@@ -1173,12 +1186,12 @@ private struct ImmersiveDownloadControl: View {
             else { manager.download(post) }
         } label: {
             Group {
-                if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 28) }
-                else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 23, weight: .semibold)) }
-            }.foregroundStyle(.white).frame(width: 52, height: 52).contentShape(Circle())
-                .background(.black.opacity(0.16), in: Circle())
-                .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
-                .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
+                if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 30) }
+                else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 26, weight: .semibold)) }
+            }.foregroundStyle(.white).frame(width: 58, height: 58)
+                .background(.black.opacity(0.10), in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.32), lineWidth: 1))
+                .frame(width: 64, height: 64).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Download").accessibilityValue(status)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: status)
             .sensoryFeedback(.selection, trigger: taps)

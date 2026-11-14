@@ -9,7 +9,7 @@ struct PostCardView: View {
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
-    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = true
     let post: Post
     var available = CGSize(width: 400, height: 800)
     var playbackTab = 0
@@ -23,6 +23,7 @@ struct PostCardView: View {
     @State private var tags = false
     @State private var havenBrowser = false
     @State private var pornhubBrowser = false
+    @State private var xvideosBrowser = false
     @State private var creditedArtists: [String] = []
     @State private var fullImage = false
     @State private var readingManga = false
@@ -42,6 +43,7 @@ struct PostCardView: View {
     @State private var mediaStreamRetry = 0
     @State private var watchSeconds = 0.0
     @State private var completion = 0.0
+    @State private var inferredPreviewSize: CGSize?
     @State private var showLikeHeart = false
     @State private var likeHeartSequence = 0
     private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
@@ -49,18 +51,34 @@ struct PostCardView: View {
     private var isWebsitePost: Bool { post.providerKey == .hhaven && post.type.lowercased() == "web" }
     private var cardRadius: CGFloat { fullBleed && !AppTheme.isDeSlopified ? 0 : AppTheme.cardRadius }
     private var mediaSize: CGSize {
-        // Reserve the final card bounds from stable post metadata. Delayed
-        // thumbnail/GIF/video dimensions must not resize a visible feed row.
+        // Prefer provider geometry; otherwise recover it from the already
+        // decoded thumbnail without an extra network request or video load.
         let kind = post.type.lowercased()
         let defaultAspect: CGFloat = kind == "video" || kind == "web" ? 16 / 9 : (kind == "gif" ? 1 : 4 / 3)
-        let aspect = (post.nativeSize.map {
-            kind == "image" && $0.height > $0.width * 4
+        let aspect = ((post.nativeSize ?? inferredPreviewSize).map {
+            kind == "image" && $0.height > $0.width * 3
                 ? CGFloat(2) / 3 : $0.width / $0.height
         }) ?? defaultAspect
-        return fullBleed || (offline && playbackTab == 3)
+        if offline && playbackTab == 3 {
+            return MediaSizing.offlineCard(aspect: aspect, available: available)
+        }
+        return fullBleed
             ? MediaSizing.feedCard(aspect: aspect, available: available)
             : MediaSizing.size(native: post.nativeSize, aspect: aspect, available: available)
     }
+    private func recordPreviewGeometry(_ decoded: DecodedMediaImage) {
+        store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
+        guard !offline, playbackTab == 0, post.nativeSize == nil,
+              decoded.nativeSize.width.isFinite, decoded.nativeSize.height.isFinite,
+              decoded.nativeSize.width > 0, decoded.nativeSize.height > 0 else { return }
+        let aspect = decoded.nativeSize.width / decoded.nativeSize.height
+        if let current = inferredPreviewSize,
+           abs(current.width / current.height - aspect) < 0.03 { return }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { inferredPreviewSize = decoded.nativeSize }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             media.frame(width: mediaSize.width, height: mediaSize.height).clipped().contentShape(Rectangle())
@@ -84,6 +102,15 @@ struct PostCardView: View {
                             Label("Watch in QuickTick browser", systemImage: "play.rectangle.on.rectangle")
                                 .font(.caption.weight(.semibold))
                                 .padding(.horizontal, 14).frame(minHeight: 38)
+                                .background(AppTheme.elevatedSurface, in: Capsule())
+                        }
+                    }
+                    if post.providerKey == .xvideos,
+                       NativeProviderAPI.xvideosWatchURL(post.pageUrl) != nil {
+                        Button { xvideosBrowser = true } label: {
+                            Label("Open XVideos in QuickTick browser", systemImage: "safari")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 14).frame(minHeight: 44)
                                 .background(AppTheme.elevatedSurface, in: Capsule())
                         }
                     }
@@ -173,6 +200,11 @@ struct PostCardView: View {
             }
             .sheet(isPresented: $pornhubBrowser) {
                 if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
+            }
+            .sheet(isPresented: $xvideosBrowser) {
+                if let url = NativeProviderAPI.xvideosWatchURL(post.pageUrl) {
+                    SourceWebsiteView(url: url).ignoresSafeArea()
+                }
             }
             .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
                 previewURL: post.cardPreviewURL) }
@@ -301,7 +333,7 @@ struct PostCardView: View {
                 }
             } else if let player, store.fullScreenPlaybackID != post.stableID {
                 ZStack {
-                    PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) }
+                    PosterView(post: post, onDecoded: recordPreviewGeometry)
                     // Size the player to the card, then let AVPlayerLayer fit
                     // the stream *inside* it without cropping the video.
                     NativePlayerSurface(player: player, fill: false, ready: $ready)
@@ -315,10 +347,9 @@ struct PostCardView: View {
                 // A 3x card decode produced ~16 MB textures on iPad and
                 // evicted adjacent previews from the shared 32 MB cache.
                 CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl,
-                                 pixels: min(1280, Int(mediaSize.width * 2)), comic: true, fill: true) { decoded in
-                    store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
-                }
-            } else { PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
+                                 pixels: min(1280, Int(mediaSize.width * 2)), comic: true, fill: false,
+                                 onDecoded: recordPreviewGeometry)
+            } else { PosterView(post: post, onDecoded: recordPreviewGeometry) }
         }
         .frame(width: mediaSize.width, height: mediaSize.height)
         .allowsHitTesting(false)
@@ -412,7 +443,7 @@ struct PostCardView: View {
                     HStack(spacing: 8) {
                         if preparing { InfinityLoader(size: 24) } else { Image(systemName: playing ? "pause.fill" : "play.fill") }
                         Text(playing ? "Pause" : "Play")
-                    }.font(.subheadline.weight(.semibold)).padding(12).frame(minHeight: 44).background(.ultraThinMaterial, in: Capsule())
+                    }.font(.subheadline.weight(.semibold)).padding(12).frame(minHeight: 44).background(AppTheme.chrome, in: Capsule())
                 }.disabled(preparing).buttonStyle(.plain).padding(10)
                     .accessibilityIdentifier("inline-play-\(post.stableID)")
                     .accessibilityLabel(playing ? "Pause media" : "Play media")
@@ -420,7 +451,7 @@ struct PostCardView: View {
             } else {
                 Button { openMediaFullscreen() } label: {
                     Label(post.providerKey == .nhentai ? "Read manga" : "View full", systemImage: post.providerKey == .nhentai ? "book.fill" : "arrow.up.left.and.arrow.down.right")
-                        .font(.caption.weight(.semibold)).padding(12).background(.ultraThinMaterial, in: Capsule())
+                        .font(.caption.weight(.semibold)).padding(12).background(AppTheme.chrome, in: Capsule())
                 }.buttonStyle(.plain).padding(10).accessibilityLabel("View full image")
             }
         }
@@ -538,19 +569,19 @@ private struct FeedDownloadControl: View {
             }
         } label: {
             Group {
-                if working { InfinityLoader(size: 22) }
+                if working { InfinityLoader(size: 25) }
                 else {
                     Image(systemName: saved ? "checkmark" : failed ? "arrow.clockwise" : "arrow.down.to.line")
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 25, weight: .semibold))
                         .symbolEffect(.bounce, value: taps)
                         .accessibilityHidden(true)
                 }
             }
             .foregroundStyle(saved ? AppTheme.accent : .white.opacity(0.9))
-            .frame(width: 42, height: 42)
+            .frame(width: 52, height: 52)
             .background(saved ? AppTheme.accent.opacity(0.16) : .white.opacity(0.065), in: Circle())
             .overlay(Circle().strokeBorder(saved ? AppTheme.accent.opacity(0.42) : .white.opacity(0.11), lineWidth: 1))
-            .frame(maxWidth: .infinity, minHeight: 50)
+            .frame(maxWidth: .infinity, minHeight: 58)
             .contentShape(Rectangle())
         }
         .buttonStyle(QuicktickPressStyle())
@@ -794,7 +825,7 @@ struct FullComicView: View {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 19, weight: .semibold))
                             .frame(width: 48, height: 48)
-                            .background(.ultraThinMaterial, in: Circle())
+                            .background(AppTheme.chrome, in: Circle())
                     }
                     .accessibilityLabel("Share downloaded image")
                     .accessibilityIdentifier("fullscreen-download-share")
@@ -804,7 +835,7 @@ struct FullComicView: View {
                     // cannot reliably resolve the implicit symbol label here.
                     Text("×").font(.system(size: 30, weight: .medium, design: .rounded))
                         .frame(width: 48, height: 48)
-                        .background(.ultraThinMaterial, in: Circle())
+                        .background(AppTheme.chrome, in: Circle())
                 }.accessibilityLabel("Close full image")
             }.buttonStyle(.plain).padding(12)
         }
@@ -969,7 +1000,7 @@ struct MangaReaderView: View {
                         Image(systemName: "xmark")
                             .font(.system(size: 15, weight: .bold))
                             .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial, in: Circle())
+                            .background(AppTheme.chrome, in: Circle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Close manga")

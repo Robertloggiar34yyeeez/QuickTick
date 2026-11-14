@@ -59,7 +59,9 @@ final class FastFeedVisualTests: XCTestCase {
         let store = AppStore()
         store.queryText = "long_hair -jacket sort:random rating:general score:>=25"
         store.selectedProvider = .eporner
-        XCTAssertEqual(store.queryText, "long_hair -jacket")
+        XCTAssertEqual(store.queryText, "", "Provider-specific Rule34 filters must not carry to Eporner.")
+        store.selectedProvider = .rule34
+        XCTAssertTrue(store.queryText.contains("long_hair"), "Returning to Rule34 restores its own search.")
         store.startManualVisualRefresh(); store.handleMemoryPressure()
         XCTAssertFalse(store.isManualVisualScanRunning)
     }
@@ -135,6 +137,17 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertTrue(chips.allSatisfy { $0.imageURL.isEmpty })
         let selected = QueryParser.formatted(ParsedQuery(included: [chips[0].term], excluded: []))
         XCTAssertEqual(QueryParser.parse(selected).included, ["dark skin"])
+    }
+    func testHanimeTopicsUseDistinctArtworkAcrossOverlappingTags() {
+        let shared = Post(key: "hanime:one", id: "one", provider: "Hanime",
+            tags: ["fantasy", "romance"], thumbUrl: "https://cdn.example.test/one.jpg", type: "video")
+        let alternate = Post(key: "hanime:two", id: "two", provider: "Hanime",
+            tags: ["romance", "magic"], thumbUrl: "https://cdn.example.test/two.jpg", type: "video")
+        let chips = HomeThemeSuggestions.make(provider: .hanime, learned: [], chosen: [], visual: [],
+            favorites: [], posts: [shared, alternate], excluded: [], limit: 7)
+        let images = chips.map(\.imageURL).filter { !$0.isEmpty }
+        XCTAssertEqual(Set(images).count, images.count,
+            "Two topics must not reuse the same Hanime cover")
     }
     func testDislikedChunLiPresentationPreservesIdentityAndContext() {
         let liked = VisualFeatures.metadata(post("liked", tags: ["chun_li", "qipao", "watercolor"]))!

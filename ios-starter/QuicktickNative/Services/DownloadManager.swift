@@ -43,7 +43,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     nonisolated let root: URL
     private var tasks: [String: URLSessionTask] = [:]
     private var preparing = Set<String>()
+    private var preparationTasks: [String: Task<Void, Never>] = [:]
+    private var preparationIDs: [String: UUID] = [:]
     private var refreshedPornhubTransfers = Set<String>()
+    private var refreshedXvideosTransfers = Set<String>()
     private var hanimeStreamRetries: [String: Int] = [:]
     nonisolated private let progressGate = DownloadProgressGate()
     private var metadataFailed = false
@@ -63,6 +66,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }()
     private lazy var hlsSession: AVAssetDownloadURLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: "com.quicktick.downloads.hls")
+        // A signed HLS URL has a short lifetime. This is always a user-initiated
+        // download, so never defer its first request until the token expires.
+        config.isDiscretionary = false
+        config.sessionSendsLaunchEvents = true
         return AVAssetDownloadURLSession(configuration: config, assetDownloadDelegate: self, delegateQueue: transferDelegateQueue)
     }()
 
@@ -82,10 +89,14 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 } else { savedRecords = try JSONDecoder().decode([DownloadRecord].self, from: data) }
                 let paths = DownloadPathStorage(root: root)
                 records = Self.newestFirst(savedRecords.map { paths.restore($0) })
-                for index in records.indices where records[index].provider.lowercased() == Provider.hanime.rawValue &&
+                for index in records.indices where
+                    [Provider.hanime.rawValue, Provider.pornhub.rawValue].contains(records[index].provider.lowercased()) &&
                     records[index].state == .complete && records[index].kind == .file &&
-                    (records[index].isHanimePosterOnly ||
-                     records[index].localMediaPath.map { DownloadResponseValidator.isPreviewImage(at: URL(fileURLWithPath: $0)) } == true) {
+                    (records[index].isProviderVideoPoster ||
+                     (records[index].mediaType?.lowercased() == "video" &&
+                      records[index].localMediaPath.map {
+                        DownloadResponseValidator.isPreviewImage(at: URL(fileURLWithPath: $0))
+                      } == true)) {
                     // Older releases also stored image bytes *named media.mp4*.
                     // Check the file signature once while restoring metadata;
                     // don't read files repeatedly on the scrolling hot path.
@@ -93,7 +104,9 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     // as a completed offline movie.
                     records[index].state = .failed
                     records[index].progress = 0
-                    records[index].errorMessage = "Only the old preview was saved. Retry to download the full Hanime video."
+                    records[index].errorMessage = records[index].provider.lowercased() == Provider.hanime.rawValue
+                        ? "Only the old preview was saved. Retry to download the full Hanime video."
+                        : "Only the old preview was saved. Retry to download the full Pornhub video."
                 }
                 // Older builds serialized the app container's absolute UUID path.
                 // iOS can change that UUID on an update even though the files survive.
@@ -121,6 +134,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         records = Self.newestFirst(posts.map { post in
             var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: "Saved fixture", tags: post.tags, thumbnailRemoteURL: "", localMediaPath: URL(string: post.mediaUrl)?.path, kind: .file, state: .complete, progress: 1, createdAt: .now)
             record.mediaType = post.type == "image" ? nil : post.type
+            record.pixelWidth = post.width.flatMap { $0.isFinite && $0 > 0 ? Int($0) : nil }
+            record.pixelHeight = post.height.flatMap { $0.isFinite && $0 > 0 ? Int($0) : nil }
             if let path = record.localMediaPath,
                let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber { record.fileSize = size.int64Value }
             return record
@@ -131,7 +146,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     func download(_ post: Post, refreshSource: Bool = false, streamVariant: Int = 0) {
         guard !metadataFailed, tasks[post.stableID] == nil, !preparing.contains(post.stableID), records.first(where: { $0.key == post.stableID })?.state != .complete else { return }
         if post.providerKey == .hanime && streamVariant == 0 { hanimeStreamRetries[post.stableID] = nil }
+        if post.providerKey == .pornhub && streamVariant == 0 { refreshedPornhubTransfers.remove(post.stableID) }
+        if post.providerKey == .xvideos && streamVariant == 0 { refreshedXvideosTransfers.remove(post.stableID) }
         preparing.insert(post.stableID)
+        let preparationID = UUID()
+        preparationIDs[post.stableID] = preparationID
         // Publish the queued state *before* any resolver/network await. Home and
         // Immersive can animate the tap immediately, even on a slow provider.
         let pending: DownloadRecord = {
@@ -141,18 +160,34 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 kind: .file, state: .queued, progress: 0, createdAt: .now)
             record.mediaType = post.type
             record.pageURL = post.pageUrl
+            record.pixelWidth = post.width.flatMap { $0.isFinite && $0 > 0 ? Int($0) : nil }
+            record.pixelHeight = post.height.flatMap { $0.isFinite && $0 > 0 ? Int($0) : nil }
             return record
         }()
         upsert(pending)
-        Task {
-            defer { preparing.remove(post.stableID) }
+        let work = Task {
+            defer {
+                if preparationIDs[post.stableID] == preparationID {
+                    preparationIDs.removeValue(forKey: post.stableID)
+                    preparationTasks.removeValue(forKey: post.stableID)
+                    preparing.remove(post.stableID)
+                }
+            }
             do {
                 // Each Hanime transfer needs a newly issued signed playlist.
                 // Catalog previews and an AVPlayer's cached URL are not valid
                 // substitutes for a downloadable video package.
                 let media = try await resolver.resolve(post,
-                    refresh: refreshSource || post.providerKey == .hanime,
-                    streamVariant: post.providerKey == .hanime ? streamVariant : 0)
+                    // Signed playback URLs may expire before transfer starts.
+                    refresh: refreshSource || post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .xvideos,
+                    streamVariant: (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .xvideos)
+                        ? streamVariant : 0,
+                    forDownload: true)
+                try Task.checkCancellation()
+                // A user can cancel while the provider issues a signed URL.
+                // The URL must never start a background transfer afterward.
+                guard preparationIDs[post.stableID] == preparationID,
+                      records.first(where: { $0.key == post.stableID })?.state == .queued else { return }
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--ui-testing"), let file = URL(string: media.mediaUrl), file.isFileURL {
                     let dir = root.appendingPathComponent(Self.safeName(post.stableID))
@@ -161,7 +196,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     if FileManager.default.fileExists(atPath: copy.path) { try FileManager.default.removeItem(at: copy) }
                     try FileManager.default.copyItem(at: file, to: copy)
                     var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: "Saved fixture", tags: post.tags, thumbnailRemoteURL: "", localMediaPath: copy.path, kind: .file, state: .complete, progress: 1, createdAt: .now)
-                    record.mediaType = post.type; upsert(record)
+                    record.mediaType = post.type
+                    record.pixelWidth = pending.pixelWidth
+                    record.pixelHeight = pending.pixelHeight
+                    upsert(record)
                     await measureSize(record.key, at: copy)
                     return
                 }
@@ -169,15 +207,34 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 let source = try DownloadSourcePolicy.validate(media: media, for: post)
                 let url = source.url
                 if let host = url.host, let provider = post.providerKey { try await ProviderRequestGate.shared.wait(host: host, provider: provider) }
+                try Task.checkCancellation()
+                guard preparationIDs[post.stableID] == preparationID,
+                      records.first(where: { $0.key == post.stableID })?.state == .queued else { return }
                 let hls = source.isHLS
                 var record = pending
                 record.kind = hls ? .hlsPackage : .file
                 let task: URLSessionTask
                 if hls {
-                    let mediaHeaders = HanimeGeneratedAPI.mediaHeaders(for: url)
+                    var mediaHeaders = HanimeGeneratedAPI.mediaHeaders(for: url)
                         .merging(EromeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
-                    let asset = mediaHeaders.isEmpty ? AVURLAsset(url: url)
-                        : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": mediaHeaders])
+                    if post.providerKey == .xvideos {
+                        mediaHeaders["Referer"] = "https://www.xvideos.com/"
+                    }
+                    if post.providerKey == .pornhub {
+                        mediaHeaders["Referer"] = "https://www.pornhub.com/"
+                        mediaHeaders["User-Agent"] = NativeProviderAPI.userAgent
+                    }
+                    var assetOptions: [String: Any] = [:]
+                    if !mediaHeaders.isEmpty { assetOptions["AVURLAssetHTTPHeaderFieldsKey"] = mediaHeaders }
+                    if post.providerKey == .hanime {
+                        // Match native player first-party session semantics.
+                        let cookies = (HTTPCookieStorage.shared.cookies ?? []).filter {
+                            let domain = $0.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                            return domain == "hanime.tv" || domain.hasSuffix(".hanime.tv")
+                        }
+                        if !cookies.isEmpty { assetOptions[AVURLAssetHTTPCookiesKey] = cookies }
+                    }
+                    let asset = AVURLAsset(url: url, options: assetOptions)
                     guard let transfer = hlsSession.makeAssetDownloadTask(asset: asset, assetTitle: record.title, assetArtworkData: nil, options: nil) else { throw APIError.server("This HLS stream cannot be stored offline.") }
                     task = transfer
                 } else {
@@ -191,11 +248,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                             request.setValue(value, forHTTPHeaderField: header)
                         }
                     }
-                    if post.providerKey == .pornhub || post.providerKey == .erome {
+                    if post.providerKey == .pornhub || post.providerKey == .erome || post.providerKey == .xvideos {
                         // Some media CDNs check the public source-page origin.
                         // No account cookies or third-party proxy are used.
                         request.setValue(NativeProviderAPI.userAgent, forHTTPHeaderField: "User-Agent")
-                        request.setValue(post.providerKey == .erome ? "https://www.erome.com/" : "https://www.pornhub.com/", forHTTPHeaderField: "Referer")
+                        request.setValue(post.providerKey == .erome ? "https://www.erome.com/" : (post.providerKey == .xvideos ? "https://www.xvideos.com/" : "https://www.pornhub.com/"), forHTTPHeaderField: "Referer")
                         request.setValue("video/*, application/octet-stream;q=0.9, */*;q=0.7", forHTTPHeaderField: "Accept")
                     }
                     task = directSession.downloadTask(with: request)
@@ -205,15 +262,23 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 record.mediaType = "video" == post.type.lowercased() && hls ? "video" : media.type
                 tasks[record.key] = task; upsert(record); task.resume()
                 await cacheThumbnail(record)
+            } catch is CancellationError {
+                // Cancel is a user decision, never a failed download.
             } catch {
+                guard !Task.isCancelled, preparationIDs[post.stableID] == preparationID else { return }
                 var record = records.first { $0.key == post.stableID } ?? DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: post.tags.first ?? post.provider, tags: post.tags, thumbnailRemoteURL: post.thumbUrl, kind: .file, state: .failed, progress: 0, createdAt: .now)
+                guard record.state != .cancelled else { return }
                 record.state = .failed; record.errorMessage = error.localizedDescription; upsert(record)
             }
         }
+        preparationTasks[post.stableID] = work
     }
     func pause(_ record: DownloadRecord) { tasks[record.key]?.suspend(); update(record.key) { $0.state = .paused } }
     func resume(_ record: DownloadRecord) { tasks[record.key]?.resume(); update(record.key) { $0.state = .downloading } }
     func cancel(_ record: DownloadRecord) {
+        preparationTasks.removeValue(forKey: record.key)?.cancel()
+        preparationIDs.removeValue(forKey: record.key)
+        preparing.remove(record.key)
         tasks.removeValue(forKey: record.key)?.cancel()
         progressGate.clear(key: record.key)
         update(record.key) { $0.state = .cancelled }
@@ -328,6 +393,17 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             if record.kind == .file { try? FileManager.default.removeItem(at: location) }
             return
         }
+        if record.kind == .file,
+           [Provider.hanime.rawValue, Provider.pornhub.rawValue, Provider.xvideos.rawValue].contains(record.provider.lowercased()),
+           record.mediaType?.lowercased() == "video" {
+            // A completed download must be decodable video, not a thumbnail
+            // or an HTML error document disguised as an MP4.
+            let playable = (try? await AVURLAsset(url: location).load(.isPlayable)) ?? false
+            guard playable else {
+                failedTransfer(key, reason: "The provider did not save a playable full video. Retry with a fresh stream.")
+                return
+            }
+        }
         if record.kind == .hlsPackage {
             var isDirectory: ObjCBool = false
             guard location.pathExtension.lowercased() == "movpkg",
@@ -370,7 +446,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             let file = dir.appendingPathComponent("thumbnail.jpg")
             try data.write(to: file, options: .atomic)
             update(record.key) { $0.thumbnailLocalPath = file.path }
-        } catch { update(record.key) { $0.errorMessage = "Thumbnail: \(error.localizedDescription)" } }
+        } catch {
+            // A missing poster must not be reported as a failed video
+            // transfer; thumbnails are optional display-only metadata.
+        }
     }
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         guard let key = downloadTask.taskDescription else { return }
@@ -391,7 +470,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             let header = handle.readData(ofLength: 256)
             try? handle.close()
             if let reason = DownloadResponseValidator.failure(response: response, header: header,
-                                                              expectedVideo: key.hasPrefix("hanime:")) {
+                                                              expectedVideo: key.hasPrefix("hanime:") || key.hasPrefix("pornhub:") || key.hasPrefix("xvideos:")) {
                 Task { @MainActor in self.failedTransfer(key, reason: reason) }
                 return
             }
@@ -418,9 +497,13 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         } else if record.provider.lowercased() == Provider.pornhub.rawValue,
            !refreshedPornhubTransfers.contains(key) {
             refreshedPornhubTransfers.insert(key)
-            // The cached video URL may have expired or returned an HTML error
-            // page. Resolve one fresh signed URL from the original post.
-            retry(record)
+            // Try the next distinct declared stream rather than replaying
+            // the same expired CDN URL.
+            retry(record, streamVariant: 1)
+        } else if record.provider.lowercased() == Provider.xvideos.rawValue,
+                  !refreshedXvideosTransfers.contains(key) {
+            refreshedXvideosTransfers.insert(key)
+            retry(record, streamVariant: 1)
         } else {
             update(key) { $0.state = .failed; $0.errorMessage = reason }
         }
@@ -491,14 +574,26 @@ enum DownloadSourcePolicy {
             throw URLError(.badURL)
         }
         let fileType = url.pathExtension.lowercased()
-        let isHLS = fileType == "m3u8" || url.path.hasPrefix("/hls/") ||
-            (media.type == "hls" && !["mp4", "m4v", "mov"].contains(fileType))
+        // An MP4 served from /hls/ is still a file, not an HLS playlist.
+        // Routing those to AVAssetDownloadURLSession silently fails or
+        // produces incomplete offline packages on some providers.
+        let isVideoFile = ["mp4", "m4v", "mov"].contains(fileType)
+        let isHLS = !isVideoFile && (fileType == "m3u8" ||
+            url.path.hasPrefix("/hls/") || media.type == "hls")
         if post.providerKey == .hanime {
             // An image can be a useful poster, but it must never be marked as
             // the completed offline video. Hanime requires first-party media.
             guard HanimeGeneratedAPI.permittedStreamURL(url),
-                  isHLS || ["mp4", "m4v"].contains(fileType) else {
+                  isHLS || ["mp4", "m4v"].contains(fileType) ||
+                    (fileType.isEmpty && media.type.lowercased() == "video") else {
                 throw APIError.server("Hanime returned a preview instead of a video stream. Retry to resolve the HLS source.")
+            }
+        }
+        if post.providerKey == .pornhub && post.type.lowercased() == "video" {
+            // Do not accept a poster disguised as a video download.
+            guard !["jpg", "jpeg", "png", "webp", "avif", "gif"].contains(fileType),
+                  ["video", "hls"].contains(media.type.lowercased()) else {
+                throw APIError.server("Pornhub returned an image instead of a downloadable video stream.")
             }
         }
         return (url, isHLS)
@@ -532,7 +627,7 @@ enum DownloadResponseValidator {
         }
         let mime = response.mimeType?.lowercased() ?? ""
         if expectedVideo && (mime.hasPrefix("image/") || isPreviewImage(header: header)) {
-            return "The media server returned only a preview image, not the Hanime video. Retry to resolve its stream."
+            return "The media server returned an image rather than video bytes. Retry to resolve the full stream."
         }
         let prefix = String(decoding: header, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if mime.contains("text/") || mime.contains("json") || mime.contains("html") ||

@@ -1265,6 +1265,13 @@ struct FavoritesView: View {
                     ScrollViewReader { scrollProxy in
                     ScrollView {
                         LazyVStack(spacing: 18) {
+                            if AppTheme.premium {
+                                PremiumPageHeader(title: "Your favorites", eyebrow: "QUICKTICK / LIBRARY",
+                                                  subtitle: collectionSubtitle, icon: "heart.fill")
+                                    .padding(.horizontal, 16)
+                                    .padding(.top, 16)
+                                    .id("favorites-feed-top")
+                            } else {
                             HStack(spacing: 12) {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Your collection")
@@ -1283,6 +1290,7 @@ struct FavoritesView: View {
                             .padding(.horizontal, 16)
                             .padding(.top, 14)
                             .id("favorites-feed-top")
+                            }
                             CollectionSearchField(text: $searchText, placeholder: "Search likes",
                                                   identifier: "favorites-search", isSearching: searching)
                                 .padding(.horizontal, 16)
@@ -1600,24 +1608,110 @@ struct TasteWrappedActivity: Equatable {
     }
 }
 
+/// Cinematic layer shared by *every* New UI Wrapped chapter. Actual saved
+/// favorites drift through the frame; at most two native players run, and
+/// nothing from this private layer is included in the share card.
+enum WrappedMotionSelection {
+    static func select(_ posts: [Post], chapter: Int, limit: Int = 6) -> [Post] {
+        var seen = Set<String>()
+        let unique = posts.filter { seen.insert($0.stableID).inserted }
+        guard !unique.isEmpty, limit > 0 else { return [] }
+        let videos = unique.filter { $0.type.lowercased() == "video" }
+        let images = unique.filter { $0.type.lowercased() != "video" }
+        var chosen: [Post] = []
+        func take(_ pool: [Post], start: Int, count: Int) {
+            guard !pool.isEmpty, count > 0 else { return }
+            for offset in 0..<min(count, pool.count) {
+                let post = pool[(start + offset) % pool.count]
+                if !chosen.contains(where: { $0.stableID == post.stableID }) {
+                    chosen.append(post)
+                }
+            }
+        }
+        let page = max(0, chapter)
+        take(videos, start: (page * 2) % max(1, videos.count), count: 2)
+        take(images, start: (page * 4) % max(1, images.count), count: limit - chosen.count)
+        if chosen.count < limit {
+            take(unique, start: (page * limit) % unique.count, count: unique.count)
+        }
+        return Array(chosen.prefix(limit))
+    }
+}
+
+private struct WrappedMotionBackdrop: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let posts: [Post]
+    let active: Bool
+    let chapter: Int
+    @State private var drifting = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            // Two staggered frames create a film-reel journey without
+            // six stacked posters covering the playing video.
+            let items = WrappedMotionSelection.select(posts, chapter: chapter, limit: 2)
+            let width = max(135, min(265, geometry.size.width * 0.62))
+            let height = max(185, min(380, geometry.size.height * 0.43))
+            ZStack {
+                ForEach(items.indices, id: \.self) { index in
+                    let post = items[index]
+                    Group {
+                        if index < 2 && post.type.lowercased() == "video" {
+                            WrappedVideoStage(post: post, active: active, showsMuteControl: false)
+                        } else {
+                            PosterView(post: post)
+                        }
+                    }
+                    .frame(width: width, height: height)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 19))
+                    .overlay(RoundedRectangle(cornerRadius: 19)
+                        .strokeBorder(.white.opacity(0.28), lineWidth: 1))
+                    .rotationEffect(.degrees(index == 0 ? -5 : 5))
+                    .position(x: geometry.size.width * (index == 0 ? 0.34 : 0.69),
+                              y: geometry.size.height * (index == 0 ? 0.29 : 0.72))
+                    .offset(x: reduceMotion ? 0 : (drifting ? CGFloat(10 + index * 8) : CGFloat(-14 - index * 4)),
+                            y: reduceMotion ? 0 : (drifting ? -12 : 12))
+                    .animation(reduceMotion ? nil :
+                        .easeInOut(duration: Double(7 + index)).repeatForever(autoreverses: true),
+                        value: drifting)
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
+        }
+        .onAppear { drifting = active }
+        .onChange(of: active) { _, value in drifting = value }
+    }
+}
+
 private struct WrappedActivityPage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let activity: TasteWrappedActivity
     let active: Bool
+    let mediaPosts: [Post]
+    let chapter: Int
     @State private var drifting = false
 
     var body: some View {
+        GeometryReader { geometry in
         ZStack(alignment: .topLeading) {
-            LinearGradient(colors: [AppTheme.accent.opacity(0.32), .clear],
+            WrappedMotionBackdrop(posts: mediaPosts, active: active, chapter: chapter)
+                .opacity(mediaPosts.isEmpty ? 0 : 0.38)
+                .allowsHitTesting(false)
+            LinearGradient(colors: [AppTheme.background.opacity(0.45), AppTheme.accent.opacity(0.33),
+                                    AppTheme.background.opacity(0.92)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
-                .ignoresSafeArea()
+                .allowsHitTesting(false)
             if !reduceMotion {
                 Text("PLAY  •  REPLAY  •  REMEMBER  •  YOUR STORY  •")
                     .font(.system(size: 16, weight: .black, design: .rounded))
                     .tracking(3)
-                    .fixedSize()
+                    .fixedSize(horizontal: true, vertical: false)
                     .foregroundStyle(.white.opacity(0.23))
                     .offset(x: drifting ? -480 : 120)
+                    .frame(width: geometry.size.width, alignment: .leading)
+                    .clipped()
                     .padding(.top, 106)
                     .animation(.linear(duration: 12).repeatForever(autoreverses: false), value: drifting)
                     .allowsHitTesting(false)
@@ -1628,8 +1722,10 @@ private struct WrappedActivityPage: View {
                     .tracking(2.6)
                     .foregroundStyle(AppTheme.accent)
                 Text("Every replay\ntells a story.")
-                    .font(.system(size: 40, weight: .black, design: .rounded))
+                    .font(.system(size: 38, weight: .black, design: .rounded))
                     .tracking(-1.7)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.76)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Your real playback and save history, tracked privately on this device.")
                     .font(.system(size: 16, weight: .medium, design: .rounded))
@@ -1648,8 +1744,11 @@ private struct WrappedActivityPage: View {
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.6))
             }
-            .padding(.horizontal, 27)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .padding(.horizontal, 25)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+        }
+        .frame(width: geometry.size.width, height: geometry.size.height)
+        .clipped()
         }
         .onAppear { drifting = active }
         .onChange(of: active) { _, now in drifting = now }
@@ -1688,24 +1787,33 @@ private struct WrappedVideoStage: View {
     @EnvironmentObject private var store: AppStore
     let post: Post
     let active: Bool
+    var showsMuteControl = true
     @State private var player: AVPlayer?
     @State private var ready = false
     @State private var muted = true
 
     var body: some View {
         ZStack {
-            PosterView(post: post)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Color.black
             if let player {
                 NativePlayerSurface(player: player, fill: true, ready: $ready,
                                     accessibilityID: "wrapped-video-\(post.stableID)")
                     .opacity(ready ? 1 : 0)
                     .allowsHitTesting(false)
+                if !ready {
+                    ProgressView().tint(.white)
+                        .accessibilityLabel("Preparing the full video")
+                }
+            } else {
+                // Once a real player is present the poster is removed from
+                // the hierarchy, never alpha-composited over the video.
+                PosterView(post: post)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .clipped()
         .overlay(alignment: .bottomTrailing) {
-            if player != nil {
+            if player != nil && showsMuteControl {
                 Button {
                     muted.toggle(); player?.isMuted = muted
                 } label: {
@@ -1801,9 +1909,104 @@ private struct WrappedSpotlightPage: View {
                 .animation(reduceMotion ? nil : .spring(response: 0.75, dampingFraction: 0.85), value: revealed)
             }
         }
-        .onAppear { revealed = true; drifting = true }
+        .onAppear { revealed = active; drifting = active }
+        .onChange(of: active) { _, isActive in
+            revealed = isActive
+            drifting = isActive
+        }
         .onDisappear { revealed = false; drifting = false }
         .accessibilityIdentifier("wrapped-spotlight-\(spotlight.post.stableID)")
+    }
+}
+
+/// Exported only when the user deliberately shares it. Avoid titles, tags,
+/// artwork, URLs, account IDs and source history on the recap card: those can
+/// be sensitive even when the underlying favorites are local to the device.
+private struct WrappedRecapCard: View {
+    let year: Int
+    let period: String
+    let likes: Int
+    let videos: Int
+    let sources: Int
+    let activity: TasteWrappedActivity
+
+    var body: some View {
+        ZStack {
+            Color(red: 0.038, green: 0.047, blue: 0.059)
+            Circle()
+                .strokeBorder(AppTheme.accent.opacity(0.33), lineWidth: 2)
+                .frame(width: 560, height: 560)
+                .offset(x: 260, y: -320)
+            Circle()
+                .strokeBorder(.white.opacity(0.10), lineWidth: 2)
+                .frame(width: 480, height: 480)
+                .offset(x: 260, y: -320)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 11) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 26, weight: .black))
+                        .foregroundStyle(AppTheme.accent)
+                    Text("QUICKTICK")
+                        .font(.system(size: 18, weight: .black, design: .default))
+                        .tracking(4)
+                    Spacer()
+                    Text("\(year)")
+                        .font(.system(size: 19, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.58))
+                }
+                Spacer()
+                Text("YOUR\nTASTE.\nYOUR STORY.")
+                    .font(.system(size: 66, weight: .black, design: .default))
+                    .tracking(-3)
+                    .lineSpacing(-7)
+                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: false, vertical: true)
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(AppTheme.accent)
+                    .frame(width: 90, height: 5)
+                    .padding(.top, 28)
+                Text(period)
+                    .font(.system(size: 14, weight: .bold, design: .default))
+                    .tracking(3.5)
+                    .foregroundStyle(.white.opacity(0.65))
+                    .padding(.top, 30)
+                HStack(alignment: .top, spacing: 19) {
+                    recapStat("\(likes)", "LIKED POSTS")
+                    recapStat("\(videos)", "VIDEOS")
+                    recapStat("\(sources)", "SOURCES")
+                }
+                .padding(.top, 22)
+                RoundedRectangle(cornerRadius: 1).fill(.white.opacity(0.16))
+                    .frame(height: 1).padding(.vertical, 26)
+                HStack {
+                    Label(activity.watchTime + " watched (all-time)", systemImage: "play.circle.fill")
+                    Spacer()
+                    Text("MADE FOR ME")
+                        .tracking(1.3)
+                }
+                .font(.system(size: 13, weight: .bold, design: .default))
+                .foregroundStyle(.white.opacity(0.70))
+                .padding(.bottom, 18)
+            }
+            .padding(49)
+            .foregroundStyle(.white)
+        }
+        .frame(width: 540, height: 960)
+        .clipped()
+    }
+
+    private func recapStat(_ value: String, _ caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(value)
+                .font(.system(size: 43, weight: .heavy, design: .rounded))
+                .minimumScaleFactor(0.65)
+                .lineLimit(1)
+            Text(caption)
+                .font(.system(size: 10, weight: .bold, design: .default))
+                .tracking(1.3)
+                .foregroundStyle(AppTheme.accent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -1817,12 +2020,14 @@ struct TasteWrappedView: View {
     @State private var page = 0
     @State private var sections: [TasteWrappedCategory] = []
     @State private var spotlights: [TasteWrappedSpotlight] = []
+    @State private var motionPosts: [Post] = []
     @State private var likedCount = 0
     @State private var videoCount = 0
     @State private var providerCount = 0
     @State private var activity = TasteWrappedActivity(watchSeconds: 0, replays: 0, completed: 0, downloads: 0)
     @State private var showingWeeklyLikes = false
     @State private var animated = false
+    @State private var shareImage: Image?
     private var totalPages: Int { spotlights.count + sections.count + 3 }
 
     var body: some View {
@@ -1831,7 +2036,7 @@ struct TasteWrappedView: View {
             LinearGradient(colors: [AppTheme.accent.opacity(0.28), .clear, AppTheme.palette.secondary.opacity(0.12)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
-            if !reduceMotion {
+            if !reduceMotion && !AppTheme.premium {
                 Circle().fill(AppTheme.accent.opacity(0.20))
                     .frame(width: 280, height: 280).blur(radius: 65)
                     .offset(x: animated ? 145 : -130, y: animated ? -240 : 250)
@@ -1844,7 +2049,8 @@ struct TasteWrappedView: View {
                     WrappedSpotlightPage(spotlight: spotlights[index], active: page == index + 1)
                         .tag(index + 1)
                 }
-                WrappedActivityPage(activity: activity, active: page == spotlights.count + 1)
+                WrappedActivityPage(activity: activity, active: page == spotlights.count + 1,
+                                    mediaPosts: motionPosts, chapter: spotlights.count + 1)
                     .tag(spotlights.count + 1)
                 ForEach(sections.indices, id: \.self) { index in
                     wrappedPage(sections[index], pageIndex: spotlights.count + index + 2)
@@ -1853,9 +2059,14 @@ struct TasteWrappedView: View {
                 conclusion.tag(totalPages - 1)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            .sensoryFeedback(.selection, trigger: page)
             VStack {
                 HStack {
-                    Text("QUICKTICK / WRAPPED")
+                    Text(page == 0 ? "PROLOGUE / YOUR JOURNEY" :
+                         page == totalPages - 1 ? "FINALE / THE NEXT CHAPTER" :
+                         page <= spotlights.count ? "ACT I / YOUR MOMENTS" :
+                         page == spotlights.count + 1 ? "ACT II / YOUR ACTIVITY" :
+                         "ACT III / THE PATTERNS")
                         .font(.system(size: 11, weight: .bold, design: .rounded))
                         .tracking(2)
                         .foregroundStyle(.white.opacity(0.86))
@@ -1878,7 +2089,7 @@ struct TasteWrappedView: View {
                     }
                 }
                 HStack {
-                    Text("\(page + 1) / \(totalPages)")
+                    Text("SCENE \(String(format: "%02d", page + 1)) / \(String(format: "%02d", totalPages))")
                         .font(.caption2.monospacedDigit())
                     Spacer()
                     Button(page == totalPages - 1 ? "Finish" : "Next") {
@@ -1904,6 +2115,7 @@ struct TasteWrappedView: View {
             likedCount = favorites.count
             sections = TasteWrappedSummary.make(from: favorites)
             spotlights = TasteWrappedSpotlights.make(from: favorites, sections: sections)
+            motionPosts = favorites.shuffled()
             videoCount = favorites.filter { $0.type.lowercased() == "video" }.count
             providerCount = Set(favorites.map { $0.providerKey?.rawValue ?? $0.provider }).count
             animated = true
@@ -1912,10 +2124,25 @@ struct TasteWrappedView: View {
             let history = await store.recommendations.snapshot()
             activity = TasteWrappedActivity.make(from: history)
         }
+        .task(id: "\(page):\(likedCount):\(activity.watchSeconds)") {
+            guard page == totalPages - 1 else { return }
+            // Rendering a share image only when the final story becomes
+            // visible avoids allocating a 1080×1920 bitmap during feed scroll.
+            let renderer = ImageRenderer(content: WrappedRecapCard(
+                year: Calendar.current.component(.year, from: .now),
+                period: showingWeeklyLikes ? "THIS WEEK'S LIKES" : "ALL-TIME PROFILE",
+                likes: likedCount, videos: videoCount, sources: providerCount,
+                activity: activity))
+            renderer.scale = 2
+            if let rendered = renderer.uiImage { shareImage = Image(uiImage: rendered) }
+        }
         .accessibilityIdentifier("taste-wrapped")
     }
 
-    private var introduction: some View {
+    @ViewBuilder private var introduction: some View {
+        if AppTheme.premium {
+            premiumIntroduction
+        } else {
         VStack(alignment: .leading, spacing: 22) {
             Image(systemName: "sparkles.rectangle.stack.fill")
                 .font(.system(size: 65, weight: .light))
@@ -1943,9 +2170,139 @@ struct TasteWrappedView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 30)
+        }
+    }
+
+    private var premiumIntroduction: some View {
+        ZStack(alignment: .bottomLeading) {
+            WrappedMotionBackdrop(posts: motionPosts, active: page == 0, chapter: 0)
+                .opacity(0.60)
+                .allowsHitTesting(false)
+            LinearGradient(colors: [.black.opacity(0.25),
+                                    AppTheme.background.opacity(0.48),
+                                    AppTheme.background.opacity(0.98)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("QUICKTICK  /  A YEAR IN MOTION  /  \(Calendar.current.component(.year, from: .now))")
+                    .font(.system(size: 12, weight: .black, design: .default))
+                    .tracking(3)
+                    .foregroundStyle(AppTheme.accent)
+                    .padding(.bottom, 26)
+                Text("YOUR YEAR.\nYOUR JOURNEY.")
+                    .font(.system(size: 57, weight: .black, design: .default))
+                    .tracking(-2.8)
+                    .lineSpacing(-3)
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .opacity(page == 0 ? 1 : 0.3)
+                    .offset(y: page == 0 ? 0 : 28)
+                    .animation(reduceMotion ? nil : .spring(response: 0.8, dampingFraction: 0.85), value: page)
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(AppTheme.accent)
+                    .frame(width: 92, height: 5)
+                    .padding(.vertical, 32)
+                Text("\(likedCount)")
+                    .font(.system(size: 90, weight: .black, design: .rounded))
+                    .tracking(-5)
+                    .contentTransition(.numericText())
+                    .foregroundStyle(.white)
+                Text(showingWeeklyLikes ? "POSTS YOU LOVED THIS WEEK" : "POSTS YOU CHOSE TO KEEP")
+                    .font(.system(size: 13, weight: .bold, design: .default))
+                    .tracking(2.1)
+                    .foregroundStyle(AppTheme.accent)
+                Text("Real favorites. Real patterns. A story nobody else could make.")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .padding(.top, 26)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 32)
+            .padding(.bottom, 140)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        }
     }
 
     private func wrappedPage(_ section: TasteWrappedCategory, pageIndex: Int) -> some View {
+        Group {
+        if AppTheme.premium {
+            GeometryReader { geometry in
+                ZStack(alignment: .bottomLeading) {
+                    WrappedMotionBackdrop(posts: motionPosts, active: page == pageIndex, chapter: pageIndex)
+                        .opacity(0.72).allowsHitTesting(false)
+                    LinearGradient(colors: [.black.opacity(0.06), AppTheme.background.opacity(0.55),
+                                            AppTheme.background.opacity(0.97)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .allowsHitTesting(false)
+                    VStack(alignment: .leading, spacing: 11) {
+                        HStack(spacing: 8) {
+                            Image(systemName: section.symbol)
+                            Text("CHAPTER \(pageIndex - spotlights.count - 1) / \(sections.count)")
+                                .tracking(1.6)
+                            Spacer(minLength: 8)
+                            Text("YOUR FAVORITES")
+                                .tracking(1.2)
+                                .foregroundStyle(.white.opacity(0.64))
+                        }
+                        .font(.system(size: 10, weight: .black))
+                        .foregroundStyle(AppTheme.accent)
+                        Text(section.heading)
+                            .font(.system(size: 35, weight: .black, design: .rounded))
+                            .tracking(-1.2)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.72)
+                        if let top = section.moments.first {
+                            HStack(spacing: 13) {
+                                Image(systemName: section.symbol)
+                                    .font(.system(size: 28, weight: .semibold))
+                                    .foregroundStyle(AppTheme.accent)
+                                    .frame(width: 56, height: 78)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("MOST LIKED")
+                                        .font(.system(size: 10, weight: .black))
+                                        .tracking(1.5)
+                                        .foregroundStyle(AppTheme.accent)
+                                    Text(top.label)
+                                        .font(.system(size: 23, weight: .bold, design: .rounded))
+                                        .lineLimit(2)
+                                        .minimumScaleFactor(0.8)
+                                    Text("\(top.appearances) liked posts")
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.white.opacity(0.75))
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(10)
+                            .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 17))
+                            ForEach(0..<min(3, section.moments.count), id: \.self) { index in
+                                let moment = section.moments[index]
+                                HStack(spacing: 12) {
+                                    Text(String(format: "%02d", index + 1))
+                                        .font(.caption.monospacedDigit().weight(.black))
+                                        .foregroundStyle(AppTheme.accent)
+                                    Text(moment.label).lineLimit(1)
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer(minLength: 5)
+                                    Text("\(moment.appearances)")
+                                        .font(.subheadline.monospacedDigit().weight(.bold))
+                                }
+                                .padding(.vertical, 5)
+                            }
+                        } else {
+                            Text("Keep liking posts to unlock this chapter.")
+                                .font(.subheadline.weight(.medium))
+                        }
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 105)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .clipped()
+            }
+        } else {
         VStack(alignment: .leading, spacing: 18) {
             Image(systemName: section.symbol)
                 .font(.system(size: 39, weight: .light))
@@ -1984,6 +2341,8 @@ struct TasteWrappedView: View {
         }
         .frame(maxWidth: 500, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 26)
+        }
+        }
     }
 
     private var conclusion: some View {
@@ -2012,6 +2371,23 @@ struct TasteWrappedView: View {
             }
             Text("Come back in Settings for your evolving Wrapped. A new weekly recap appears when your likes tell a new story.")
                 .font(.subheadline).foregroundStyle(.white.opacity(0.69))
+            if let shareImage {
+                ShareLink(item: shareImage,
+                          preview: SharePreview("My QuickTick Wrapped", image: shareImage)) {
+                    Label("Share a recap card", systemImage: "square.and.arrow.up")
+                        .font(.system(size: 15, weight: .bold))
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                        .foregroundStyle(.white)
+                        .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .accessibilityIdentifier("wrapped-share-recap")
+            } else {
+                ProgressView("Preparing your recap card…")
+                    .tint(AppTheme.accent)
+            }
+            Text("Sharing is optional. The card uses counts only, never private posts, titles or account details.")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.55))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 30)

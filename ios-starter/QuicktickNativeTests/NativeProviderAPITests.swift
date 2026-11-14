@@ -80,9 +80,14 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "api.redgifs.com", path == "/v2/niches" {
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let number = query.first(where: { $0.name == "page" })?.value ?? "1"
-            payload = number == "2"
-                ? #"{"pages":2,"niches":[{"id":"gaming","name":"Gaming","gifs":54,"thumbnail":"https://media.redgifs.com/gaming.jpg"}]}"#
-                : #"{"pages":2,"niches":[{"id":"cosplay","name":"Cosplay","gifs":200,"thumbnail":"https://media.redgifs.com/niche.jpg"}]}"#
+            payload = number == "3"
+                ? #"{"pages":3,"niches":[{"id":"no-cover","name":"No Cover","gifs":18}]}"#
+                : (number == "2"
+                    ? #"{"pages":2,"niches":[{"id":"gaming","name":"Gaming","gifs":54,"thumbnail":"https://media.redgifs.com/gaming.jpg"}]}"#
+                    : #"{"pages":2,"niches":[{"id":"cosplay","name":"Cosplay","gifs":200,"thumbnail":"https://media.redgifs.com/niche.jpg"}]}"#)
+        }
+        else if host == "api.redgifs.com", path == "/v2/niches/no-cover/gifs" {
+            payload = #"{"pages":1,"gifs":[]}"#
         }
         else if host == "api.redgifs.com", path == "/v2/niches/gaming/gifs" {
             payload = #"{"pages":1,"gifs":[{"id":"gamingclip","type":"g","tags":["gaming"],"urls":{"hd":"https://media.redgifs.com/gamingclip.mp4","poster":"https://media.redgifs.com/gamingclip.jpg"}}]}"#
@@ -98,6 +103,32 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 : #"{"pages":1,"gifs":[{"id":"usable","type":"g","niches":["empty-top"],"urls":{"hd":"https://media.redgifs.com/usable.mp4","poster":"https://media.redgifs.com/usable.jpg"}}]}"#
         }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
+        else if host == "www.xvideos.com", path == "/" || path.hasPrefix("/best/") || path.hasPrefix("/new/") {
+            let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "k" })?.value ?? ""
+            if search == "empty" {
+                payload = #"<html><div>No matches</div></html>"#
+            } else {
+                payload = #"""
+                <html><div class="thumb-block">
+                    <div class="thumb"><a href="/video.abc123/first-story">
+                    <img data-src="https://img-cf.xvideos-cdn.com/videos/first.jpg"></a></div>
+                    <p><a href="/video.abc123/first-story" title="First story">First story</a></p>
+                </div><div class="thumb-block"><div class="thumb">
+                    <a href="/video.def456/second-story"><img data-src="https://img-cf.xvideos-cdn.com/videos/second.jpg"></a>
+                </div><p><a href="/video.def456/second-story" title="Second story">Second story</a></p></div></html>
+                """#
+            }
+        }
+        else if host == "www.xvideos.com", path.hasPrefix("/video.") {
+            payload = #"""
+            <html><script>
+            html5player.setVideoUrlHigh('https://cdn77.xvideos-cdn.com/videos/full-hd.mp4?token=valid');
+            html5player.setVideoUrlLow('https://cdn77.xvideos-cdn.com/videos/full-sd.mp4');
+            html5player.setVideoHLS('https://cdn77.xvideos-cdn.com/videos/full-hls.m3u8');
+            </script></html>
+            """#
+        }
         else if host == "www.erome.com", ["/explore", "/explore/new", "/search"].contains(path) {
             let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                 .first(where: { $0.name == "q" })?.value
@@ -145,6 +176,8 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 result = #"{"sources":[{"kind":"normal","src":"/hls/broken","height":1080},{"kind":"normal","src":"/hls/alternate","height":720}]}"#
             } else if slug == "plain-json" {
                 result = #"{"sources":[{"kind":"normal","src":"https://cdn.hanime.tv/hls/signed-opaque?token=abc","height":720}]}"#
+            } else if slug == "download-file" {
+                result = #"{"sources":[{"kind":"normal","src":"https://cdn.hanime.tv/videos/high-quality.m3u8","height":1080},{"kind":"normal","src":"https://cdn.hanime.tv/videos/download-full.mp4","height":720}]}"#
             } else {
                 result = #"{"sources":[{"kind":"promotion","src":"/hls/ad/placeholder"},{"kind":"normal","src":"/hls/42/fixture-token","height":1080,"type":"application/vnd.apple.mpegurl"}]}"#
             }
@@ -334,9 +367,11 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             let fallback = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "fallback" } == true
             let opaque = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "opaque" } == true
             let multi = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "multi" } == true
+            let downloadPriority = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "viewkey" && $0.value == "download-priority" } == true
             payload = fallback ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://www.pornhub.com/removed-definition"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/valid.m3u8"}]};</script>"#
                 : opaque ? #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"1080","videoUrl":"https://vid-cdn.phncdn.com/signed/abc123?expires=123&token=xyz"}]};</script>"#
                 : multi ? #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/first-1080.mp4"},{"format":"hls","quality":"720","videoUrl":"https://cdn.pornhub.com/second-720.m3u8"}]};</script>"#
+                : downloadPriority ? #"<script>var player={"mediaDefinitions":[{"format":"hls","quality":"1080","videoUrl":"https://cdn.pornhub.com/priority-1080.m3u8"},{"format":"mp4","quality":"720","videoUrl":"https://cdn.pornhub.com/offline-720.mp4"}]};</script>"#
                 : #"<script>var player={"mediaDefinitions":[{"format":"mp4","quality":"1080","videoUrl":"https://cdn.pornhub.com/full.mp4"}]};</script>"#
         }
         else if path == "/embed/multi" {
@@ -545,6 +580,14 @@ final class NativeProviderAPITests: XCTestCase {
         })
     }
 
+    func testRedgifsNicheWithoutArtworkIsStillAvailableToBrowse() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let page = try await api.redgifsNichesPage(page: 3, limit: 24)
+        XCTAssertEqual(page.items.map(\.id), ["no-cover"])
+        XCTAssertEqual(page.items.first?.imageURL, "")
+        XCTAssertFalse(page.hasMore)
+    }
+
     @MainActor func testRedgifsExplicitNicheSelectionReplacesFeedAndKeepsLikedClips() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -720,6 +763,19 @@ final class NativeProviderAPITests: XCTestCase {
         }
     }
 
+    func testHanimeDownloadSelectsFullVideoWhenFirstPartyPlayerAlsoOffersHLS() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "hanime:download-file", id: "download-file", provider: "Hanime", type: "video")
+        let playback = try await api.resolveMedia(post)
+        XCTAssertEqual(playback.type, "hls")
+        XCTAssertEqual(playback.mediaUrl, "https://cdn.hanime.tv/videos/high-quality.m3u8")
+        let download = try await api.resolveMedia(post, forDownload: true)
+        XCTAssertEqual(download.type, "video")
+        XCTAssertEqual(download.mediaUrl, "https://cdn.hanime.tv/videos/download-full.mp4")
+        let result = try DownloadSourcePolicy.validate(media: download, for: post)
+        XCTAssertFalse(result.isHLS)
+    }
+
     func testHanimeNativeHLSResolvesCurrentV11Handshake() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let post = Post(key: "hanime:sample", id: "sample", provider: "Hanime", type: "video")
@@ -771,6 +827,28 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(resolved.mediaUrl, "https://cdn.hanime.tv/hls/signed-opaque?token=abc")
         XCTAssertEqual(resolved.type, "hls")
         XCTAssertTrue(HanimeGeneratedAPI.permittedStreamURL(URL(string: resolved.mediaUrl)!))
+    }
+
+    func testHanimeHandshakeTokensUseURLSafeUnpaddedBase64() throws {
+        let payload = Data(#"{"slug":"example","directive":"htv_player_handshake"}"#.utf8)
+        for _ in 0..<12 {
+            let token = try HanimeHandshakeCodec.seal(payload)
+            XCTAssertFalse(token.contains("="))
+            XCTAssertFalse(token.contains("+"))
+            XCTAssertFalse(token.contains("/"))
+            let normalized = token.replacingOccurrences(of: "-", with: "+")
+                .replacingOccurrences(of: "_", with: "/")
+            let padded = normalized + String(repeating: "=", count: (4 - normalized.count % 4) % 4)
+            let bytes = try XCTUnwrap(Data(base64Encoded: padded))
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+            for field in ["iv", "tag", "data"] {
+                let encoded = try XCTUnwrap(envelope[field] as? String)
+                XCTAssertFalse(encoded.contains("="))
+                XCTAssertFalse(encoded.contains("+"))
+                XCTAssertFalse(encoded.contains("/"))
+            }
+            XCTAssertEqual(try HanimeHandshakeCodec.open(token), payload)
+        }
     }
 
     func testHanimeHandshakeCodecAuthenticatesEnvelope() throws {
@@ -1293,6 +1371,56 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertFalse(excluded.contains(where: { $0.term == "pokemon" }))
     }
 
+    func testXVideosProviderIdentityAndSafeURLs() throws {
+        XCTAssertEqual(Provider.identify("XVideos.com"), .xvideos)
+        XCTAssertEqual(Provider.identifyPage("https://www.xvideos.com/video.abc123/example"), .xvideos)
+        XCTAssertTrue(Provider.allCases.contains(.xvideos))
+        XCTAssertNotNil(NativeProviderAPI.xvideosWatchURL("/video.abc123/example"))
+        XCTAssertNotNil(NativeProviderAPI.xvideosWatchURL("https://de.xvideos.com/video4588838/example"))
+        XCTAssertNil(NativeProviderAPI.xvideosWatchURL("https://evil.invalid/video.abc123/example"))
+        XCTAssertNotNil(NativeProviderAPI.xvideosPlayerMediaURL("https://cdn77.xvideos-cdn.com/video.mp4"))
+        XCTAssertNotNil(NativeProviderAPI.xvideosPlayerMediaURL(
+            "https%3A%2F%2Fcdn77.xvideos-cdn.com%2Fvideo.mp4"))
+        XCTAssertNil(NativeProviderAPI.xvideosPlayerMediaURL("https://evil.invalid/preview.mp4"))
+        XCTAssertNil(NativeProviderAPI.xvideosPlayerMediaURL("https://img-cf.xvideos-cdn.com/video.jpg"))
+    }
+
+    func testXVideosFeedSearchAndPlaybackUseFirstPartyPages() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let page = try await api.posts(provider: .xvideos,
+            query: QueryParser.parse("first story"), page: 1, sort: "popular")
+        XCTAssertEqual(page.items.map(\.stableID), ["xvideos:abc123"],
+                       "XVideos search must not include unrelated promoted cards.")
+        XCTAssertEqual(page.items.first?.caption, "First story")
+        XCTAssertEqual(page.items.first?.thumbUrl,
+            "https://img-cf.xvideos-cdn.com/videos/first.jpg")
+        XCTAssertEqual(page.items.first?.type, "video")
+        let search = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first { $0.url?.host == "www.xvideos.com" })
+        let params = URLComponents(url: try XCTUnwrap(search.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(params.first(where: { $0.name == "k" })?.value, "first story")
+        let post = try XCTUnwrap(page.items.first)
+        let first = try await api.resolveMedia(post)
+        XCTAssertEqual(first.mediaUrl, "https://cdn77.xvideos-cdn.com/videos/full-hd.mp4?token=valid")
+        XCTAssertEqual(first.type, "video")
+        let next = try await api.resolveMedia(post, streamVariant: 1, forDownload: true)
+        XCTAssertEqual(next.mediaUrl, "https://cdn77.xvideos-cdn.com/videos/full-sd.mp4")
+        let hls = try await api.resolveMedia(post, streamVariant: 2)
+        XCTAssertEqual(hls.type, "hls")
+        XCTAssertTrue(try DownloadSourcePolicy.validate(media: hls, for: post).isHLS)
+    }
+
+    func testXVideosUnavailableSearchNeverInventsPosts() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        do {
+            _ = try await api.posts(provider: .xvideos,
+                query: QueryParser.parse("empty"), page: 1)
+            XCTFail("A blank provider search should not manufacture unrelated video cards.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("XVideos"))
+        }
+    }
+
     func testPornhubHomeCategoryUsesActualCategoryParameter() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
@@ -1400,6 +1528,18 @@ final class NativeProviderAPITests: XCTestCase {
             $0.url?.query?.contains("search=browse-filter-404") == true &&
             $0.url?.query?.contains("min_duration") != true
         }, "An unsupported filter must not permanently break a valid search")
+    }
+
+    func testPornhubOfflineResolutionPrefersFullMP4OverHLS() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "pornhub:download-priority", id: "download-priority",
+                        provider: "Pornhub", type: "video")
+        let playback = try await api.resolveMedia(post)
+        XCTAssertEqual(playback.type, "hls")
+        XCTAssertEqual(playback.mediaUrl, "https://cdn.pornhub.com/priority-1080.m3u8")
+        let offline = try await api.resolveMedia(post, forDownload: true)
+        XCTAssertEqual(offline.type, "video")
+        XCTAssertEqual(offline.mediaUrl, "https://cdn.pornhub.com/offline-720.mp4")
     }
 
     func testPornhubWatchPage404FallsBackToFirstPartyEmbedMedia() async throws {
@@ -1852,8 +1992,12 @@ final class NativeProviderAPITests: XCTestCase {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         for provider in Provider.allCases {
             let page = try await api.posts(provider: provider, query: QueryParser.parse(""), page: 1)
-            XCTAssertEqual(page.items.count,
-                           provider == .kemono || provider == .coomer ? 3 : (provider == .erome ? 2 : 1), provider.rawValue)
+            // XVideos' first-party listing intentionally exposes two unique
+            // videos, not one. Keep this aggregate smoke test aligned with
+            // its actual fixture instead of treating discovery as a failure.
+            let expectedCount = provider == .kemono || provider == .coomer ? 3 :
+                ([.erome, .xvideos].contains(provider) ? 2 : 1)
+            XCTAssertEqual(page.items.count, expectedCount, provider.rawValue)
             XCTAssertEqual(page.items.first?.providerKey, provider)
         }
         let requests = NativeProviderProtocol.log.snapshot()

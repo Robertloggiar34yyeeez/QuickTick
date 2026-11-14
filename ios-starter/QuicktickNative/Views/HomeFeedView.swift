@@ -66,11 +66,15 @@ private struct HomeArtworkChip: View {
     var width: CGFloat = 182
     var height: CGFloat = 210
     var placeholder = "tag.fill"
+    // Only visible tiles fetch missing posters for the matching Hanime title.
+    var hanimePosterSlug: String? = nil
+    @State private var resolvedHanimePoster = ""
 
     var body: some View {
+        let artworkURL = imageURL.isEmpty ? resolvedHanimePoster : imageURL
         ZStack(alignment: .bottomLeading) {
-            if !imageURL.isEmpty {
-                CachedMediaImage(url: imageURL, pixels: 480, fill: true)
+            if !artworkURL.isEmpty {
+                CachedMediaImage(url: artworkURL, pixels: 480, fill: true)
                     .frame(width: width, height: height)
                     .clipped()
             } else {
@@ -97,6 +101,13 @@ private struct HomeArtworkChip: View {
         .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous)
             .strokeBorder(selected ? AppTheme.accent : .white.opacity(0.17), lineWidth: selected ? 2.5 : 1))
         .contentShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+        .task(id: hanimePosterSlug) {
+            resolvedHanimePoster = ""
+            guard imageURL.isEmpty, let slug = hanimePosterSlug else { return }
+            let poster = await HanimeArtworkCache.shared.posterURL(slug: slug)
+            guard !Task.isCancelled else { return }
+            resolvedHanimePoster = poster
+        }
     }
 }
 
@@ -192,7 +203,8 @@ private struct TopicArtworkGallery: View {
                         ForEach(filtered) { topic in
                             Button { onSelect(topic) } label: {
                                 HomeArtworkChip(title: topic.label, imageURL: topic.imageURL,
-                                                width: width, height: width * 1.35)
+                                                width: width, height: width * 1.35,
+                                                hanimePosterSlug: topic.hanimePosterSlug)
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("all-topic-\(topic.term)")
@@ -922,7 +934,8 @@ struct HomeFeedView: View {
                                 Task { await store.refresh() }
                             } label: {
                                 HomeArtworkChip(title: theme.label, imageURL: theme.imageURL,
-                                                selected: selected)
+                                                selected: selected,
+                                                hanimePosterSlug: theme.hanimePosterSlug)
                             }
                             .buttonStyle(QuicktickPressStyle())
                             .accessibilityLabel("Suggested theme: \(theme.label)")
@@ -1592,22 +1605,28 @@ private struct HanimeTopicsBrowserView: View {
         return term.isEmpty ? topics : topics.filter { $0.localizedCaseInsensitiveContains(term) }
     }
 
-    private var topicPreviews: [String: String] {
-        var previews: [String: String] = [:]
-        let evidence = (catalogPosts + store.posts + Array(store.favorites.values)).filter {
-            $0.providerKey == .hanime && URL(string: $0.cardPreviewURL)?.scheme == "https"
-        }
-        var used = Set<String>()
+    private var topicPreviews: [String: (url: String, slug: String)] {
+        var previews: [String: (url: String, slug: String)] = [:]
+        let evidence = (catalogPosts + store.posts + Array(store.favorites.values))
+            .filter { $0.providerKey == .hanime }
+        var usedTitles = Set<String>()
         for topic in topics {
-            guard let post = evidence.first(where: { post in
-                !used.contains(post.cardPreviewURL) && post.tags.contains { tag in
+            let matching = evidence.filter { post in
+                post.tags.contains { tag in
                     tag.replacingOccurrences(of: "_", with: " ")
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                         .lowercased() == topic
                 }
-            }) else { continue }
-            used.insert(post.cardPreviewURL)
-            previews[topic] = post.cardPreviewURL
+            }
+            guard let post = matching.first(where: {
+                !usedTitles.contains($0.id) && URL(string: $0.cardPreviewURL)?.scheme == "https"
+            }) ?? matching.first(where: { !usedTitles.contains($0.id) })
+                ?? matching.first else { continue }
+            usedTitles.insert(post.id)
+            previews[topic] = (
+                url: URL(string: post.cardPreviewURL)?.scheme == "https" ? post.cardPreviewURL : "",
+                slug: post.id
+            )
         }
         return previews
     }
@@ -1619,7 +1638,8 @@ private struct HanimeTopicsBrowserView: View {
                 TopicArtworkGallery(title: "Hanime topics", subtitle: "Explore the available catalog",
                                     topics: topics.map { term in
                     HomeThemeSuggestion(term: term, label: term.capitalized,
-                                        imageURL: previews[term] ?? "")
+                                        imageURL: previews[term]?.url ?? "",
+                                         hanimePosterSlug: previews[term]?.slug)
                 }, onClose: { dismiss() }, onSelect: { theme in
                     let current = QueryParser.parse(store.queryText)
                     store.commitSuggestedTopic(theme.term, excluded: current.excluded)
@@ -1651,10 +1671,9 @@ private struct HanimeTopicsBrowserView: View {
                     } label: {
                         HStack(spacing: 12) {
                             if let preview {
-                                CachedMediaImage(url: preview, pixels: 240, fill: true)
-                                    .frame(width: 76, height: 84)
-                                    .clipped()
-                                    .clipShape(RoundedRectangle(cornerRadius: 11))
+                                HomeArtworkChip(title: "", imageURL: preview.url,
+                                                width: 76, height: 84,
+                                                hanimePosterSlug: preview.slug)
                             } else {
                                 RoundedRectangle(cornerRadius: 11)
                                     .fill(AppTheme.gradient)
@@ -1740,6 +1759,7 @@ struct HomeThemeSuggestion: Identifiable, Equatable {
     let label: String
     let imageURL: String
     var kind: String = "tag"
+    var hanimePosterSlug: String? = nil
     var id: String { kind + ":" + term }
 }
 
@@ -1879,17 +1899,19 @@ enum HomeThemeSuggestions {
         let lead = Array(terms.prefix(max(limit, 10)))
         let shift = lead.isEmpty ? 0 : (rotation % lead.count + lead.count) % lead.count
         let ordered = Array(lead.dropFirst(shift)) + Array(lead.prefix(shift))
-        var usedImages = Set<String>()
+        var usedTitles = Set<String>()
         return Array(ordered.prefix(limit)).map { tag in
-            let sample = evidence.first { post in
-                post.tags.contains(where: { normalize($0) == tag }) &&
-                    URL(string: post.cardPreviewURL)?.scheme == "https" &&
-                    !usedImages.contains(post.cardPreviewURL)
-            }
-            if let sample { usedImages.insert(sample.cardPreviewURL) }
+            let matching = evidence.filter { $0.tags.contains(where: { normalize($0) == tag }) }
+            let sample = matching.first(where: {
+                !usedTitles.contains($0.id) && URL(string: $0.cardPreviewURL)?.scheme == "https"
+            }) ?? matching.first(where: { !usedTitles.contains($0.id) }) ?? matching.first
+            if let sample { usedTitles.insert(sample.id) }
+            let image = sample.flatMap {
+                URL(string: $0.cardPreviewURL)?.scheme == "https" ? $0.cardPreviewURL : nil
+            } ?? ""
             return HomeThemeSuggestion(term: tag.replacingOccurrences(of: "_", with: " "),
                                        label: tag.replacingOccurrences(of: "_", with: " ").capitalized,
-                                       imageURL: sample?.cardPreviewURL ?? "")
+                                       imageURL: image, hanimePosterSlug: sample?.id)
         }
     }
 }

@@ -284,11 +284,11 @@ enum AppTheme {
     /// No live material rendering in New UI, including fullscreen controls.
     /// Original UI retains its previous native material treatments.
     static var chrome: AnyShapeStyle {
-        premium ? AnyShapeStyle(navigationSurface.opacity(0.96))
+        premium ? AnyShapeStyle(navigationSurface.opacity(0.82))
                 : AnyShapeStyle(Material.ultraThinMaterial)
     }
     static var border: Color {
-        if premium { return Color.white.opacity(0.095) }
+        if premium { return Color.white.opacity(0.15) }
         if isDeSlopified { return Color.white.opacity(0.11) }
         return palette == .oledBlack ? Color.white.opacity(0.13) : (isCosmic ? palette.primary.opacity(0.30) : Color.white.opacity(0.12))
     }
@@ -807,7 +807,7 @@ struct SettingsLauncher: View {
             Image(systemName: "slider.horizontal.3").font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: immersive ? 52 : 44, height: immersive ? 52 : 44)
-                .background(immersive ? Color.black.opacity(0.16) : AppTheme.elevatedSurface,
+                .background(immersive ? Color.black.opacity(0.10) : AppTheme.elevatedSurface,
                             in: RoundedRectangle(cornerRadius: immersive ? 17 : 14))
                 .overlay(RoundedRectangle(cornerRadius: immersive ? 17 : 14)
                     .stroke(immersive ? .white.opacity(0.25) : AppTheme.border, lineWidth: 1))

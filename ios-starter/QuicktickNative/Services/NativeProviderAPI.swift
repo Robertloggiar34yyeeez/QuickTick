@@ -1168,8 +1168,13 @@ enum NativeProviderAPI {
         #else
         credentials = try await HanimeBrowserHandshake.credentials(slug: slug)
         #endif
+        // The signed request and encrypted payload must use the same
+        // first-party player clock, including millisecond timestamps.
+        guard let playerTime = Double(credentials.timestamp), playerTime.isFinite,
+              playerTime > 0 else { throw APIError.invalidResponse }
+        let seconds = playerTime > 1_000_000_000_000 ? playerTime / 1000 : playerTime
         let payload = try JSONSerialization.data(withJSONObject: [
-            "timestamp_unix": Int(Date().timeIntervalSince1970),
+            "timestamp_unix": Int(seconds),
             "directive": "htv_player_handshake", "slug": slug
         ])
         let token = try HanimeHandshakeCodec.seal(payload)
@@ -1203,7 +1208,8 @@ enum NativeProviderAPI {
         let result: [String: Any]
         if let encrypted = http.value(forHTTPHeaderField: "x-token"), !encrypted.isEmpty {
             result = try object(HanimeHandshakeCodec.open(encrypted))
-        } else if let plain = try? object(bytes), !rows(plain["sources"]).isEmpty {
+        } else if let plain = try? object(bytes),
+                  !rows(plain["sources"] ?? (plain["data"] as? [String: Any])?["sources"]).isEmpty {
             // Some authorized first-party player responses expose the stream
             // manifest directly rather than in an encrypted response header.
             // A valid 2xx response and official media host are still required.
@@ -1211,8 +1217,12 @@ enum NativeProviderAPI {
         } else {
             throw APIError.server("Hanime did not return a playable HLS handshake. Use the original website or a configured authorized Hanime API in Settings.")
         }
-        let streams = rows(result["sources"])
-            .filter { text($0["kind"]).lowercased() == "normal" }
+        let decodedManifest = result["data"] as? [String: Any] ?? result
+        let streams = rows(result["sources"] ?? decodedManifest["sources"])
+            .filter {
+                let kind = text($0["kind"]).lowercased()
+                return kind.isEmpty || kind == "normal"
+            }
             .sorted { number($0["height"]) > number($1["height"]) }
         let playable = streams.compactMap { source -> URL? in
             let raw = text(source["src"] ?? source["url"])

@@ -989,7 +989,7 @@ private struct ImmersiveItemView: View {
     }
 
     private var actionRail: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 4) {
             railButton("Like", symbol: "heart.fill", selected: store.favorites[post.stableID] != nil) {
                 interacted = true; store.toggleFavorite(post)
             }.accessibilityValue(store.favorites[post.stableID] == nil ? "Not liked" : "Liked")
@@ -1011,9 +1011,10 @@ private struct ImmersiveItemView: View {
                     } label: {
                         Image(systemName: "paintbrush.pointed.fill")
                             .font(.system(size: 21, weight: .semibold))
-                            .frame(width: 52, height: 52)
-                            .background(.black.opacity(0.16), in: Circle())
-                            .overlay(Circle().strokeBorder(.white.opacity(0.24)))
+                            .frame(width: 58, height: 58)
+                            .background(.black.opacity(0.10), in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(0.32)))
+                            .frame(width: 64, height: 64).contentShape(Rectangle())
                     }
                     .accessibilityLabel("More from this artist")
                 }
@@ -1035,10 +1036,10 @@ private struct ImmersiveItemView: View {
                 .font(.system(size: 26, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(selected ? AppTheme.accent : .white)
-                .frame(width: 58, height: 58).contentShape(Circle())
-                .background(.black.opacity(0.16), in: Circle())
-                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.8) : .white.opacity(0.25), lineWidth: 1))
-                .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
+                .frame(width: 58, height: 58)
+                .background(.black.opacity(0.10), in: Circle())
+                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.9) : .white.opacity(0.32), lineWidth: 1))
+                .frame(width: 64, height: 64).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(title)
             .accessibilityIdentifier(active ? "immersive-\(title)" : "inactive-\(title)-\(post.stableID)")
     }
@@ -1187,10 +1188,10 @@ private struct ImmersiveDownloadControl: View {
             Group {
                 if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 30) }
                 else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 26, weight: .semibold)) }
-            }.foregroundStyle(.white).frame(width: 58, height: 58).contentShape(Circle())
-                .background(.black.opacity(0.16), in: Circle())
-                .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
-                .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
+            }.foregroundStyle(.white).frame(width: 58, height: 58)
+                .background(.black.opacity(0.10), in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.32), lineWidth: 1))
+                .frame(width: 64, height: 64).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Download").accessibilityValue(status)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: status)
             .sensoryFeedback(.selection, trigger: taps)

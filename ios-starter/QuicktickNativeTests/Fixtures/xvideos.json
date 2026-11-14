@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "provider": "xvideos",
+      "type": "video",
+      "key": "xvideos:fixture",
+      "tags": [
+        "example"
+      ],
+      "id": "fixture"
+    }
+  ],
+  "hasMore": true
+}

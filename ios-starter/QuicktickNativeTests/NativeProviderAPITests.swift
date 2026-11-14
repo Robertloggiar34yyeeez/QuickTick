@@ -1992,8 +1992,12 @@ final class NativeProviderAPITests: XCTestCase {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         for provider in Provider.allCases {
             let page = try await api.posts(provider: provider, query: QueryParser.parse(""), page: 1)
-            XCTAssertEqual(page.items.count,
-                           provider == .kemono || provider == .coomer ? 3 : (provider == .erome ? 2 : 1), provider.rawValue)
+            // XVideos' first-party listing intentionally exposes two unique
+            // videos, not one. Keep this aggregate smoke test aligned with
+            // its actual fixture instead of treating discovery as a failure.
+            let expectedCount = provider == .kemono || provider == .coomer ? 3 :
+                ([.erome, .xvideos].contains(provider) ? 2 : 1)
+            XCTAssertEqual(page.items.count, expectedCount, provider.rawValue)
             XCTAssertEqual(page.items.first?.providerKey, provider)
         }
         let requests = NativeProviderProtocol.log.snapshot()

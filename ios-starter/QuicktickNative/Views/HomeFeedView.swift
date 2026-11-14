@@ -74,7 +74,8 @@ private struct HomeArtworkChip: View {
         let artworkURL = imageURL.isEmpty ? resolvedHanimePoster : imageURL
         ZStack(alignment: .bottomLeading) {
             if !artworkURL.isEmpty {
-                CachedMediaImage(url: artworkURL, pixels: 480, fill: true)
+                CachedMediaImage(url: artworkURL, pixels: 480, fill: true,
+                                 hanimeSlug: hanimePosterSlug ?? "")
                     .frame(width: width, height: height)
                     .clipped()
             } else {

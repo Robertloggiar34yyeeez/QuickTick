@@ -9,6 +9,18 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertEqual(store.selectedProvider, .hanime)
     }
 
+    func testWrappedChaptersOnlyMoveMediaMatchingTheDisplayedSource() {
+        var sourceClip = Post(key: "xvideos:abc", id: "abc", provider: "xvideos", type: "video")
+        sourceClip.caption = "Related clip"
+        let unrelated = Post(key: "hanime:def", id: "def", provider: "hanime", type: "video")
+        let label = TasteWrappedMoment(id: "source|xvideos", label: "XVideos",
+                                       appearances: 1, sample: sourceClip)
+        let section = TasteWrappedCategory(id: "source", heading: "Favorite providers",
+                                           symbol: "play", moments: [label])
+        let clips = TasteWrappedSummary.relatedMedia(from: [unrelated, sourceClip], section: section)
+        XCTAssertEqual(clips.map(\.stableID), [sourceClip.stableID])
+    }
+
     func testIPadImmersiveRecognizesShortVerticalFlicksWithoutDiagonalPaging() {
         let height: CGFloat = 1_080
         XCTAssertEqual(ImmersivePageSwipePolicy.direction(

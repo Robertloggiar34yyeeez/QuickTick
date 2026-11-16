@@ -1543,6 +1543,49 @@ enum TasteWrappedSummary {
                                         symbol: section.symbol, moments: Array(moments.prefix(3)))
         }
     }
+
+    /// Every moving chapter clip must have evidence for one of the labels
+    /// currently displayed. Favor matching GIFs/videos before static samples.
+    /// This is calculated once when Wrapped opens, never during animation.
+    static func relatedMedia(from favorites: [Post], section: TasteWrappedCategory,
+                             limit: Int = 6) -> [Post] {
+        let keys = Set(section.moments.map { String($0.id.dropFirst(section.id.count + 1)) })
+        func belongs(_ post: Post) -> Bool {
+            let features = VisualFeatures.metadata(post)
+            let attrs = Array(features?.attributes.keys ?? [:].keys)
+            let terms: [String]
+            switch section.id {
+            case "source": terms = [post.providerKey?.rawValue ?? post.provider]
+            case "creator": terms = [post.creator ?? ""]
+            case "character": terms = (features?.subjects ?? []).filter { !$0.hasPrefix("performer:") }
+            case "franchise": terms = features?.franchises ?? []
+            case "artist": terms = features?.artists ?? []
+            case "performer": terms = (features?.subjects ?? []).filter { $0.hasPrefix("performer:") }
+            case "theme":
+                terms = attrs.filter { token in
+                    ["scene:", "camera:", "style:", "setting:", "interest:", "clothing:"]
+                        .contains { token.hasPrefix($0) }
+                } + (post.category.map { ["category:" + $0] } ?? [])
+            case "power":
+                terms = ActionSemantics.facets(post).filter {
+                    $0.hasPrefix("power:") || $0.hasPrefix("role:")
+                }
+            case "action":
+                terms = attrs.filter {
+                    $0.hasPrefix("pose:") || $0.hasPrefix("act:") || $0.hasPrefix("scene:")
+                }
+            default: terms = []
+            }
+            return terms.contains { keys.contains(TasteConcepts.canonical($0)) }
+        }
+        let clips = favorites.filter {
+            ["video", "gif"].contains($0.type.lowercased()) && belongs($0)
+        }
+        let samples = section.moments.map(\.sample)
+        var seen = Set<String>()
+        return Array((clips + samples).filter { seen.insert($0.stableID).inserted }
+            .prefix(max(1, limit)))
+    }
 }
 
 struct TasteWrappedSpotlight: Identifiable {
@@ -2034,6 +2077,7 @@ struct TasteWrappedView: View {
     @State private var sections: [TasteWrappedCategory] = []
     @State private var spotlights: [TasteWrappedSpotlight] = []
     @State private var motionPosts: [Post] = []
+    @State private var chapterMedia: [String: [Post]] = [:]
     @State private var likedCount = 0
     @State private var videoCount = 0
     @State private var providerCount = 0
@@ -2127,6 +2171,9 @@ struct TasteWrappedView: View {
             let favorites = showingWeeklyLikes ? recent : store.newestFavorites
             likedCount = favorites.count
             sections = TasteWrappedSummary.make(from: favorites)
+            chapterMedia = Dictionary(uniqueKeysWithValues: sections.map {
+                ($0.id, TasteWrappedSummary.relatedMedia(from: favorites, section: $0))
+            })
             spotlights = TasteWrappedSpotlights.make(from: favorites, sections: sections)
             // Keep the media order reproducible; chapter media is chosen
             // from the matching facet samples, not a random global pool.
@@ -2246,7 +2293,8 @@ struct TasteWrappedView: View {
                 ZStack(alignment: .bottomLeading) {
                     // Chapter visuals must actually illustrate this chapter's
                     // labels, rather than replaying unrelated random favorites.
-                    WrappedMotionBackdrop(posts: section.moments.map(\.sample),
+                    WrappedMotionBackdrop(
+                        posts: chapterMedia[section.id] ?? section.moments.map(\.sample),
                         active: page == pageIndex, chapter: pageIndex)
                         .opacity(0.72).allowsHitTesting(false)
                     LinearGradient(colors: [.black.opacity(0.06), AppTheme.background.opacity(0.55),

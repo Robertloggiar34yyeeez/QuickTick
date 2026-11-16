@@ -32,7 +32,10 @@ jobs:
     needs: swift-syntax
     # Mirage's native sdcpp XCFramework ships arm64 device/simulator slices.
     # The Intel runner cannot link its x86_64 simulator tests.
-    runs-on: macos-15
+    # macOS 15 arm64 provisioning cancelled runs before the first step,
+    # with a GitHub Actions internal-server error and no job logs. Use the
+    # independent macOS 26 arm64 runner pool, preserving the pinned Xcode.
+    runs-on: macos-26
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v5

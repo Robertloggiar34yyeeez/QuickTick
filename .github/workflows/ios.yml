@@ -14,7 +14,22 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  swift-syntax:
+    # Quick syntax diagnostics run independently of scarce macOS capacity.
+    # Parsing (not typechecking) does not need SwiftUI or the Apple SDK.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse native Swift source before the Xcode archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc --version
+          find ios-starter/QuicktickNative ios-starter/QuicktickNativeTests ios-starter/QuicktickNativeUITests \
+            -type f -name '*.swift' -print0 | xargs -0 swiftc -frontend -parse
   ios:
+    needs: swift-syntax
     # Mirage's native sdcpp XCFramework ships arm64 device/simulator slices.
     # The Intel runner cannot link its x86_64 simulator tests.
     runs-on: macos-15

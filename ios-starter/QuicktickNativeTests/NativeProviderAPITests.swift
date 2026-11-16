@@ -103,11 +103,14 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
                 : #"{"pages":1,"gifs":[{"id":"usable","type":"g","niches":["empty-top"],"urls":{"hd":"https://media.redgifs.com/usable.mp4","poster":"https://media.redgifs.com/usable.jpg"}}]}"#
         }
         else if host == "api.redgifs.com" { payload = #"{"pages":3,"gifs":[{"id":"clip","type":"g","width":1920,"height":1080,"tags":["engineering"],"urls":{"hd":"https://media.redgifs.com/clip.mp4","poster":"https://media.redgifs.com/clip.jpg"}}]}"# }
-        else if host == "www.xvideos.com", path == "/" || path.hasPrefix("/best/") || path.hasPrefix("/new/") {
+        else if host == "www.xvideos.com", path == "/" || path.hasPrefix("/best/") ||
+                path.hasPrefix("/new/") || path.hasPrefix("/search/") {
             let search = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                 .first(where: { $0.name == "k" })?.value ?? ""
             if search == "empty" {
                 payload = #"<html><div>No matches</div></html>"#
+            } else if path.hasPrefix("/search/") {
+                payload = #"<html><div class="thumb-block"><a href="/video.abc123/alternate-search" title="A unique alternate search clip"><img data-src="https://img-cf.xvideos-cdn.com/videos/alternate.jpg"></a></div></html>"#
             } else {
                 payload = #"""
                 <html><div class="thumb-block">
@@ -609,6 +612,16 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(store.posts.map(\.id), ["gamingclip"],
             "Switching niche must replace the old feed with the requested niche")
         XCTAssertNil(store.lastError)
+    }
+
+    func testXVideosAlternateSearchRouteIsUsedWhenHomepageDoesNotMatch() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let query = QueryParser.parse("unique alternate search")
+        let page = try await api.posts(provider: .xvideos, query: query, page: 1)
+        XCTAssertEqual(page.items.map(\.stableID), ["xvideos:abc123"])
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.path.hasPrefix("/search/") == true
+        })
     }
 
     func testHanimePublicCatalogSearchesTagsBeforeAuthAPI() async throws {

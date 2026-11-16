@@ -724,6 +724,20 @@ enum NativeProviderAPI {
             try url("https://www.xvideos.com/", [.init(name: "p", value: String(page - 1))])
     }
 
+    /// XVideos exposes both the query-string and path-based search pages.
+    /// Some localized deployments return home recommendations for ?k=.
+    /// Never show those as search results; retry the site's search path.
+    static func xvideosSearchPathURL(query: ParsedQuery, page: Int) throws -> URL {
+        guard (1...100).contains(page) else { throw APIError.invalidResponse }
+        let term = query.included.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { throw APIError.invalidResponse }
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#"))
+        guard let encoded = term.addingPercentEncoding(withAllowedCharacters: allowed) else {
+            throw APIError.invalidResponse
+        }
+        return try url("https://www.xvideos.com/search/" + encoded + "/" + String(page - 1))
+    }
+
     static func xvideosWatchURL(_ raw: String) -> URL? {
         let expanded = raw.hasPrefix("//") ? "https:" + raw : raw
         guard let address = URL(string: expanded, relativeTo: origin(.xvideos))?.absoluteURL,
@@ -828,25 +842,42 @@ enum NativeProviderAPI {
 
     static func xvideos(session: URLSession, query: ParsedQuery, page: Int,
                         sort: String, immersive: Bool) async throws -> PostPage {
-        let listing = try xvideosPageURL(query: query, page: page, sort: sort)
-        let bytes = try await data(session: session, url: listing,
-            provider: .xvideos, headers: ["Accept": "text/html,application/xhtml+xml;q=0.9"],
-            maxBytes: 3 * 1024 * 1024)
-        guard !unavailableHTML(bytes) else {
-            throw APIError.server("XVideos returned an unavailable listing page. Check provider access in Browse.")
+        let primary = try xvideosPageURL(query: query, page: page, sort: sort)
+        var candidates = [primary]
+        if !query.included.isEmpty {
+            candidates.append(try xvideosSearchPathURL(query: query, page: page))
         }
-        let posts = xvideosHTMLPosts(String(decoding: bytes, as: UTF8.self))
-        guard !posts.isEmpty else {
-            // Never return fabricated or unrelated posts when a site blocks
-            // or changes its HTML listing.
-            throw APIError.server("XVideos returned no readable video cards. Open its first-party website in Browse.")
+        var lastError: Error?
+        for listing in candidates {
+            try Task.checkCancellation()
+            do {
+                let bytes = try await data(session: session, url: listing,
+                    provider: .xvideos, headers: ["Accept": "text/html,application/xhtml+xml;q=0.9"],
+                    maxBytes: 3 * 1024 * 1024, timeout: 10)
+                guard !unavailableHTML(bytes) else {
+                    throw APIError.server("XVideos returned an unavailable listing page.")
+                }
+                let posts = xvideosHTMLPosts(String(decoding: bytes, as: UTF8.self))
+                // Search results must actually match the requested terms:
+                // front-page promoted clips are not proof a search succeeded.
+                let matched = query.included.isEmpty ? posts : posts.filter { post in
+                    query.included.allSatisfy { containsKeyword($0, in: post) }
+                }
+                if !matched.isEmpty {
+                    return self.page(matched, hasMore: posts.count >= 20,
+                                     query: query, immersive: immersive)
+                }
+            } catch is CancellationError { throw CancellationError() }
+              catch APIError.rateLimited(_, let until) {
+                  throw APIError.rateLimited(.xvideos, until)
+              } catch {
+                  lastError = error
+            }
         }
-        // Public searches sometimes append unrelated promoted cards. Match
-        // visible title metadata when a keyword was explicitly entered.
-        let visible = query.included.isEmpty ? posts : posts.filter { post in
-            query.included.allSatisfy { containsKeyword($0, in: post) }
-        }
-        return self.page(visible, hasMore: posts.count >= 20, query: query, immersive: immersive)
+        if let lastError, query.included.isEmpty { throw lastError }
+        throw APIError.server(query.included.isEmpty
+            ? "XVideos did not expose readable first-party video cards."
+            : "XVideos did not return videos matching your search on either official search route. Try another keyword or Browse.")
     }
 
     static func xvideosResolve(session: URLSession, post: Post,

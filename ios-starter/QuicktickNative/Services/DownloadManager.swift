@@ -48,6 +48,9 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     private var refreshedPornhubTransfers = Set<String>()
     private var refreshedXvideosTransfers = Set<String>()
     private var hanimeStreamRetries: [String: Int] = [:]
+    // HLS completion may arrive through two delegate callbacks. Avoid
+    // competing validation/export tasks on the same media package.
+    private var finishing = Set<String>()
     nonisolated private let progressGate = DownloadProgressGate()
     private var metadataFailed = false
     // Native URLSession transfers already survive app suspension. Delegate
@@ -393,14 +396,23 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             if record.kind == .file { try? FileManager.default.removeItem(at: location) }
             return
         }
+        guard finishing.insert(key).inserted else { return }
+        defer { finishing.remove(key) }
+        var completedLocation = location
+        var completedKind = record.kind
         if record.kind == .file,
            [Provider.hanime.rawValue, Provider.pornhub.rawValue, Provider.xvideos.rawValue].contains(record.provider.lowercased()),
            record.mediaType?.lowercased() == "video" {
             // A completed download must be decodable video, not a thumbnail
             // or an HTML error document disguised as an MP4.
-            let playable = (try? await AVURLAsset(url: location).load(.isPlayable)) ?? false
-            guard playable else {
-                failedTransfer(key, reason: "The provider did not save a playable full video. Retry with a fresh stream.")
+            let movie = AVURLAsset(url: location)
+            let playable = (try? await movie.load(.isPlayable)) ?? false
+            let seconds = (try? await movie.load(.duration))?.seconds ?? 0
+            // A decodable 6-second trailer is still not a Hanime episode.
+            // The full source has to be available locally before success.
+            guard playable, record.provider.lowercased() != Provider.hanime.rawValue ||
+                (seconds.isFinite && seconds >= 30) else {
+                failedTransfer(key, reason: "The saved video was missing, unplayable, or only a short preview. Retry for a full episode.")
                 return
             }
         }
@@ -416,9 +428,21 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             }
             let offlineAsset = AVURLAsset(url: location)
             let playable = (try? await offlineAsset.load(.isPlayable)) ?? false
-            guard playable else {
-                failedTransfer(key, reason: "The HLS download contained no playable offline video. Retry to save the full stream.")
+            // isPlayable checks the asset's format, not whether a future
+            // AVPlayer would request missing network segments. Require the
+            // complete Apple offline cache, never a thumbnail or partial HLS.
+            let storedOffline = offlineAsset.assetCache?.isPlayableOffline == true
+            guard playable, storedOffline else {
+                failedTransfer(key, reason: "The HLS package is not independently playable offline. Retry another full-video stream.")
                 return
+            }
+            if record.provider.lowercased() == Provider.hanime.rawValue,
+               let movie = await exportHanimeMovie(asset: offlineAsset, key: key) {
+                completedLocation = movie
+                completedKind = .file
+                // The verified MP4 now owns the offline copy. Release the
+                // redundant HLS cache to avoid doubling storage use.
+                try? FileManager.default.removeItem(at: location)
             }
         }
         // Multiple URLSession delegate callbacks may race while an HLS
@@ -426,12 +450,48 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         guard let current = records.first(where: { $0.key == key }),
               current.state != .complete, current.state != .cancelled else { return }
         progressGate.clear(key: key)
-        update(key) { $0.localMediaPath = location.path; $0.progress = 1; $0.state = .complete; $0.errorMessage = nil }
+        update(key) {
+            $0.localMediaPath = completedLocation.path
+            $0.kind = completedKind
+            $0.progress = 1
+            $0.state = .complete
+            $0.errorMessage = nil
+        }
         tasks.removeValue(forKey: key)
         hanimeStreamRetries[key] = nil
         onCompleted?(Post(key: record.key, id: record.postID, provider: record.provider, tags: record.tags))
-        Task { await measureSize(key, at: location) }
+        Task { await measureSize(key, at: completedLocation) }
     }
+
+    /// Best-effort remux from an *already verified* offline HLS asset to a
+    /// standalone MP4. Never decrypt protected media or transcode on scroll.
+    /// Unsupported HLS codecs remain in their playable .movpkg container.
+    private func exportHanimeMovie(asset: AVURLAsset, key: String) async -> URL? {
+        guard let exporter = AVAssetExportSession(asset: asset,
+                           presetName: AVAssetExportPresetPassthrough),
+              exporter.supportedFileTypes.contains(.mp4) else { return nil }
+        let folder = root.appendingPathComponent(Self.safeName(key), isDirectory: true)
+        let target = folder.appendingPathComponent("media.mp4")
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: target.path) {
+                try FileManager.default.removeItem(at: target)
+            }
+            try await exporter.export(to: target, as: .mp4)
+            let movie = AVURLAsset(url: target)
+            let playable = try await movie.load(.isPlayable)
+            let duration = try await movie.load(.duration).seconds
+            guard playable, duration.isFinite, duration >= 30 else {
+                try? FileManager.default.removeItem(at: target)
+                return nil
+            }
+            return target
+        } catch {
+            try? FileManager.default.removeItem(at: target)
+            return nil
+        }
+    }
+
     private func measureSize(_ key: String, at url: URL) async {
         guard let size = await DownloadSizeReader.shared.bytes(at: url),
               let record = records.first(where: { $0.key == key && $0.state == .complete && $0.localMediaPath == url.path }),

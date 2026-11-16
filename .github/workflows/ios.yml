@@ -28,6 +28,23 @@ jobs:
           swiftc --version
           find ios-starter/QuicktickNative ios-starter/QuicktickNativeTests ios-starter/QuicktickNativeUITests \
             -type f -name '*.swift' -print0 | xargs -0 swiftc -frontend -parse
+      - name: Check app Swift files are registered in the Xcode project
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          project = Path('ios-starter/QuicktickNative.xcodeproj/project.pbxproj').read_text()
+          missing = []
+          for path in Path('ios-starter/QuicktickNative').rglob('*.swift'):
+              if 'TestsSupport' in path.parts:
+                  continue
+              relative = path.relative_to('ios-starter').as_posix()
+              if f'"path" = "{relative}";' not in project:
+                  missing.append(relative)
+          if missing:
+              raise SystemExit('Unregistered Swift source(s) in Xcode project:\\n' + '\\n'.join(missing))
+          print('All app Swift sources registered in Xcode project.')
+          PY
   ios:
     needs: swift-syntax
     # Mirage's native sdcpp XCFramework ships arm64 device/simulator slices.

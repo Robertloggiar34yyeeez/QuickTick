@@ -9,7 +9,7 @@ struct HanimeSeries: Identifiable, Hashable {
     let poster: Post
 
     private static let episodePattern =
-        #"(?i)(?:[\\s:–—\\-]+|^)(?:episode|ep\\.?|part|chapter)\\s*#?\\s*(\\d{1,3})(?:\\s*[-–:]\\s*.*)?$"#
+        #"(?i)(?:[\s:–—-]+|^)(?:episode|ep\.?|part|chapter)\s*#?\s*(\d{1,3})(?:\s*[-–:]\s*.*)?$"#
 
     static func episodeNumber(_ title: String) -> Int? {
         guard let expression = try? NSRegularExpression(pattern: episodePattern),
@@ -53,12 +53,12 @@ struct HanimeSeries: Identifiable, Hashable {
             }
             return HanimeSeries(id: key, title: titles[key] ?? key,
                                 episodes: episodes, poster: poster)
-        }.sorted {
-            $0.episodes.reduce(0) { $0 + $1.score } ==
-                $1.episodes.reduce(0) { $0 + $1.score }
-                ? $0.title < $1.title
-                : $0.episodes.reduce(0) { $0 + $1.score } >
-                    $1.episodes.reduce(0) { $0 + $1.score }
+        }.sorted { left, right in
+            let leftScore = left.episodes.reduce(0.0) { $0 + $1.score }
+            let rightScore = right.episodes.reduce(0.0) { $0 + $1.score }
+            return leftScore == rightScore
+                ? left.title.localizedStandardCompare(right.title) == .orderedAscending
+                : leftScore > rightScore
         }
     }
 }
@@ -205,7 +205,8 @@ private struct HanimeEpisodePicker: View {
                     Text(series.title).font(.title2.weight(.bold))
                     Text("Episodes found in the current catalog. Load more shows to discover additional episodes.")
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
-                    ForEach(Array(series.episodes.enumerated()), id: \.element.stableID) { index, episode in
+                    ForEach(series.episodes.indices, id: \.self) { index in
+                        let episode = series.episodes[index]
                         let record = downloads.records.first { $0.key == episode.stableID }
                         HStack(spacing: 12) {
                             PosterView(post: episode)

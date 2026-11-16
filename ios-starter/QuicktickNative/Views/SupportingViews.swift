@@ -1616,8 +1616,8 @@ enum WrappedMotionSelection {
         var seen = Set<String>()
         let unique = posts.filter { seen.insert($0.stableID).inserted }
         guard !unique.isEmpty, limit > 0 else { return [] }
-        let videos = unique.filter { $0.type.lowercased() == "video" }
-        let images = unique.filter { $0.type.lowercased() != "video" }
+        let videos = unique.filter { ["video", "gif"].contains($0.type.lowercased()) }
+        let images = unique.filter { !["video", "gif"].contains($0.type.lowercased()) }
         var chosen: [Post] = []
         func take(_ pool: [Post], start: Int, count: Int) {
             guard !pool.isEmpty, count > 0 else { return }

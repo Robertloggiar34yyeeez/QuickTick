@@ -467,6 +467,9 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     /// standalone MP4. Never decrypt protected media or transcode on scroll.
     /// Unsupported HLS codecs remain in their playable .movpkg container.
     private func exportHanimeMovie(asset: AVURLAsset, key: String) async -> URL? {
+        // The modern async export API is introduced in iOS 18. On iOS 17
+        // retain the verified offline .movpkg rather than failing downloads.
+        guard #available(iOS 18.0, *) else { return nil }
         guard let exporter = AVAssetExportSession(asset: asset,
                            presetName: AVAssetExportPresetPassthrough),
               exporter.supportedFileTypes.contains(.mp4) else { return nil }

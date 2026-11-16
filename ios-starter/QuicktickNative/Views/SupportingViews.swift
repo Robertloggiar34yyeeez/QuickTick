@@ -1552,7 +1552,7 @@ enum TasteWrappedSummary {
         let keys = Set(section.moments.map { String($0.id.dropFirst(section.id.count + 1)) })
         func belongs(_ post: Post) -> Bool {
             let features = VisualFeatures.metadata(post)
-            let attrs = Array(features?.attributes.keys ?? [:].keys)
+            let attrs = features.map { Array($0.attributes.keys) } ?? []
             let terms: [String]
             switch section.id {
             case "source": terms = [post.providerKey?.rawValue ?? post.provider]
@@ -1578,7 +1578,7 @@ enum TasteWrappedSummary {
             }
             return terms.contains { keys.contains(TasteConcepts.canonical($0)) }
         }
-        let clips = favorites.filter {
+        let clips = favorites.prefix(240).filter {
             ["video", "gif"].contains($0.type.lowercased()) && belongs($0)
         }
         let samples = section.moments.map(\.sample)

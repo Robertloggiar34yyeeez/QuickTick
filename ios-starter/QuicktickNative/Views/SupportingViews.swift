@@ -1656,8 +1656,11 @@ private struct WrappedMotionBackdrop: View {
                 ForEach(items.indices, id: \.self) { index in
                     let post = items[index]
                     Group {
-                        if index < 2 && post.type.lowercased() == "video" {
+                        if active && post.type.lowercased() == "video" {
                             WrappedVideoStage(post: post, active: active, showsMuteControl: false)
+                        } else if active && post.type.lowercased() == "gif",
+                                  let url = URL(string: post.mediaUrl), url.scheme == "https" || url.isFileURL {
+                            AnimatedGIFSurface(url: url, playing: active, pixels: 360, frameLimit: 48)
                         } else {
                             PosterView(post: post)
                         }
@@ -1864,7 +1867,17 @@ private struct WrappedSpotlightPage: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottomLeading) {
-                WrappedVideoStage(post: spotlight.post, active: active)
+                Group {
+                    if spotlight.post.type.lowercased() == "gif",
+                       let gif = URL(string: spotlight.post.mediaUrl),
+                       gif.scheme == "https" || gif.isFileURL {
+                        AnimatedGIFSurface(url: gif, playing: active, pixels: 480, frameLimit: 64)
+                    } else if spotlight.post.type.lowercased() == "video" {
+                        WrappedVideoStage(post: spotlight.post, active: active)
+                    } else {
+                        PosterView(post: spotlight.post)
+                    }
+                }
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 LinearGradient(colors: [.clear, .black.opacity(0.16), .black.opacity(0.93)],
                                startPoint: .center, endPoint: .bottom)
@@ -2115,7 +2128,9 @@ struct TasteWrappedView: View {
             likedCount = favorites.count
             sections = TasteWrappedSummary.make(from: favorites)
             spotlights = TasteWrappedSpotlights.make(from: favorites, sections: sections)
-            motionPosts = favorites.shuffled()
+            // Keep the media order reproducible; chapter media is chosen
+            // from the matching facet samples, not a random global pool.
+            motionPosts = favorites
             videoCount = favorites.filter { $0.type.lowercased() == "video" }.count
             providerCount = Set(favorites.map { $0.providerKey?.rawValue ?? $0.provider }).count
             animated = true
@@ -2229,7 +2244,10 @@ struct TasteWrappedView: View {
         if AppTheme.premium {
             GeometryReader { geometry in
                 ZStack(alignment: .bottomLeading) {
-                    WrappedMotionBackdrop(posts: motionPosts, active: page == pageIndex, chapter: pageIndex)
+                    // Chapter visuals must actually illustrate this chapter's
+                    // labels, rather than replaying unrelated random favorites.
+                    WrappedMotionBackdrop(posts: section.moments.map(\.sample),
+                        active: page == pageIndex, chapter: pageIndex)
                         .opacity(0.72).allowsHitTesting(false)
                     LinearGradient(colors: [.black.opacity(0.06), AppTheme.background.opacity(0.55),
                                             AppTheme.background.opacity(0.97)],

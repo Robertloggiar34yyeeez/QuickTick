@@ -238,6 +238,7 @@ struct HomeFeedView: View {
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage("quicktick-suggested-themes-v1") private var suggestedThemesEnabled = true
     @AppStorage(SuggestedThemeMode.storageKey) private var suggestedThemesMode = SuggestedThemeMode.balanced.rawValue
+    @AppStorage("quicktick-hanime-browse-mode-v1") private var hanimeBrowseMode = "instant"
     @State private var showSearch = false
     @State private var showProviderWebsite = false
     @State private var immersive = false
@@ -487,6 +488,19 @@ struct HomeFeedView: View {
                     .padding(.horizontal, 16)
                     .accessibilityIdentifier("home-active-filter")
                 }
+                if store.selectedProvider == .hanime {
+                    Picker("Hanime browsing mode", selection: $hanimeBrowseMode) {
+                        Label("Instant", systemImage: "play.fill").tag("instant")
+                        Label("Shows", systemImage: "play.rectangle.on.rectangle").tag("shows")
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
+                    .accessibilityIdentifier("hanime-browse-mode")
+                    .onChange(of: hanimeBrowseMode) { _, _ in
+                        store.inlinePlaybackID = nil
+                        store.players.transitionVisiblePost()
+                    }
+                }
                 if store.selectedProvider == .pornhub {
                     pornhubDiscoveryRow
                 } else if store.selectedProvider == .redgifs {
@@ -495,7 +509,10 @@ struct HomeFeedView: View {
                             (suggestedThemesEnabled && !themeSuggestions.isEmpty) {
                     suggestedThemeRow
                 }
-                if store.posts.isEmpty && !store.bootstrapped {
+                if store.selectedProvider == .hanime && hanimeBrowseMode == "shows" {
+                    HanimeShowsView(seedPosts: store.posts, initialQuery: store.queryText)
+                        .padding(.horizontal, 16)
+                } else if store.posts.isEmpty && !store.bootstrapped {
                     RoundedRectangle(cornerRadius: 22)
                         .fill(AppTheme.surface)
                         .frame(height: 220)
@@ -516,6 +533,7 @@ struct HomeFeedView: View {
                 } else if store.posts.isEmpty && !store.isLoading && store.bootstrapped {
                     ContentUnavailableView("No posts yet", systemImage: "rectangle.stack", description: Text("Choose another source or adjust your search."))
                 }
+                if store.selectedProvider != .hanime || hanimeBrowseMode != "shows" {
                 ForEach(store.posts, id: \.stableID) { post in
                     PostCardView(post: post, available: CGSize(width: max(1, min(AppTheme.feedWidth, viewport.size.width) - cardInset * 2), height: viewport.size.height),
                                  onOpenFullImage: {
@@ -531,7 +549,8 @@ struct HomeFeedView: View {
                         .id(post.stableID)
                         .onAppear { maybeLoadMoreAfterUserScroll(visibleID: post.stableID) }
                 }
-                if store.isLoading {
+                }
+                if store.isLoading && (store.selectedProvider != .hanime || hanimeBrowseMode != "shows") {
                     RoundedRectangle(cornerRadius: 22).fill(AppTheme.surface).frame(height: 220)
                         .overlay {
                             VStack(spacing: 7) {
@@ -541,7 +560,7 @@ struct HomeFeedView: View {
                         }
                         .accessibilityIdentifier("feed-loading")
                 }
-                if store.hasMore {
+                if store.hasMore && (store.selectedProvider != .hanime || hanimeBrowseMode != "shows") {
                     Button("Load more") { Task { await store.loadMore() } }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .padding(.horizontal, 16)
@@ -1621,8 +1640,7 @@ private struct HanimeTopicsBrowserView: View {
             }
             guard let post = matching.first(where: {
                 !usedTitles.contains($0.id) && URL(string: $0.cardPreviewURL)?.scheme == "https"
-            }) ?? matching.first(where: { !usedTitles.contains($0.id) })
-                ?? matching.first else { continue }
+            }) ?? matching.first(where: { !usedTitles.contains($0.id) }) else { continue }
             usedTitles.insert(post.id)
             previews[topic] = (
                 url: URL(string: post.cardPreviewURL)?.scheme == "https" ? post.cardPreviewURL : "",
@@ -1905,7 +1923,7 @@ enum HomeThemeSuggestions {
             let matching = evidence.filter { $0.tags.contains(where: { normalize($0) == tag }) }
             let sample = matching.first(where: {
                 !usedTitles.contains($0.id) && URL(string: $0.cardPreviewURL)?.scheme == "https"
-            }) ?? matching.first(where: { !usedTitles.contains($0.id) }) ?? matching.first
+            }) ?? matching.first(where: { !usedTitles.contains($0.id) })
             if let sample { usedTitles.insert(sample.id) }
             let image = sample.flatMap {
                 URL(string: $0.cardPreviewURL)?.scheme == "https" ? $0.cardPreviewURL : nil

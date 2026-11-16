@@ -778,21 +778,23 @@ private struct ImmersiveItemView: View {
                         .allowsHitTesting(false)
                 }
                 if let forward = seekFeedbackForward {
-                    HStack {
-                        if forward { Spacer(minLength: 0) }
-                        VStack(spacing: 5) {
-                            Image(systemName: forward ? "goforward" : "gobackward")
-                                .font(.system(size: 32, weight: .semibold))
-                            Text("\(forward ? "+" : "−")\(doubleTapSeconds)s")
-                                .font(.headline.weight(.bold))
-                        }
-                        .foregroundStyle(.white)
-                        .padding(18)
-                        .background(.black.opacity(0.55), in: Capsule())
-                        if !forward { Spacer(minLength: 0) }
+                    // Mirror the feedback around the canvas midpoint, not
+                    // around a flexible HStack that shifts on rotation/iPad.
+                    VStack(spacing: 6) {
+                        Image(systemName: forward ? "goforward" : "gobackward")
+                            .font(.system(size: 30, weight: .semibold))
+                            .symbolRenderingMode(.hierarchical)
+                        Text("\(forward ? "+" : "−")\(doubleTapSeconds)s")
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .monospacedDigit()
                     }
-                    .padding(.horizontal, 26)
-                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .foregroundStyle(.white)
+                    .frame(width: 92, height: 92)
+                    .background(.black.opacity(0.30), in: RoundedRectangle(cornerRadius: 25))
+                    .overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.28)))
+                    .position(x: geo.size.width * (forward ? 0.77 : 0.23),
+                              y: geo.size.height * 0.48)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
                     .allowsHitTesting(false)
                 }
                 if !playing && !scrubbing {

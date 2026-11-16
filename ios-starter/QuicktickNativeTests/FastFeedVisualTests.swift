@@ -130,6 +130,22 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertEqual(VisualDomain.classify(post("d", provider: "hanime")), .anime)
         XCTAssertTrue(VisualFeatures.metadata(post("e", provider: "redgifs", tags: ["blonde_hair"]))!.subjects.isEmpty)
     }
+    func testHanimeShowCatalogGroupsOnlyExplicitEpisodes() {
+        var first = Post(key: "hanime:episode-one", id: "episode-one", provider: "Hanime",
+                         tags: ["fantasy"], type: "video")
+        first.caption = "Fantasy World - Episode 1"
+        var second = Post(key: "hanime:episode-two", id: "episode-two", provider: "Hanime",
+                          tags: ["fantasy"], type: "video")
+        second.caption = "Fantasy World - Episode 2"
+        var solo = Post(key: "hanime:solo", id: "solo", provider: "Hanime", type: "video")
+        solo.caption = "Unrelated movie 2"
+        let groups = HanimeSeries.group([second, first, solo])
+        XCTAssertEqual(groups.count, 2)
+        let series = try? XCTUnwrap(groups.first { $0.title == "Fantasy World" })
+        XCTAssertEqual(series?.episodes.map(\.id), ["episode-one", "episode-two"])
+        XCTAssertEqual(groups.first { $0.title == "Unrelated movie 2" }?.episodes.count, 1)
+    }
+
     func testHanimeSuggestedTopicsAreSearchableTagsWithoutInventedImages() {
         let chips = HomeThemeSuggestions.make(provider: .hanime, learned: [], chosen: [], visual: [],
                                               favorites: [], posts: [], excluded: [], limit: 5)

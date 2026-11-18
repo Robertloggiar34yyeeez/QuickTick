@@ -73,6 +73,12 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         guard !isProviderVideoPoster, state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }
         let media = URL(fileURLWithPath: path)
+        // A legacy "media.mp4" may contain a JPEG, or a saved playlist
+        // may still need the network. Neither counts as an offline episode.
+        if provider.lowercased() == "hanime" && kind == .file {
+            guard ["mp4", "m4v", "mov"].contains(media.pathExtension.lowercased()),
+                  DownloadResponseValidator.isMP4Container(at: media) else { return nil }
+        }
         let type: String
         if let mediaType, ["image", "video", "gif"].contains(mediaType.lowercased()) { type = mediaType.lowercased() }
         else if kind == .hlsPackage { type = "video" }

@@ -145,34 +145,37 @@ private struct HanimeTitleCover: View {
 
     var body: some View {
         let displayedCover = coverURL.isEmpty ? catalogCoverURL : coverURL
-        ZStack {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(AppTheme.gradient)
-            if !displayedCover.isEmpty {
-                CachedMediaImage(url: displayedCover,
-                                 pixels: height >= 260 ? 768 : 512,
-                                 fill: true, hanimeSlug: post.id)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-            } else {
-                VStack(spacing: 10) {
-                    Image(systemName: "play.rectangle.on.rectangle.fill")
-                        .font(.system(size: 42, weight: .ultraLight))
-                    Text("TITLE ARTWORK")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .tracking(2.1)
+        // Explicit geometry prevents AsyncImage content from spilling across
+        // neighboring SwiftUI grid cells and overlapping title cards.
+        GeometryReader { geometry in
+            ZStack {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(AppTheme.gradient)
+                if !displayedCover.isEmpty {
+                    CachedMediaImage(url: displayedCover,
+                                     pixels: height >= 260 ? 768 : 512,
+                                     fill: true, hanimeSlug: post.id)
+                        .frame(width: geometry.size.width, height: height)
+                        .clipped()
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "play.rectangle.on.rectangle.fill")
+                            .font(.system(size: 42, weight: .ultraLight))
+                        Text("TITLE ARTWORK")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .tracking(2.1)
+                    }
+                    .foregroundStyle(.white.opacity(0.56))
                 }
-                .foregroundStyle(.white.opacity(0.56))
             }
+            .frame(width: geometry.size.width, height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.white.opacity(0.18), lineWidth: 1))
         }
         .frame(height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-            .strokeBorder(.white.opacity(0.18), lineWidth: 1))
         .task(id: post.id) {
             coverURL = ""
-            // A known title poster is enough; don't block every tile on a
-            // redundant metadata lookup or download a video preview.
             guard catalogCoverURL.isEmpty else { return }
             let official = await HanimeArtworkCache.shared.posterURL(slug: post.id)
             guard !Task.isCancelled else { return }
@@ -220,6 +223,7 @@ private struct HanimeFeaturedShow: View {
                 .padding(22)
             }
             .frame(height: 280)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 20))
         }
         .buttonStyle(QuicktickPressStyle())
@@ -239,8 +243,9 @@ private struct HanimeShowPosterCard: View {
                     .font(.system(size: 15, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .lineLimit(2)
-                    .frame(height: 39, alignment: .topLeading)
+                    .frame(height: 42, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .clipped()
                 HStack(spacing: 5) {
                     Image(systemName: "play.rectangle")
                     Text(series.episodes.count == 1 ? "1 episode" : "\(series.episodes.count) episodes")
@@ -325,7 +330,7 @@ struct HanimeShowsView: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(AppTheme.secondaryLabel)
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 148), spacing: 14)],
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 148, maximum: 210), spacing: 14)],
                       alignment: .center, spacing: 20) {
                 ForEach(shows.dropFirst()) { series in
                     HanimeShowPosterCard(series: series) { selectedSeries = series }
@@ -429,42 +434,45 @@ private struct HanimeEpisodePicker: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    HanimeTitleCover(post: currentSeries.poster, height: 300)
-                    VStack(alignment: .leading, spacing: 9) {
-                        Text(currentSeries.title)
-                            .font(.system(size: 27, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text("Choose an episode to watch or save as a full offline video.")
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.secondaryLabel)
-                        HStack(spacing: 8) {
-                            Label(currentSeries.episodes.count == 1
-                                  ? "1 episode found" : "\(currentSeries.episodes.count) episodes found",
-                                  systemImage: "play.rectangle.on.rectangle")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(AppTheme.accent)
-                            Spacer(minLength: 4)
+            List {
+                Section {
+                    HStack(alignment: .top, spacing: 16) {
+                        HanimeTitleCover(post: currentSeries.poster, height: 142)
+                            .frame(width: 104)
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text(currentSeries.title)
+                                .font(.title3.weight(.bold))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(currentSeries.episodes.count == 1
+                                 ? "1 episode found" : "\(currentSeries.episodes.count) episodes found")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.secondary)
                             if discovering {
-                                ProgressView().controlSize(.small)
-                                    .accessibilityLabel("Finding more episodes")
+                                Label("Finding episodes", systemImage: "magnifyingglass")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+                    .listRowSeparator(.hidden)
+                }
+                .listRowBackground(AppTheme.elevatedSurface)
+                Section {
                     ForEach(currentSeries.episodes.indices, id: \.self) { index in
                         episodeRow(currentSeries.episodes[index], number: index + 1)
                     }
+                } header: {
+                    Text("Episodes").textCase(nil)
+                } footer: {
+                    Text("Saved episodes play from this device without a network connection.")
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 20)
-                .frame(maxWidth: 700, alignment: .leading)
-                .frame(maxWidth: .infinity)
             }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
             .background(ThemeBackdrop())
-            .navigationTitle("Episode selection")
+            .navigationTitle("Episodes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -518,12 +526,12 @@ private struct HanimeEpisodePicker: View {
 
         return VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .top, spacing: 16) {
-                HanimeTitleCover(post: episode, height: 148)
-                    .frame(width: 116)
+                HanimeTitleCover(post: episode, height: 120)
+                    .frame(width: 88)
                 VStack(alignment: .leading, spacing: 9) {
                     Text(HanimeSeries.episodeNumber(episode.caption ?? "").map {
-                        "EPISODE \($0)"
-                    } ?? "EPISODE \(number)")
+                        "Episode \($0)"
+                    } ?? "Episode \(number)")
                         .font(.system(size: 12, weight: .heavy, design: .rounded))
                         .tracking(1.3)
                         .foregroundStyle(AppTheme.accent)
@@ -563,7 +571,8 @@ private struct HanimeEpisodePicker: View {
                 .accessibilityIdentifier("hanime-play-\(episode.id)")
 
                 Button {
-                    if let record, record.state == .failed || record.state == .cancelled {
+                    if let record, [.failed, .cancelled, .complete].contains(record.state) {
+                        // Repair a legacy completion that has no actual offline video.
                         downloads.retry(record)
                     } else if !busy && saved == nil {
                         downloads.download(episode)
@@ -571,6 +580,7 @@ private struct HanimeEpisodePicker: View {
                 } label: {
                     Label(saved != nil ? "Saved" :
                           busy ? "Saving…" :
+                          record?.state == .complete ? "Repair download" :
                           record?.state == .failed ? "Retry save" : "Download",
                           systemImage: saved != nil ? "checkmark.circle.fill" :
                           busy ? "arrow.down.circle.dotted" : "arrow.down.to.line")
@@ -590,11 +600,9 @@ private struct HanimeEpisodePicker: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(16)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.elevatedSurface,
-                    in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 20)
-            .strokeBorder(AppTheme.border, lineWidth: 1))
+        .listRowBackground(AppTheme.elevatedSurface)
+        .listRowSeparator(.hidden)
     }
 }

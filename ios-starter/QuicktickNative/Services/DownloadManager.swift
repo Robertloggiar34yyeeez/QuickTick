@@ -105,10 +105,12 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     [Provider.hanime.rawValue, Provider.pornhub.rawValue].contains(records[index].provider.lowercased()) &&
                     records[index].state == .complete && records[index].kind == .file &&
                     (records[index].isProviderVideoPoster ||
-                     (records[index].mediaType?.lowercased() == "video" &&
-                      records[index].localMediaPath.map {
-                        DownloadResponseValidator.isPreviewImage(at: URL(fileURLWithPath: $0))
-                      } == true)) {
+                     (records[index].localMediaPath.map {
+                        let url = URL(fileURLWithPath: $0)
+                        return records[index].provider.lowercased() == Provider.hanime.rawValue
+                            ? !DownloadResponseValidator.isMP4Container(at: url)
+                            : DownloadResponseValidator.isPreviewImage(at: url)
+                     } == true)) {
                     // Older releases also stored image bytes *named media.mp4*.
                     // Check the file signature once while restoring metadata;
                     // don't read files repeatedly on the scrolling hot path.
@@ -439,21 +441,22 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         }
         guard finishing.insert(key).inserted else { return }
         defer { finishing.remove(key) }
-        var completedLocation = location
-        var completedKind = record.kind
+        let completedLocation = location
+        let completedKind = record.kind
         if record.kind == .file,
-           [Provider.hanime.rawValue, Provider.pornhub.rawValue, Provider.xvideos.rawValue].contains(record.provider.lowercased()),
-           record.mediaType?.lowercased() == "video" {
-            // A completed download must be decodable video, not a thumbnail
-            // or an HTML error document disguised as an MP4.
+           [Provider.hanime.rawValue, Provider.pornhub.rawValue, Provider.xvideos.rawValue].contains(record.provider.lowercased()) {
+            // Verify actual stored media, regardless of a provider's declared
+            // type. Older builds mistakenly trusted "hls" or preview metadata.
             let movie = AVURLAsset(url: location)
             let playable = (try? await movie.load(.isPlayable)) ?? false
+            let tracks = try? await movie.loadTracks(withMediaType: .video)
             let seconds = (try? await movie.load(.duration))?.seconds ?? 0
-            // A decodable 6-second trailer is still not a Hanime episode.
-            // The full source has to be available locally before success.
-            guard playable, record.provider.lowercased() != Provider.hanime.rawValue ||
-                HanimeOfflineVideoPolicy.hasFullEpisodeDuration(seconds) else {
-                failedTransfer(key, reason: "The saved video was missing, unplayable, or only a short preview. Retry for a full episode.")
+            let hanime = record.provider.lowercased() == Provider.hanime.rawValue
+            guard playable, tracks?.isEmpty == false,
+                  !DownloadResponseValidator.isPreviewImage(at: location),
+                  !hanime || (DownloadResponseValidator.isMP4Container(at: location) &&
+                              HanimeOfflineVideoPolicy.hasFullEpisodeDuration(seconds)) else {
+                failedTransfer(key, reason: "The saved media was not a complete playable video. Retry the full episode stream.")
                 return
             }
         }
@@ -483,14 +486,9 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 failedTransfer(key, reason: "The HLS download is incomplete, only a preview, or cannot play offline. Retry another full-video stream.")
                 return
             }
-            if record.provider.lowercased() == Provider.hanime.rawValue,
-               let movie = await exportHanimeMovie(asset: offlineAsset, key: key) {
-                completedLocation = movie
-                completedKind = .file
-                // The verified MP4 now owns the offline copy. Release the
-                // redundant HLS cache to avoid doubling storage use.
-                try? FileManager.default.removeItem(at: location)
-            }
+            // Keep the verified system-managed .movpkg. Opportunistic MP4
+            // export can discard a complete native HLS offline asset, leaving
+            // a file that still depends on the provider's expired stream.
         }
         // Multiple URLSession delegate callbacks may race while an HLS
         // package is being verified; publish completion exactly once.
@@ -508,50 +506,6 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         hanimeStreamRetries[key] = nil
         onCompleted?(Post(key: record.key, id: record.postID, provider: record.provider, tags: record.tags))
         Task { await measureSize(key, at: completedLocation) }
-    }
-
-    /// Best-effort, copy-only MP4 remux from the *verified complete* offline
-    /// HLS asset. Protected or codec-incompatible HLS stays as a locally
-    /// playable .movpkg; never expose a still image as a successful video.
-    private func exportHanimeMovie(asset: AVURLAsset, key: String) async -> URL? {
-        guard let exporter = AVAssetExportSession(asset: asset,
-                           presetName: AVAssetExportPresetPassthrough),
-              exporter.supportedFileTypes.contains(.mp4) else { return nil }
-        let folder = root.appendingPathComponent(Self.safeName(key), isDirectory: true)
-        let target = folder.appendingPathComponent("media.mp4")
-        do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            if FileManager.default.fileExists(atPath: target.path) {
-                try FileManager.default.removeItem(at: target)
-            }
-            if #available(iOS 18.0, *) {
-                try await exporter.export(to: target, as: .mp4)
-            } else {
-                // iOS 17 still supports the older asynchronous export API.
-                // Without it older phones could only keep .movpkg packages.
-                exporter.outputURL = target
-                exporter.outputFileType = .mp4
-                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                    exporter.exportAsynchronously { continuation.resume() }
-                }
-                guard exporter.status == .completed else {
-                    throw exporter.error ?? URLError(.cannotDecodeContentData)
-                }
-            }
-            let movie = AVURLAsset(url: target)
-            let playable = try await movie.load(.isPlayable)
-            let duration = try await movie.load(.duration).seconds
-            let videoTracks = try await movie.loadTracks(withMediaType: .video)
-            guard playable, !videoTracks.isEmpty,
-                  duration.isFinite, duration >= 90 else {
-                try? FileManager.default.removeItem(at: target)
-                return nil
-            }
-            return target
-        } catch {
-            try? FileManager.default.removeItem(at: target)
-            return nil
-        }
     }
 
     private func measureSize(_ key: String, at url: URL) async {
@@ -740,6 +694,17 @@ enum DownloadResponseValidator {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
         return isPreviewImage(header: handle.readData(ofLength: 32))
+    }
+
+    /// Legacy Hanime records sometimes contain a JPEG named media.mp4.
+    /// Inspect the ISO BMFF header instead of trusting filename or MIME type.
+    static func isMP4Container(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let header = handle.readData(ofLength: 32)
+        return header.count >= 12 &&
+            header.dropFirst(4).prefix(4) == Data("ftyp".utf8) &&
+            !isPreviewImage(header: header)
     }
 
     static func failure(response: HTTPURLResponse?, header: Data, expectedVideo: Bool = false) -> String? {

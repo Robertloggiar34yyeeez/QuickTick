@@ -146,6 +146,33 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertEqual(groups.first { $0.title == "Unrelated movie 2" }?.episodes.count, 1)
     }
 
+    func testHanimeNumberedTitlesShareSeriesAndKeepEpisodeOrdering() {
+        var second = Post(key: "hanime:cloud-2", id: "cloud-2", provider: "Hanime", type: "video")
+        second.caption = "Cloud Adventures 2"
+        var first = Post(key: "hanime:cloud-1", id: "cloud-1", provider: "Hanime", type: "video")
+        first.caption = "Cloud Adventures 1"
+        var unrelated = Post(key: "hanime:cloud-2024", id: "cloud-2024", provider: "Hanime", type: "video")
+        unrelated.caption = "Cloud Adventures 2024"
+        let groups = HanimeSeries.group([second, unrelated, first, first])
+        XCTAssertEqual(groups.count, 2)
+        let family = groups.first { $0.title == "Cloud Adventures" }
+        XCTAssertEqual(family?.episodes.map(\.id), ["cloud-1", "cloud-2"])
+        XCTAssertEqual(groups.first { $0.title == "Cloud Adventures 2024" }?.episodes.count, 1)
+        XCTAssertEqual(HanimeSeries.lookupTitle(for: second), "Cloud Adventures")
+        XCTAssertEqual(HanimeSeries.episodeNumber("Cloud Adventures 2"), 2)
+    }
+
+    func testHanimeLoneNumberedTitleIsNotMisgrouped() {
+        var lone = Post(key: "hanime:summer-1", id: "summer-1", provider: "Hanime", type: "video")
+        lone.caption = "Summer Mystery 1"
+        var other = Post(key: "hanime:galaxy-2", id: "galaxy-2", provider: "Hanime", type: "video")
+        other.caption = "Galaxy Mystery 2"
+        let groups = HanimeSeries.group([lone, other])
+        XCTAssertEqual(groups.count, 2)
+        XCTAssertTrue(groups.contains { $0.title == "Summer Mystery 1" })
+        XCTAssertTrue(groups.contains { $0.title == "Galaxy Mystery 2" })
+    }
+
     func testHanimeSuggestedTopicsAreSearchableTagsWithoutInventedImages() {
         let chips = HomeThemeSuggestions.make(provider: .hanime, learned: [], chosen: [], visual: [],
                                               favorites: [], posts: [], excluded: [], limit: 5)

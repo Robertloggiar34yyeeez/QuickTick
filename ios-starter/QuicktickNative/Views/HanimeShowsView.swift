@@ -1,55 +1,120 @@
 import SwiftUI
 
-/// A catalog entry is grouped only when its title explicitly identifies an
-/// episode/part. Unrelated standalone titles never become a fake series.
+/// Normalize numbered releases into a single show, even when the provider
+/// names them "Show Title 1", "Show Title 2" rather than "Episode 1/2".
+/// An isolated numbered title is preserved verbatim instead of being assumed
+/// to be part of an imaginary series.
 struct HanimeSeries: Identifiable, Hashable {
     let id: String
     let title: String
     let episodes: [Post]
     let poster: Post
 
-    private static let episodePattern =
+    private struct NumberedTitle {
+        let base: String
+        let number: Int
+        let explicit: Bool
+    }
+    private struct Entry {
+        let post: Post
+        let name: String
+        let numbered: NumberedTitle?
+        let familyKey: String
+    }
+    private static let explicitEpisodePattern =
         #"(?i)(?:[\s:–—-]+|^)(?:episode|ep\.?|part|chapter)\s*#?\s*(\d{1,3})(?:\s*[-–:]\s*.*)?$"#
+    private static let numberedSuffixPattern = #"^(.+?)[\s:–—-]+(\d{1,3})$"#
 
-    static func episodeNumber(_ title: String) -> Int? {
-        guard let expression = try? NSRegularExpression(pattern: episodePattern),
+    private static func displayName(_ post: Post) -> String {
+        let title = (post.caption ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? post.id.replacingOccurrences(of: "-", with: " ").capitalized : title
+    }
+
+    private static func numbered(_ raw: String) -> NumberedTitle? {
+        let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let expression = try? NSRegularExpression(pattern: explicitEpisodePattern),
+           let match = expression.firstMatch(in: title,
+               range: NSRange(title.startIndex..., in: title)),
+           let episodeRange = Range(match.range(at: 1), in: title),
+           let number = Int(title[episodeRange]) {
+            let base = title.replacingOccurrences(of: explicitEpisodePattern, with: "",
+                options: .regularExpression)
+                .trimmingCharacters(in: CharacterSet(charactersIn: " -:–—"))
+            if !base.isEmpty { return NumberedTitle(base: base, number: number, explicit: true) }
+        }
+        guard let expression = try? NSRegularExpression(pattern: numberedSuffixPattern),
               let match = expression.firstMatch(in: title,
                   range: NSRange(title.startIndex..., in: title)),
-              let range = Range(match.range(at: 1), in: title) else { return nil }
-        return Int(title[range])
+              let nameRange = Range(match.range(at: 1), in: title),
+              let episodeRange = Range(match.range(at: 2), in: title),
+              let episode = Int(title[episodeRange]) else { return nil }
+        let base = String(title[nameRange]).trimmingCharacters(in: CharacterSet(charactersIn: " -:–—"))
+        // Four-digit years and one-word numbers are not episode families.
+        guard base.count >= 3, base.rangeOfCharacter(from: .letters) != nil else { return nil }
+        return NumberedTitle(base: base, number: episode, explicit: false)
+    }
+
+    private static func familyKey(_ name: String) -> String {
+        name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .replacingOccurrences(of: #"[\s_–—-]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func episodeNumber(_ title: String) -> Int? { numbered(title)?.number }
+
+    /// Used for on-demand discovery when the current catalog contains only
+    /// one of the numbered episodes. Never search the full unique title.
+    static func lookupTitle(for post: Post) -> String {
+        let name = displayName(post)
+        return numbered(name)?.base ?? name
     }
 
     static func showTitle(_ post: Post) -> String {
-        let original = (post.caption ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let fallback = post.id.replacingOccurrences(of: "-", with: " ").capitalized
-        guard !original.isEmpty else { return fallback }
-        let base = original.replacingOccurrences(of: episodePattern, with: "",
-                                                 options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: " -:–—"))
-        return base.isEmpty ? original : base
+        let name = displayName(post)
+        let candidate = numbered(name)
+        return candidate?.explicit == true ? candidate!.base : name
     }
 
     static func group(_ posts: [Post]) -> [HanimeSeries] {
+        var seen = Set<String>()
+        let entries = posts.compactMap { post -> Entry? in
+            guard post.providerKey == .hanime, seen.insert(post.stableID).inserted else { return nil }
+            let name = displayName(post)
+            let parsed = numbered(name)
+            let key = familyKey(parsed?.base ?? name)
+            guard !key.isEmpty else { return nil }
+            return Entry(post: post, name: name, numbered: parsed, familyKey: key)
+        }
+        var numbers: [String: Set<Int>] = [:]
+        for entry in entries {
+            if let parsed = entry.numbered {
+                numbers[entry.familyKey, default: []].insert(parsed.number)
+            }
+        }
         var groups: [String: [Post]] = [:]
         var titles: [String: String] = [:]
-        var used = Set<String>()
-        for post in posts where post.providerKey == .hanime {
-            guard used.insert(post.stableID).inserted else { continue }
-            let name = showTitle(post)
-            let key = name.lowercased()
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { continue }
-            groups[key, default: []].append(post)
-            if titles[key] == nil { titles[key] = name }
+        for entry in entries {
+            let parsed = entry.numbered
+            // A shared suffix (1, 2, ...) is meaningful only with at least
+            // two distinct episode numbers; explicit "Episode" markers always
+            // identify a series, including a single indexed episode.
+            let grouped = parsed == nil || parsed?.explicit == true ||
+                (numbers[entry.familyKey]?.count ?? 0) >= 2
+            let key = grouped ? "series:" + entry.familyKey : "single:" + entry.post.stableID
+            groups[key, default: []].append(entry.post)
+            if titles[key] == nil {
+                titles[key] = grouped ? (parsed?.base ?? entry.name) : entry.name
+            }
         }
-        return groups.compactMap { key, posts -> HanimeSeries? in
-            guard let poster = posts.first(where: { !$0.cardPreviewURL.isEmpty })
-                ?? posts.first else { return nil }
-            let episodes = posts.sorted {
-                let left = episodeNumber($0.caption ?? "") ?? Int.max
-                let right = episodeNumber($1.caption ?? "") ?? Int.max
-                return left == right ? $0.stableID < $1.stableID : left < right
+        return groups.compactMap { key, items -> HanimeSeries? in
+            let poster = items.first {
+                guard let url = URL(string: $0.thumbUrl) else { return false }
+                return HanimeGeneratedAPI.permittedArtworkURL(url)
+            } ?? items.first!
+            let episodes = items.sorted { lhs, rhs in
+                let left = numbered(displayName(lhs))?.number ?? Int.max
+                let right = numbered(displayName(rhs))?.number ?? Int.max
+                return left == right ? lhs.stableID < rhs.stableID : left < right
             }
             return HanimeSeries(id: key, title: titles[key] ?? key,
                                 episodes: episodes, poster: poster)

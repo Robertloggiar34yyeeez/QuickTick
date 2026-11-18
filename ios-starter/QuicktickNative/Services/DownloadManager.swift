@@ -31,6 +31,15 @@ enum HanimeDownloadRetryPolicy {
     }
 }
 
+/// Existing downloads may be valid MP4 files that are actually short trailers.
+/// Duration verification also runs on catalog restore so a previous build's
+/// "Saved" preview cannot block retrying the proper episode.
+enum HanimeOfflineVideoPolicy {
+    static func hasFullEpisodeDuration(_ seconds: Double) -> Bool {
+        seconds.isFinite && seconds >= 90
+    }
+}
+
 @MainActor
 final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDelegate, AVAssetDownloadDelegate {
     @Published private(set) var records: [DownloadRecord] = []
@@ -122,8 +131,40 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             for record in records where record.state == .complete && record.fileSize == nil {
                 if let path = record.localMediaPath { await measureSize(record.key, at: URL(fileURLWithPath: path)) }
             }
+            // Old builds marked a trailer MP4 as completed. Verify saved
+            // Hanime video duration in the background, never on feed scroll.
+            if !ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+                await revalidateSavedHanimeVideos()
+            }
         }
     }
+
+    private func revalidateSavedHanimeVideos() async {
+        let candidates = records.filter {
+            $0.provider.lowercased() == Provider.hanime.rawValue && $0.state == .complete
+        }
+        for record in candidates {
+            guard !Task.isCancelled else { return }
+            guard let path = record.localMediaPath,
+                  FileManager.default.fileExists(atPath: path) else { continue }
+            let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+            let playable = (try? await asset.load(.isPlayable)) ?? false
+            let seconds = (try? await asset.load(.duration))?.seconds ?? 0
+            let localCacheReady = record.kind != .hlsPackage ||
+                asset.assetCache?.isPlayableOffline == true
+            guard !playable || !localCacheReady ||
+                  !HanimeOfflineVideoPolicy.hasFullEpisodeDuration(seconds) else { continue }
+            guard records.contains(where: {
+                $0.key == record.key && $0.state == .complete && $0.localMediaPath == path
+            }) else { continue }
+            update(record.key) {
+                $0.state = .failed
+                $0.progress = 0
+                $0.errorMessage = "The previous download contained a short preview or incomplete offline video. Retry to save the complete episode."
+            }
+        }
+    }
+
     func restoreTasks() async {
         let files = await directSession.allTasks
         let packages = await hlsSession.allTasks
@@ -411,7 +452,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             // A decodable 6-second trailer is still not a Hanime episode.
             // The full source has to be available locally before success.
             guard playable, record.provider.lowercased() != Provider.hanime.rawValue ||
-                (seconds.isFinite && seconds >= 90) else {
+                HanimeOfflineVideoPolicy.hasFullEpisodeDuration(seconds) else {
                 failedTransfer(key, reason: "The saved video was missing, unplayable, or only a short preview. Retry for a full episode.")
                 return
             }
@@ -437,7 +478,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             // a VOD episode were saved. Do not mark a thumbnail-length
             // playlist (or an unmeasurable package) as a complete download.
             let verifiedFullEpisode = record.provider.lowercased() != Provider.hanime.rawValue ||
-                (seconds.isFinite && seconds >= 90)
+                HanimeOfflineVideoPolicy.hasFullEpisodeDuration(seconds)
             guard playable, storedOffline, verifiedFullEpisode else {
                 failedTransfer(key, reason: "The HLS download is incomplete, only a preview, or cannot play offline. Retry another full-video stream.")
                 return

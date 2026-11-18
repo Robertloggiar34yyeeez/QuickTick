@@ -804,6 +804,13 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(media.type, "hls")
     }
 
+    func testHanimeOldDownloadedPreviewIsNotAcceptedAsFullEpisode() {
+        XCTAssertFalse(HanimeOfflineVideoPolicy.hasFullEpisodeDuration(8))
+        XCTAssertFalse(HanimeOfflineVideoPolicy.hasFullEpisodeDuration(.nan))
+        XCTAssertFalse(HanimeOfflineVideoPolicy.hasFullEpisodeDuration(0))
+        XCTAssertTrue(HanimeOfflineVideoPolicy.hasFullEpisodeDuration(720))
+    }
+
     func testHanimeOfflineSourcePrioritizesHLSOverPreviewMP4() {
         let clips = [
             URL(string: "https://cdn.hanime.tv/video/preview.mp4")!,

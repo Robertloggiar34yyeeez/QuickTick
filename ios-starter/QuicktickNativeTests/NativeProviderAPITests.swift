@@ -212,6 +212,8 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             }
             if id == "legacy-working" {
                 payload = #"{"videos_manifest":{"servers":[{"streams":[{"height":1080,"url":"https://cdn.hanime.tv/videos/legacy-full.m3u8"},{"height":720,"url":"https://cdn.hanime.tv/videos/legacy-small.m3u8"},{"height":9999,"url":"https://evil.invalid/unsafe.m3u8"}]}]}}"#
+            } else if id == "nested-media" {
+                payload = #"{"data":{"hentai_video":{"videos_manifest":{"servers":[{"streams":[{"height":720,"url":"https://cdn.hanime.tv/videos/episode.m3u8"}]}]}}}}"#
             } else {
                 payload = #"{"hentai_video":{"poster_url":"https://cdn.hanime.tv/official-poster.webp","cover_url":"https://cdn.hanime.tv/official-cover.jpg"},"videos_manifest":{"servers":[{"streams":[]}]}}"#
             }
@@ -783,10 +785,23 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(playback.type, "hls")
         XCTAssertEqual(playback.mediaUrl, "https://cdn.hanime.tv/videos/high-quality.m3u8")
         let download = try await api.resolveMedia(post, forDownload: true)
-        XCTAssertEqual(download.type, "video")
-        XCTAssertEqual(download.mediaUrl, "https://cdn.hanime.tv/videos/download-full.mp4")
+        XCTAssertEqual(download.type, "hls")
+        XCTAssertEqual(download.mediaUrl, "https://cdn.hanime.tv/videos/high-quality.m3u8")
         let result = try DownloadSourcePolicy.validate(media: download, for: post)
-        XCTAssertFalse(result.isHLS)
+        XCTAssertTrue(result.isHLS)
+        // If the first HLS playlist fails, retry can pick another official
+        // source instead of requesting the same already failed URL.
+        let next = try await api.resolveMedia(post, streamVariant: 1, forDownload: true)
+        XCTAssertEqual(next.mediaUrl, "https://cdn.hanime.tv/videos/download-full.mp4")
+    }
+
+    func testHanimeLegacyMediaReadsNestedFirstPartyEpisodeManifest() async throws {
+        let (_, session) = client(); defer { session.invalidateAndCancel() }
+        let post = Post(key: "hanime:nested-media", id: "nested-media", provider: "Hanime", type: "video")
+        let media = try await NativeProviderAPI.hanimeLegacyMediaResolve(session: session,
+                                                                        post: post, preferFile: true)
+        XCTAssertEqual(media.mediaUrl, "https://cdn.hanime.tv/videos/episode.m3u8")
+        XCTAssertEqual(media.type, "hls")
     }
 
     func testHanimeOfflineSourcePrioritizesHLSOverPreviewMP4() {

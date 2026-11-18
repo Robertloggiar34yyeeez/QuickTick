@@ -1179,9 +1179,13 @@ enum NativeProviderAPI {
         let response = try object(await data(session: session,
             url: url("https://hanime.tv/api/v8/video", [.init(name: "id", value: post.id)]),
             provider: .hanime))
-        let manifest = response["videos_manifest"] as? [String: Any] ?? [:]
+        let data = response["data"] as? [String: Any] ?? response
+        let video = data["hentai_video"] as? [String: Any] ?? data
+        let manifest = video["videos_manifest"] as? [String: Any] ??
+            data["videos_manifest"] as? [String: Any] ?? [:]
         let ordered = (rows(manifest["servers"]).flatMap { rows($0["streams"]) } +
-                       rows(manifest["streams"]) + rows(response["sources"]))
+                       rows(manifest["streams"]) +
+                       rows(video["sources"]) + rows(data["sources"]))
             .filter {
                 let kind = text($0["kind"]).lowercased()
                 return kind.isEmpty || kind == "normal"
@@ -2493,6 +2497,16 @@ extension NativeProviderAPI {
             throw APIError.server("Eporner returned no playable public stream.")
         case .hanime:
             if forDownload {
+                // Retry with the independent older first-party playlist
+                // after the signed player stream fails. Reissuing the same
+                // single available URL would only download the preview again.
+                if streamVariant == 1,
+                   let legacy = try? await hanimeLegacyMediaResolve(
+                       session: session, post: post, variant: 0, preferFile: true),
+                   legacy.type == "hls" {
+                    try Task.checkCancellation()
+                    return legacy
+                }
                 // An advertised MP4 may be the playable *preview*, not the
                 // episode. Resolve a fresh first-party HLS playlist before
                 // considering a standalone file. AVAssetDownloadURLSession

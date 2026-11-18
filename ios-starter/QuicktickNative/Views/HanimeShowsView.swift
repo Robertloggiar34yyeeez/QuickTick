@@ -135,13 +135,23 @@ private struct HanimeTitleCover: View {
     var height: CGFloat = 220
     @State private var coverURL = ""
 
+    /// The catalog's first-party poster is available synchronously. Display it
+    /// immediately; the old flow held every card blank until a second API call.
+    private var catalogCoverURL: String {
+        guard let url = URL(string: post.thumbUrl),
+              HanimeGeneratedAPI.permittedArtworkURL(url) else { return "" }
+        return url.absoluteString
+    }
+
     var body: some View {
+        let displayedCover = coverURL.isEmpty ? catalogCoverURL : coverURL
         ZStack {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(AppTheme.gradient)
-            if !coverURL.isEmpty {
-                CachedMediaImage(url: coverURL, pixels: 740, fill: true,
-                                 hanimeSlug: post.id)
+            if !displayedCover.isEmpty {
+                CachedMediaImage(url: displayedCover,
+                                 pixels: height >= 260 ? 768 : 512,
+                                 fill: true, hanimeSlug: post.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
             } else {
@@ -161,18 +171,14 @@ private struct HanimeTitleCover: View {
             .strokeBorder(.white.opacity(0.18), lineWidth: 1))
         .task(id: post.id) {
             coverURL = ""
+            // A known title poster is enough; don't block every tile on a
+            // redundant metadata lookup or download a video preview.
+            guard catalogCoverURL.isEmpty else { return }
             let official = await HanimeArtworkCache.shared.posterURL(slug: post.id)
             guard !Task.isCancelled else { return }
-            // Title detail poster is the authority. Never fall back to a
-            // cardPreviewURL that might be the video player screenshot.
             if let url = URL(string: official),
                HanimeGeneratedAPI.permittedArtworkURL(url) {
                 coverURL = official
-            } else if let backup = URL(string: post.thumbUrl),
-                      HanimeGeneratedAPI.permittedArtworkURL(backup),
-                      backup.path.lowercased().contains("/images/") {
-                // Catalog artwork is a fallback only when marked as artwork.
-                coverURL = backup.absoluteString
             }
         }
     }
@@ -352,6 +358,8 @@ struct HanimeShowsView: View {
         .sheet(item: $selectedSeries) { series in
             HanimeEpisodePicker(series: series, downloads: store.downloads)
                 .environmentObject(store)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
         .task(id: "\(initialQuery):\(activeSearch)") {
             catalog = []
@@ -374,6 +382,21 @@ struct HanimeShowsView: View {
             try Task.checkCancellation()
             let existing = Set(catalog.map(\.stableID))
             catalog.append(contentsOf: result.items.filter { !existing.contains($0.stableID) })
+            if nextPage == 1 {
+                // Only prime a few immediately visible, real title posters.
+                // This runs off the scrolling path using the shared image cache.
+                let posters = Array(result.items.prefix(5)).compactMap { post -> String? in
+                    guard let url = URL(string: post.thumbUrl),
+                          HanimeGeneratedAPI.permittedArtworkURL(url) else { return nil }
+                    return url.absoluteString
+                }
+                Task(priority: .utility) {
+                    for poster in posters {
+                        if Task.isCancelled { return }
+                        _ = try? await MediaImagePipeline.shared.image(raw: poster, pixels: 512)
+                    }
+                }
+            }
             hasMore = (result.hasMore ?? false) && nextPage < 40 && !result.items.isEmpty
             nextPage += 1
             failure = nil
@@ -389,36 +412,59 @@ private struct HanimeEpisodePicker: View {
     @Environment(\.dismiss) private var dismiss
     let series: HanimeSeries
     @ObservedObject var downloads: DownloadManager
+    @State private var additionalEpisodes: [Post] = []
+    @State private var discovering = false
     @State private var playingEpisode: Post?
     @State private var playingOffline = false
     @State private var activeEpisodeID: String?
 
+    /// Catalog pages can contain "Show 1" but not "Show 2". Once this sheet
+    /// is actually opened, search the shared base title (not "Show 1") and
+    /// merge matching releases into one episode list without fake episodes.
+    private var currentSeries: HanimeSeries {
+        HanimeSeries.group(series.episodes + additionalEpisodes).first {
+            $0.episodes.contains(where: { $0.stableID == series.poster.stableID })
+        } ?? series
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    HanimeTitleCover(post: series.poster, height: 280)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(series.title)
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
-                        Text("Select an episode to play or download the full video.")
-                            .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
-                        Label("\(series.episodes.count) episodes found",
-                              systemImage: "play.rectangle.on.rectangle")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.accent)
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    HanimeTitleCover(post: currentSeries.poster, height: 300)
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text(currentSeries.title)
+                            .font(.system(size: 27, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Choose an episode to watch or save as a full offline video.")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.secondaryLabel)
+                        HStack(spacing: 8) {
+                            Label(currentSeries.episodes.count == 1
+                                  ? "1 episode found" : "\(currentSeries.episodes.count) episodes found",
+                                  systemImage: "play.rectangle.on.rectangle")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.accent)
+                            Spacer(minLength: 4)
+                            if discovering {
+                                ProgressView().controlSize(.small)
+                                    .accessibilityLabel("Finding more episodes")
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    ForEach(series.episodes.indices, id: \.self) { index in
-                        episodeRow(series.episodes[index], number: index + 1)
+                    ForEach(currentSeries.episodes.indices, id: \.self) { index in
+                        episodeRow(currentSeries.episodes[index], number: index + 1)
                     }
                 }
-                .padding(18)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 20)
                 .frame(maxWidth: 700, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
             .background(ThemeBackdrop())
-            .navigationTitle("Episodes")
+            .navigationTitle("Episode selection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -432,6 +478,35 @@ private struct HanimeEpisodePicker: View {
                     .environmentObject(store)
                     .ignoresSafeArea()
             }
+            .task(id: series.id) { await findRelatedEpisodes() }
+        }
+    }
+
+    @MainActor private func findRelatedEpisodes() async {
+        let title = HanimeSeries.lookupTitle(for: series.poster)
+        guard title.count >= 3, !discovering else { return }
+        discovering = true
+        defer { discovering = false }
+        var seen = Set(series.episodes.map(\.stableID))
+        // Fetch only after opening a title, and cap lookup pages to protect
+        // network time and the first-frame performance of Instant mode.
+        for page in 1...4 {
+            do {
+                let response = try await store.api.posts(
+                    provider: .hanime, query: QueryParser.parse(title),
+                    page: page, sort: "popular")
+                try Task.checkCancellation()
+                for post in response.items where post.providerKey == .hanime {
+                    if seen.insert(post.stableID).inserted { additionalEpisodes.append(post) }
+                }
+                guard response.hasMore == true, !response.items.isEmpty else { break }
+            } catch is CancellationError {
+                return
+            } catch {
+                // Keep already indexed episodes usable when the remote
+                // provider refuses a wider search or page fetch.
+                break
+            }
         }
     }
 
@@ -439,53 +514,87 @@ private struct HanimeEpisodePicker: View {
         let record = downloads.records.first { $0.key == episode.stableID }
         let saved = record?.offlinePost
         let busy = record?.state == .downloading || record?.state == .queued
-        return HStack(alignment: .center, spacing: 12) {
-            HanimeTitleCover(post: episode, height: 106)
-                .frame(width: 94).clipped()
-            VStack(alignment: .leading, spacing: 7) {
-                Text(HanimeSeries.episodeNumber(episode.caption ?? "").map { "Episode \($0)" }
-                     ?? "Episode \(number)")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.white)
-                Text(episode.displayTitle ?? series.title)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.secondaryLabel)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        let failure = record?.state == .failed ? record?.errorMessage : nil
+
+        return VStack(alignment: .leading, spacing: 13) {
+            HStack(alignment: .top, spacing: 16) {
+                HanimeTitleCover(post: episode, height: 148)
+                    .frame(width: 116)
+                VStack(alignment: .leading, spacing: 9) {
+                    Text(HanimeSeries.episodeNumber(episode.caption ?? "").map {
+                        "EPISODE \($0)"
+                    } ?? "EPISODE \(number)")
+                        .font(.system(size: 12, weight: .heavy, design: .rounded))
+                        .tracking(1.3)
+                        .foregroundStyle(AppTheme.accent)
+                    Text(episode.displayTitle ?? currentSeries.title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let record, busy {
+                        ProgressView(value: max(0, min(1, record.progress)))
+                            .tint(AppTheme.accent)
+                            .accessibilityLabel("Downloading full video")
+                    } else if saved != nil {
+                        Label("Available offline", systemImage: "checkmark.circle.fill")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(AppTheme.accent)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+            }
+            HStack(spacing: 12) {
                 Button {
                     let target = saved ?? episode
                     playingOffline = saved != nil
                     activeEpisodeID = target.stableID
                     playingEpisode = target
                 } label: {
-                    Label(saved == nil ? "Play" : "Play offline", systemImage: "play.fill")
-                        .font(.caption.weight(.bold))
-                        .frame(minHeight: 36)
+                    Label(saved == nil ? "Play episode" : "Play offline",
+                          systemImage: "play.fill")
+                        .font(.subheadline.weight(.bold))
+                        .frame(maxWidth: .infinity, minHeight: 52)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(AppTheme.accent)
-            }
-            Spacer(minLength: 0)
-            Button {
-                if let record, record.state == .failed || record.state == .cancelled {
-                    downloads.retry(record)
-                } else if !busy && saved == nil {
-                    downloads.download(episode)
+                .accessibilityIdentifier("hanime-play-\(episode.id)")
+
+                Button {
+                    if let record, record.state == .failed || record.state == .cancelled {
+                        downloads.retry(record)
+                    } else if !busy && saved == nil {
+                        downloads.download(episode)
+                    }
+                } label: {
+                    Label(saved != nil ? "Saved" :
+                          busy ? "Saving…" :
+                          record?.state == .failed ? "Retry save" : "Download",
+                          systemImage: saved != nil ? "checkmark.circle.fill" :
+                          busy ? "arrow.down.circle.dotted" : "arrow.down.to.line")
+                        .font(.subheadline.weight(.bold))
+                        .frame(maxWidth: .infinity, minHeight: 52)
                 }
-            } label: {
-                Image(systemName: saved != nil ? "checkmark.circle.fill" :
-                      busy ? "arrow.down.circle.dotted" : "arrow.down.circle")
-                    .font(.system(size: 25, weight: .semibold))
-                    .foregroundStyle(saved != nil ? AppTheme.accent : .white)
-                    .frame(width: 48, height: 48)
+                .buttonStyle(.bordered)
+                .disabled(busy || saved != nil)
+                .accessibilityIdentifier("hanime-download-\(episode.id)")
+                .accessibilityLabel(saved != nil ? "Downloaded full episode" :
+                                    busy ? "Downloading full video" : "Download full episode")
             }
-            .disabled(busy || saved != nil)
-            .accessibilityLabel(saved != nil ? "Downloaded video" :
-                                busy ? "Downloading video" :
-                                record?.state == .failed ? "Retry full video download" : "Download full episode")
+            if let failure, !failure.isEmpty {
+                Text(failure)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(11)
-        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 17))
-        .overlay(RoundedRectangle(cornerRadius: 17).stroke(AppTheme.border))
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.elevatedSurface,
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20)
+            .strokeBorder(AppTheme.border, lineWidth: 1))
     }
 }

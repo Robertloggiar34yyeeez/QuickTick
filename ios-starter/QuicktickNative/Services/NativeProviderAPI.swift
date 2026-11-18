@@ -2521,6 +2521,10 @@ extension NativeProviderAPI {
                 if let legacy, legacy.type == "hls" { return legacy }
                 if let current, current.type == "video" { return current }
                 if let legacy, legacy.type == "video" { return legacy }
+                // Never fall through into the playback-only resolver: that
+                // route can legitimately return a short preview or trailer.
+                // A download needs an explicit first-party media candidate.
+                throw APIError.server("No full Hanime download stream is available for this episode. Retry later or check the official player.")
             }
             // When AVPlayer rejects the first signed playlist, the retry must
             // be able to change transport, not merely request another token

@@ -1138,6 +1138,33 @@ enum NativeProviderAPI {
         }
     }
 
+    /// Do not prioritize an advertised MP4 simply because it downloads as
+    /// a file: Hanime manifests also carry short preview/trailer MP4s.
+    /// Choose a full HLS playlist first for offline storage and only then
+    /// consider a first-party movie file. Preserve quality order within each
+    /// kind, and never select a named preview asset.
+    static func hanimeOfflineStreamOrder(_ urls: [URL]) -> [URL] {
+        let valid = urls.filter { address in
+            let path = address.path.lowercased()
+            let components = path.split(separator: "/").map(String.init)
+            return !components.contains(where: { segment in
+                segment == "preview" || segment == "previews" ||
+                segment == "trailer" || segment == "trailers" ||
+                segment.hasPrefix("preview.") || segment.hasPrefix("trailer.") ||
+                segment.hasPrefix("sample.") || segment.hasPrefix("teaser.")
+            })
+        }
+        let hls = valid.filter { address in
+            let path = address.path.lowercased()
+            return address.pathExtension.lowercased() == "m3u8" ||
+                path.hasPrefix("/hls/")
+        }
+        let remaining = valid.filter { address in
+            !hls.contains(address)
+        }
+        return hls + remaining
+    }
+
     /// Older working releases resolved the public v8 video manifest. Some
     /// titles still expose a valid first-party HLS playlist there while their
     /// newer v11 handshake is empty, blocked, or produces an expired token.
@@ -1167,13 +1194,12 @@ enum NativeProviderAPI {
             return address
         }
         guard !valid.isEmpty else { throw APIError.server("Hanime's public video manifest has no playable stream.") }
-        // A full MP4 is simpler and more portable for offline storage than an
-        // HLS package. Prefer one when the provider itself advertises it.
-        let candidates = preferFile ? valid.sorted {
-            let leftFile = ["mp4", "m4v"].contains($0.pathExtension.lowercased())
-            let rightFile = ["mp4", "m4v"].contains($1.pathExtension.lowercased())
-            return leftFile && !rightFile
-        } : valid
+        // The legacy manifest often exposes a trailer MP4 alongside an
+        // episode playlist. For offline downloads, choose the full playlist.
+        let candidates = preferFile ? hanimeOfflineStreamOrder(valid) : valid
+        guard !candidates.isEmpty else {
+            throw APIError.server("Hanime exposed only preview media for this title.")
+        }
         let selected = candidates[min(max(variant, 0), candidates.count - 1)]
         return ResolvedMedia(mediaUrl: selected.absoluteString,
             type: ["mp4", "m4v"].contains(selected.pathExtension.lowercased()) ? "video" : "hls")
@@ -1272,11 +1298,10 @@ enum NativeProviderAPI {
         // After a genuine AVPlayer failure, request a fresh handshake and
         // step down through the advertised variants without probing/using up
         // the playlist URL. Normal first playback still picks best quality.
-        let candidates = preferFile ? playable.sorted {
-            let firstIsFile = ["mp4", "m4v"].contains($0.pathExtension.lowercased())
-            let secondIsFile = ["mp4", "m4v"].contains($1.pathExtension.lowercased())
-            return firstIsFile && !secondIsFile
-        } : playable
+        let candidates = preferFile ? hanimeOfflineStreamOrder(playable) : playable
+        guard !candidates.isEmpty else {
+            throw APIError.server("Hanime exposed only preview media for this title.")
+        }
         let selected = candidates[min(max(0, variant), candidates.count - 1)]
         let extensionName = selected.pathExtension.lowercased()
         return ResolvedMedia(mediaUrl: selected.absoluteString,
@@ -2468,19 +2493,20 @@ extension NativeProviderAPI {
             throw APIError.server("Eporner returned no playable public stream.")
         case .hanime:
             if forDownload {
-                // Independent authorized source manifests can expose
-                // different qualities and containers. Favor real MP4 files,
-                // fall back to HLS only when neither source advertises one.
-                let legacy = try? await hanimeLegacyMediaResolve(
-                    session: session, post: post, variant: streamVariant, preferFile: true)
-                try Task.checkCancellation()
-                if let legacy, legacy.type == "video" { return legacy }
+                // An advertised MP4 may be the playable *preview*, not the
+                // episode. Resolve a fresh first-party HLS playlist before
+                // considering a standalone file. AVAssetDownloadURLSession
+                // stores and verifies the full offline stream.
                 let current = try? await hanimeHLSResolve(
                     session: session, post: post, variant: streamVariant, preferFile: true)
                 try Task.checkCancellation()
+                if let current, current.type == "hls" { return current }
+                let legacy = try? await hanimeLegacyMediaResolve(
+                    session: session, post: post, variant: streamVariant, preferFile: true)
+                try Task.checkCancellation()
+                if let legacy, legacy.type == "hls" { return legacy }
                 if let current, current.type == "video" { return current }
-                if let current { return current }
-                if let legacy { return legacy }
+                if let legacy, legacy.type == "video" { return legacy }
             }
             // When AVPlayer rejects the first signed playlist, the retry must
             // be able to change transport, not merely request another token

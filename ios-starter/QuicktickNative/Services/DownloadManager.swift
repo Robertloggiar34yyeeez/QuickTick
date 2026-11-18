@@ -411,7 +411,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             // A decodable 6-second trailer is still not a Hanime episode.
             // The full source has to be available locally before success.
             guard playable, record.provider.lowercased() != Provider.hanime.rawValue ||
-                (seconds.isFinite && seconds >= 30) else {
+                (seconds.isFinite && seconds >= 90) else {
                 failedTransfer(key, reason: "The saved video was missing, unplayable, or only a short preview. Retry for a full episode.")
                 return
             }
@@ -432,7 +432,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             // AVPlayer would request missing network segments. Require the
             // complete Apple offline cache, never a thumbnail or partial HLS.
             let storedOffline = offlineAsset.assetCache?.isPlayableOffline == true
-            guard playable, storedOffline else {
+            let seconds = (try? await offlineAsset.load(.duration))?.seconds ?? 0
+            let isShortPreview = record.provider.lowercased() == Provider.hanime.rawValue &&
+                seconds.isFinite && seconds > 0 && seconds < 90
+            guard playable, storedOffline, !isShortPreview else {
                 failedTransfer(key, reason: "The HLS package is not independently playable offline. Retry another full-video stream.")
                 return
             }

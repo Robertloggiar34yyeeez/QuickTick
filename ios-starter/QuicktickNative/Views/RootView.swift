@@ -375,7 +375,7 @@ struct RootView: View {
             current: store.activeTab, translation: navigationDrag, vertical: false,
             axisLength: axisLength, visibleIndices: visibleTabIndices, accelerated: fastDockEnabled)
         return RoundedRectangle(cornerRadius: modernUI ? 18 : 12, style: .continuous)
-            .fill(modernUI ? AnyShapeStyle(AppTheme.accent.opacity(0.16))
+            .fill(modernUI ? AnyShapeStyle(AppTheme.accent.opacity(0.30))
                            : AnyShapeStyle(AppTheme.gradient))
             .frame(width: slotWidth, height: 54)
             .offset(x: center - slotWidth / 2)
@@ -587,8 +587,7 @@ struct RootView: View {
                                 .transition(.opacity)
                         }
                     }
-                    .foregroundStyle(modernUI && highlightedTab == tabID ? AppTheme.accent :
-                                     (highlightedTab == tabID ? .white : .white.opacity(0.62)))
+                     .foregroundStyle(highlightedTab == tabID ? Color.white : Color.white.opacity(0.92))
                     .frame(width: vertical ? (brieflyNamedTab == nil ? 62 : 138) : nil, height: vertical ? 62 : 54)
                     .frame(maxWidth: vertical ? nil : .infinity)
                     .contentShape(Rectangle())

@@ -789,6 +789,17 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertFalse(result.isHLS)
     }
 
+    func testHanimeOfflineSourcePrioritizesHLSOverPreviewMP4() {
+        let clips = [
+            URL(string: "https://cdn.hanime.tv/video/preview.mp4")!,
+            URL(string: "https://cdn.hanime.tv/hls/episode/master.m3u8")!,
+            URL(string: "https://cdn.hanime.tv/video/full.mp4")!
+        ]
+        let ordered = NativeProviderAPI.hanimeOfflineStreamOrder(clips)
+        XCTAssertEqual(ordered.map(\.lastPathComponent),
+                       ["master.m3u8", "full.mp4"])
+    }
+
     func testHanimeNativeHLSResolvesCurrentV11Handshake() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let post = Post(key: "hanime:sample", id: "sample", provider: "Hanime", type: "video")

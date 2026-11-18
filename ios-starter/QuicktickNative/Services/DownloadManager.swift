@@ -433,10 +433,13 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             // complete Apple offline cache, never a thumbnail or partial HLS.
             let storedOffline = offlineAsset.assetCache?.isPlayableOffline == true
             let seconds = (try? await offlineAsset.load(.duration))?.seconds ?? 0
-            let isShortPreview = record.provider.lowercased() == Provider.hanime.rawValue &&
-                seconds.isFinite && seconds > 0 && seconds < 90
-            guard playable, storedOffline, !isShortPreview else {
-                failedTransfer(key, reason: "The HLS package is not independently playable offline. Retry another full-video stream.")
+            // A zero/indefinite duration cannot certify that all segments of
+            // a VOD episode were saved. Do not mark a thumbnail-length
+            // playlist (or an unmeasurable package) as a complete download.
+            let verifiedFullEpisode = record.provider.lowercased() != Provider.hanime.rawValue ||
+                (seconds.isFinite && seconds >= 90)
+            guard playable, storedOffline, verifiedFullEpisode else {
+                failedTransfer(key, reason: "The HLS download is incomplete, only a preview, or cannot play offline. Retry another full-video stream.")
                 return
             }
             if record.provider.lowercased() == Provider.hanime.rawValue,

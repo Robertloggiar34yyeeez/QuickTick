@@ -469,13 +469,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         Task { await measureSize(key, at: completedLocation) }
     }
 
-    /// Best-effort remux from an *already verified* offline HLS asset to a
-    /// standalone MP4. Never decrypt protected media or transcode on scroll.
-    /// Unsupported HLS codecs remain in their playable .movpkg container.
+    /// Best-effort, copy-only MP4 remux from the *verified complete* offline
+    /// HLS asset. Protected or codec-incompatible HLS stays as a locally
+    /// playable .movpkg; never expose a still image as a successful video.
     private func exportHanimeMovie(asset: AVURLAsset, key: String) async -> URL? {
-        // The modern async export API is introduced in iOS 18. On iOS 17
-        // retain the verified offline .movpkg rather than failing downloads.
-        guard #available(iOS 18.0, *) else { return nil }
         guard let exporter = AVAssetExportSession(asset: asset,
                            presetName: AVAssetExportPresetPassthrough),
               exporter.supportedFileTypes.contains(.mp4) else { return nil }
@@ -486,11 +483,26 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             if FileManager.default.fileExists(atPath: target.path) {
                 try FileManager.default.removeItem(at: target)
             }
-            try await exporter.export(to: target, as: .mp4)
+            if #available(iOS 18.0, *) {
+                try await exporter.export(to: target, as: .mp4)
+            } else {
+                // iOS 17 still supports the older asynchronous export API.
+                // Without it older phones could only keep .movpkg packages.
+                exporter.outputURL = target
+                exporter.outputFileType = .mp4
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    exporter.exportAsynchronously { continuation.resume() }
+                }
+                guard exporter.status == .completed else {
+                    throw exporter.error ?? URLError(.cannotDecodeContentData)
+                }
+            }
             let movie = AVURLAsset(url: target)
             let playable = try await movie.load(.isPlayable)
             let duration = try await movie.load(.duration).seconds
-            guard playable, duration.isFinite, duration >= 30 else {
+            let videoTracks = try await movie.loadTracks(withMediaType: .video)
+            guard playable, !videoTracks.isEmpty,
+                  duration.isFinite, duration >= 90 else {
                 try? FileManager.default.removeItem(at: target)
                 return nil
             }

@@ -125,6 +125,7 @@ struct HomeFeedView: View {
     @State private var openingNicheID: String?
     @State private var showAllRedgifsNiches = false
     @State private var showAllHanimeTopics = false
+    @State private var showHanimeShows = false
     @State private var presentedFullImage: HomeFullImagePresentation?
     @State private var themeRefreshCycle = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -154,6 +155,13 @@ struct HomeFeedView: View {
                 }
             })
             .environmentObject(store)
+        }
+        .sheet(isPresented: $showHanimeShows) {
+            HanimeShowsBrowserView(posts: store.posts, onPlay: { post in
+                showHanimeShows = false
+                immersivePostID = post.stableID
+                immersive = true
+            })
         }
         .sheet(isPresented: $showAllHanimeTopics) {
             NavigationStack { HanimeTopicsBrowserView() }
@@ -294,6 +302,18 @@ struct HomeFeedView: View {
                     .overlay(RoundedRectangle(cornerRadius: 17).stroke(AppTheme.border))
                     .padding(.horizontal, 16)
                     .accessibilityIdentifier("home-active-filter")
+                }
+                if store.selectedProvider == .hanime {
+                    Button { showHanimeShows = true } label: {
+                        Label("Shows", systemImage: "rectangle.stack.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(maxWidth: .infinity, minHeight: 46)
+                            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14))
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppTheme.border))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .accessibilityIdentifier("hanime-shows-mode")
                 }
                 if store.selectedProvider == .redgifs {
                     redgifsNicheRow
@@ -1624,5 +1644,95 @@ enum FranchiseThemeSuggestions {
             if result.count >= limit { break }
         }
         return result
+    }
+}
+
+private struct HanimeShowsBrowserView: View {
+    let posts: [Post]
+    let onPlay: (Post) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private struct ShowGroup: Identifiable {
+        let id: String
+        let title: String
+        let episodes: [Post]
+        var cover: String { episodes.first(where: { !$0.thumbUrl.isEmpty })?.thumbUrl ?? "" }
+    }
+
+    private var shows: [ShowGroup] {
+        let hanime = posts.filter { $0.providerKey == .hanime }
+        let groups = Dictionary(grouping: hanime) { post -> String in
+            let slug = post.id.replacingOccurrences(of: #"-[0-9]+$"#, with: "", options: .regularExpression)
+            return slug.isEmpty ? post.id : slug
+        }
+        return groups.map { key, episodes in
+            let ordered = episodes.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+            let title = (ordered.first?.caption ?? key.replacingOccurrences(of: "-", with: " "))
+                .replacingOccurrences(of: #"\s+[0-9]+$"#, with: "", options: .regularExpression)
+            return ShowGroup(id: key, title: title, episodes: ordered)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(shows) { show in
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .top, spacing: 14) {
+                                if !show.cover.isEmpty {
+                                    CachedMediaImage(url: show.cover, pixels: 480, fill: true)
+                                        .frame(width: 100, height: 142).clipped()
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                } else {
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(AppTheme.elevatedSurface)
+                                        .frame(width: 100, height: 142)
+                                        .overlay(Image(systemName: "film").foregroundStyle(.secondary))
+                                }
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(show.title).font(.headline).lineLimit(3)
+                                    Text("\(show.episodes.count) available episode\(show.episodes.count == 1 ? "" : "s")")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    Spacer(minLength: 0)
+                                    Button { if let first = show.episodes.first { onPlay(first) } } label: {
+                                        Label("Play", systemImage: "play.fill")
+                                            .font(.subheadline.weight(.semibold))
+                                            .frame(maxWidth: .infinity, minHeight: 38)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                }
+                            }
+                            ForEach(show.episodes, id: \.stableID) { episode in
+                                Button { onPlay(episode) } label: {
+                                    HStack {
+                                        Image(systemName: "play.circle.fill")
+                                        Text(episode.caption ?? episode.id.replacingOccurrences(of: "-", with: " "))
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Image(systemName: "chevron.right").font(.caption)
+                                    }
+                                    .font(.subheadline)
+                                    .padding(.vertical, 7)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(14)
+                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
+                    }
+                    if shows.isEmpty {
+                        ContentUnavailableView("No shows loaded", systemImage: "film.stack",
+                                               description: Text("Load Hanime videos in Home to browse their series."))
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle("Shows")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") { dismiss() }
+            } }
+        }
     }
 }

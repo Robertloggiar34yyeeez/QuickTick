@@ -19,6 +19,40 @@ struct RecommendationQualityModel: Sendable {
     }
 }
 
+/// Rule34 media-format affinity, kept separate from character and artist taste.
+struct Rule34FormatTaste: Sendable {
+    private var counts: [String: Int] = [:]
+    static func formats(_ post: Post) -> Set<String> {
+        guard post.providerKey == .rule34 else { return [] }
+        let tags = Set(post.tags.map { $0.lowercased().replacingOccurrences(of: "-", with: "_").replacingOccurrences(of: " ", with: "_") })
+        let ext = URL(string: post.mediaUrl)?.pathExtension.lowercased() ?? ""
+        var result = Set<String>()
+        if post.type.lowercased() == "gif" || ext == "gif" { result.insert("gif") }
+        if ["video", "hls"].contains(post.type.lowercased()) || ["mp4", "webm", "mov"].contains(ext) { result.insert("video") }
+        if !tags.isDisjoint(with: ["loop", "looping", "seamless_loop", "animated_gif"]) { result.insert("loop") }
+        if !tags.isDisjoint(with: ["comic", "comic_strip", "webcomic", "manga"]) { result.insert("comic") }
+        if !tags.isDisjoint(with: ["voice_over", "voiceover", "narration", "narrated", "dubbed", "voice_acting"]) { result.insert("narration") }
+        if !tags.isDisjoint(with: ["motion_comic", "animated_comic"]) { result.formUnion(["comic", "motion_comic"]) }
+        if !tags.isDisjoint(with: ["slideshow", "slide_show"]) { result.insert("slideshow") }
+        if result.contains("comic") && result.contains("narration") { result.insert("comic_voiceover") }
+        return result
+    }
+    mutating func train(_ favorites: [Post]) {
+        counts.removeAll(keepingCapacity: true)
+        for post in favorites where post.providerKey == .rule34 {
+            for format in Self.formats(post) { counts[format, default: 0] += 1 }
+        }
+    }
+    func score(_ post: Post) -> Double {
+        min(4.5, Self.formats(post).reduce(0.0) { total, format in
+            let count = counts[format] ?? 0
+            guard count >= 2 else { return total }
+            let specificity = ["video", "gif", "comic"].contains(format) ? 0.35 : 1.0
+            return total + min(2.0, log1p(Double(count - 1)) * specificity)
+        })
+    }
+}
+
 // Native metadata-only interaction model learned from the FULL current
 // Favorites collection. A loved subject doesn't imply every presentation:
 // source + subject + medium must match, with credited artist modeled
@@ -319,6 +353,7 @@ actor RecommendationEngine {
     // liked. Unknown 3D creators never inherit a character's positive score.
     private var trusted3DCredits: [String: Set<String>] = [:]
     private var trusted3DArtistTags: [String: [String]] = [:]
+    private var rule34FormatTaste = Rule34FormatTaste()
     private var sourcesWithRougeLikes: Set<String> = []
     private var sourcesWithFictionalCharacters: Set<String> = []
     private var sourcesWithWildlifeLikes: Set<String> = []
@@ -432,6 +467,7 @@ actor RecommendationEngine {
         }.prefix(384))
         currentFavorites = recent
         conditionalTaste.train(recent, taxonomy: taxonomy)
+        rule34FormatTaste.train(recent)
         trusted3DCredits = [:]
         trusted3DArtistTags = [:]
         sourcesWithRougeLikes = []
@@ -1094,6 +1130,7 @@ actor RecommendationEngine {
         score += min(3.0, log1p(savedScore) * 0.9)
         score += preferenceGuardPenalty(post)
         score += conditionalTaste.score(post, taxonomy: taxonomy)
+        score += rule34FormatTaste.score(post)
         score -= unfamiliarIdentityPenalty(post, taste: taste)
         // An instant swipe away is an explicitly reversible negative; unlike a
         // thumbs-down it does not change permanent term evidence or visual profiles.

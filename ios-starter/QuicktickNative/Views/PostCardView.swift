@@ -221,7 +221,10 @@ struct PostCardView: View {
             }) {
                 if let player {
                     FullScreenVideoView(player: player, postID: post.stableID,
-                                        exportURL: offline ? DownloadExporter.localFileURL(post.mediaUrl) : nil) {
+                                        exportURL: offline ? store.downloads.records.first(where: { $0.key == post.stableID })?.exportURL : nil,
+                                        hlsExportRecord: offline ? store.downloads.records.first(where: {
+                                            $0.key == post.stableID && $0.kind == .hlsPackage
+                                        }) : nil) {
                         store.fullScreenPlaybackID = nil
                     }
                 }
@@ -273,7 +276,11 @@ struct PostCardView: View {
                         player = nil; ready = false
                         playbackError = nil
                     } else {
-                        playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."
+                        if offline, post.providerKey == .hanime {
+                            playbackError = "Saved HLS episode cannot play without the network. Re-download the full episode and verify offline playback."
+                        } else {
+                            playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."
+                        }
                     }
                 }
             }
@@ -481,7 +488,17 @@ struct PostCardView: View {
         do {
             let resolved: ResolvedMedia
             if offline {
-                guard let local = URL(string: post.mediaUrl), local.isFileURL, FileManager.default.fileExists(atPath: local.path) else { throw APIError.server("Downloaded file is missing.") }
+                guard let local = URL(string: post.mediaUrl), local.isFileURL,
+                      FileManager.default.fileExists(atPath: local.path) else {
+                    throw APIError.server("Downloaded file is missing.")
+                }
+                if local.pathExtension.lowercased() == "movpkg" {
+                    let package = AVURLAsset(url: local)
+                    let playable = (try? await package.load(.isPlayable)) ?? false
+                    guard playable, package.assetCache?.isPlayableOffline == true else {
+                        throw APIError.server("The HLS package is not complete for offline playback. Re-download the full video while connected.")
+                    }
+                }
                 resolved = ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type)
             } else { resolved = try await store.resolver.resolve(post,
                 refresh: mediaStreamRetry > 0,
@@ -606,6 +623,7 @@ private struct FullScreenVideoView: View {
     let player: AVPlayer
     let postID: String
     let exportURL: URL?
+    let hlsExportRecord: DownloadRecord?
     let onClose: () -> Void
     var body: some View {
         FullScreenPlayerController(player: player, onSwipeDown: {
@@ -644,6 +662,16 @@ private struct FullScreenVideoView: View {
                                 .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
                         }
                         .accessibilityLabel("Share downloaded video")
+                        .accessibilityIdentifier("fullscreen-download-share")
+                    } else if let hlsExportRecord {
+                        Button {
+                            Task { await DownloadExporter.exportAndShare(hlsExportRecord) }
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 19, weight: .semibold))
+                                .frame(width: 48, height: 48).background(.black.opacity(0.7), in: Circle())
+                        }
+                        .accessibilityLabel("Export downloaded HLS as MP4")
                         .accessibilityIdentifier("fullscreen-download-share")
                     }
                     Button {

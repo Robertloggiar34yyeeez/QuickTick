@@ -37,6 +37,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     private var tasks: [String: URLSessionTask] = [:]
     private var preparing = Set<String>()
     private var refreshedPornhubTransfers = Set<String>()
+    private var hanimeVariantAttempts: [String: Int] = [:]
     nonisolated private let progressGate = DownloadProgressGate()
     private var metadataFailed = false
     // Native URLSession transfers already survive app suspension. Delegate
@@ -116,7 +117,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         catalogDidChange.send()
     }
     #endif
-    func download(_ post: Post, refreshSource: Bool = false) {
+    func download(_ post: Post, refreshSource: Bool = false, hanimeVariant: Int = 0) {
         guard !metadataFailed, tasks[post.stableID] == nil, !preparing.contains(post.stableID), records.first(where: { $0.key == post.stableID })?.state != .complete else { return }
         preparing.insert(post.stableID)
         // Publish the queued state *before* any resolver/network await. Home and
@@ -138,7 +139,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 // Catalog previews and an AVPlayer's cached URL are not valid
                 // substitutes for a downloadable video package.
                 let media = try await resolver.resolve(post,
-                    refresh: refreshSource || post.providerKey == .hanime)
+                    refresh: refreshSource || post.providerKey == .hanime,
+                    hanimeVariant: hanimeVariant)
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--ui-testing"), let file = URL(string: media.mediaUrl), file.isFileURL {
                     let dir = root.appendingPathComponent(Self.safeName(post.stableID))
@@ -206,6 +208,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }
     func retry(_ record: DownloadRecord) {
         cancel(record)
+        hanimeVariantAttempts.removeValue(forKey: record.key)
         // A previous signed CDN URL may have expired. Recover the provider
         // stream on retry, retaining direct URLs for unknown/legacy sites.
         let identity = Post(key: record.key, id: record.postID, provider: record.provider)
@@ -340,6 +343,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         guard let current = records.first(where: { $0.key == key }),
               current.state != .complete, current.state != .cancelled else { return }
         progressGate.clear(key: key)
+        hanimeVariantAttempts.removeValue(forKey: key)
         update(key) { $0.localMediaPath = location.path; $0.progress = 1; $0.state = .complete; $0.errorMessage = nil }
         tasks.removeValue(forKey: key)
         onCompleted?(Post(key: record.key, id: record.postID, provider: record.provider, tags: record.tags))
@@ -394,7 +398,33 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             Task { @MainActor in await self.finished(key, location: file) }
         } catch { let message = error.localizedDescription; Task { @MainActor in self.update(key) { $0.state = .failed; $0.errorMessage = message } } }
     }
+    /// Try a fresh authorized Hanime handshake at a lower stream quality.
+    /// This starts another actual AVAssetDownloadTask, never a thumbnail transfer.
+    private func retryHanimeStream(_ key: String, reason: String) -> Bool {
+        guard let record = records.first(where: { $0.key == key }),
+              record.provider.lowercased() == Provider.hanime.rawValue,
+              record.state != .cancelled, record.state != .complete else { return false }
+        let nextVariant = (hanimeVariantAttempts[key] ?? 0) + 1
+        guard nextVariant <= 2 else {
+            hanimeVariantAttempts.removeValue(forKey: key)
+            return false
+        }
+        hanimeVariantAttempts[key] = nextVariant
+        tasks.removeValue(forKey: key)
+        update(key) {
+            $0.state = .queued
+            $0.progress = 0
+            $0.localMediaPath = nil
+            $0.errorMessage = "Retrying Hanime stream quality \(nextVariant + 1)…"
+        }
+        let post = Post(key: record.key, id: record.postID, provider: record.provider,
+                        tags: record.tags, thumbUrl: record.thumbnailRemoteURL,
+                        pageUrl: record.pageURL ?? "", type: "video")
+        download(post, refreshSource: true, hanimeVariant: nextVariant)
+        return true
+    }
     private func failedTransfer(_ key: String, reason: String) {
+        if retryHanimeStream(key, reason: reason) { return }
         tasks.removeValue(forKey: key)
         guard let record = records.first(where: { $0.key == key }), record.state != .cancelled else { return }
         if record.provider.lowercased() == Provider.pornhub.rawValue,
@@ -446,6 +476,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         Task { @MainActor in
             guard self.tasks[key]?.taskIdentifier == taskID else { return }
             if let message {
+                if isHLS && self.retryHanimeStream(key, reason: message) { return }
                 self.tasks.removeValue(forKey: key)
                 self.update(key) { if $0.state != .cancelled { $0.state = .failed; $0.errorMessage = message } }
             } else if isHLS {

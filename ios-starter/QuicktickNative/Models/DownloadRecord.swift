@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 
 enum DownloadState: String, Codable, Sendable { case queued, downloading, paused, complete, failed, cancelled }
 enum DownloadMediaKind: String, Codable, Sendable { case file, hlsPackage }
@@ -26,6 +27,9 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var remoteURL: String?
     var errorMessage: String?
     var mediaType: String?
+    /// Preserve original geometry through offline restoration.
+    var pixelWidth: Int?
+    var pixelHeight: Int?
     /// Retain the canonical provider post URL for signed-media retries.
     /// Older saved catalogs decode this optional field as nil.
     var pageURL: String?
@@ -43,20 +47,44 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
             .contains(URL(fileURLWithPath: path).pathExtension.lowercased())
     }
 
-    // The share sheet exports the existing file/package without decoding or copying it.
+    // An old download may contain a poster named as media, not full video.
+    var isProviderVideoPoster: Bool {
+        guard kind == .file, ["hanime", "pornhub"].contains(provider.lowercased()),
+              let path = localMediaPath,
+              provider.lowercased() == "hanime" || mediaType?.lowercased() == "video" else {
+            return false
+        }
+        let location = URL(fileURLWithPath: path)
+        if ["jpg", "jpeg", "png", "webp", "avif", "heic", "gif"]
+            .contains(location.pathExtension.lowercased()) { return true }
+        // Old versions wrote JPEGs under the filename media.mp4. A filename
+        // cannot prove that video data was downloaded; inspect the signature.
+        return DownloadResponseValidator.isPreviewImage(at: location)
+    }
+
+    // .movpkg is an AVFoundation HLS directory, not a portable movie file.
+    // Never send that directory to Files as if it were an MP4 export.
     var exportURL: URL? {
-        guard !isHanimePosterOnly, state == .complete, let path = localMediaPath,
-              FileManager.default.fileExists(atPath: path) else { return nil }
+        guard kind == .file, !isProviderVideoPoster, state == .complete,
+              let path = localMediaPath, FileManager.default.fileExists(atPath: path) else { return nil }
         return URL(fileURLWithPath: path)
     }
 
     var offlinePost: Post? {
-        guard !isHanimePosterOnly, state == .complete, let path = localMediaPath,
+        guard !isProviderVideoPoster, state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }
         let media = URL(fileURLWithPath: path)
+        // A legacy "media.mp4" may contain a JPEG, or a saved playlist
+        // may still need the network. Neither counts as an offline episode.
+        if provider.lowercased() == "hanime" && kind == .file {
+            guard ["mp4", "m4v", "mov"].contains(media.pathExtension.lowercased()),
+                  DownloadResponseValidator.isMP4Container(at: media) else { return nil }
+        }
         let type: String
-        if let mediaType, ["image", "video", "gif"].contains(mediaType.lowercased()) { type = mediaType.lowercased() }
-        else if kind == .hlsPackage { type = "video" }
+        // HLS packages always contain video, even when the remote listing
+        // labeled the source as a poster or generic hls stream.
+        if kind == .hlsPackage { type = "video" }
+        else if let mediaType, ["image", "video", "gif"].contains(mediaType.lowercased()) { type = mediaType.lowercased() }
         else {
             switch media.pathExtension.lowercased() {
             case "jpg", "jpeg", "png", "webp", "heic", "avif", "bmp", "tiff": type = "image"
@@ -69,6 +97,15 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         var post = Post(key: key, id: postID, provider: provider, tags: tags, mediaUrl: media.absoluteString,
                         previewUrl: type == "image" ? media.absoluteString : thumbnail, thumbUrl: thumbnail, type: type)
         post.caption = title
+        if let pixelWidth, let pixelHeight, pixelWidth > 0, pixelHeight > 0 {
+            post.width = Double(pixelWidth)
+            post.height = Double(pixelHeight)
+        } else if type == "image",
+                  let source = CGImageSourceCreateWithURL(media as CFURL, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as NSDictionary? {
+            post.width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue
+            post.height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue
+        }
         return post
     }
 }

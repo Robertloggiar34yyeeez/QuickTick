@@ -112,7 +112,7 @@ struct FloatingPiPView: View {
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 16)
                                 .frame(height: 44)
-                                .background(.ultraThinMaterial, in: Capsule())
+                                .background(AppTheme.chrome, in: Capsule())
                                 .overlay(Capsule().stroke(.white.opacity(0.22)))
                         }
                         .padding(20)

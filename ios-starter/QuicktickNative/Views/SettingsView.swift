@@ -20,7 +20,7 @@ struct SettingsView: View {
     @State private var backgroundImporting = false
     @State private var backgroundError: String?
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
-    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = true
     @AppStorage(VideoPlaybackPreferences.autoplayKey) private var autoplayVideos = true
     @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeekSeconds = 10
     @AppStorage(HanimeGeneratedAPI.settingKey) private var hanimeAPIURL = ""
@@ -261,34 +261,22 @@ struct SettingsView: View {
                 settingsQuickActions(scroll: scroll)
                 settingsNavigationGrid(scroll: scroll)
             if let storageWarning = store.storageWarning { SettingsGroup(title: "Storage needs attention", icon: "exclamationmark.triangle") { Text(storageWarning).foregroundStyle(.orange) } }
-            SettingsGroup(title: "Navigation", icon: "square.grid.2x2") {
-                HStack(spacing: 12) {
-                    Text("Show AI tab")
-                    Spacer(minLength: 8)
-                    // Keep the switch's accessible frame on the actual
-                    // control, rather than the entire scroll-view row. UI
-                    // automation and normal taps now hit the same target.
-                    Toggle("Show AI tab", isOn: $showAITab)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .accessibilityIdentifier("show-ai-tab-toggle")
-                        .frame(minWidth: 52, minHeight: 44)
+            SettingsGroup(title: "Appearance", icon: "paintbrush.pointed") {
+                VStack(alignment: .leading, spacing: 11) {
+                    HStack(spacing: 9) {
+                        Image(systemName: "rectangle.on.rectangle.angled")
+                            .foregroundStyle(AppTheme.accent)
+                        Text("Interface style").font(.subheadline.weight(.semibold))
+                    }
+                    InterfaceStyleChooser(premium: $modernUI)
+                    .accessibilityIdentifier("interface-style-picker")
+                    Text(modernUI
+                         ? "Premium matte surfaces, simpler navigation and cinematic Wrapped. No blur or glass."
+                         : "The familiar QuickTick interface, with every account, favorite and download preserved.")
+                        .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
                 }
                 .modifier(SettingsControlRow())
-                Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Toggle("Use a wider iPad sidebar", isOn: $ipadSidebarEnabled)
-                    .modifier(SettingsControlRow())
-                    .accessibilityIdentifier("ipad-sidebar-toggle")
-                Text("Moves the Home bar to a larger vertical rail on the left across every iPad feed. On iPhone the bottom bar stays unchanged.")
-                    .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
-            }.id(SettingsDestination.navigation.rawValue)
-            SettingsGroup(title: "Appearance", icon: "paintbrush.pointed") {
-                Toggle("Modern interface", isOn: $modernUI)
-                    .modifier(SettingsControlRow())
-                    .accessibilityIdentifier("modern-ui-toggle")
-                Text(modernUI ? "Rounded surfaces, compact chips and animated navigation." : "Previous QuickTick interface restored.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                .accessibilityIdentifier("modern-ui-toggle")
                 Label("Color theme", systemImage: "paintpalette.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.secondaryLabel)
                 SettingsPaletteSelector(selected: $accentPalette)
@@ -339,6 +327,28 @@ struct SettingsView: View {
                 }
                 if let backgroundError { Text(backgroundError).font(.caption).foregroundStyle(.orange) }
             }.id(SettingsDestination.appearance.rawValue)
+            SettingsGroup(title: "Navigation", icon: "square.grid.2x2") {
+                HStack(spacing: 12) {
+                    Text("Show AI tab")
+                    Spacer(minLength: 8)
+                    // Keep the switch's accessible frame on the actual
+                    // control, rather than the entire scroll-view row. UI
+                    // automation and normal taps now hit the same target.
+                    Toggle("Show AI tab", isOn: $showAITab)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .accessibilityIdentifier("show-ai-tab-toggle")
+                        .frame(minWidth: 52, minHeight: 44)
+                }
+                .modifier(SettingsControlRow())
+                Text(showAITab ? "Five tabs" : "Four tabs · Turn this on to open Create again")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Toggle("Use a wider iPad sidebar", isOn: $ipadSidebarEnabled)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("ipad-sidebar-toggle")
+                Text("Moves the Home bar to a larger vertical rail on the left across every iPad feed. On iPhone the bottom bar stays unchanged.")
+                    .font(.footnote).foregroundStyle(AppTheme.secondaryLabel)
+            }.id(SettingsDestination.navigation.rawValue)
             SettingsGroup(title: "Your name & birthday", icon: "gift") {
                 BirthdayProfileEditor()
                 Text("A private birthday animation appears once a year. Your profile is optional and stays on this device.")
@@ -616,10 +626,10 @@ struct SettingsView: View {
                 Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
                     .modifier(SettingsControlRow())
                     .accessibilityIdentifier("skip-video-intros-toggle")
-                Toggle("Skip Hanime intros (10 seconds)", isOn: $skipHanimeIntros)
+                Toggle("Start Hanime videos at 1 minute", isOn: $skipHanimeIntros)
                     .modifier(SettingsControlRow())
                     .accessibilityIdentifier("skip-hanime-intros-toggle")
-                Text("When enabled, the first 10 seconds are skipped for Pornhub or Hanime videos longer than 12 seconds, independently for each provider. Old saved Haven posts retain their previous preference.")
+                Text("Pornhub skips the first 10 seconds. Hanime starts at 1:00 when available, or near the beginning for short clips. You can turn either option off independently. Old saved Haven posts keep their previous preference.")
                     .font(.footnote).foregroundStyle(.secondary)
             }.id(SettingsDestination.playback.rawValue)
             SettingsGroup(title: "Rhythm & floating player", icon: "waveform.path") {
@@ -721,7 +731,12 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var settingsHero: some View {
-        if AppTheme.isDeSlopified {
+        if AppTheme.premium {
+            PremiumPageHeader(title: "Make it yours", eyebrow: "QUICKTICK / SETTINGS",
+                              subtitle: "Your space, your rules, your privacy.", icon: "slider.horizontal.3")
+                .padding(.top, 16)
+                .padding(.bottom, 6)
+        } else if AppTheme.isDeSlopified {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Settings")
                     .font(.system(size: 26, weight: .semibold))
@@ -833,7 +848,7 @@ private struct SettingsPaletteSelector: View {
         for palette in [current, .deSlopified, .oledBlack, .galaxy, .darkCosmos] where !featured.contains(palette) {
             featured.append(palette)
         }
-        return Array(featured.prefix(3))
+        return Array(featured.prefix(4))
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
@@ -1018,6 +1033,38 @@ private struct PersistentExclusionEditor: View {
     }
 }
 
+/// Explicit opaque controls avoid iOS's system frosted segmented-picker
+/// appearance. Selection writes only the existing style preference.
+private struct InterfaceStyleChooser: View {
+    @Binding var premium: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            option("New UI", icon: "square.grid.2x2.fill", value: true, identifier: "interface-style-new")
+            option("Original UI", icon: "square.stack.3d.up", value: false, identifier: "interface-style-original")
+        }
+        .padding(5)
+        .background(AppTheme.navigationSurface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(AppTheme.border))
+    }
+
+    private func option(_ title: String, icon: String, value: Bool, identifier: String) -> some View {
+        Button { premium = value } label: {
+            Label(title, systemImage: icon)
+                .font(.system(size: 13, weight: .semibold, design: .default))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, minHeight: 46)
+                .foregroundStyle(premium == value ? Color.white : AppTheme.secondaryLabel)
+                .background(premium == value ? AppTheme.accent : AppTheme.surface,
+                            in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier)
+        .accessibilityAddTraits(premium == value ? .isSelected : [])
+    }
+}
+
 private struct SettingsGroup<Content: View>: View {
     let title: String
     let icon: String
@@ -1030,23 +1077,23 @@ private struct SettingsGroup<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: AppTheme.premium ? 12 : 16) {
             HStack(spacing: 11) {
                 Image(systemName: icon)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(AppTheme.accent)
                     .frame(width: 36, height: 36)
-                    .background(AppTheme.isDeSlopified ? Color.clear : AppTheme.accent.opacity(0.13),
+                    .background(AppTheme.premium || AppTheme.isDeSlopified ? Color.clear : AppTheme.accent.opacity(0.13),
                                 in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12)
                         .strokeBorder(AppTheme.accent.opacity(0.22), lineWidth: 0.8))
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold,
-                                  design: AppTheme.isDeSlopified ? .default : .rounded))
+                    .font(.system(size: AppTheme.premium ? 17 : 16, weight: .semibold,
+                                  design: AppTheme.premium || AppTheme.isDeSlopified ? .default : .rounded))
                     .foregroundStyle(.white)
                 Spacer(minLength: 0)
             }
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: AppTheme.premium ? 10 : 14) {
                 content
             }
             .font(.subheadline)
@@ -1055,7 +1102,7 @@ private struct SettingsGroup<Content: View>: View {
             .tint(AppTheme.accent)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(AppTheme.isDeSlopified ? AppTheme.contentMargin : 18)
+        .padding(AppTheme.premium ? 15 : (AppTheme.isDeSlopified ? AppTheme.contentMargin : 18))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: AppTheme.panelRadius, style: .continuous))
         .modifier(SettingsCardOutline(radius: AppTheme.panelRadius))
@@ -1073,7 +1120,10 @@ private struct SettingsCardOutline: ViewModifier {
         content
             .overlay {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(LinearGradient(colors: highlighted
+                    .strokeBorder(LinearGradient(colors: AppTheme.premium
+                        ? [highlighted ? AppTheme.accent.opacity(0.70) : AppTheme.border,
+                           highlighted ? AppTheme.accent.opacity(0.70) : AppTheme.border]
+                        : highlighted
                         ? [AppTheme.accent.opacity(0.83), .white.opacity(0.43), AppTheme.accent.opacity(0.32)]
                         : [.white.opacity(0.17), AppTheme.accent.opacity(0.12), .white.opacity(0.055)],
                         startPoint: .topLeading, endPoint: .bottomTrailing),

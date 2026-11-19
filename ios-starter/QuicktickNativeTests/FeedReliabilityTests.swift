@@ -149,9 +149,91 @@ final class FeedReliabilityTests: XCTestCase {
             media: ResolvedMedia(mediaUrl: "https://cdn.hanime.tv/sample-video.mp4", type: "hls"),
             for: post)
         XCTAssertFalse(mp4.isHLS, "MP4 must be stored as a video file, not an HLS playlist package.")
+        let mp4UnderHLSPath = try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://cdn.hanime.tv/hls/full-video.mp4", type: "hls"),
+            for: post)
+        XCTAssertFalse(mp4UnderHLSPath.isHLS, "An MP4 within /hls/ remains a direct video transfer.")
+        let signed = try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://cdn.hanime.tv/video?token=signed", type: "video"),
+            for: post)
+        XCTAssertFalse(signed.isHLS, "Signed first-party MP4 streams may have opaque URLs.")
         XCTAssertThrowsError(try DownloadSourcePolicy.validate(
             media: ResolvedMedia(mediaUrl: "https://example.com/sample-video.mp4", type: "video"),
             for: post))
+    }
+
+    func testPornhubPosterOnlyRecordIsNeverACompletedVideo() {
+        var record = DownloadRecord(key: "pornhub:fixture", provider: "Pornhub",
+            postID: "fixture", title: "Poster", tags: [], thumbnailRemoteURL: "",
+            localMediaPath: "/tmp/quicktick-legacy-poster.jpg", kind: .file,
+            state: .complete, progress: 1, createdAt: .now)
+        record.mediaType = "video"
+        XCTAssertTrue(record.isProviderVideoPoster)
+        XCTAssertNil(record.offlinePost)
+        XCTAssertNil(record.exportURL)
+    }
+
+    func testPornhubDownloadsRejectPostersButAcceptDeclaredVideo() throws {
+        let post = Post(key: "pornhub:123", id: "123", provider: "Pornhub", type: "video")
+        XCTAssertThrowsError(try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://cdn.example.test/poster.jpg", type: "video"),
+            for: post))
+        let stream = try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://cdn.example.test/video.m3u8", type: "hls"),
+            for: post)
+        XCTAssertTrue(stream.isHLS)
+    }
+
+    func testWrappedMotionRotatesSavedVideosBetweenChapters() {
+        let posts = (0..<16).map { index in
+            Post(key: "redgifs:" + String(index), id: String(index), provider: "RedGIFs",
+                 type: index < 10 ? "video" : "image")
+        }
+        let first = WrappedMotionSelection.select(posts, chapter: 0)
+        let later = WrappedMotionSelection.select(posts, chapter: 1)
+        XCTAssertEqual(first.count, 6)
+        XCTAssertEqual(Set(first.map(\.stableID)).count, 6)
+        XCTAssertNotEqual(first.map(\.stableID), later.map(\.stableID))
+        XCTAssertGreaterThanOrEqual(later.filter { $0.type == "video" }.count, 2)
+    }
+
+    func testOfflineImagePreservesSavedPortraitAndLandscapeRatios() {
+        let screen = CGSize(width: 390, height: 844)
+        let portrait = MediaSizing.offlineCard(aspect: 9.0 / 16.0, available: screen)
+        let landscape = MediaSizing.offlineCard(aspect: 16.0 / 9.0, available: screen)
+        XCTAssertEqual(portrait.width, 390, accuracy: 0.1)
+        XCTAssertEqual(portrait.height, 390 * 16.0 / 9.0, accuracy: 0.1)
+        XCTAssertEqual(landscape.width, 390, accuracy: 0.1)
+        XCTAssertEqual(landscape.height, 390 * 9.0 / 16.0, accuracy: 0.1)
+    }
+
+    func testOfflineRecordKeepsOriginalDimensions() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        var record = DownloadRecord(key: "rule34:portrait", provider: "Rule34",
+            postID: "portrait", title: "Saved portrait", tags: [],
+            thumbnailRemoteURL: "", localMediaPath: file.path,
+            kind: .file, state: .complete, progress: 1, createdAt: .now)
+        record.mediaType = "image"
+        record.pixelWidth = 900
+        record.pixelHeight = 1600
+        XCTAssertEqual(record.offlinePost?.width, 900)
+        XCTAssertEqual(record.offlinePost?.height, 1600)
+    }
+
+    @MainActor func testProviderSwitchKeepsNicheSearchOutOfBooruTags() {
+        let store = AppStore()
+        store.selectedProvider = .redgifs
+        store.commitSearch(query: "niche:favorite-community", sort: "popular")
+        store.selectedProvider = .rule34
+        XCTAssertFalse(store.queryText.contains("niche:"))
+        store.commitSearch(query: "favorite_character", sort: "recommended")
+        store.selectedProvider = .redgifs
+        XCTAssertEqual(store.queryText, "niche:favorite-community")
+        store.selectedProvider = .rule34
+        XCTAssertEqual(store.queryText, "favorite_character")
     }
 
     func testHanimeOfflineStreamRetriesAreBoundedAndProviderSpecific() {
@@ -404,6 +486,9 @@ final class FeedReliabilityTests: XCTestCase {
         let video = MediaSizing.feedCard(aspect: 16.0 / 9.0, available: phone)
         XCTAssertEqual(video.width, 390)
         XCTAssertEqual(video.width / video.height, 16.0 / 9.0, accuracy: 0.001)
+        let portrait = MediaSizing.feedCard(aspect: 9.0 / 16.0, available: phone)
+        XCTAssertEqual(portrait.height, phone.width * 16.0 / 9.0, accuracy: 0.1)
+        XCTAssertEqual(portrait.width / portrait.height, 9.0 / 16.0, accuracy: 0.001)
         let tall = MediaSizing.feedCard(aspect: 0.125, available: phone)
         XCTAssertEqual(tall.width, 390)
         XCTAssertLessThanOrEqual(tall.height, 560)

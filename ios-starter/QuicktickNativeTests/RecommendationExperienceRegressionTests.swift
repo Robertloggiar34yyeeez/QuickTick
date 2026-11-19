@@ -9,6 +9,18 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertEqual(store.selectedProvider, .hanime)
     }
 
+    func testWrappedChaptersOnlyMoveMediaMatchingTheDisplayedSource() {
+        var sourceClip = Post(key: "xvideos:abc", id: "abc", provider: "xvideos", type: "video")
+        sourceClip.caption = "Related clip"
+        let unrelated = Post(key: "hanime:def", id: "def", provider: "hanime", type: "video")
+        let label = TasteWrappedMoment(id: "source|xvideos", label: "XVideos",
+                                       appearances: 1, sample: sourceClip)
+        let section = TasteWrappedCategory(id: "source", heading: "Favorite providers",
+                                           symbol: "play", moments: [label])
+        let clips = TasteWrappedSummary.relatedMedia(from: [unrelated, sourceClip], section: section)
+        XCTAssertEqual(clips.map(\.stableID), [sourceClip.stableID])
+    }
+
     func testIPadImmersiveRecognizesShortVerticalFlicksWithoutDiagonalPaging() {
         let height: CGFloat = 1_080
         XCTAssertEqual(ImmersivePageSwipePolicy.direction(
@@ -273,6 +285,25 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
         XCTAssertEqual(activity.replays, 5)
         XCTAssertEqual(activity.completed, 3)
         XCTAssertEqual(activity.downloads, 5)
+    }
+
+    func testInterfaceSwitchUsesExistingPersistentKeyWithoutTouchingPersonalData() {
+        let defaults = UserDefaults.standard
+        let key = "quicktick-modern-ui-v1"
+        let original = defaults.object(forKey: key)
+        let favoriteFixture = "quicktick-test-interface-preserves-liked-ids"
+        let previousFixture = defaults.object(forKey: favoriteFixture)
+        defer {
+            if let original { defaults.set(original, forKey: key) } else { defaults.removeObject(forKey: key) }
+            if let previousFixture { defaults.set(previousFixture, forKey: favoriteFixture) }
+            else { defaults.removeObject(forKey: favoriteFixture) }
+        }
+        defaults.set(["hanime:favorite", "rule34:favorite"], forKey: favoriteFixture)
+        defaults.set(true, forKey: key)
+        XCTAssertTrue(AppTheme.premium)
+        defaults.set(false, forKey: key)
+        XCTAssertFalse(AppTheme.premium)
+        XCTAssertEqual(defaults.stringArray(forKey: favoriteFixture), ["hanime:favorite", "rule34:favorite"])
     }
 
     func testOptionalBirthdayOnlyMatchesTheCalendarDay() {

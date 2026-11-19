@@ -33,7 +33,8 @@ final class QueryParserTests: XCTestCase {
                                               haven: false, hanime: true))
         XCTAssertFalse(VideoIntroPolicy.enabled(provider: "Hanime", pornhub: true,
                                                haven: true, hanime: false))
-        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "Hanime"), 10)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 160, enabled: true, provider: "Hanime"), 60)
+        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "Hanime"), 52)
         XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true, provider: "Hanime"), 0)
     }
 

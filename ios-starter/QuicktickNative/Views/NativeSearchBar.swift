@@ -51,6 +51,12 @@ struct NativeSearchBar: View {
 
     private var searchForm: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if AppTheme.premium {
+                PremiumPageHeader(title: "Find your next", eyebrow: "QUICKTICK / SEARCH",
+                                  subtitle: "Search \(store.selectedProvider.displayName) with precise filters.",
+                                  icon: "magnifyingglass")
+                    .padding(.bottom, 8)
+            }
             inputRow
             if store.selectedProvider == .rule34 || isArchive { autocompleteRow }
             filterRow

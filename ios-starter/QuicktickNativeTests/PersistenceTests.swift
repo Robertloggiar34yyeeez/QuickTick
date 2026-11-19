@@ -223,6 +223,22 @@ final class PersistenceTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: disguised.path), "Keep the old preview until retry.")
     }
 
+    @MainActor func testCancelQueuedHanimePreparationNeverRestartsDownload() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manager = DownloadManager(resolver: MediaResolver(api: QuicktickAPIClient()), directory: directory)
+        // The invalid slug would fail resolution if the queued preparation
+        // were allowed to outlive Cancel and overwrite its terminal state.
+        let post = Post(key: "hanime:invalid_slug", id: "invalid_slug", provider: "Hanime", type: "video")
+        manager.download(post)
+        let queued = try XCTUnwrap(manager.records.first)
+        XCTAssertEqual(queued.state, .queued)
+        manager.cancel(queued)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(manager.records.first?.state, .cancelled)
+        XCTAssertNil(manager.records.first?.localMediaPath)
+    }
+
     func testSystemManagedHLSPathsRebaseWithoutMovingPackage() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: base) }

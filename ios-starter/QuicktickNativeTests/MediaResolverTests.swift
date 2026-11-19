@@ -24,6 +24,48 @@ private final class MediaProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class MediaResolverTests: XCTestCase {
+    func testLegacyPreviewNamedMP4IsNeverExposedOffline() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]).write(to: file)
+        var record = DownloadRecord(key: "hanime:test", provider: "hanime",
+                                    postID: "test", title: "Test episode", tags: [],
+                                    thumbnailRemoteURL: "", localMediaPath: file.path,
+                                    kind: .file, state: .complete, progress: 1, createdAt: .now)
+        record.mediaType = "video"
+        XCTAssertFalse(DownloadResponseValidator.isMP4Container(at: file))
+        XCTAssertNil(record.offlinePost)
+        let header = Data([0x00, 0x00, 0x00, 0x18]) +
+            Data("ftypisom".utf8) + Data(repeating: 0, count: 12)
+        try header.write(to: file)
+        XCTAssertTrue(DownloadResponseValidator.isMP4Container(at: file))
+        XCTAssertNotNil(record.offlinePost)
+    }
+
+    func testHLSPackageIsAnOfflineAssetNotAnExportableMovieFile() throws {
+        let location = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("movpkg")
+        try FileManager.default.createDirectory(at: location, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: location) }
+        var record = DownloadRecord(key: "hanime:hls-test", provider: "hanime",
+                                    postID: "hls-test", title: "Local HLS", tags: [],
+                                    thumbnailRemoteURL: "", localMediaPath: location.path,
+                                    kind: .hlsPackage, state: .complete,
+                                    progress: 1, createdAt: .now)
+        record.mediaType = "image"
+        XCTAssertNil(record.exportURL, "Sharing a .movpkg would produce an unplayable directory in Files")
+        XCTAssertEqual(record.offlinePost?.type, "video")
+        XCTAssertEqual(record.offlinePost?.mediaUrl, location.absoluteString)
+    }
+
+    func testHanimeSourceNeverAcceptsArtworkAsDownloadableVideo() {
+        let post = Post(key: "hanime:test", id: "test", provider: "hanime", type: "video")
+        XCTAssertThrowsError(try DownloadSourcePolicy.validate(
+            media: ResolvedMedia(mediaUrl: "https://hanime.tv/images/preview.jpg", type: "video"),
+            for: post))
+    }
+
     func testConcurrentPrewarmAndPlaybackShareOneMediaRequest() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MediaProtocol.self]

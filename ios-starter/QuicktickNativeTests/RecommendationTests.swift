@@ -384,6 +384,48 @@ final class RecommendationTests: XCTestCase {
         XCTAssertEqual(Set(results.map(\.stableID)), Set([relevantOne.stableID, relevantTwo.stableID]))
     }
 
+    func testRule34CommonBooruDescriptorsCannotOutscoreSpecificLearnedSubject() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        var state = RecommendationState()
+        var profile = RecommendationProfile()
+        // These tags are seen in almost every liked illustration. Their raw
+        // historic weights must not become a preference for unrelated people.
+        profile.terms = ["1girl": 70, "long_hair": 70, "looking_at_viewer": 70, "chun_li": 70]
+        state.profiles["rule34"] = profile
+        await engine.load(state)
+        let generic = Post(key: "rule34:generic-portrait", id: "generic-portrait", provider: "rule34",
+                           tags: ["1girl", "long_hair", "looking_at_viewer"])
+        let relevant = Post(key: "rule34:specific-character", id: "specific-character", provider: "rule34",
+                            tags: ["chun_li"])
+        let genericScore = await engine.score(generic, taste: TasteChoice(), recent: [])
+        let relevantScore = await engine.score(relevant, taste: TasteChoice(), recent: [])
+        XCTAssertGreaterThan(relevantScore, genericScore + 10,
+            "Repeated incidental appearance tags must not outweigh the learned subject")
+        let ranked = await engine.rankFast([generic, relevant], taste: TasteChoice(), recent: [])
+        XCTAssertEqual(ranked.first?.stableID, relevant.stableID)
+    }
+
+    func testRule34RecentRepetitionDoesNotOverrideStrongerSpecificPreference() async {
+        let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
+        var state = RecommendationState()
+        var profile = RecommendationProfile()
+        profile.terms = ["chun_li": 10, "qipao": 18, "preferred_pose": 18]
+        state.profiles["rule34"] = profile
+        await engine.load(state)
+        let recent = (0..<18).map { index in
+            Post(key: "rule34:recent-pose-\(index)", id: "recent-pose-\(index)", provider: "rule34",
+                 tags: ["chun_li", "qipao", "preferred_pose"])
+        }
+        let weak = Post(key: "rule34:weak-variety", id: "weak-variety", provider: "rule34",
+                        tags: ["chun_li", "outdoors"])
+        let strong = Post(key: "rule34:strong-affinity", id: "strong-affinity", provider: "rule34",
+                          tags: ["chun_li", "qipao", "preferred_pose"])
+        let ranked = await engine.rankFast([weak, strong],
+            taste: TasteChoice(done: true, into: ["chun_li"]), recent: recent, strict: true)
+        XCTAssertEqual(ranked.first?.stableID, strong.stableID,
+            "Diversity should separate close matches, not bury posts aligned with specific preferences")
+    }
+
     func testStrongCachedVisualMatchCannotAdmitUnrelatedRule34Posts() async {
         let engine = RecommendationEngine(semantic: SemanticRecommender(enabled: false))
         let taste = TasteChoice(done: true, into: ["chun_li"], notInto: [])

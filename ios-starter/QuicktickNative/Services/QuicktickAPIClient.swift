@@ -198,6 +198,7 @@ actor QuicktickAPIClient {
             }
             return try await cachedEromePosts(query: query, page: page, sort: sort, immersive: immersive)
         case .pornhub: return try await NativeProviderAPI.pornhub(session: session, credentials: credentials, query: query, page: page, sort: sort, immersive: immersive)
+        case .xvideos: return try await NativeProviderAPI.xvideos(session: session, query: query, page: page, sort: sort, immersive: immersive)
         case .hanime:
             if let base = HanimeGeneratedAPI.configuredURL {
                 return try await HanimeGeneratedAPI.posts(session: session, base: base,
@@ -288,7 +289,7 @@ actor QuicktickAPIClient {
                 // delaying the feed or fetching metadata for offscreen pages.
                 let missingArtwork = Array(result.items.filter {
                     $0.providerKey == .hanime && $0.previewImageURLs.isEmpty
-                }.prefix(8).map(\.id))
+                }.prefix(4).map(\.id))
                 if !missingArtwork.isEmpty {
                     Task(priority: .utility) {
                         await withTaskGroup(of: Void.self) { group in
@@ -493,7 +494,8 @@ actor QuicktickAPIClient {
         return url
     }
 
-    func resolveMedia(_ post: Post, streamVariant: Int = 0) async throws -> ResolvedMedia {
+    func resolveMedia(_ post: Post, streamVariant: Int = 0,
+                      forDownload: Bool = false) async throws -> ResolvedMedia {
         if post.providerKey == .hanime, post.mediaUrl.isEmpty,
            let base = HanimeGeneratedAPI.configuredURL {
             return try await HanimeGeneratedAPI.resolve(session: session, base: base, post: post)
@@ -515,7 +517,7 @@ actor QuicktickAPIClient {
         do {
             return try await NativeProviderAPI.resolve(session: session, credentials: credentials,
                 post: post, redgifsToken: token, havenToken: havenToken,
-                streamVariant: streamVariant)
+                streamVariant: streamVariant, forDownload: forDownload)
         } catch APIError.providerStatus(.hhaven, 401) {
             guard let havenToken else { throw APIError.invalidResponse }
             await havenAuth.invalidate(expecting: havenToken)

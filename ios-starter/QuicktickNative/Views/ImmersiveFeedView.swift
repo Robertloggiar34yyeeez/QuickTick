@@ -584,7 +584,7 @@ private struct ImmersiveItemView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
-    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = true
     @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
     @AppStorage("quicktick-ipad-side-navigation-v1") private var ipadSidebarEnabled = false
     let post: Post
@@ -611,6 +611,7 @@ private struct ImmersiveItemView: View {
     @State private var automaticProviderRetry = 0
     @State private var browseHanime = false
     @State private var browsePornhub = false
+    @State private var browseXvideos = false
     @State private var showComments = false
     @State private var showTags = false
     @State private var gifURL: URL?
@@ -626,14 +627,20 @@ private struct ImmersiveItemView: View {
     @State private var lastDoubleTapTarget: Double?
     @State private var lastDoubleTapAt = Date.distantPast
     private var shouldSkipIntro: Bool {
-        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
-                                 haven: skipHavenIntros, hanime: skipHanimeIntros)
+        // Offline HLS must never perform an additional metadata/seek startup
+        // that could consult the source playlist when the device is offline.
+        !offline && VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
+                                             haven: skipHavenIntros, hanime: skipHanimeIntros)
     }
     private var hanimePage: URL? {
         guard post.providerKey == .hanime,
               let url = URL(string: post.pageUrl), url.scheme == "https",
               ["hanime.tv", "www.hanime.tv"].contains(url.host ?? "") else { return nil }
         return url
+    }
+    private var xvideosPage: URL? {
+        guard post.providerKey == .xvideos else { return nil }
+        return NativeProviderAPI.xvideosWatchURL(post.pageUrl)
     }
     private var pornhubPage: URL? {
         guard post.providerKey == .pornhub,
@@ -773,21 +780,23 @@ private struct ImmersiveItemView: View {
                         .allowsHitTesting(false)
                 }
                 if let forward = seekFeedbackForward {
-                    HStack {
-                        if forward { Spacer(minLength: 0) }
-                        VStack(spacing: 5) {
-                            Image(systemName: forward ? "goforward" : "gobackward")
-                                .font(.system(size: 32, weight: .semibold))
-                            Text("\(forward ? "+" : "−")\(doubleTapSeconds)s")
-                                .font(.headline.weight(.bold))
-                        }
-                        .foregroundStyle(.white)
-                        .padding(18)
-                        .background(.black.opacity(0.55), in: Capsule())
-                        if !forward { Spacer(minLength: 0) }
+                    // Mirror the feedback around the canvas midpoint, not
+                    // around a flexible HStack that shifts on rotation/iPad.
+                    VStack(spacing: 6) {
+                        Image(systemName: forward ? "goforward" : "gobackward")
+                            .font(.system(size: 30, weight: .semibold))
+                            .symbolRenderingMode(.hierarchical)
+                        Text("\(forward ? "+" : "−")\(doubleTapSeconds)s")
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .monospacedDigit()
                     }
-                    .padding(.horizontal, 26)
-                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .foregroundStyle(.white)
+                    .frame(width: 92, height: 92)
+                    .background(.black.opacity(0.30), in: RoundedRectangle(cornerRadius: 25))
+                    .overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.28)))
+                    .position(x: geo.size.width * (forward ? 0.77 : 0.23),
+                              y: geo.size.height * 0.48)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
                     .allowsHitTesting(false)
                 }
                 if !playing && !scrubbing {
@@ -848,12 +857,16 @@ private struct ImmersiveItemView: View {
                             Button("Open original in QuickTick browser") { browsePornhub = true }
                                 .frame(minHeight: 44)
                         }
-                    }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
+                        if xvideosPage != nil {
+                            Button("Open XVideos in QuickTick browser") { browseXvideos = true }
+                                .frame(minHeight: 44)
+                        }
+                    }.padding(12).background(AppTheme.chrome, in: RoundedRectangle(cornerRadius: 12)).padding()
                 }
                 if active, !offline, !collection, let message = store.lastError {
                     Button { Task { await store.loadMore(immersive: true) } } label: {
                         VStack { Text(message); Text("Load more").bold() }.font(.caption).padding(12)
-                    }.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
+                    }.background(AppTheme.chrome, in: RoundedRectangle(cornerRadius: 12)).padding()
                 }
             }
             .overlay {
@@ -875,6 +888,9 @@ private struct ImmersiveItemView: View {
         }
         .sheet(isPresented: $browsePornhub) {
             if let url = pornhubPage { SourceWebsiteView(url: url).ignoresSafeArea() }
+        }
+        .sheet(isPresented: $browseXvideos) {
+            if let url = xvideosPage { SourceWebsiteView(url: url).ignoresSafeArea() }
         }
         .task(id: likePulse) {
             guard likePulse else { return }
@@ -900,14 +916,19 @@ private struct ImmersiveItemView: View {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if let player {
                     if player.currentItem?.status == .failed {
-                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
+                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .xvideos),
                            automaticProviderRetry < (post.providerKey == .hanime ? 2 : 3) {
                             automaticProviderRetry += 1
                             store.players.release(post.stableID)
                             self.player = nil; ready = false; mediaRetry += 1
                             break
                         }
-                        error = "This clip could not load. Retry or scroll to the next clip."; ready = false
+                        if offline, post.providerKey == .hanime {
+                            error = "This saved HLS episode could not play offline. Its media segments or required keys may be missing. Re-download the full episode while connected."
+                        } else {
+                            error = "This clip could not load. Retry or scroll to the next clip."
+                        }
+                        ready = false
                         continue
                     }
                     let seconds = player.currentTime().seconds
@@ -931,14 +952,18 @@ private struct ImmersiveItemView: View {
                     else { stalledSeconds = 0; if player.timeControlStatus == .playing { error = nil } }
                     lastTime = seconds
                     if stalledSeconds >= 12, !offline,
-                       (post.providerKey == .hanime || post.providerKey == .pornhub),
+                       (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .xvideos),
                        automaticProviderRetry < (post.providerKey == .hanime ? 2 : 3) {
                         automaticProviderRetry += 1
                         store.players.release(post.stableID)
                         self.player = nil; ready = false; mediaRetry += 1
                         break
                     }
-                    if stalledSeconds >= 20 { error = "Playback is not advancing. Retry media or swipe to another clip." }
+                    if stalledSeconds >= 20 {
+                        error = offline && post.providerKey == .hanime
+                            ? "The saved Hanime episode has stalled offline. Retry the full download while connected."
+                            : "Playback is not advancing. Retry media or swipe to another clip."
+                    }
                 }
                 sampleExposure()
                 if watched > reportedWatch {
@@ -977,13 +1002,20 @@ private struct ImmersiveItemView: View {
     }
 
     private var actionRail: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 4) {
             railButton("Like", symbol: "heart.fill", selected: store.favorites[post.stableID] != nil) {
                 interacted = true; store.toggleFavorite(post)
             }.accessibilityValue(store.favorites[post.stableID] == nil ? "Not liked" : "Liked")
             if offline, let local = DownloadExporter.localFileURL(post.mediaUrl) {
-                railButton("Share", symbol: "square.and.arrow.up") {
-                    DownloadExporter.share([local])
+                if let record = store.downloads.records.first(where: { $0.key == post.stableID }),
+                   record.kind == .hlsPackage {
+                    railButton("Export MP4", symbol: "square.and.arrow.up") {
+                        Task { await DownloadExporter.exportAndShare(record) }
+                    }
+                } else if local.pathExtension.lowercased() != "movpkg" {
+                    railButton("Share", symbol: "square.and.arrow.up") {
+                        DownloadExporter.share([local])
+                    }
                 }
             }
             if !offline {
@@ -999,9 +1031,10 @@ private struct ImmersiveItemView: View {
                     } label: {
                         Image(systemName: "paintbrush.pointed.fill")
                             .font(.system(size: 21, weight: .semibold))
-                            .frame(width: 52, height: 52)
-                            .background(.black.opacity(0.16), in: Circle())
-                            .overlay(Circle().strokeBorder(.white.opacity(0.24)))
+                            .frame(width: 58, height: 58)
+                            .background(.black.opacity(0.10), in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(0.32)))
+                            .frame(width: 64, height: 64).contentShape(Rectangle())
                     }
                     .accessibilityLabel("More from this artist")
                 }
@@ -1020,13 +1053,13 @@ private struct ImmersiveItemView: View {
     private func railButton(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 23, weight: .semibold))
+                .font(.system(size: 26, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(selected ? AppTheme.accent : .white)
-                .frame(width: 52, height: 52).contentShape(Circle())
-                .background(.black.opacity(0.16), in: Circle())
-                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.8) : .white.opacity(0.25), lineWidth: 1))
-                .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
+                .frame(width: 58, height: 58)
+                .background(.black.opacity(0.10), in: Circle())
+                .overlay(Circle().strokeBorder(selected ? AppTheme.accent.opacity(0.9) : .white.opacity(0.32), lineWidth: 1))
+                .frame(width: 64, height: 64).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(title)
             .accessibilityIdentifier(active ? "immersive-\(title)" : "inactive-\(title)-\(post.stableID)")
     }
@@ -1035,7 +1068,17 @@ private struct ImmersiveItemView: View {
         do {
             let url: URL
             if offline {
-                guard let local = URL(string: post.mediaUrl), local.isFileURL, FileManager.default.fileExists(atPath: local.path) else { throw APIError.server("Offline file is missing.") }
+                guard let local = URL(string: post.mediaUrl), local.isFileURL,
+                      FileManager.default.fileExists(atPath: local.path) else {
+                    throw APIError.server("The offline file is missing. Re-download the episode.")
+                }
+                if local.pathExtension.lowercased() == "movpkg" {
+                    let asset = AVURLAsset(url: local)
+                    let playable = (try? await asset.load(.isPlayable)) ?? false
+                    guard playable, asset.assetCache?.isPlayableOffline == true else {
+                        throw APIError.server("The saved HLS package is incomplete or needs a network key. Re-download the episode; a poster or playlist alone is not sufficient.")
+                    }
+                }
                 url = local
             } else if mediaRetry == 0, let prepared = store.players.preparedURL(for: post.stableID) {
                 // Reuse the already-resolved, already-warmed AVPlayer URL.
@@ -1111,7 +1154,7 @@ private struct ImmersiveTimeline: View {
                     .offset(x: max(0, min(geo.size.width - 6, geo.size.width * progress - 3)))
                 if scrubbing {
                     Text("\(timeLabel(duration * progress)) / \(timeLabel(duration))")
-                        .font(.caption.monospacedDigit()).padding(8).background(.ultraThinMaterial, in: Capsule())
+                        .font(.caption.monospacedDigit()).padding(8).background(AppTheme.chrome, in: Capsule())
                         .frame(maxWidth: .infinity).offset(y: -30)
                 }
             }.frame(height: 44).contentShape(Rectangle())
@@ -1173,12 +1216,12 @@ private struct ImmersiveDownloadControl: View {
             else { manager.download(post) }
         } label: {
             Group {
-                if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 28) }
-                else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 23, weight: .semibold)) }
-            }.foregroundStyle(.white).frame(width: 52, height: 52).contentShape(Circle())
-                .background(.black.opacity(0.16), in: Circle())
-                .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
-                .shadow(color: .black.opacity(0.23), radius: 6, y: 2)
+                if record?.state == .downloading || record?.state == .queued { InfinityLoader(size: 30) }
+                else { Image(systemName: record?.state == .complete ? "checkmark.circle.fill" : "arrow.down.to.line").font(.system(size: 26, weight: .semibold)) }
+            }.foregroundStyle(.white).frame(width: 58, height: 58)
+                .background(.black.opacity(0.10), in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.32), lineWidth: 1))
+                .frame(width: 64, height: 64).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Download").accessibilityValue(status)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: status)
             .sensoryFeedback(.selection, trigger: taps)

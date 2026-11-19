@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AVFoundation
 
 /// Local-only search for saved media. Every word must match somewhere in the
 /// title, provider, creator, tags or ID; underscores and case are normalized.
@@ -112,6 +113,87 @@ enum DownloadExporter {
         guard let url = URL(string: address), url.isFileURL,
               FileManager.default.fileExists(atPath: url.path) else { return nil }
         return url
+    }
+
+    enum MP4ExportError: LocalizedError {
+        case missingPackage, unavailable, invalidVideo
+        var errorDescription: String? {
+            switch self {
+            case .missingPackage:
+                return "The downloaded HLS package is missing or cannot play offline. Re-download the episode."
+            case .unavailable:
+                return "This HLS package cannot be converted to an MP4 by iOS. It can still be watched in QuickTick when its local media is complete. Some streams cannot be exported."
+            case .invalidVideo:
+                return "The MP4 export did not contain a complete playable episode. The saved HLS package was not changed."
+            }
+        }
+    }
+
+    /// Produce a genuine movie for Files, not the internal .movpkg directory.
+    /// A successful conversion is copy-only: never delete the downloaded asset.
+    static func prepareMP4(for record: DownloadRecord) async throws -> URL {
+        guard record.state == .complete, record.kind == .hlsPackage,
+              let path = record.localMediaPath else { throw MP4ExportError.missingPackage }
+        let source = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw MP4ExportError.missingPackage
+        }
+        let asset = AVURLAsset(url: source)
+        guard (try? await asset.load(.isPlayable)) == true,
+              asset.assetCache?.isPlayableOffline == true else {
+            throw MP4ExportError.missingPackage
+        }
+        guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough),
+              exporter.supportedFileTypes.contains(.mp4) else {
+            throw MP4ExportError.unavailable
+        }
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
+        do {
+            if #available(iOS 18.0, *) {
+                try await exporter.export(to: file, as: .mp4)
+            } else {
+                exporter.outputURL = file
+                exporter.outputFileType = .mp4
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    exporter.exportAsynchronously { continuation.resume() }
+                }
+                guard exporter.status == .completed else {
+                    throw exporter.error ?? MP4ExportError.unavailable
+                }
+            }
+            let movie = AVURLAsset(url: file)
+            let playable = (try? await movie.load(.isPlayable)) ?? false
+            let tracks = try? await movie.loadTracks(withMediaType: .video)
+            let seconds = (try? await movie.load(.duration))?.seconds ?? 0
+            let full = record.provider.lowercased() != "hanime" ||
+                HanimeOfflineVideoPolicy.hasFullEpisodeDuration(seconds)
+            guard playable, tracks?.isEmpty == false, full,
+                  !DownloadResponseValidator.isPreviewImage(at: file) else {
+                throw MP4ExportError.invalidVideo
+            }
+            return file
+        } catch {
+            try? FileManager.default.removeItem(at: file)
+            throw error
+        }
+    }
+
+    static func exportAndShare(_ record: DownloadRecord) async {
+        do {
+            share([try await prepareMP4(for: record)])
+        } catch {
+            guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }),
+                let root = scene.windows.first(where: \.isKeyWindow)?.rootViewController else { return }
+            var presenter = root
+            while let next = presenter.presentedViewController { presenter = next }
+            let alert = UIAlertController(title: "MP4 export unavailable",
+                    message: error.localizedDescription, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            presenter.present(alert, animated: true)
+        }
     }
 
     static func share(_ urls: [URL]) {
@@ -306,7 +388,25 @@ private struct DownloadContent: View {
             let built = await Task.detached(priority: .utility) {
                 var posts: [String: Post] = [:]
                 for record in records where record.state == .complete {
-                    if let post = record.offlinePost { posts[record.key] = post }
+                    guard var post = record.offlinePost else { continue }
+                    // Older saved videos lack pixel metadata. Read natural
+                    // track geometry and rotate into display orientation,
+                    // keeping portrait media portrait in the offline feed.
+                    if post.nativeSize == nil, post.type.lowercased() == "video",
+                       let localURL = URL(string: post.mediaUrl), localURL.isFileURL {
+                        let asset = AVURLAsset(url: localURL)
+                        if let track = (try? await asset.loadTracks(withMediaType: .video))?.first,
+                           let natural = try? await track.load(.naturalSize),
+                           let transform = try? await track.load(.preferredTransform) {
+                            let oriented = natural.applying(transform)
+                            let width = abs(oriented.width), height = abs(oriented.height)
+                            if width > 0, height > 0 {
+                                post.width = Double(width)
+                                post.height = Double(height)
+                            }
+                        }
+                    }
+                    posts[record.key] = post
                 }
                 return posts
             }.value
@@ -342,6 +442,13 @@ private struct DownloadContent: View {
                 ScrollViewReader { scrollProxy in
                 ScrollView {
                 LazyVStack(spacing: 18) {
+                    if AppTheme.premium {
+                        PremiumPageHeader(title: "Downloads", eyebrow: "QUICKTICK / OFFLINE",
+                                          subtitle: collectionSubtitle, icon: "arrow.down.to.line")
+                            .padding(.horizontal, AppTheme.contentMargin)
+                            .padding(.top, 16)
+                            .id("downloads-feed-top")
+                    } else {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Saved offline")
@@ -365,6 +472,7 @@ private struct DownloadContent: View {
                     .padding(.top, 2)
                     .padding(.horizontal, AppTheme.contentMargin)
                     .id("downloads-feed-top")
+                    }
                     CollectionSearchField(text: $searchText, placeholder: "Search downloads",
                                           identifier: "downloads-search", isSearching: searching)
                         .padding(.horizontal, AppTheme.contentMargin)
@@ -466,7 +574,7 @@ private struct DownloadContent: View {
                         .padding(.horizontal, AppTheme.contentMargin)
                         .padding(.vertical, 9)
                         .frame(maxWidth: .infinity)
-                        .background(.ultraThinMaterial)
+                        .background(AppTheme.chrome)
                         .overlay(alignment: .top) { Rectangle().fill(AppTheme.border).frame(height: 1) }
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
@@ -626,23 +734,55 @@ private struct DownloadTransferRow: View {
             HStack {
                 if let path = record.thumbnailLocalPath {
                     CachedMediaImage(url: URL(fileURLWithPath: path).absoluteString, pixels: 216)
-                        .frame(width: 72, height: 72).clipped()
+                        .frame(width: 72, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.premium ? 12 : 0))
+                } else if AppTheme.premium {
+                    Image(systemName: record.kind == .hlsPackage ? "film.stack" : "arrow.down.to.line")
+                        .font(.system(size: 23, weight: .semibold))
+                        .foregroundStyle(AppTheme.accent)
+                        .frame(width: 72, height: 72)
+                        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        if record.state == .downloading { InfinityLoader(size: 27) }
-                        Text(record.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                        if record.state == .downloading {
+                            if AppTheme.premium {
+                                Image(systemName: "arrow.down.circle.fill")
+                                    .font(.system(size: 19, weight: .semibold))
+                                    .foregroundStyle(AppTheme.accent)
+                            } else {
+                                InfinityLoader(size: 27)
+                            }
+                        }
+                        Text(record.title).font(.subheadline.weight(AppTheme.premium ? .bold : .semibold)).lineLimit(2)
                     }
-                    Text("\(record.provider) · \(record.state.rawValue)")
+                    Text("\(record.provider) · \(transferStatus(record))")
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     Text(record.formattedSize).font(.caption.monospacedDigit())
-                    ProgressView(value: record.progress).tint(AppTheme.accent)
+                    if record.state == .queued {
+                        ProgressView().tint(AppTheme.accent)
+                            .accessibilityLabel("Resolving the video source")
+                    } else {
+                        HStack(spacing: 8) {
+                            ProgressView(value: max(0, min(1, record.progress))).tint(AppTheme.accent)
+                            if AppTheme.premium && (record.state == .downloading || record.state == .paused) {
+                                Text("\(Int((record.progress * 100).rounded()))%")
+                                    .font(.caption2.monospacedDigit().weight(.semibold))
+                                    .foregroundStyle(AppTheme.secondaryLabel)
+                            }
+                        }
+                    }
                     if let error = record.errorMessage {
-                        Text(error).foregroundStyle(.orange).font(.caption)
+                        Label(error, systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.orange).font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
             HStack {
+                if record.state == .queued {
+                    Button("Cancel", systemImage: "xmark.circle") { manager.cancel(record) }
+                }
                 if record.state == .downloading {
                     Button("Pause") { manager.pause(record) }
                     Button("Cancel") { manager.cancel(record) }
@@ -661,9 +801,10 @@ private struct DownloadTransferRow: View {
             }
             .buttonStyle(.bordered)
         }
-        .padding(14)
-        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(AppTheme.border))
+        .padding(AppTheme.premium ? 16 : 14)
+        .background(AppTheme.premium ? AppTheme.surface : AppTheme.elevatedSurface,
+                    in: RoundedRectangle(cornerRadius: AppTheme.cardRadius))
+        .overlay(RoundedRectangle(cornerRadius: AppTheme.cardRadius).stroke(AppTheme.border))
         .overlay {
             if selecting {
                 Button(action: onSelect) {
@@ -683,6 +824,19 @@ private struct DownloadTransferRow: View {
                 .accessibilityIdentifier("select-download-\(record.key)")
             }
         }
+        .accessibilityIdentifier("download-transfer-\(record.key)")
+    }
+
+    private func transferStatus(_ record: DownloadRecord) -> String {
+        guard AppTheme.premium else { return record.state.rawValue }
+        switch record.state {
+        case .queued: return "Preparing video"
+        case .downloading: return record.kind == .hlsPackage ? "Saving HLS video" : "Downloading file"
+        case .paused: return "Paused"
+        case .complete: return "Available offline"
+        case .failed: return "Needs attention"
+        case .cancelled: return "Cancelled"
+        }
     }
 }
 
@@ -698,6 +852,7 @@ private struct DownloadCachedCardRow: View, Equatable {
     let selecting: Bool
     let selected: Bool
     let onSelect: () -> Void
+    @State private var exporting = false
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.record == rhs.record && lhs.offlinePost == rhs.offlinePost &&
@@ -712,16 +867,36 @@ private struct DownloadCachedCardRow: View, Equatable {
                     Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         .accessibilityIdentifier("download-size-\(record.key)")
                     Spacer()
-                    if !selecting, let url = record.exportURL {
-                        Button { DownloadExporter.share([url]) } label: {
-                            Label("Export", systemImage: "square.and.arrow.up")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 13).padding(.vertical, 9)
-                                .background(AppTheme.elevatedSurface, in: Capsule())
-                                .overlay(Capsule().stroke(AppTheme.border))
+                    if !selecting {
+                        if let url = record.exportURL {
+                            Button { DownloadExporter.share([url]) } label: {
+                                Label("Export", systemImage: "square.and.arrow.up")
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 13).padding(.vertical, 9)
+                                    .background(AppTheme.elevatedSurface, in: Capsule())
+                                    .overlay(Capsule().stroke(AppTheme.border))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("export-download-\(record.key)")
+                        } else if record.kind == .hlsPackage {
+                            Button {
+                                exporting = true
+                                Task {
+                                    await DownloadExporter.exportAndShare(record)
+                                    exporting = false
+                                }
+                            } label: {
+                                if exporting {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Label("Export MP4", systemImage: "square.and.arrow.up")
+                                }
+                            }
+                            .font(.caption.weight(.semibold))
+                            .buttonStyle(.bordered)
+                            .disabled(exporting)
+                            .accessibilityIdentifier("export-download-\(record.key)")
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("export-download-\(record.key)")
                     }
                 }
                 .padding(.horizontal, AppTheme.contentMargin)

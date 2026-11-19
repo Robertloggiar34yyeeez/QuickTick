@@ -48,21 +48,29 @@ enum PlaybackPosition {
 }
 
 enum MediaSizing {
-    /// The Home screen fills the available phone width instead of respecting
-    /// low-resolution provider thumbnail dimensions. Tall artwork is previewed
-    /// with a bounded crop; its full image remains available in full screen.
+    /// Natural Home geometry for images and videos, just like Downloads.
+    /// Exceptionally long comic strips are preview-cropped in the feed.
     static func feedCard(aspect: CGFloat, available: CGSize) -> CGSize {
         let ratio: CGFloat = aspect.isFinite && aspect > 0 ? aspect : CGFloat(4) / 3
         let fullWidth = max(1, min(available.width, 680))
-        let heightCap = min(available.width > 600 ? CGFloat(620) : CGFloat(560),
-                            max(1, available.height * (available.height < 500 ? 0.60 : 0.72)))
-        // In a short landscape viewport an uncapped 16:9 card can be taller
-        // than the entire scrollable area. Fit wide media to the viewport
-        // without distorting it. In portrait we still use every phone point.
-        let width = ratio >= 1 ? min(fullWidth, heightCap * ratio) : fullWidth
-        // Only tall artwork uses a crop; the original is kept for full screen.
-        let height = ratio >= 1 ? width / ratio : min(width / ratio, heightCap)
+        let shortViewport = available.height < 500
+        let shortCap = max(1, available.height * 0.72)
+        let width = ratio >= 1 && shortViewport
+            ? min(fullWidth, shortCap * ratio) : fullWidth
+        let naturalHeight = width / ratio
+        let comicCap = min(available.width > 600 ? CGFloat(620) : CGFloat(560),
+                            max(1, available.height * (shortViewport ? 0.60 : 0.72)))
+        let height = ratio < 1.0 / 3.0 ? min(naturalHeight, comicCap) : naturalHeight
         return CGSize(width: width, height: max(1, height))
+    }
+
+    /// Offline media is rendered at its original ratio and available width,
+    /// not the Home preview's bounded/cropped height. Long comics are
+    /// clamped by the card caller and remain full size in the reader.
+    static func offlineCard(aspect: CGFloat, available: CGSize) -> CGSize {
+        let ratio = aspect.isFinite && aspect > 0 ? aspect : CGFloat(4) / 3
+        let width = max(1, min(available.width, 680))
+        return CGSize(width: width, height: max(1, width / ratio))
     }
 
     // Full viewing canvas: deliberately separate from the bounded Home cards.

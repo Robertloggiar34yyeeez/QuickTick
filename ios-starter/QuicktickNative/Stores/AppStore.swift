@@ -30,6 +30,7 @@ enum CandidatePoolMix {
 final class AppStore: ObservableObject {
     private static let lastProviderKey = "quicktick-last-selected-provider-v1"
     private let persistsProviderSelection: Bool
+    private var providerQueries: [Provider: String] = [:]
     @Published var selectedProvider: Provider = .rule34 {
         didSet {
             // Keep saved Haven items but migrate the old picker selection to Hanime.
@@ -38,34 +39,17 @@ final class AppStore: ObservableObject {
             if persistsProviderSelection {
                 UserDefaults.standard.set(selectedProvider.rawValue, forKey: Self.lastProviderKey)
             }
+            // Save each provider's search state separately. Provider-specific
+            // niche and category routes must never leak into another provider.
+            providerQueries[oldValue] = queryText
+            let restored = providerQueries[selectedProvider] ?? ""
+            selectedTopicTerm = nil
             savedFeeds.removeAll()
-            // Home category chips are scoped to one provider. Never carry a
-            // category route into another provider's keyword search.
-            let previousQuery = QueryParser.parse(queryText)
-            let retainedTerms = previousQuery.included.filter {
-                !ProviderSearchCategories.valid($0, provider: oldValue)
+            if queryText != restored {
+                queryText = restored // The query observer invalidates this feed.
+            } else {
+                invalidateFeed()
             }
-            if retainedTerms.count != previousQuery.included.count {
-                queryText = QueryParser.formatted(ParsedQuery(included: retainedTerms,
-                                                              excluded: previousQuery.excluded))
-                return // queryText's didSet invalidates this feed once.
-            }
-            // Creator references are scoped to one archive's service/user
-            // index. Carrying them into a different provider silently builds
-            // invalid routes and can surface as HTTP 404 on a tab switch.
-            if QueryParser.parse(queryText).included.contains(where: {
-                NativeProviderAPI.archiveCreatorRoute($0) != nil
-            }) {
-                queryText = ""
-                return // queryText's didSet invalidates this feed once.
-            }
-            // An opaque Pornhub filter token must never become part of a
-            // Rule34 tag query or another provider's keyword search.
-            if selectedProvider != .rule34 || oldValue == .pornhub {
-                let plainQuery = SearchFilters.split(queryText).tags
-                if plainQuery != queryText { queryText = plainQuery; return }
-            }
-            invalidateFeed()
         }
     }
     @Published var posts: [Post] = [] {
@@ -1159,8 +1143,13 @@ final class AppStore: ObservableObject {
                 await recommendations.advanceCandidatePage(context: b.key, nextPage: b.page + 1)
             }
         }
+        let firstItems = firstPage?.items ?? []
+        let secondItems = secondPage?.items ?? []
+        let consecutiveUnfiltered = a.query.included.isEmpty && b.query.included.isEmpty &&
+            a.page + 1 == b.page
         let combined = PostPage(
-            items: CandidatePoolMix.interleave(firstPage?.items ?? [], secondPage?.items ?? []),
+            items: consecutiveUnfiltered ? firstItems + secondItems :
+                CandidatePoolMix.interleave(firstItems, secondItems),
             hasMore: (firstPage?.hasMore ?? false) || (secondPage?.hasMore ?? false))
         if provider == .eporner, parsed.included.isEmpty, combined.items.isEmpty,
            a.page > 1 || b.page > 1, generation == requestedGeneration {

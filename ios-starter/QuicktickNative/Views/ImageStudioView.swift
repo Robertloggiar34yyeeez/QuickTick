@@ -104,7 +104,10 @@ struct ImageStudioView: View {
                 .scrollDismissesKeyboard(.interactively)
             }
         }
-        .background(StudioAuroraBackground().ignoresSafeArea())
+        .background {
+            if AppTheme.premium { AppTheme.background.ignoresSafeArea() }
+            else { StudioAuroraBackground().ignoresSafeArea() }
+        }
         .navigationTitle(showGenerationFocus ? "" : "Create")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(showGenerationFocus ? .hidden : .visible, for: .navigationBar)
@@ -223,22 +226,25 @@ struct ImageStudioView: View {
     private var focusedGenerationView: some View {
         GeometryReader { geometry in
             ZStack {
-                StudioAuroraBackground().ignoresSafeArea()
+                if AppTheme.premium { AppTheme.background.ignoresSafeArea() }
+                else { StudioAuroraBackground().ignoresSafeArea() }
                 if let image = renderPreview ?? (busy ? latestImage : (renderPhase == .completed ? latestImage : nil)) {
                     StudioImageThumbnail(url: image, maxPixelDimension: 960, fill: true)
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .clipped()
-                        .blur(radius: busy ? (renderPreview == nil ? 32 : 8) : 0)
+                        .blur(radius: AppTheme.premium ? 0 : (busy ? (renderPreview == nil ? 32 : 8) : 0))
                         .overlay(.black.opacity(busy ? 0.52 : 0.18))
                         .animation(.easeInOut(duration: 0.55), value: renderPreview)
                         .ignoresSafeArea()
                 } else {
-                    Circle()
-                        .fill(AppTheme.accent.opacity(0.28))
-                        .frame(width: 270, height: 270)
-                        .blur(radius: 105)
-                        .offset(y: -80)
-                        .accessibilityHidden(true)
+                    if !AppTheme.premium {
+                        Circle()
+                            .fill(AppTheme.accent.opacity(0.28))
+                            .frame(width: 270, height: 270)
+                            .blur(radius: 105)
+                            .offset(y: -80)
+                            .accessibilityHidden(true)
+                    }
                 }
                 VStack(spacing: 0) {
                     HStack {
@@ -254,7 +260,7 @@ struct ImageStudioView: View {
                         } label: {
                             Image(systemName: "xmark").font(.subheadline.weight(.semibold))
                                 .frame(width: 40, height: 40)
-                                .background(.ultraThinMaterial, in: Circle())
+                                .background(AppTheme.chrome, in: Circle())
                         }
                         .accessibilityLabel(busy ? "Cancel image render" : "Close image preview")
                     }
@@ -351,7 +357,7 @@ struct ImageStudioView: View {
                         }
                     }
                     .padding(20)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26))
+                    .background(AppTheme.chrome, in: RoundedRectangle(cornerRadius: 26))
                     .overlay(RoundedRectangle(cornerRadius: 26).stroke(.white.opacity(0.15)))
                 }
                 .foregroundStyle(.white)
@@ -1122,7 +1128,10 @@ struct ImageStudioView: View {
                 .padding(16).frame(maxWidth: 720)
                 .frame(maxWidth: .infinity)
             }
-            .background(StudioAuroraBackground().ignoresSafeArea())
+            .background {
+                if AppTheme.premium { AppTheme.background.ignoresSafeArea() }
+                else { StudioAuroraBackground().ignoresSafeArea() }
+            }
             .navigationTitle("Model library")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

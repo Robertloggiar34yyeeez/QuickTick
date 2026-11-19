@@ -1,6 +1,32 @@
 import XCTest
 
 final class NavigationTests: XCTestCase {
+    @MainActor func testInterfaceStylePersistsAcrossSettingsPresentation() {
+        let app = XCUIApplication(); app.launchArguments = ["--ui-testing"]; app.launch()
+        func stylePicker() -> XCUIElement {
+            let change = app.buttons["settings-change-theme"]
+            if change.isHittable { change.tap() }
+            let picker = app.buttons["interface-style-original"]
+            for _ in 0..<8 { if picker.isHittable { break }; app.swipeUp() }
+            return picker
+        }
+        app.buttons["open-settings"].tap()
+        let picker = stylePicker()
+        XCTAssertTrue(picker.waitForExistence(timeout: 10))
+        app.buttons["interface-style-original"].tap()
+        XCTAssertTrue(app.buttons["interface-style-original"].isSelected)
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons["tab-Home"].waitForExistence(timeout: 10))
+        app.buttons["open-settings"].tap()
+        _ = stylePicker()
+        XCTAssertTrue(app.buttons["interface-style-original"].isSelected)
+        app.buttons["interface-style-new"].tap()
+        XCTAssertTrue(app.buttons["interface-style-new"].isSelected)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Persistent original and premium interface switch"
+        capture.lifetime = .keepAlways
+        add(capture)
+    }
     @MainActor private func assertHomeScrolledToTop(_ app: XCUIApplication,
                                                      file: StaticString = #filePath,
                                                      line: UInt = #line) {
@@ -354,8 +380,11 @@ final class NavigationTests: XCTestCase {
         XCTAssertTrue(offlineCard.waitForExistence(timeout: 10))
         XCTAssertEqual(offlineCard.frame.width, homeWidth, accuracy: 2,
                        "Downloaded media cards must use the same edge-to-edge width as Home")
-        let full = app.buttons["View full image"].firstMatch
-        for _ in 0..<5 { if full.isHittable { break }; app.swipeUp() }
+        // The full-bleed comic now uses a stable media action identifier,
+        // rather than a label that is different between the two UI styles.
+        let full = app.buttons["fullscreen-test:image"]
+        XCTAssertTrue(full.waitForExistence(timeout: 10))
+        for _ in 0..<10 { if full.isHittable { break }; app.swipeUp() }
         XCTAssertTrue(full.isHittable); full.tap()
         let close = app.buttons["Close full image"]
         XCTAssertTrue(close.waitForExistence(timeout: 10))

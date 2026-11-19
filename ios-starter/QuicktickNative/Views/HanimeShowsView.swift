@@ -542,9 +542,13 @@ private struct HanimeEpisodePicker: View {
                 }
             }
             .fullScreenCover(item: $playingEpisode) { episode in
+                // Shows may be presented from Home or the immersive tab.
+                // An offline episode must stay active in its actual host tab,
+                // not assume the Downloads tab (index 3) is selected.
                 ImmersiveFeedView(posts: [episode], offline: playingOffline,
                                   activePostID: $activeEpisodeID,
-                                  onClose: { playingEpisode = nil })
+                                  onClose: { playingEpisode = nil },
+                                  collectionTab: store.activeTab)
                     .environmentObject(store)
                     .ignoresSafeArea()
             }

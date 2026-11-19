@@ -443,19 +443,31 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             if let message {
                 self.tasks.removeValue(forKey: key)
                 self.update(key) { if $0.state != .cancelled { $0.state = .failed; $0.errorMessage = message } }
-            } else if isHLS, let record = self.records.first(where: { $0.key == key }) {
-                // Newer HLS delegate implementations can finish by reporting a
-                // successful URLSession task after willDownloadTo. Do not leave
-                // a successful offline package stuck at "Downloading".
-                if let path = record.localMediaPath,
-                   FileManager.default.fileExists(atPath: path) {
-                    await self.finished(key, location: URL(fileURLWithPath: path))
-                } else {
-                    self.tasks.removeValue(forKey: key)
-                    self.update(key) {
-                        $0.state = .failed
-                        $0.errorMessage = "HLS ended without an offline video package. Retry to fetch the stream."
+            } else if isHLS {
+                // AVAssetDownloadTask's didFinishDownloadingTo and
+                // didCompleteWithError callbacks are dispatched to separate
+                // MainActor tasks. The completion callback can run first.
+                // Give the asset-location callback time to persist its path
+                // instead of incorrectly marking a successful download failed.
+                for attempt in 0..<8 {
+                    guard self.tasks[key]?.taskIdentifier == taskID else { return }
+                    guard let record = self.records.first(where: { $0.key == key }),
+                          record.state != .complete, record.state != .cancelled,
+                          record.state != .failed else { return }
+                    if let path = record.localMediaPath,
+                       FileManager.default.fileExists(atPath: path) {
+                        await self.finished(key, location: URL(fileURLWithPath: path))
+                        return
                     }
+                    if attempt < 7 {
+                        try? await Task.sleep(for: .milliseconds(250))
+                    }
+                }
+                guard self.tasks[key]?.taskIdentifier == taskID else { return }
+                self.tasks.removeValue(forKey: key)
+                self.update(key) {
+                    $0.state = .failed
+                    $0.errorMessage = "HLS completed without a local package. Retry the full video download."
                 }
             }
         }

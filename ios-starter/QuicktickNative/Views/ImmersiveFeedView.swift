@@ -627,8 +627,10 @@ private struct ImmersiveItemView: View {
     @State private var lastDoubleTapTarget: Double?
     @State private var lastDoubleTapAt = Date.distantPast
     private var shouldSkipIntro: Bool {
-        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
-                                 haven: skipHavenIntros, hanime: skipHanimeIntros)
+        // Offline HLS must never perform an additional metadata/seek startup
+        // that could consult the source playlist when the device is offline.
+        !offline && VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
+                                             haven: skipHavenIntros, hanime: skipHanimeIntros)
     }
     private var hanimePage: URL? {
         guard post.providerKey == .hanime,
@@ -921,7 +923,12 @@ private struct ImmersiveItemView: View {
                             self.player = nil; ready = false; mediaRetry += 1
                             break
                         }
-                        error = "This clip could not load. Retry or scroll to the next clip."; ready = false
+                        if offline, post.providerKey == .hanime {
+                            error = "This saved HLS episode could not play offline. Its media segments or required keys may be missing. Re-download the full episode while connected."
+                        } else {
+                            error = "This clip could not load. Retry or scroll to the next clip."
+                        }
+                        ready = false
                         continue
                     }
                     let seconds = player.currentTime().seconds
@@ -952,7 +959,11 @@ private struct ImmersiveItemView: View {
                         self.player = nil; ready = false; mediaRetry += 1
                         break
                     }
-                    if stalledSeconds >= 20 { error = "Playback is not advancing. Retry media or swipe to another clip." }
+                    if stalledSeconds >= 20 {
+                        error = offline && post.providerKey == .hanime
+                            ? "The saved Hanime episode has stalled offline. Retry the full download while connected."
+                            : "Playback is not advancing. Retry media or swipe to another clip."
+                    }
                 }
                 sampleExposure()
                 if watched > reportedWatch {
@@ -996,8 +1007,15 @@ private struct ImmersiveItemView: View {
                 interacted = true; store.toggleFavorite(post)
             }.accessibilityValue(store.favorites[post.stableID] == nil ? "Not liked" : "Liked")
             if offline, let local = DownloadExporter.localFileURL(post.mediaUrl) {
-                railButton("Share", symbol: "square.and.arrow.up") {
-                    DownloadExporter.share([local])
+                if let record = store.downloads.records.first(where: { $0.key == post.stableID }),
+                   record.kind == .hlsPackage {
+                    railButton("Export MP4", symbol: "square.and.arrow.up") {
+                        Task { await DownloadExporter.exportAndShare(record) }
+                    }
+                } else if local.pathExtension.lowercased() != "movpkg" {
+                    railButton("Share", symbol: "square.and.arrow.up") {
+                        DownloadExporter.share([local])
+                    }
                 }
             }
             if !offline {
@@ -1050,7 +1068,17 @@ private struct ImmersiveItemView: View {
         do {
             let url: URL
             if offline {
-                guard let local = URL(string: post.mediaUrl), local.isFileURL, FileManager.default.fileExists(atPath: local.path) else { throw APIError.server("Offline file is missing.") }
+                guard let local = URL(string: post.mediaUrl), local.isFileURL,
+                      FileManager.default.fileExists(atPath: local.path) else {
+                    throw APIError.server("The offline file is missing. Re-download the episode.")
+                }
+                if local.pathExtension.lowercased() == "movpkg" {
+                    let asset = AVURLAsset(url: local)
+                    let playable = (try? await asset.load(.isPlayable)) ?? false
+                    guard playable, asset.assetCache?.isPlayableOffline == true else {
+                        throw APIError.server("The saved HLS package is incomplete or needs a network key. Re-download the episode; a poster or playlist alone is not sufficient.")
+                    }
+                }
                 url = local
             } else if mediaRetry == 0, let prepared = store.players.preparedURL(for: post.stableID) {
                 // Reuse the already-resolved, already-warmed AVPlayer URL.

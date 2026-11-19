@@ -1138,11 +1138,10 @@ enum NativeProviderAPI {
         }
     }
 
-    /// Do not prioritize an advertised MP4 simply because it downloads as
-    /// a file: Hanime manifests also carry short preview/trailer MP4s.
-    /// Choose a full HLS playlist first for offline storage and only then
-    /// consider a first-party movie file. Preserve quality order within each
-    /// kind, and never select a named preview asset.
+    /// Prefer explicit first-party MP4 files for reliable iOS offline playback.
+    /// Some manifests include short trailer MP4s: exclude named previews and
+    /// verify the real duration and video track after transfer. An invalid
+    /// movie triggers a retry with the next HLS candidate, never success.
     static func hanimeOfflineStreamOrder(_ urls: [URL]) -> [URL] {
         let valid = urls.filter { address in
             let path = address.path.lowercased()
@@ -1162,7 +1161,7 @@ enum NativeProviderAPI {
         let remaining = valid.filter { address in
             !hls.contains(address)
         }
-        return hls + remaining
+        return remaining + hls
     }
 
     /// Older working releases resolved the public v8 video manifest. Some
@@ -2507,20 +2506,20 @@ extension NativeProviderAPI {
                     try Task.checkCancellation()
                     return legacy
                 }
-                // An advertised MP4 may be the playable *preview*, not the
-                // episode. Resolve a fresh first-party HLS playlist before
-                // considering a standalone file. AVAssetDownloadURLSession
-                // stores and verifies the full offline stream.
+                // Direct complete movies avoid .movpkg media-selection/key
+                // dependencies and give Files a native video export. Short
+                // previews are explicitly rejected by download validation,
+                // which automatically retries the next HLS candidate.
                 let current = try? await hanimeHLSResolve(
                     session: session, post: post, variant: streamVariant, preferFile: true)
                 try Task.checkCancellation()
-                if let current, current.type == "hls" { return current }
+                if let current, current.type == "video" { return current }
                 let legacy = try? await hanimeLegacyMediaResolve(
                     session: session, post: post, variant: streamVariant, preferFile: true)
                 try Task.checkCancellation()
-                if let legacy, legacy.type == "hls" { return legacy }
-                if let current, current.type == "video" { return current }
                 if let legacy, legacy.type == "video" { return legacy }
+                if let current, current.type == "hls" { return current }
+                if let legacy, legacy.type == "hls" { return legacy }
                 // Never fall through into the playback-only resolver: that
                 // route can legitimately return a short preview or trailer.
                 // A download needs an explicit first-party media candidate.

@@ -115,6 +115,87 @@ enum DownloadExporter {
         return url
     }
 
+    enum MP4ExportError: LocalizedError {
+        case missingPackage, unavailable, invalidVideo
+        var errorDescription: String? {
+            switch self {
+            case .missingPackage:
+                return "The downloaded HLS package is missing or cannot play offline. Re-download the episode."
+            case .unavailable:
+                return "This HLS package cannot be converted to an MP4 by iOS. It can still be watched in QuickTick when its local media is complete. Some streams cannot be exported."
+            case .invalidVideo:
+                return "The MP4 export did not contain a complete playable episode. The saved HLS package was not changed."
+            }
+        }
+    }
+
+    /// Produce a genuine movie for Files, not the internal .movpkg directory.
+    /// A successful conversion is copy-only: never delete the downloaded asset.
+    static func prepareMP4(for record: DownloadRecord) async throws -> URL {
+        guard record.state == .complete, record.kind == .hlsPackage,
+              let path = record.localMediaPath else { throw MP4ExportError.missingPackage }
+        let source = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw MP4ExportError.missingPackage
+        }
+        let asset = AVURLAsset(url: source)
+        guard (try? await asset.load(.isPlayable)) == true,
+              asset.assetCache?.isPlayableOffline == true else {
+            throw MP4ExportError.missingPackage
+        }
+        guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough),
+              exporter.supportedFileTypes.contains(.mp4) else {
+            throw MP4ExportError.unavailable
+        }
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
+        do {
+            if #available(iOS 18.0, *) {
+                try await exporter.export(to: file, as: .mp4)
+            } else {
+                exporter.outputURL = file
+                exporter.outputFileType = .mp4
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    exporter.exportAsynchronously { continuation.resume() }
+                }
+                guard exporter.status == .completed else {
+                    throw exporter.error ?? MP4ExportError.unavailable
+                }
+            }
+            let movie = AVURLAsset(url: file)
+            let playable = (try? await movie.load(.isPlayable)) ?? false
+            let tracks = try? await movie.loadTracks(withMediaType: .video)
+            let seconds = (try? await movie.load(.duration))?.seconds ?? 0
+            let full = record.provider.lowercased() != "hanime" ||
+                HanimeOfflineVideoPolicy.hasFullEpisodeDuration(seconds)
+            guard playable, tracks?.isEmpty == false, full,
+                  !DownloadResponseValidator.isPreviewImage(at: file) else {
+                throw MP4ExportError.invalidVideo
+            }
+            return file
+        } catch {
+            try? FileManager.default.removeItem(at: file)
+            throw error
+        }
+    }
+
+    static func exportAndShare(_ record: DownloadRecord) async {
+        do {
+            share([try await prepareMP4(for: record)])
+        } catch {
+            guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }),
+                let root = scene.windows.first(where: \.isKeyWindow)?.rootViewController else { return }
+            var presenter = root
+            while let next = presenter.presentedViewController { presenter = next }
+            let alert = UIAlertController(title: "MP4 export unavailable",
+                    message: error.localizedDescription, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            presenter.present(alert, animated: true)
+        }
+    }
+
     static func share(_ urls: [URL]) {
         guard !urls.isEmpty,
               let scene = UIApplication.shared.connectedScenes
@@ -771,6 +852,7 @@ private struct DownloadCachedCardRow: View, Equatable {
     let selecting: Bool
     let selected: Bool
     let onSelect: () -> Void
+    @State private var exporting = false
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.record == rhs.record && lhs.offlinePost == rhs.offlinePost &&
@@ -785,16 +867,36 @@ private struct DownloadCachedCardRow: View, Equatable {
                     Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         .accessibilityIdentifier("download-size-\(record.key)")
                     Spacer()
-                    if !selecting, let url = record.exportURL {
-                        Button { DownloadExporter.share([url]) } label: {
-                            Label("Export", systemImage: "square.and.arrow.up")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 13).padding(.vertical, 9)
-                                .background(AppTheme.elevatedSurface, in: Capsule())
-                                .overlay(Capsule().stroke(AppTheme.border))
+                    if !selecting {
+                        if let url = record.exportURL {
+                            Button { DownloadExporter.share([url]) } label: {
+                                Label("Export", systemImage: "square.and.arrow.up")
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 13).padding(.vertical, 9)
+                                    .background(AppTheme.elevatedSurface, in: Capsule())
+                                    .overlay(Capsule().stroke(AppTheme.border))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("export-download-\(record.key)")
+                        } else if record.kind == .hlsPackage {
+                            Button {
+                                exporting = true
+                                Task {
+                                    await DownloadExporter.exportAndShare(record)
+                                    exporting = false
+                                }
+                            } label: {
+                                if exporting {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Label("Export MP4", systemImage: "square.and.arrow.up")
+                                }
+                            }
+                            .font(.caption.weight(.semibold))
+                            .buttonStyle(.bordered)
+                            .disabled(exporting)
+                            .accessibilityIdentifier("export-download-\(record.key)")
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("export-download-\(record.key)")
                     }
                 }
                 .padding(.horizontal, AppTheme.contentMargin)

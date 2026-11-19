@@ -476,13 +476,17 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             // AVPlayer would request missing network segments. Require the
             // complete Apple offline cache, never a thumbnail or partial HLS.
             let storedOffline = offlineAsset.assetCache?.isPlayableOffline == true
+            let videoTracks = try? await offlineAsset.loadTracks(withMediaType: .video)
             let seconds = (try? await offlineAsset.load(.duration))?.seconds ?? 0
             // A zero/indefinite duration cannot certify that all segments of
             // a VOD episode were saved. Do not mark a thumbnail-length
             // playlist (or an unmeasurable package) as a complete download.
             let verifiedFullEpisode = record.provider.lowercased() != Provider.hanime.rawValue ||
                 HanimeOfflineVideoPolicy.hasFullEpisodeDuration(seconds)
-            guard playable, storedOffline, verifiedFullEpisode else {
+            // Some broken provider packages contain only manifest/preview
+            // resources. They must have a locally resolvable video track too.
+            guard playable, storedOffline, videoTracks?.isEmpty == false,
+                  verifiedFullEpisode else {
                 failedTransfer(key, reason: "The HLS download is incomplete, only a preview, or cannot play offline. Retry another full-video stream.")
                 return
             }

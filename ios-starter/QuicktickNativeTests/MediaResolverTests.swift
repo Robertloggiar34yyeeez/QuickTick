@@ -43,6 +43,22 @@ final class MediaResolverTests: XCTestCase {
         XCTAssertNotNil(record.offlinePost)
     }
 
+    func testHLSPackageIsAnOfflineAssetNotAnExportableMovieFile() throws {
+        let location = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("movpkg")
+        try FileManager.default.createDirectory(at: location, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: location) }
+        var record = DownloadRecord(key: "hanime:hls-test", provider: "hanime",
+                                    postID: "hls-test", title: "Local HLS", tags: [],
+                                    thumbnailRemoteURL: "", localMediaPath: location.path,
+                                    kind: .hlsPackage, state: .complete,
+                                    progress: 1, createdAt: .now)
+        record.mediaType = "image"
+        XCTAssertNil(record.exportURL, "Sharing a .movpkg would produce an unplayable directory in Files")
+        XCTAssertEqual(record.offlinePost?.type, "video")
+        XCTAssertEqual(record.offlinePost?.mediaUrl, location.absoluteString)
+    }
+
     func testHanimeSourceNeverAcceptsArtworkAsDownloadableVideo() {
         let post = Post(key: "hanime:test", id: "test", provider: "hanime", type: "video")
         XCTAssertThrowsError(try DownloadSourcePolicy.validate(

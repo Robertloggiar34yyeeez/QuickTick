@@ -785,14 +785,15 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(playback.type, "hls")
         XCTAssertEqual(playback.mediaUrl, "https://cdn.hanime.tv/videos/high-quality.m3u8")
         let download = try await api.resolveMedia(post, forDownload: true)
-        XCTAssertEqual(download.type, "hls")
-        XCTAssertEqual(download.mediaUrl, "https://cdn.hanime.tv/videos/high-quality.m3u8")
+        XCTAssertEqual(download.type, "video")
+        XCTAssertEqual(download.mediaUrl, "https://cdn.hanime.tv/videos/download-full.mp4")
         let result = try DownloadSourcePolicy.validate(media: download, for: post)
-        XCTAssertTrue(result.isHLS)
-        // If the first HLS playlist fails, retry can pick another official
-        // source instead of requesting the same already failed URL.
+        XCTAssertFalse(result.isHLS)
+        // If the direct MP4 is actually a short preview, full-duration
+        // validation fails and the next variant retries the HLS playlist.
         let next = try await api.resolveMedia(post, streamVariant: 1, forDownload: true)
-        XCTAssertEqual(next.mediaUrl, "https://cdn.hanime.tv/videos/download-full.mp4")
+        XCTAssertEqual(next.type, "hls")
+        XCTAssertEqual(next.mediaUrl, "https://cdn.hanime.tv/videos/high-quality.m3u8")
     }
 
     func testHanimeLegacyMediaReadsNestedFirstPartyEpisodeManifest() async throws {
@@ -811,7 +812,7 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(HanimeOfflineVideoPolicy.hasFullEpisodeDuration(720))
     }
 
-    func testHanimeOfflineSourcePrioritizesHLSOverPreviewMP4() {
+    func testHanimeOfflineSourcePrioritizesFullMP4ButRejectsNamedPreviews() {
         let clips = [
             URL(string: "https://cdn.hanime.tv/video/preview.mp4")!,
             URL(string: "https://cdn.hanime.tv/hls/episode/master.m3u8")!,
@@ -819,7 +820,7 @@ final class NativeProviderAPITests: XCTestCase {
         ]
         let ordered = NativeProviderAPI.hanimeOfflineStreamOrder(clips)
         XCTAssertEqual(ordered.map(\.lastPathComponent),
-                       ["master.m3u8", "full.mp4"])
+                       ["full.mp4", "master.m3u8"])
     }
 
     func testHanimeNativeHLSResolvesCurrentV11Handshake() async throws {

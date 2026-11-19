@@ -62,10 +62,11 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         return DownloadResponseValidator.isPreviewImage(at: location)
     }
 
-    // The share sheet exports the existing file/package without decoding or copying it.
+    // .movpkg is an AVFoundation HLS directory, not a portable movie file.
+    // Never send that directory to Files as if it were an MP4 export.
     var exportURL: URL? {
-        guard !isProviderVideoPoster, state == .complete, let path = localMediaPath,
-              FileManager.default.fileExists(atPath: path) else { return nil }
+        guard kind == .file, !isProviderVideoPoster, state == .complete,
+              let path = localMediaPath, FileManager.default.fileExists(atPath: path) else { return nil }
         return URL(fileURLWithPath: path)
     }
 
@@ -80,8 +81,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
                   DownloadResponseValidator.isMP4Container(at: media) else { return nil }
         }
         let type: String
-        if let mediaType, ["image", "video", "gif"].contains(mediaType.lowercased()) { type = mediaType.lowercased() }
-        else if kind == .hlsPackage { type = "video" }
+        // HLS packages always contain video, even when the remote listing
+        // labeled the source as a poster or generic hls stream.
+        if kind == .hlsPackage { type = "video" }
+        else if let mediaType, ["image", "video", "gif"].contains(mediaType.lowercased()) { type = mediaType.lowercased() }
         else {
             switch media.pathExtension.lowercased() {
             case "jpg", "jpeg", "png", "webp", "heic", "avif", "bmp", "tiff": type = "image"

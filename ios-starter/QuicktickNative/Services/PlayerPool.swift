@@ -176,7 +176,9 @@ final class PlayerPool: ObservableObject {
             pornhub: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
             haven: UserDefaults.standard.object(forKey: "quicktick-skip-hhaven-intros-v1") as? Bool ?? true,
             hanime: VideoIntroPolicy.hanimeEnabled())
-        if skipIntro, !introSkipped.contains(key),
+        // A local .movpkg is already an offline asset. Starting immediately
+        // avoids extra HLS playlist metadata and seek requests while offline.
+        if skipIntro, !url.isFileURL, !introSkipped.contains(key),
            p.currentItem != nil {
             // Crucially: never decode 0:00 and seek a playing video afterward.
             // Keep the poster visible while metadata, the seek, and the first

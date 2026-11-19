@@ -194,40 +194,58 @@ private struct HanimeFeaturedShow: View {
     var body: some View {
         Button(action: open) {
             ZStack(alignment: .bottomLeading) {
-                HanimeTitleCover(post: series.poster, height: 280)
-                LinearGradient(colors: [.clear, .black.opacity(0.42), .black.opacity(0.95)],
-                               startPoint: .center, endPoint: .bottom)
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
-                VStack(alignment: .leading, spacing: 9) {
-                    Text("FEATURED SHOW")
-                        .font(.system(size: 11, weight: .black, design: .rounded))
-                        .tracking(2.2)
-                        .foregroundStyle(.white.opacity(0.84))
-                    Text(series.title)
-                        .font(.system(size: 29, weight: .heavy, design: .rounded))
-                        .multilineTextAlignment(.leading)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.8)
-                        .foregroundStyle(.white)
-                    HStack(spacing: 10) {
-                        Image(systemName: "play.fill")
-                        Text("Explore episodes")
-                        Spacer(minLength: 4)
-                        Text("\(series.episodes.count) found")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.75))
+                HanimeTitleCover(post: series.poster, height: 350)
+                LinearGradient(
+                    stops: [.init(color: .black.opacity(0.10), location: 0),
+                            .init(color: .black.opacity(0.06), location: 0.30),
+                            .init(color: .black.opacity(0.87), location: 0.77),
+                            .init(color: .black.opacity(0.96), location: 1)],
+                    startPoint: .top, endPoint: .bottom)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "sparkle")
+                        Text("FEATURED PREMIERE")
+                            .tracking(1.6)
                     }
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.94))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.black.opacity(0.42), in: Capsule())
+                    Spacer(minLength: 0)
+                    Text(series.title)
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .tracking(-0.65)
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.83)
+                        .shadow(color: .black.opacity(0.6), radius: 10, y: 3)
+                    HStack(spacing: 12) {
+                        Label("View episodes", systemImage: "play.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 15)
+                            .frame(minHeight: 44)
+                            .background(AppTheme.accent, in: Capsule())
+                            .foregroundStyle(.white)
+                        Spacer(minLength: 0)
+                        Text(series.episodes.count == 1 ? "1 episode" : "\(series.episodes.count) episodes")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.82))
+                    }
                 }
-                .padding(22)
+                .padding(20)
             }
-            .frame(height: 280)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 20))
+            .frame(height: 350)
+            .frame(maxWidth: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(.white.opacity(0.18), lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 24))
         }
         .buttonStyle(QuicktickPressStyle())
         .accessibilityIdentifier("hanime-featured-show")
+        .accessibilityLabel("Featured: \(series.title), view episodes")
     }
 }
 
@@ -237,27 +255,35 @@ private struct HanimeShowPosterCard: View {
 
     var body: some View {
         Button(action: open) {
-            VStack(alignment: .leading, spacing: 8) {
-                HanimeTitleCover(post: series.poster, height: 210)
-                Text(series.title)
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .frame(height: 42, alignment: .topLeading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .clipped()
-                HStack(spacing: 5) {
-                    Image(systemName: "play.rectangle")
-                    Text(series.episodes.count == 1 ? "1 episode" : "\(series.episodes.count) episodes")
+            ZStack(alignment: .bottomLeading) {
+                HanimeTitleCover(post: series.poster, height: 254)
+                LinearGradient(colors: [.clear, .black.opacity(0.18), .black.opacity(0.88)],
+                               startPoint: .center, endPoint: .bottom)
+                VStack(alignment: .leading, spacing: 7) {
+                    Spacer(minLength: 0)
+                    Text(series.title)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Label(series.episodes.count == 1 ? "1 episode" : "\(series.episodes.count) episodes",
+                          systemImage: "play.rectangle")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.84))
                 }
-                .font(.caption.weight(.medium))
-                .foregroundStyle(AppTheme.secondaryLabel)
+                .padding(13)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            .frame(height: 254)
+            .frame(maxWidth: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.white.opacity(0.13), lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 20))
         }
         .buttonStyle(QuicktickPressStyle())
         .accessibilityIdentifier("hanime-show-\(series.id)")
+        .accessibilityLabel("\(series.title), \(series.episodes.count) episodes")
     }
 }
 
@@ -287,72 +313,102 @@ struct HanimeShowsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("HANIME  /  SHOWS")
-                    .font(.system(size: 11, weight: .black, design: .rounded))
-                    .tracking(2.5).foregroundStyle(AppTheme.accent)
-                Text("Explore stories")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                Text("Original title artwork. Choose an episode to watch or save.")
-                    .font(.subheadline).foregroundStyle(AppTheme.secondaryLabel)
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("HANIME COLLECTION")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(2.2)
+                        .foregroundStyle(AppTheme.accent)
+                    Text("Shows")
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .tracking(-0.9)
+                        .foregroundStyle(.white)
+                }
+                Spacer()
+                Image(systemName: "film.stack")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(AppTheme.accent)
+                    .frame(width: 48, height: 48)
+                    .background(AppTheme.elevatedSurface,
+                                in: RoundedRectangle(cornerRadius: 15))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 12) {
+            HStack(spacing: 11) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(AppTheme.secondaryLabel)
-                TextField("Search titles and episodes", text: $search)
+                TextField("Search shows or episodes", text: $search)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.search)
                     .onSubmit { activeSearch = search.trimmingCharacters(in: .whitespacesAndNewlines) }
+                if !search.isEmpty {
+                    Button {
+                        search = ""
+                        activeSearch = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(AppTheme.secondaryLabel)
+                            .frame(width: 38, height: 42)
+                    }
+                    .accessibilityLabel("Clear show search")
+                }
                 Button {
                     activeSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
                 } label: {
                     Image(systemName: "arrow.right")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(width: 44, height: 44)
-                        .background(AppTheme.accent.opacity(0.28), in: RoundedRectangle(cornerRadius: 13))
+                        .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 13))
                 }
                 .accessibilityLabel("Search Hanime shows")
             }
-            .padding(.leading, 14)
-            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 16))
+            .padding(.leading, 16)
+            .padding(.trailing, 5)
+            .frame(minHeight: 54)
+            .background(AppTheme.elevatedSurface,
+                        in: RoundedRectangle(cornerRadius: 17))
+            .overlay(RoundedRectangle(cornerRadius: 17).strokeBorder(AppTheme.border))
             if let featured = shows.first {
                 HanimeFeaturedShow(series: featured) { selectedSeries = featured }
             }
             HStack(alignment: .firstTextBaseline) {
-                Text("Browse titles")
-                    .font(.title3.weight(.bold)).foregroundStyle(.white)
-                Spacer()
-                Text("\(shows.count) available")
+                Text("Explore the collection")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 8)
+                Text("\(shows.count) titles")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(AppTheme.secondaryLabel)
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 148, maximum: 210), spacing: 14)],
-                      alignment: .center, spacing: 20) {
+            .padding(.top, 4)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 152, maximum: 230), spacing: 14)],
+                      alignment: .center, spacing: 14) {
                 ForEach(shows.dropFirst()) { series in
                     HanimeShowPosterCard(series: series) { selectedSeries = series }
                 }
             }
             if shows.isEmpty && !loading {
                 ContentUnavailableView("No shows found", systemImage: "film.stack",
-                    description: Text("Try a different title or load more of the catalog."))
+                    description: Text("Try a different title or discover more shows."))
             }
             if loading {
-                ProgressView("Loading the catalog")
-                    .frame(maxWidth: .infinity).padding(.vertical, 12)
+                ProgressView("Loading the collection")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
             }
             if let failure {
                 Text(failure)
-                    .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.secondaryLabel)
             }
             if hasMore && !loading {
                 Button {
                     Task { await loadNextPage() }
                 } label: {
                     Label("Discover more shows", systemImage: "rectangle.stack.badge.plus")
+                        .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 52)
                 }
                 .buttonStyle(.bordered)
@@ -436,29 +492,35 @@ private struct HanimeEpisodePicker: View {
         NavigationStack {
             List {
                 Section {
-                    HStack(alignment: .top, spacing: 16) {
-                        HanimeTitleCover(post: currentSeries.poster, height: 142)
-                            .frame(width: 104)
+                    ZStack(alignment: .bottomLeading) {
+                        HanimeTitleCover(post: currentSeries.poster, height: 240)
+                        LinearGradient(colors: [.clear, .black.opacity(0.30),
+                                                .black.opacity(0.93)],
+                                       startPoint: .center, endPoint: .bottom)
                         VStack(alignment: .leading, spacing: 9) {
+                            Spacer(minLength: 0)
                             Text(currentSeries.title)
-                                .font(.title3.weight(.bold))
-                                .fixedSize(horizontal: false, vertical: true)
-                            Text(currentSeries.episodes.count == 1
-                                 ? "1 episode found" : "\(currentSeries.episodes.count) episodes found")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.secondary)
-                            if discovering {
-                                Label("Finding episodes", systemImage: "magnifyingglass")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                .font(.system(size: 24, weight: .bold, design: .rounded))
+                                .lineLimit(3)
+                                .foregroundStyle(.white)
+                            HStack(spacing: 8) {
+                                Label(currentSeries.episodes.count == 1
+                                      ? "1 episode" : "\(currentSeries.episodes.count) episodes",
+                                      systemImage: "play.rectangle")
+                                if discovering { ProgressView().controlSize(.small) }
                             }
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.86))
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(18)
                     }
-                    .padding(.vertical, 8)
+                    .frame(height: 240)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     .listRowSeparator(.hidden)
                 }
-                .listRowBackground(AppTheme.elevatedSurface)
+                .listRowBackground(Color.clear)
                 Section {
                     ForEach(currentSeries.episodes.indices, id: \.self) { index in
                         episodeRow(currentSeries.episodes[index], number: index + 1)
@@ -526,8 +588,8 @@ private struct HanimeEpisodePicker: View {
 
         return VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .top, spacing: 16) {
-                HanimeTitleCover(post: episode, height: 120)
-                    .frame(width: 88)
+                HanimeTitleCover(post: episode, height: 105)
+                    .frame(width: 82)
                 VStack(alignment: .leading, spacing: 9) {
                     Text(HanimeSeries.episodeNumber(episode.caption ?? "").map {
                         "Episode \($0)"
@@ -536,8 +598,8 @@ private struct HanimeEpisodePicker: View {
                         .tracking(1.3)
                         .foregroundStyle(AppTheme.accent)
                     Text(episode.displayTitle ?? currentSeries.title)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
                         .multilineTextAlignment(.leading)
                         .lineLimit(3)
                         .frame(maxWidth: .infinity, alignment: .leading)

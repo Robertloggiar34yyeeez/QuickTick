@@ -325,8 +325,13 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             }
             let offlineAsset = AVURLAsset(url: location)
             let playable = (try? await offlineAsset.load(.isPlayable)) ?? false
-            guard playable else {
-                failedTransfer(key, reason: "The HLS download contained no playable offline video. Retry to save the full stream.")
+            let videoTracks = (try? await offlineAsset.loadTracks(withMediaType: .video)) ?? []
+            // isPlayable alone can succeed for a partial HLS asset that still
+            // references remote media. Require a video track and, where
+            // AVFoundation exposes the cache, an explicitly offline-ready asset.
+            let offlineReady = offlineAsset.assetCache?.isPlayableOffline ?? true
+            guard playable, !videoTracks.isEmpty, offlineReady else {
+                failedTransfer(key, reason: "The HLS package is incomplete or still requires the network. Retry the full video download.")
                 return
             }
         }

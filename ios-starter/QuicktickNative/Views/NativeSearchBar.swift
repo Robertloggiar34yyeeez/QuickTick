@@ -14,6 +14,7 @@ struct NativeSearchBar: View {
     @State private var suggestionsLoading = false
     @State private var suggestionsUnavailable = false
     @State private var loaded = false
+    @State private var showRedgifsNiches = false
     init(immersive: Bool = false, focusRequested: Binding<Bool> = .constant(false)) {
         self.immersive = immersive; _focusRequested = focusRequested
     }
@@ -54,12 +55,47 @@ struct NativeSearchBar: View {
             inputRow
             if store.selectedProvider == .rule34 || isArchive { autocompleteRow }
             filterRow
+            if store.selectedProvider == .redgifs {
+                redgifsNicheControl
+            }
             if store.selectedProvider == .pornhub {
                 PornhubFilterPanel(filters: $form.pornhub, categories: pornhubCategories)
             }
             queryEditingControls
             submitButton
         }.padding(20)
+            .sheet(isPresented: $showRedgifsNiches) {
+                RedgifsSearchNichePicker(selection: $form.redgifsNiche)
+                    .environmentObject(store)
+            }
+    }
+
+    private var redgifsNicheControl: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Niche").font(.headline)
+            HStack {
+                Button { focused = false; showRedgifsNiches = true } label: {
+                    HStack {
+                        Label(form.redgifsNiche?.replacingOccurrences(of: "-", with: " ").capitalized ?? "All niches",
+                              systemImage: "square.grid.2x2")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity)
+                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("redgifs-niche-filter")
+                if form.redgifsNiche != nil {
+                    Button { form.redgifsNiche = nil } label: {
+                        Image(systemName: "xmark.circle.fill").frame(minWidth: 44, minHeight: 44)
+                    }.accessibilityLabel("Clear niche")
+                }
+            }
+            Text("Choose a niche, then enter optional keywords to search within it.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder private var queryEditingControls: some View {
@@ -105,10 +141,11 @@ struct NativeSearchBar: View {
             ? QueryParser.formatted(ParsedQuery(included: keywords, excluded: parsed.excluded))
             : split.tags
         var pornhubFilters = PornhubSearchFilters.decode(store.queryText)
-        if store.selectedProvider == .pornhub, pornhubFilters.includedCategory == nil,
+        if store.selectedProvider == .pornhub, pornhubFilters.includedCategory == nil, pornhubFilters.includedEthnicity == nil,
            let selectedCategory = ProviderSearchCategories.split(parsed, provider: .pornhub).category {
             pornhubFilters.includedCategory = String(selectedCategory.dropFirst("category:".count))
         }
+        pornhubFilters = pornhubFilters.normalized
         if let saved = store.searchDrafts[tab], saved.provider == store.selectedProvider {
             form = saved
         } else {
@@ -116,6 +153,15 @@ struct NativeSearchBar: View {
                                tags: store.selectedProvider == .rule34 ? SearchTag.parse(split.tags) : [],
                                filters: split.filters, pornhub: pornhubFilters, sort: store.feedSort,
                                provider: store.selectedProvider)
+        }
+        if store.selectedProvider == .pornhub { form.pornhub = form.pornhub.normalized }
+        if store.selectedProvider == .redgifs {
+            let draft = QueryParser.parse(form.text)
+            form.redgifsNiche = NativeProviderAPI.redgifsSelectedNiche(parsed)
+                ?? NativeProviderAPI.redgifsSelectedNiche(draft) ?? form.redgifsNiche
+            form.text = QueryParser.formatted(ParsedQuery(
+                included: draft.included.filter { !$0.hasPrefix("niche:") },
+                excluded: draft.excluded))
         }
     }
 
@@ -336,6 +382,13 @@ struct NativeSearchBar: View {
         } else if store.selectedProvider == .pornhub {
             query = form.pornhub.encodedQuery(form.text)
             form.sort = form.pornhub.order.feedSort
+        } else if store.selectedProvider == .redgifs {
+            var parsed = QueryParser.parse(form.text)
+            if let niche = form.redgifsNiche {
+                parsed.included.removeAll { $0.hasPrefix("niche:") }
+                parsed.included.insert("niche:" + niche, at: 0)
+            }
+            query = QueryParser.formatted(parsed)
         } else {
             query = (isArchive ? form.archiveCreatorReference : nil)
                 ?? form.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -344,5 +397,92 @@ struct NativeSearchBar: View {
         store.commitSearch(query: query, sort: form.sort)
         dismiss()
         Task { await store.refresh(immersive: immersive, trainSearch: true) }
+    }
+}
+
+
+/// A lightweight directory for search; artwork is not required for a valid
+/// niche and the next page remains reachable even if the current filter is empty.
+private struct RedgifsSearchNichePicker: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selection: String?
+    @State private var niches: [RedgifsNiche] = []
+    @State private var search = ""
+    @State private var nextPage = 1
+    @State private var hasMore = true
+    @State private var loading = false
+    @State private var error: String?
+
+    private var visible: [RedgifsNiche] {
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        return niches.filter {
+            needle.isEmpty || $0.name.localizedCaseInsensitiveContains(needle) ||
+                $0.id.localizedCaseInsensitiveContains(needle)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button {
+                    selection = nil; dismiss()
+                } label: {
+                    HStack {
+                        Text("All niches")
+                        Spacer()
+                        if selection == nil { Image(systemName: "checkmark.circle.fill") }
+                    }
+                }
+                ForEach(visible) { niche in
+                    Button {
+                        selection = niche.id; dismiss()
+                    } label: {
+                        HStack {
+                            Text(niche.name)
+                            Spacer()
+                            if selection == niche.id { Image(systemName: "checkmark.circle.fill") }
+                        }
+                    }
+                    .accessibilityIdentifier("redgifs-niche-\(niche.id)")
+                }
+                if let error {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
+                if loading {
+                    HStack { ProgressView(); Text("Loading niches…") }
+                } else if hasMore {
+                    Button(error == nil ? "Load more niches" : "Retry") {
+                        Task { await loadNextPage() }
+                    }
+                    .accessibilityIdentifier("redgifs-load-more-niches")
+                } else if visible.isEmpty {
+                    Text("No matching niches").foregroundStyle(.secondary)
+                }
+            }
+            .searchable(text: $search, prompt: "Find a niche")
+            .navigationTitle("Choose a niche")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+            .task { if niches.isEmpty { await loadNextPage() } }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    @MainActor private func loadNextPage() async {
+        guard !loading, hasMore else { return }
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            let result = try await store.api.redgifsNichesPage(page: nextPage, limit: 24, includeArtwork: false)
+            try Task.checkCancellation()
+            var known = Set(niches.map(\.id))
+            niches.append(contentsOf: result.items.filter { known.insert($0.id).inserted })
+            hasMore = result.hasMore
+            nextPage += 1
+        } catch is CancellationError {
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }

@@ -444,6 +444,20 @@ final class NativeProviderAPITests: XCTestCase {
             .allSatisfy { $0.value(forHTTPHeaderField: "Referer") == "https://www.redgifs.com/" })
     }
 
+    func testRedgifsNicheSearchKeepsKeywordIntersectionAndPagination() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let directory = try await api.redgifsNichesPage(page: 1, includeArtwork: false)
+        XCTAssertEqual(directory.items.map(\.id), ["cosplay"])
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/v2/niches/cosplay/gifs" })
+        let matching = try await api.posts(provider: .redgifs,
+            query: QueryParser.parse("niche:cosplay clip"), page: 1, sort: "popular", immersive: true)
+        XCTAssertEqual(matching.items.map(\.id), ["nicheclip"])
+        let missing = try await api.posts(provider: .redgifs,
+            query: QueryParser.parse("niche:cosplay impossible-keyword"), page: 1, sort: "popular", immersive: true)
+        XCTAssertTrue(missing.items.isEmpty)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/v2/niches/cosplay/gifs" })
+    }
+
     func testRedgifsShowAllNichesPaginatesAndUsesRealPopularPosters() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let first = try await api.redgifsNichesPage(page: 1, limit: 24)
@@ -1120,6 +1134,17 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(unrestricted.first { $0.name == "ordering" }?.value, "newest")
         XCTAssertEqual(NativeProviderAPI.pornhubDurationSeconds("1:05:30"), 3930)
         XCTAssertNil(NativeProviderAPI.pornhubDurationSeconds("unknown"))
+    }
+
+    func testSeparateCategoryFiltersRequireStructuredIntersection() {
+        let filters = PornhubSearchFilters(includedCategory: "Cosplay", includedEthnicity: "Asian")
+        XCTAssertTrue(NativeProviderAPI.pornhubMatches(["categories": ["Cosplay", "Asian"]], filters: filters))
+        XCTAssertFalse(NativeProviderAPI.pornhubMatches(["categories": ["Cosplay"]], filters: filters))
+        XCTAssertFalse(NativeProviderAPI.pornhubMatches(["categories": ["Asian"]], filters: filters))
+        XCTAssertFalse(NativeProviderAPI.pornhubMatches([:], filters: filters))
+        let query = QueryParser.parse(filters.encodedQuery("sample"))
+        let params = NativeProviderAPI.pornhubSearchParameters(query: query, page: 1, sort: "recent")
+        XCTAssertEqual(params.filter { $0.name == "category" }.map(\.value), ["Cosplay"])
     }
 
     func testPornhubWebmaster404UsesSameSitePublicCatalog() async throws {

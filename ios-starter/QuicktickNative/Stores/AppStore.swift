@@ -582,13 +582,13 @@ final class AppStore: ObservableObject {
         defer { if generation == token && !releasedLoading { isLoading = false } }
         do {
             let parsed = QueryParser.parse(requestedQuery)
-            let explicitRedgifsNiche = provider == .redgifs && parsed.included.count == 1
-                ? NativeProviderAPI.redgifsNicheID(parsed.included[0]) : nil
+            let explicitRedgifsNiche = provider == .redgifs ? NativeProviderAPI.redgifsSelectedNiche(parsed) : nil
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let search = SearchFilters.split(queryText).tags
                 Task(priority: .utility) { await recordSearch(provider: provider, query: search) }
             }
-            let personalized = requestedSort == "recommended" && parsed.included.isEmpty
+            let explicitPornhubFilters = provider == .pornhub && (parsed.pornhub?.normalized ?? PornhubSearchFilters()) != PornhubSearchFilters()
+            let personalized = requestedSort == "recommended" && parsed.included.isEmpty && !explicitPornhubFilters
             let topicPersonalized = requestedSort == "recommended" &&
                 selectedTopicTerm.map { parsed.included.contains($0) } == true
             let tasteRanked = personalized || topicPersonalized
@@ -774,7 +774,7 @@ final class AppStore: ObservableObject {
                         visualScores: appearance, strict: true)).prefix(24))
                 }
             }
-            if immediate.isEmpty, explicitRedgifsNiche == nil, provider != .rule34,
+            if immediate.isEmpty, explicitRedgifsNiche == nil, !explicitPornhubFilters, provider != .rule34,
                !parsed.included.isEmpty || !parsed.excluded.isEmpty {
                 // Some video providers search titles but omit searchable
                 // keywords/tags from their index. Keep *verified* matches
@@ -787,7 +787,7 @@ final class AppStore: ObservableObject {
                     favoriteIDs: favoriteExclusionIDs)
             }
             guard generation == token, !Task.isCancelled else { return }
-            posts = immediate.isEmpty && keepWarmFeed && explicitRedgifsNiche == nil
+            posts = immediate.isEmpty && keepWarmFeed && explicitRedgifsNiche == nil && !explicitPornhubFilters
                 ? previousVisible : immediate
             if !immediate.isEmpty {
                 let snapshot = immediate
@@ -850,8 +850,7 @@ final class AppStore: ObservableObject {
         let provider = selectedProvider
         do {
             let parsed = QueryParser.parse(queryText)
-            let explicitRedgifsNiche = provider == .redgifs && parsed.included.count == 1
-                ? NativeProviderAPI.redgifsNicheID(parsed.included[0]) : nil
+            let explicitRedgifsNiche = provider == .redgifs ? NativeProviderAPI.redgifsSelectedNiche(parsed) : nil
             lastError = nil
             let directCatalog = (provider == .hhaven || provider == .nhentai ||
                                  (provider == .erome && feedMediaOnly)) &&

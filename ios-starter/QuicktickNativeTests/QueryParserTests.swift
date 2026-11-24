@@ -116,6 +116,20 @@ final class QueryParserTests: XCTestCase {
         XCTAssertEqual(PornhubSearchFilters().encodedQuery("portrait"), "portrait")
     }
 
+    func testSeparateCategoryFiltersRoundTripAndMigrateLegacySelection() {
+        let filters = PornhubSearchFilters(includedCategory: "Cosplay",
+                                           excludedCategories: ["asian", "Vintage"],
+                                           includedEthnicity: "Asian")
+        let normalized = filters.normalized
+        XCTAssertEqual(normalized.includedCategory, "Cosplay")
+        XCTAssertEqual(normalized.includedEthnicity, "Asian")
+        XCTAssertEqual(normalized.excludedCategories, ["Vintage"])
+        XCTAssertEqual(QueryParser.parse(filters.encodedQuery("sample")).pornhub, normalized)
+        let legacy = PornhubSearchFilters(includedCategory: "Asian").normalized
+        XCTAssertNil(legacy.includedCategory)
+        XCTAssertEqual(legacy.includedEthnicity, "Asian")
+    }
+
     func testPornhubFilterLimitsAndCorruptMetadata() {
         let query = PornhubSearchFilters(minimumMinutes: -5, maximumMinutes: 100,
                                          includedCategory: "Cosplay", excludedCategories:

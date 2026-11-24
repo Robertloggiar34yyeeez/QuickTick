@@ -530,6 +530,12 @@ enum NativeProviderAPI {
         return id
     }
 
+    static func redgifsSelectedNiche(_ query: ParsedQuery) -> String? {
+        let tokens = query.included.filter { $0.hasPrefix("niche:") }
+        guard tokens.count == 1 else { return nil }
+        return redgifsNicheID(tokens[0])
+    }
+
     private static func redgifsPreview(_ raw: String) -> String {
         guard let address = mediaURL(raw, provider: .redgifs),
               let host = address.host?.lowercased(),
@@ -547,7 +553,7 @@ enum NativeProviderAPI {
     }
 
     static func redgifsNichesPage(session: URLSession, token: String,
-                                 page: Int = 1, limit: Int = 24) async throws -> RedgifsNichePage {
+                                 page: Int = 1, limit: Int = 24, includeArtwork: Bool = true) async throws -> RedgifsNichePage {
         guard (1...1000).contains(page), (1...32).contains(limit) else { throw APIError.invalidResponse }
         let response = try object(await data(session: session,
             url: url("https://api.redgifs.com/v2/niches",
@@ -565,6 +571,11 @@ enum NativeProviderAPI {
                                       postCount: Int(number(item["gifs"] ?? item["count"]))))
             if chosen.count >= limit { break }
         }
+        let declaredPages = Int(number(response["pages"] ?? response["total_pages"]))
+        let hasMore = declaredPages > 0 ? page < declaredPages : entries.count >= limit
+        // Text-only search needs every real directory entry, even when an
+        // artwork request fails or the niche has no cover.
+        if !includeArtwork { return RedgifsNichePage(items: chosen, hasMore: hasMore) }
         var covers: [Int: String] = [:]
         for start in stride(from: 0, to: chosen.count, by: 4) {
             try Task.checkCancellation()
@@ -598,14 +609,14 @@ enum NativeProviderAPI {
             guard !image.isEmpty else { return nil }
             return RedgifsNiche(id: niche.id, name: niche.name, imageURL: image, postCount: niche.postCount)
         }
-        let declaredPages = Int(number(response["pages"] ?? response["total_pages"]))
-        return RedgifsNichePage(items: enriched,
-                               hasMore: declaredPages > 0 ? page < declaredPages : entries.count >= limit)
+        return RedgifsNichePage(items: enriched, hasMore: hasMore)
     }
 
     static func redgifs(session: URLSession, token: String, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
         let result: [String: Any]
-        let selectedNicheID = query.included.count == 1 ? redgifsNicheID(query.included[0]) : nil
+        let selectedNicheID = redgifsSelectedNiche(query)
+        let keywords = query.included.filter { !$0.hasPrefix("niche:") }
+        if selectedNicheID == nil, keywords.count != query.included.count { throw APIError.invalidResponse }
         if let niche = selectedNicheID {
             result = try object(await data(session: session,
                 url: url("https://api.redgifs.com/v2/niches/\(niche)/gifs",
@@ -613,7 +624,6 @@ enum NativeProviderAPI {
                      .init(name: "count", value: "40"), .init(name: "page", value: String(page))]),
                 provider: .redgifs, headers: redgifsHeaders(token: token)))
         } else {
-            guard !query.included.contains(where: { $0.hasPrefix("niche:") }) else { throw APIError.invalidResponse }
             let items = [URLQueryItem(name: "order", value: sort == "recent" ? "latest" : sort == "popular" ? "top7" : "trending"),
                          .init(name: "count", value: "40"), .init(name: "page", value: String(page))] + (query.included.isEmpty ? [] : [.init(name: "search_text", value: query.included.joined(separator: " "))])
             var found: [String: Any]?
@@ -655,7 +665,12 @@ enum NativeProviderAPI {
             post.category = selectedNicheID
             post.creator = text(row["userName"]); post.createdAt = number(row["createDate"]); return post
         }
-        return self.page(posts, hasMore: number(result["pages"]) > 0 ? page < Int(number(result["pages"])) : !raw.isEmpty, query: query, immersive: immersive)
+        let matching = selectedNicheID == nil ? posts : posts.filter { post in
+            keywords.allSatisfy { containsKeyword($0, in: post) }
+        }
+        // Preserve server pagination even when local niche keyword matching
+        // removes every item on this particular page.
+        return self.page(matching, hasMore: number(result["pages"]) > 0 ? page < Int(number(result["pages"])) : !raw.isEmpty, query: query, immersive: immersive)
     }
 
     static func hanimeSignature(claim: String) -> String {
@@ -1232,7 +1247,7 @@ enum NativeProviderAPI {
         if !selection.keywords.isEmpty {
             params.insert(.init(name: "search", value: selection.keywords.joined(separator: " ")), at: 0)
         }
-        if let category = filters.includedCategory ?? selection.category.map({ String($0.dropFirst("category:".count)) }) {
+        if let category = filters.includedCategory ?? filters.includedEthnicity ?? selection.category.map({ String($0.dropFirst("category:".count)) }) {
             params.append(.init(name: "category", value: category))
         }
         if ordering != "featured" { params.append(.init(name: "period", value: "monthly")) }
@@ -1257,12 +1272,15 @@ enum NativeProviderAPI {
             if seconds < options.minimumMinutes * 60 { return false }
             if options.maximumMinutes < 40 && seconds > options.maximumMinutes * 60 { return false }
         }
-        func key(_ value: String) -> String {
-            value.lowercased().replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
-        }
-        let available = Set(strings(row["categories"]).map(key))
-        if let category = options.includedCategory, !available.isEmpty, !available.contains(key(category)) { return false }
-        if options.excludedCategories.contains(where: { available.contains(key($0)) }) { return false }
+        let available = Set(strings(row["categories"]).map(PornhubSearchFilters.categoryKey))
+        let selected = [options.includedCategory, options.includedEthnicity].compactMap { $0 }
+        // The upstream API exposes a single category parameter. The second
+        // selection is an intersection verified against structured metadata.
+        if selected.count > 1 {
+            guard selected.allSatisfy({ available.contains(PornhubSearchFilters.categoryKey($0)) }) else { return false }
+        } else if let category = selected.first, !available.isEmpty,
+                  !available.contains(PornhubSearchFilters.categoryKey(category)) { return false }
+        if options.excludedCategories.contains(where: { available.contains(PornhubSearchFilters.categoryKey($0)) }) { return false }
         let production = text(row["production"] ?? row["production_type"]).lowercased()
         if options.production != .all, !production.isEmpty, production != options.production.rawValue { return false }
         return true
@@ -1351,9 +1369,15 @@ enum NativeProviderAPI {
         let selection = ProviderSearchCategories.split(query, provider: .pornhub)
         let filters = (query.pornhub ?? PornhubSearchFilters()).normalized
         let searching = !selection.keywords.isEmpty
-        let category = filters.includedCategory ?? selection.category.map { String($0.dropFirst("category:".count)) }
+        if filters.includedCategory != nil && filters.includedEthnicity != nil {
+            // Public HTML cards do not expose reliable category membership
+            // for a two-category intersection. Never return unrelated cards.
+            throw APIError.server("Combined topic and ethnicity filters require the provider's structured category results. Try again or select just one filter.")
+        }
+        let category = filters.includedCategory ?? filters.includedEthnicity ?? selection.category.map { String($0.dropFirst("category:".count)) }
+        let categorySlug = category.map { PornhubSearchFilters.categoryKey($0).replacingOccurrences(of: " ", with: "-") }
         let route = searching ? "https://www.pornhub.com/video/search" :
-            category.map { "https://www.pornhub.com/categories/" + $0 } ?? "https://www.pornhub.com/video"
+            categorySlug.map { "https://www.pornhub.com/categories/" + $0 } ?? "https://www.pornhub.com/video"
         var parameters: [URLQueryItem] = [.init(name: "page", value: String(max(1, page)))]
         let selectedOrder = query.pornhub?.order ?? (sort == "recent" ? .newest : sort == "popular" ? .mostViewed : .relevance)
         let browserOrder: String
@@ -1417,7 +1441,7 @@ enum NativeProviderAPI {
             let html = String(decoding: bytes.prefix(2 * 1024 * 1024), as: UTF8.self)
             var posts = pornhubHTMLPosts(html, filters: filters)
             if !posts.isEmpty {
-                if let category, !searching, candidate.path.hasPrefix("/categories/" + category) {
+                if let category = categorySlug, !searching, candidate.path == "/categories/" + category {
                     // A first-party category page is source evidence for its
                     // own cards; title words in a generic feed are not.
                     for index in posts.indices { posts[index].category = "category:" + category }

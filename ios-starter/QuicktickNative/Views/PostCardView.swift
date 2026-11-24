@@ -31,7 +31,7 @@ struct PostCardView: View {
     @State private var gifURL: URL?
     @State private var ready = false
     private var shouldSkipIntro: Bool {
-        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
+        !offline && VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
                                  haven: skipHavenIntros, hanime: skipHanimeIntros)
     }
     @State private var introReady = true

@@ -623,7 +623,7 @@ private struct ImmersiveItemView: View {
     @State private var lastDoubleTapTarget: Double?
     @State private var lastDoubleTapAt = Date.distantPast
     private var shouldSkipIntro: Bool {
-        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
+        !offline && VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
                                  haven: skipHavenIntros, hanime: skipHanimeIntros)
     }
     private var hanimePage: URL? {
@@ -907,7 +907,14 @@ private struct ImmersiveItemView: View {
                             self.player = nil; ready = false; mediaRetry += 1
                             break
                         }
-                        error = "This clip could not load. Retry or scroll to the next clip."; ready = false
+                        if offline {
+                            let failure = player.currentItem?.error as NSError?
+                            error = failure.map { "Offline playback failed (\($0.domain) \($0.code)). Retry the saved video." }
+                                ?? "Offline playback failed. Retry the saved video."
+                        } else {
+                            error = "This clip could not load. Retry or scroll to the next clip."
+                        }
+                        ready = false
                         continue
                     }
                     let seconds = player.currentTime().seconds

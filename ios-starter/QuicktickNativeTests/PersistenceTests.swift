@@ -25,6 +25,29 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNil(record.exportURL)
     }
 
+    func testHLSOfflineReadinessRequiresExplicitPositiveCacheStatus() {
+        XCTAssertFalse(OfflineHLSReadiness.isVerified(playable: true, duration: 60, cacheReady: nil))
+        XCTAssertFalse(OfflineHLSReadiness.isVerified(playable: true, duration: 60, cacheReady: false))
+        XCTAssertFalse(OfflineHLSReadiness.isVerified(playable: false, duration: 60, cacheReady: true))
+        XCTAssertFalse(OfflineHLSReadiness.isVerified(playable: true, duration: 0, cacheReady: true))
+        XCTAssertTrue(OfflineHLSReadiness.isVerified(playable: true, duration: 60, cacheReady: true))
+    }
+
+    func testUnverifiedHLSPackageCannotAppearAsOfflineMedia() throws {
+        let package = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".movpkg")
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: package) }
+        var record = DownloadRecord(key: "sample:1", provider: "sample", postID: "1",
+                                    title: "Fixture", tags: [], thumbnailRemoteURL: "",
+                                    localMediaPath: package.path, kind: .hlsPackage,
+                                    state: .complete, progress: 1, createdAt: .now)
+        XCTAssertNil(record.offlinePost)
+        XCTAssertNil(record.exportURL)
+        record.offlineHLSVerified = true
+        record.mediaType = "image"
+        XCTAssertEqual(record.offlinePost?.type, "video")
+    }
+
     func testVideoDownloadRejectsNonVideoPayloads() {
         let response = HTTPURLResponse(url: URL(string: "https://example.invalid/video.mp4")!,
                                        statusCode: 200, httpVersion: nil,

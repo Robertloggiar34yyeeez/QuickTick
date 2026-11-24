@@ -145,7 +145,7 @@ final class PlayerPool: ObservableObject {
             pornhub: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
             haven: UserDefaults.standard.object(forKey: "quicktick-skip-hhaven-intros-v1") as? Bool ?? true,
             hanime: UserDefaults.standard.bool(forKey: VideoIntroPolicy.hanimeSettingKey))
-        if skipIntro, !introSkipped.contains(key),
+        if skipIntro, !url.isFileURL, !introSkipped.contains(key),
            p.currentItem != nil {
             // Crucially: never decode 0:00 and seek a playing video afterward.
             // Keep the poster visible while metadata, the seek, and the first

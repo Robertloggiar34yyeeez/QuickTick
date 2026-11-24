@@ -29,6 +29,8 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// Retain the canonical provider post URL for signed-media retries.
     /// Older saved catalogs decode this optional field as nil.
     var pageURL: String?
+    /// Only set after a successful HLS task and explicit offline-cache validation.
+    var offlineHLSVerified: Bool?
     var formattedSize: String {
         guard let fileSize, fileSize >= 0 else { return "Size unavailable" }
         return ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
@@ -45,18 +47,20 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
 
     // The share sheet exports the existing file/package without decoding or copying it.
     var exportURL: URL? {
-        guard !isHanimePosterOnly, state == .complete, let path = localMediaPath,
+        guard !isHanimePosterOnly, (kind != .hlsPackage || offlineHLSVerified == true),
+              state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }
         return URL(fileURLWithPath: path)
     }
 
     var offlinePost: Post? {
-        guard !isHanimePosterOnly, state == .complete, let path = localMediaPath,
+        guard !isHanimePosterOnly, (kind != .hlsPackage || offlineHLSVerified == true),
+              state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }
         let media = URL(fileURLWithPath: path)
         let type: String
-        if let mediaType, ["image", "video", "gif"].contains(mediaType.lowercased()) { type = mediaType.lowercased() }
-        else if kind == .hlsPackage { type = "video" }
+        if kind == .hlsPackage { type = "video" }
+        else if let mediaType, ["image", "video", "gif"].contains(mediaType.lowercased()) { type = mediaType.lowercased() }
         else {
             switch media.pathExtension.lowercased() {
             case "jpg", "jpeg", "png", "webp", "heic", "avif", "bmp", "tiff": type = "image"

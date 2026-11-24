@@ -24,6 +24,23 @@ private final class DownloadProgressGate: @unchecked Sendable {
     }
 }
 
+/// The delegate queue is serial, but MainActor tasks are not a FIFO queue.
+ /// Capture the HLS destination before crossing into the actor.
+private final class HLSDownloadLocations: @unchecked Sendable {
+    private let lock = NSLock()
+    private var locations: [Int: URL] = [:]
+
+    func store(_ location: URL, taskID: Int) {
+        lock.lock(); defer { lock.unlock() }
+        locations[taskID] = location
+    }
+
+    func take(taskID: Int) -> URL? {
+        lock.lock(); defer { lock.unlock() }
+        return locations.removeValue(forKey: taskID)
+    }
+}
+
 @MainActor
 final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDelegate, AVAssetDownloadDelegate {
     @Published private(set) var records: [DownloadRecord] = []
@@ -40,6 +57,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     private var refreshedPornhubTransfers = Set<String>()
     private var hanimeVariantAttempts: [String: Int] = [:]
     nonisolated private let progressGate = DownloadProgressGate()
+    nonisolated private let hlsLocations = HLSDownloadLocations()
     private var metadataFailed = false
     // Native URLSession transfers already survive app suspension. Delegate
     // callbacks must not run on the UI thread for every downloaded chunk.
@@ -93,8 +111,13 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         } catch { metadataFailed = true; storageError = "Download metadata could not be read. The original file is preserved." }
         Task { [weak self] in
             guard let self else { return }
-            for record in records where record.state == .complete && record.fileSize == nil {
-                if let path = record.localMediaPath { await measureSize(record.key, at: URL(fileURLWithPath: path)) }
+            for record in records where record.state == .complete {
+                if record.kind == .hlsPackage && record.offlineHLSVerified != true {
+                    await revalidateLegacyHLS(record)
+                }
+                if record.fileSize == nil, let path = record.localMediaPath {
+                    await measureSize(record.key, at: URL(fileURLWithPath: path))
+                }
             }
         }
     }
@@ -169,7 +192,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                         .merging(EromeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
                     let asset = mediaHeaders.isEmpty ? AVURLAsset(url: url)
                         : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": mediaHeaders])
-                    guard let transfer = hlsSession.makeAssetDownloadTask(asset: asset, assetTitle: record.title, assetArtworkData: nil, options: nil) else { throw APIError.server("This HLS stream cannot be stored offline.") }
+                    let configuration = AVAssetDownloadConfiguration(asset: asset, title: record.title)
+                    let transfer = hlsSession.makeAssetDownloadTask(downloadConfiguration: configuration)
                     task = transfer
                 } else {
                     var request = URLRequest(url: url)
@@ -312,6 +336,27 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         catch { metadataFailed = true; storageError = error.localizedDescription }
     }
     nonisolated private static func safeName(_ value: String) -> String { value.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression) }
+    private func revalidateLegacyHLS(_ record: DownloadRecord) async {
+        guard let path = record.localMediaPath else {
+            update(record.key) { $0.state = .failed; $0.progress = 0; $0.errorMessage = "Saved video package is missing." }
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        let asset = AVURLAsset(url: url)
+        let playable = (try? await asset.load(.isPlayable)) ?? false
+        let duration = (try? await asset.load(.duration))?.seconds ?? 0
+        let verified = OfflineHLSReadiness.isVerified(playable: playable, duration: duration,
+                                                       cacheReady: asset.assetCache?.isPlayableOffline)
+        guard records.contains(where: { $0.key == record.key && $0.createdAt == record.createdAt && $0.state == .complete }) else { return }
+        update(record.key) {
+            $0.offlineHLSVerified = verified
+            if !verified {
+                $0.state = .failed; $0.progress = 0
+                $0.errorMessage = "The old package is not verified for offline playback. Retry the download."
+            }
+        }
+    }
+
     private static func isInvalidLegacyVideo(_ record: DownloadRecord) -> Bool {
         guard Provider.identify(record.provider) == .hanime, record.kind == .file,
               let path = record.localMediaPath,
@@ -344,15 +389,12 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             }
             let offlineAsset = AVURLAsset(url: location)
             let playable = (try? await offlineAsset.load(.isPlayable)) ?? false
-            let videoTracks = (try? await offlineAsset.loadTracks(withMediaType: .video)) ?? []
             let duration = (try? await offlineAsset.load(.duration))?.seconds ?? 0
-            // isPlayable alone can succeed for a partial HLS asset that still
-            // references remote media. Require a video track and, where
-            // AVFoundation exposes the cache, an explicitly offline-ready asset.
-            let offlineReady = offlineAsset.assetCache?.isPlayableOffline ?? true
-            guard playable, !videoTracks.isEmpty, duration.isFinite, duration > 0,
-                  offlineReady, let size = await DownloadSizeReader.shared.bytes(at: location), size > 0 else {
-                failedTransfer(key, reason: "The HLS package is incomplete or still requires the network. Retry the full video download.")
+            let cacheReady = offlineAsset.assetCache?.isPlayableOffline
+            guard OfflineHLSReadiness.isVerified(playable: playable, duration: duration, cacheReady: cacheReady),
+                  let size = await DownloadSizeReader.shared.bytes(at: location), size > 0 else {
+                let cacheStatus = cacheReady.map { $0 ? "ready" : "not ready" } ?? "unavailable"
+                failedTransfer(key, reason: "Offline HLS verification failed (cache: \(cacheStatus)). The video was not saved.")
                 return
             }
         } else if Provider.identify(record.provider) == .hanime {
@@ -375,7 +417,13 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
               current.state == .downloading || current.state == .paused else { return }
         progressGate.clear(key: key)
         hanimeVariantAttempts.removeValue(forKey: key)
-        update(key) { $0.localMediaPath = location.path; $0.progress = 1; $0.state = .complete; $0.errorMessage = nil }
+        update(key) {
+            $0.localMediaPath = location.path
+            $0.progress = 1
+            $0.state = .complete
+            $0.errorMessage = nil
+            if $0.kind == .hlsPackage { $0.offlineHLSVerified = true }
+        }
         tasks.removeValue(forKey: key)
         onCompleted?(Post(key: record.key, id: record.postID, provider: record.provider, tags: record.tags))
         Task { await measureSize(key, at: location) }
@@ -482,6 +530,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     nonisolated func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, willDownloadTo location: URL) {
         guard let key = assetDownloadTask.taskDescription else { return }
         let taskID = assetDownloadTask.taskIdentifier
+        hlsLocations.store(location, taskID: taskID)
         // AVFoundation owns HLS .movpkg packages. Retain its destination as
         // soon as it is assigned, including across background relaunches.
         Task { @MainActor in
@@ -490,8 +539,9 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         }
     }
     nonisolated func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let key = assetDownloadTask.taskDescription else { return }
-        Task { @MainActor in await self.finished(key, location: location) }
+        // A location callback does not establish that the transfer succeeded.
+        // Only didCompleteWithError(nil) can start verification.
+        hlsLocations.store(location, taskID: assetDownloadTask.taskIdentifier)
     }
     nonisolated func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didLoad timeRange: CMTimeRange, totalTimeRangesLoaded: [NSValue], timeRangeExpectedToLoad: CMTimeRange) {
         guard let key = assetDownloadTask.taskDescription else { return }
@@ -507,6 +557,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         let message = error?.localizedDescription
         let taskID = task.taskIdentifier
         let isHLS = task is AVAssetDownloadTask
+        let hlsLocation = isHLS ? hlsLocations.take(taskID: taskID) : nil
         Task { @MainActor in
             guard self.tasks[key]?.taskIdentifier == taskID else { return }
             if let message {
@@ -514,37 +565,27 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 self.tasks.removeValue(forKey: key)
                 self.update(key) { if $0.state != .cancelled { $0.state = .failed; $0.errorMessage = message } }
             } else if isHLS {
-                // AVAssetDownloadTask's didFinishDownloadingTo and
-                // didCompleteWithError callbacks are dispatched to separate
-                // MainActor tasks. The completion callback can run first.
-                // Give the asset-location callback time to persist its path
-                // instead of incorrectly marking a successful download failed.
-                for attempt in 0..<8 {
-                    guard self.tasks[key]?.taskIdentifier == taskID else { return }
-                    guard let record = self.records.first(where: { $0.key == key }),
-                          record.state != .complete, record.state != .cancelled,
-                          record.state != .failed else { return }
-                    if let path = record.localMediaPath,
-                       FileManager.default.fileExists(atPath: path) {
-                        await self.finished(key, location: URL(fileURLWithPath: path))
-                        return
-                    }
-                    if attempt < 7 {
-                        try? await Task.sleep(for: .milliseconds(250))
-                    }
+                guard let record = self.records.first(where: { $0.key == key }),
+                      record.state == .downloading || record.state == .paused else { return }
+                let destination = hlsLocation ?? record.localMediaPath.map { URL(fileURLWithPath: $0) }
+                guard let destination else {
+                    self.failedTransfer(key, reason: "HLS finished without a local video package.")
+                    return
                 }
-                guard self.tasks[key]?.taskIdentifier == taskID else { return }
-                self.tasks.removeValue(forKey: key)
-                self.update(key) {
-                    $0.state = .failed
-                    $0.errorMessage = "HLS completed without a local package. Retry the full video download."
-                }
+                self.update(key) { $0.localMediaPath = destination.path }
+                await self.finished(key, location: destination)
             }
         }
     }
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         guard let identifier = session.configuration.identifier else { return }
         Task { @MainActor in BackgroundDownloadEvents.complete(identifier) }
+    }
+}
+
+enum OfflineHLSReadiness {
+    static func isVerified(playable: Bool, duration: Double, cacheReady: Bool?) -> Bool {
+        playable && duration.isFinite && duration > 0 && cacheReady == true
     }
 }
 

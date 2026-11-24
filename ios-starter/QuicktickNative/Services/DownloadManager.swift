@@ -25,7 +25,7 @@ private final class DownloadProgressGate: @unchecked Sendable {
 }
 
 /// The delegate queue is serial, but MainActor tasks are not a FIFO queue.
- /// Capture the HLS destination before crossing into the actor.
+/// Capture the HLS destination before crossing into the actor.
 private final class HLSDownloadLocations: @unchecked Sendable {
     private let lock = NSLock()
     private var locations: [Int: URL] = [:]

@@ -620,6 +620,13 @@ private struct DownloadTransferRow: View {
     let selected: Bool
     let onSelect: () -> Void
 
+    private func transferLabel(_ record: DownloadRecord) -> String {
+        let video = record.mediaType == "video" || record.mediaType == "hls" || record.kind == .hlsPackage
+        if video && record.state == .queued { return "Preparing video" }
+        if video && record.state == .downloading { return "Downloading video" }
+        return record.state.rawValue.capitalized
+    }
+
     var body: some View {
         let record = manager.records.first(where: { $0.key == fallback.key }) ?? fallback
         return VStack(alignment: .leading, spacing: 12) {
@@ -627,13 +634,14 @@ private struct DownloadTransferRow: View {
                 if let path = record.thumbnailLocalPath {
                     CachedMediaImage(url: URL(fileURLWithPath: path).absoluteString, pixels: 216)
                         .frame(width: 72, height: 72).clipped()
+                        .accessibilityLabel("Preview artwork")
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         if record.state == .downloading { InfinityLoader(size: 27) }
                         Text(record.title).font(.subheadline.weight(.semibold)).lineLimit(2)
                     }
-                    Text("\(record.provider) · \(record.state.rawValue)")
+                    Text("\(record.provider) · \(transferLabel(record))")
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     Text(record.formattedSize).font(.caption.monospacedDigit())
                     ProgressView(value: record.progress).tint(AppTheme.accent)
@@ -709,8 +717,14 @@ private struct DownloadCachedCardRow: View, Equatable {
         VStack(spacing: 8) {
             if let post = offlinePost {
                 HStack {
-                    Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("download-size-\(record.key)")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("download-size-\(record.key)")
+                        if post.type == "video" {
+                            Text(record.kind == .hlsPackage ? "Offline video · HLS" : "Video file")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer()
                     if !selecting, let url = record.exportURL {
                         Button { DownloadExporter.share([url]) } label: {

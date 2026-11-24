@@ -25,6 +25,20 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNil(record.exportURL)
     }
 
+    func testVideoDownloadRejectsNonVideoPayloads() {
+        let response = HTTPURLResponse(url: URL(string: "https://example.invalid/video.mp4")!,
+                                       statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "application/octet-stream"])!
+        let bad = [Data(), Data([0xFF, 0xD8, 0xFF]),
+                   Data("RIFF1234WEBP".utf8), Data("1234ftypavif".utf8),
+                   Data("#EXTM3U\n#EXTINF:5".utf8), Data("<html>error</html>".utf8)]
+        for header in bad {
+            XCTAssertNotNil(DownloadResponseValidator.failure(response: response, header: header, expectedVideo: true))
+        }
+        XCTAssertNil(DownloadResponseValidator.failure(response: response,
+            header: Data("1234ftypisom".utf8), expectedVideo: true))
+    }
+
     @MainActor func testFavoritesNewestFirstUsesLikeTimeAcrossProviders() {
         let posts = [
             Post(key: "rule34:900", id: "900", provider: "Rule34"),

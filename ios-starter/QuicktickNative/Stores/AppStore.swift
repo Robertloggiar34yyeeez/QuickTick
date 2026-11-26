@@ -1494,7 +1494,7 @@ final class AppStore: ObservableObject {
                         && fullScreenPlaybackID == nil && Date().timeIntervalSince(lastFeedMotion) >= 1.5
                     let token = generation
                     if await visual.processNext(heavy: heavy, resolver: resolver), !Task.isCancelled {
-                        let scores = await visual.scores(Array(posts.prefix(128)))
+                        let scores = await visual.scores(Array(posts.prefix(512)))
                         let fingerprints = await visual.fingerprints()
                         guard !Task.isCancelled else { return }
                         if token == generation { visualScores = scores; feedExclusions.setFingerprints(fingerprints) }
@@ -1571,7 +1571,8 @@ final class AppStore: ObservableObject {
                     // Haven recommendations need visual evidence from poster
                     // images even when the corresponding video was not opened.
                     // Enqueue only; all network/model work remains idle-only.
-                    for post in posts.prefix(selectedProvider == .hhaven ? 8 : 4) {
+                    let visualBatch = [.rule34, .redgifs, .hhaven].contains(selectedProvider) ? 12 : 4
+                    for post in posts.prefix(visualBatch) {
                         guard !Task.isCancelled, generation == token else { return }
                         _ = await visual.enqueue(post, priority: 1)
                     }

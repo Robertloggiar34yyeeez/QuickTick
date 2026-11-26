@@ -354,7 +354,8 @@ struct VisualProfile: Codable, Sendable, Equatable {
         let contextual = comparable ? (keys.flatMap { negativeContextClusters[$0] ?? [] }
             .map { SemanticRecommender.cosine($0, features.embedding) }.max() ?? 0) : 0
         // Similarity lowers rank but is never a hard blacklist.
-        let visual = similarity * 3 + max(-0.5, similarity - baseline) * 2
+        let visual = features.embedding.isEmpty ? 0 :
+            similarity * 4 + max(-0.5, similarity - baseline) * 3
             - max(0, avoidance - max(0.73, similarity - 0.02)) * 20
             - max(0, contextual - max(0.79, similarity)) * 20
         // Keep a bounded contribution without flattening different outfits or

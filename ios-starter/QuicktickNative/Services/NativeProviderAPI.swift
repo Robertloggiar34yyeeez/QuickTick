@@ -153,20 +153,44 @@ struct RedgifsNichePage: Sendable {
 /// session starts independently; authentication and rate limits are unchanged.
 private actor WebmasterRouteHealth {
     static let shared = WebmasterRouteHealth()
-    private var unavailable: [ObjectIdentifier: [String: Date]] = [:]
+    // ObjectIdentifier alone is not a lifetime identity: a new URLSession
+    // can reuse an address after the previous session has been deallocated.
+    private final class SessionEntry {
+        weak var session: URLSession?
+        var endpoints: [String: Date] = [:]
+
+        init(session: URLSession) {
+            self.session = session
+        }
+    }
+
+    private var unavailable: [ObjectIdentifier: SessionEntry] = [:]
 
     func shouldTry(_ endpoint: String, session: URLSession) -> Bool {
-        (unavailable[ObjectIdentifier(session)]?[endpoint] ?? .distantPast) <= .now
+        let key = ObjectIdentifier(session)
+        guard let entry = unavailable[key], entry.session === session else {
+            unavailable.removeValue(forKey: key)
+            return true
+        }
+        return (entry.endpoints[endpoint] ?? .distantPast) <= .now
     }
 
     func markMissing(_ endpoint: String, session: URLSession) {
-        unavailable = unavailable.compactMapValues { entries in
-            let active = entries.filter { $0.value > .now }
-            return active.isEmpty ? nil : active
+        let now = Date()
+        unavailable = unavailable.filter { _, entry in
+            guard entry.session != nil else { return false }
+            entry.endpoints = entry.endpoints.filter { $0.value > now }
+            return !entry.endpoints.isEmpty
         }
         let key = ObjectIdentifier(session)
+        if let entry = unavailable[key], entry.session === session {
+            entry.endpoints[endpoint] = now.addingTimeInterval(120)
+            return
+        }
         guard unavailable.count < 16 || unavailable[key] != nil else { return }
-        unavailable[key, default: [:]][endpoint] = .now.addingTimeInterval(120)
+        let entry = SessionEntry(session: session)
+        entry.endpoints[endpoint] = now.addingTimeInterval(120)
+        unavailable[key] = entry
     }
 }
 

@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Combine
+import ImageIO
 
 /// URLSession delegate callbacks can arrive dozens of times per second.
 /// Coalesce on their background queue before scheduling MainActor work.
@@ -95,13 +96,14 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 let paths = DownloadPathStorage(root: root)
                 records = Self.newestFirst(savedRecords.map { paths.restore($0) })
                 for index in records.indices where records[index].state == .complete &&
-                    (records[index].isHanimePosterOnly || Self.isInvalidLegacyVideo(records[index])) {
+                    (records[index].isHanimePosterOnly || Self.isInvalidLegacyVideo(records[index]) ||
+                     (Provider.identify(records[index].provider) == .hanime && records[index].kind == .hlsPackage)) {
                     // Older versions saved the cover as the video. Preserve
                     // that file, but make the record retryable so the user can
                     // replace it with a real HLS/MP4 download.
                     records[index].state = .failed
                     records[index].progress = 0
-                    records[index].errorMessage = "Only the old preview was saved. Retry to download the full Hanime video."
+                    records[index].errorMessage = "The previous download was not a verified standalone video. Restore it to obtain a playable file."
                 }
                 // Older builds serialized the app container's absolute UUID path.
                 // iOS can change that UUID on an update even though the files survive.
@@ -112,17 +114,16 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         Task { [weak self] in
             guard let self else { return }
             for record in records where record.state == .complete {
-                if record.kind == .hlsPackage && (record.offlineHLSVerified != true ||
-                    (Provider.identify(record.provider) == .hanime && record.videoValidationVersion != 2)) {
+                if record.kind == .hlsPackage && record.offlineHLSVerified != true {
                     await revalidateLegacyHLS(record)
-                } else if Provider.identify(record.provider) == .hanime, record.videoValidationVersion != 2 {
+                } else if Provider.identify(record.provider) == .hanime, record.needsStandaloneVideoValidation {
                     let verified: Bool
                     if let path = record.localMediaPath {
                         verified = await Self.verifyStandaloneVideo(URL(fileURLWithPath: path))
                     } else { verified = false }
                     if records.contains(where: { $0.key == record.key && $0.createdAt == record.createdAt && $0.state == .complete }) {
                         update(record.key) {
-                            $0.videoValidationVersion = verified ? 2 : nil
+                            $0.videoValidationVersion = verified ? DownloadRecord.standaloneVideoValidationVersion : nil
                             if !verified {
                                 $0.state = .failed; $0.progress = 0
                                 $0.errorMessage = "The older download is not a playable video file. Retry the download."
@@ -130,8 +131,16 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                         }
                     }
                 }
-                if record.fileSize == nil, let path = record.localMediaPath {
-                    await measureSize(record.key, at: URL(fileURLWithPath: path))
+                if let path = record.localMediaPath {
+                    let url = URL(fileURLWithPath: path)
+                    if record.fileSize == nil { await measureSize(record.key, at: url) }
+                    if record.mediaWidth == nil || record.mediaHeight == nil {
+                        let size = await Self.localMediaDimensions(url, type: record.mediaType)
+                        if let size, records.contains(where: { $0.key == record.key &&
+                            $0.createdAt == record.createdAt && $0.state == .complete }) {
+                            update(record.key) { $0.mediaWidth = Double(size.width); $0.mediaHeight = Double(size.height) }
+                        }
+                    }
                 }
             }
         }
@@ -154,6 +163,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         records = Self.newestFirst(posts.map { post in
             var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: "Saved fixture", tags: post.tags, thumbnailRemoteURL: "", localMediaPath: URL(string: post.mediaUrl)?.path, kind: .file, state: .complete, progress: 1, createdAt: .now)
             record.mediaType = post.type == "image" ? nil : post.type
+            record.mediaWidth = post.width; record.mediaHeight = post.height
+            if post.providerKey == .hanime { record.videoValidationVersion = DownloadRecord.standaloneVideoValidationVersion }
             if let path = record.localMediaPath,
                let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber { record.fileSize = size.int64Value }
             return record
@@ -172,6 +183,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 thumbnailRemoteURL: post.thumbUrl.isEmpty ? post.previewUrl : post.thumbUrl,
                 kind: .file, state: .queued, progress: 0, createdAt: .now)
             record.mediaType = post.type
+            record.mediaWidth = post.width; record.mediaHeight = post.height
             record.pageURL = post.pageUrl
             return record
         }()
@@ -204,7 +216,13 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     if FileManager.default.fileExists(atPath: copy.path) { try FileManager.default.removeItem(at: copy) }
                     try FileManager.default.copyItem(at: file, to: copy)
                     var record = DownloadRecord(key: post.stableID, provider: post.provider, postID: post.id, title: "Saved fixture", tags: post.tags, thumbnailRemoteURL: "", localMediaPath: copy.path, kind: .file, state: .complete, progress: 1, createdAt: .now)
-                    record.mediaType = post.type; upsert(record)
+                    record.mediaType = post.type
+                    record.mediaWidth = post.width; record.mediaHeight = post.height
+                    if post.providerKey == .hanime {
+                        guard await Self.verifyStandaloneVideo(copy) else { throw APIError.server("Invalid local video fixture") }
+                        record.videoValidationVersion = DownloadRecord.standaloneVideoValidationVersion
+                    }
+                    upsert(record)
                     await measureSize(record.key, at: copy)
                     return
                 }
@@ -390,8 +408,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         guard records.contains(where: { $0.key == record.key && $0.createdAt == record.createdAt && $0.state == .complete }) else { return }
         update(record.key) {
             $0.offlineHLSVerified = verified
-            if verified, Provider.identify($0.provider) == .hanime { $0.videoValidationVersion = 2 }
-            if !verified {
+             if !verified {
                 $0.state = .failed; $0.progress = 0
                 $0.errorMessage = "The old package is not verified for offline playback. Retry the download."
             }
@@ -447,8 +464,23 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             // A local, unprotected and explicitly exportable asset may be
             // saved as a normal video file. Never try to convert a protected
             // or non-exportable stream, or pull additional remote segments.
-            if Provider.identify(record.provider) == .hanime,
-               let file = await exportSupportedLocalAsset(offlineAsset, key: key, duration: duration) {
+            if Provider.identify(record.provider) == .hanime {
+                guard let file = await exportSupportedLocalAsset(offlineAsset, key: key, duration: duration) else {
+                    // A cache flag is insufficient for this provider. Preserve the
+                    // downloaded package for diagnosis, but never publish it as saved.
+                    guard records.contains(where: { $0.key == key && $0.createdAt == record.createdAt &&
+                        ($0.state == .downloading || $0.state == .paused) }) else { return }
+                    tasks.removeValue(forKey: key)
+                    progressGate.clear(key: key)
+                    hanimeVariantAttempts.removeValue(forKey: key)
+                    update(key) {
+                        $0.localMediaPath = location.path
+                        $0.offlineHLSVerified = false
+                        $0.state = .failed; $0.progress = 0
+                        $0.errorMessage = "This stream cannot be exported as a self-contained video. A provider-supported downloadable file is required."
+                    }
+                    return
+                }
                 verifiedLocation = file
                 verifiedKind = .file
             }
@@ -459,6 +491,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                 return
             }
         }
+        let dimensions = await Self.localMediaDimensions(verifiedLocation, type: record.mediaType)
         // Multiple URLSession delegate callbacks may race while an HLS
         // package is being verified; publish completion exactly once.
         guard let current = records.first(where: { $0.key == key }),
@@ -477,8 +510,9 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             $0.errorMessage = nil
             if Provider.identify($0.provider) == .hanime {
                 $0.mediaType = "video"
-                $0.videoValidationVersion = 2
+                $0.videoValidationVersion = DownloadRecord.standaloneVideoValidationVersion
             }
+            if let dimensions { $0.mediaWidth = Double(dimensions.width); $0.mediaHeight = Double(dimensions.height) }
             $0.offlineHLSVerified = verifiedKind == .hlsPackage ? true : nil
         }
         tasks.removeValue(forKey: key)
@@ -487,26 +521,55 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         Task { await measureSize(key, at: verifiedLocation) }
     }
 
-    private static func verifyStandaloneVideo(_ url: URL, expectedDuration: Double? = nil) async -> Bool {
-        guard url.isFileURL, FileManager.default.fileExists(atPath: url.path) else { return false }
+    static func verifyStandaloneVideo(_ url: URL, expectedDuration: Double? = nil) async -> Bool {
+        guard url.isFileURL, ["mp4", "m4v", "mov"].contains(url.pathExtension.lowercased()),
+              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return false }
         let asset = AVURLAsset(url: url)
         guard (try? await asset.load(.isPlayable)) == true,
+              (try? await asset.load(.hasProtectedContent)) == false,
               let tracks = try? await asset.loadTracks(withMediaType: .video), !tracks.isEmpty,
+              let audioTracks = try? await asset.loadTracks(withMediaType: .audio),
               let duration = (try? await asset.load(.duration))?.seconds,
               duration.isFinite, duration > 0 else { return false }
         if let expectedDuration, abs(duration - expectedDuration) > max(2, expectedDuration * 0.03) { return false }
+        // A QuickTime reference movie can have a local path but remote samples.
+        // Require every audio and video track to store its samples inside this file.
+        for track in tracks + audioTracks {
+            guard (try? await track.load(.isSelfContained)) == true else { return false }
+        }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 160, height: 160)
         generator.requestedTimeToleranceBefore = CMTime(seconds: 2, preferredTimescale: 600)
         generator.requestedTimeToleranceAfter = CMTime(seconds: 2, preferredTimescale: 600)
         defer { generator.cancelAllCGImageGeneration() }
-        for fraction in [0.10, 0.85] {
+        for fraction in [0.02, 0.50, 0.95] {
             guard !Task.isCancelled,
                   let frame = try? await generator.image(at: CMTime(seconds: duration * fraction, preferredTimescale: 600)),
                   frame.image.width > 1, frame.image.height > 1 else { return false }
         }
         return true
+    }
+
+    private static func localMediaDimensions(_ url: URL, type: String?) async -> CGSize? {
+        guard url.isFileURL else { return nil }
+        if type == "image" || type == "gif" || ["jpg", "jpeg", "png", "webp", "gif", "avif", "heic"].contains(url.pathExtension.lowercased()) {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+                  let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else { return nil }
+            let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+            let w = width.doubleValue, h = height.doubleValue
+            guard w.isFinite, h.isFinite, w > 0, h > 0 else { return nil }
+            return (5...8).contains(orientation) ? CGSize(width: h, height: w) : CGSize(width: w, height: h)
+        }
+        let asset = AVURLAsset(url: url)
+        guard let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first,
+              let natural = try? await track.load(.naturalSize),
+              let transform = try? await track.load(.preferredTransform) else { return nil }
+        let rect = CGRect(origin: .zero, size: natural).applying(transform).standardized
+        guard rect.width.isFinite, rect.height.isFinite, rect.width > 0, rect.height > 0 else { return nil }
+        return rect.size
     }
 
     private func exportSupportedLocalAsset(_ asset: AVURLAsset, key: String, duration: Double) async -> URL? {

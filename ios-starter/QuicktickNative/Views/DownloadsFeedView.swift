@@ -192,6 +192,9 @@ private struct DownloadSearchIdentity: Equatable {
     let fileSize: Int64?
     let errorMessage: String?
     let offlineHLSVerified: Bool?
+    let videoValidationVersion: Int?
+    let mediaWidth: Double?
+    let mediaHeight: Double?
 
     init(_ record: DownloadRecord) {
         key = record.key; title = record.title; provider = record.provider
@@ -200,6 +203,8 @@ private struct DownloadSearchIdentity: Equatable {
         thumbnailLocalPath = record.thumbnailLocalPath
         fileSize = record.fileSize; errorMessage = record.errorMessage
         offlineHLSVerified = record.offlineHLSVerified
+        videoValidationVersion = record.videoValidationVersion
+        mediaWidth = record.mediaWidth; mediaHeight = record.mediaHeight
     }
 }
 
@@ -299,7 +304,7 @@ private struct DownloadContent: View {
         // File sizes, error strings and sort changes must not discard all
         // decoded offline posts. Rebuild only when playable paths change.
         let playable = records.filter { $0.state == .complete }
-            .map { "\($0.key)|\($0.localMediaPath ?? "")|\($0.thumbnailLocalPath ?? "")|\($0.mediaType ?? "")|\($0.offlineHLSVerified == true)" }
+            .map { "\($0.key)|\($0.localMediaPath ?? "")|\($0.thumbnailLocalPath ?? "")|\($0.mediaType ?? "")|\($0.offlineHLSVerified == true)|\($0.videoValidationVersion ?? 0)|\($0.mediaWidth ?? 0)|\($0.mediaHeight ?? 0)" }
         guard playable != offlineMediaIdentity else { return }
         offlineMediaIdentity = playable
         recordRevision &+= 1
@@ -760,7 +765,7 @@ private struct DownloadCachedCardRow: View, Equatable {
                              onDelete: { manager.delete(record) })
                     .frame(maxWidth: .infinity)
                     .overlay { if selecting { selectionOverlay } }
-            } else if record.kind == .hlsPackage && record.offlineHLSVerified == nil {
+            } else if record.needsStandaloneVideoValidation || (record.kind == .hlsPackage && record.offlineHLSVerified == nil) {
                 ProgressView("Verifying offline video…")
                     .frame(maxWidth: .infinity, minHeight: 150)
             } else if !cacheReady {

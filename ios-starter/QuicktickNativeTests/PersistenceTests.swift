@@ -25,6 +25,32 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNil(record.exportURL)
     }
 
+    func testHanimePackageCannotPassStandaloneFileGate() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".movpkg")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var record = DownloadRecord(key: "hanime:fixture", provider: "Hanime", postID: "fixture",
+            title: "Fixture", tags: [], thumbnailRemoteURL: "", localMediaPath: directory.path,
+            kind: .hlsPackage, state: .complete, progress: 1, createdAt: .now)
+        record.offlineHLSVerified = true
+        record.videoValidationVersion = DownloadRecord.standaloneVideoValidationVersion
+        XCTAssertNil(record.offlinePost)
+        XCTAssertNil(record.exportURL)
+    }
+
+    func testLocalMediaDimensionsPersistIntoOfflinePost() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        try Data([0, 1, 2]).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        var record = DownloadRecord(key: "fixture:1", provider: "Fixture", postID: "1",
+            title: "Fixture", tags: [], thumbnailRemoteURL: "", localMediaPath: file.path,
+            kind: .file, state: .complete, progress: 1, createdAt: .now)
+        record.mediaWidth = 720; record.mediaHeight = 1280; record.mediaType = "video"
+        let restored = try JSONDecoder().decode(DownloadRecord.self, from: JSONEncoder().encode(record))
+        XCTAssertEqual(restored.offlinePost?.width, 720)
+        XCTAssertEqual(restored.offlinePost?.height, 1280)
+    }
+
     func testReferenceSimilarityPrefersMatchingMetadata() {
         let references: [Set<String>] = [["alpha", "beta"], ["gamma", "delta"]]
         XCTAssertEqual(RecommendationEngine.referenceSimilarity(["alpha", "beta"], references: references), 1)

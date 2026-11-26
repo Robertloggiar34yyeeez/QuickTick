@@ -45,7 +45,7 @@ struct PostCardView: View {
     @State private var showLikeHeart = false
     @State private var likeHeartSequence = 0
     private var playbackOwner: String { offline ? "downloads" : (playbackTab == 2 ? "favorites" : "home") }
-    private var fullBleed: Bool { (playbackTab == 0 && !offline) || (playbackTab == 3 && offline) }
+    private var fullBleed: Bool { playbackTab == 0 && !offline }
     private var isWebsitePost: Bool { post.providerKey == .hhaven && post.type.lowercased() == "web" }
     private var cardRadius: CGFloat { fullBleed && !AppTheme.isDeSlopified ? 0 : AppTheme.cardRadius }
     private var mediaSize: CGSize {
@@ -54,10 +54,10 @@ struct PostCardView: View {
         let kind = post.type.lowercased()
         let defaultAspect: CGFloat = kind == "video" || kind == "web" ? 16 / 9 : (kind == "gif" ? 1 : 4 / 3)
         let aspect = (post.nativeSize.map {
-            kind == "image" && $0.height > $0.width * 4
+            !offline && kind == "image" && $0.height > $0.width * 4
                 ? CGFloat(2) / 3 : $0.width / $0.height
         }) ?? defaultAspect
-        return fullBleed || (offline && playbackTab == 3)
+        return fullBleed
             ? MediaSizing.feedCard(aspect: aspect, available: available)
             : MediaSizing.size(native: post.nativeSize, aspect: aspect, available: available)
     }
@@ -325,7 +325,7 @@ struct PostCardView: View {
                 // A 3x card decode produced ~16 MB textures on iPad and
                 // evicted adjacent previews from the shared 32 MB cache.
                 CachedMediaImage(url: post.cardPreviewURL, preview: post.previewUrl == post.cardPreviewURL ? post.thumbUrl : post.previewUrl,
-                                 pixels: min(1280, Int(mediaSize.width * 2)), comic: true, fill: true) { decoded in
+                                 pixels: min(1280, Int(mediaSize.width * 2)), comic: true, fill: !offline) { decoded in
                     store.notePreviewFingerprint(post, hash: decoded.perceptualHash)
                 }
             } else { PosterView(post: post) { store.notePreviewFingerprint(post, hash: $0.perceptualHash) } }
@@ -503,7 +503,10 @@ struct PostCardView: View {
                     if watchSeconds >= 10 { reportWatch() }
                 }
             }
-        } catch { if !Task.isCancelled { playbackError = error.localizedDescription; playing = false } }
+        } catch { if !Task.isCancelled {
+            playbackError = offline ? "Local playback failed. Restore the saved file. " + error.localizedDescription : error.localizedDescription
+            playing = false
+        } }
     }
     private func reportWatch() {
         if watchSeconds >= 2 { store.recordWatch(post, seconds: watchSeconds, completion: completion) }

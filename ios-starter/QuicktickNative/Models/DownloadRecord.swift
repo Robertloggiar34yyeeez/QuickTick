@@ -32,6 +32,14 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// Only set after a successful HLS task and explicit offline-cache validation.
     var offlineHLSVerified: Bool?
     var videoValidationVersion: Int?
+    var mediaWidth: Double?
+    var mediaHeight: Double?
+
+    static let standaloneVideoValidationVersion = 3
+    var needsStandaloneVideoValidation: Bool {
+        Provider.identify(provider) == .hanime &&
+            (kind != .file || videoValidationVersion != Self.standaloneVideoValidationVersion)
+    }
     var formattedSize: String {
         guard let fileSize, fileSize >= 0 else { return "Size unavailable" }
         return ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
@@ -50,7 +58,7 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var exportURL: URL? {
         // An HLS package is not an ordinary MP4 file. Never offer it as
         // one in a share sheet, where it may be represented by artwork.
-        if Provider.identify(provider) == .hanime && kind == .hlsPackage { return nil }
+        if needsStandaloneVideoValidation { return nil }
         guard !isHanimePosterOnly, (kind != .hlsPackage || offlineHLSVerified == true),
               state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }
@@ -58,7 +66,7 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     }
 
     var offlinePost: Post? {
-        guard !isHanimePosterOnly, (kind != .hlsPackage || offlineHLSVerified == true),
+        guard !needsStandaloneVideoValidation, !isHanimePosterOnly, (kind != .hlsPackage || offlineHLSVerified == true),
               state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }
         let media = URL(fileURLWithPath: path)
@@ -77,6 +85,8 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         var post = Post(key: key, id: postID, provider: provider, tags: tags, mediaUrl: media.absoluteString,
                         previewUrl: type == "image" ? media.absoluteString : thumbnail, thumbUrl: thumbnail, type: type)
         post.caption = title
+        post.width = mediaWidth
+        post.height = mediaHeight
         return post
     }
 }

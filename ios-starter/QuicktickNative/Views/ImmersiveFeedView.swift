@@ -680,7 +680,7 @@ private struct ImmersiveItemView: View {
     private var fillsNicheCanvas: Bool {
         // A selected RedGIFs niche is a TikTok-style edge-to-edge feed. The
         // regular player keeps aspect-fit for landscape and other providers.
-        post.providerKey == .redgifs && store.selectedProvider == .redgifs &&
+        !offline && post.providerKey == .redgifs && store.selectedProvider == .redgifs &&
             store.queryText.hasPrefix("niche:")
     }
 

@@ -927,7 +927,9 @@ private struct ImmersiveItemView: View {
                         // An additional resume seek races with the 10-second
                         // Pornhub seek and can bounce the clip back to 0:00.
                         let skippingIntro = shouldSkipIntro
-                        if !skippingIntro, let resume = PlaybackPosition.resume(store.resumePosition(post.stableID), duration: length), abs(seconds - resume) > 2 {
+                        if let resume = PlaybackPosition.resume(store.resumePosition(post.stableID), duration: length),
+                           (!skippingIntro || (post.providerKey == .hanime && resume > VideoIntroPolicy.startTime(duration: length, enabled: true, provider: post.provider) + 2)),
+                           abs(seconds - resume) > 2 {
                             player.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: CMTime(seconds: 0.25, preferredTimescale: 600), toleranceAfter: CMTime(seconds: 0.25, preferredTimescale: 600), completionHandler: { _ in })
                         }
                     }

@@ -804,8 +804,10 @@ enum NativeProviderAPI {
             .flatMap { rows($0["streams"]) }
             .sorted { number($0["height"]) > number($1["height"]) }
             .map { text($0["url"]) }
-        return (direct + embedded).compactMap { mediaURL($0, provider: .hanime) }
-            .first(where: HanimeGeneratedAPI.permittedStreamURL)?.absoluteString ?? ""
+        let permitted = (direct + embedded).compactMap { mediaURL($0, provider: .hanime) }
+            .filter(HanimeGeneratedAPI.permittedStreamURL)
+        return (permitted.first { ["mp4", "m4v"].contains($0.pathExtension.lowercased()) }
+                ?? permitted.first)?.absoluteString ?? ""
     }
 
     static func hanime(session: URLSession, query: ParsedQuery, page: Int,
@@ -1478,9 +1480,18 @@ enum NativeProviderAPI {
                 .replacingOccurrences(of: "&#39;", with: "'")
             let posterCandidates = [#"data-thumb_url\s*=\s*["']([^"']+)["']"#,
                           #"data-mediumthumb\s*=\s*["']([^"']+)["']"#,
-                          #"\bsrc\s*=\s*["']([^"']+)["']"#]
-                .compactMap { matches(block, $0).first }
+                          #"data-src\s*=\s*["']([^"']+)["']"#,
+                          #"data-original\s*=\s*["']([^"']+)["']"#,
+                          #"<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']"#]
+                .flatMap { matches(block, $0) }
                 .compactMap { mediaURL($0.replacingOccurrences(of: "&amp;", with: "&")) }
+                .filter { address in
+                    let path = address.path.lowercased()
+                    let ext = address.pathExtension.lowercased()
+                    return !["mp4", "m3u8", "webm", "svg", "gif"].contains(ext) &&
+                        !path.contains("placeholder") && !path.contains("transparent") &&
+                        !path.contains("loading") && !path.contains("blank")
+                }
                 .map(\.absoluteString)
             let poster = posterCandidates.reduce(into: [String]()) { result, candidate in
                 if !result.contains(candidate) { result.append(candidate) }

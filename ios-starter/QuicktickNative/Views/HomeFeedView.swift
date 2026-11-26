@@ -157,11 +157,7 @@ struct HomeFeedView: View {
             .environmentObject(store)
         }
         .sheet(isPresented: $showHanimeShows) {
-            HanimeShowsBrowserView(posts: store.posts, onPlay: { post in
-                showHanimeShows = false
-                immersivePostID = post.stableID
-                immersive = true
-            })
+            HanimeShowsBrowserView(posts: store.posts).environmentObject(store)
         }
         .sheet(isPresented: $showAllHanimeTopics) {
             NavigationStack { HanimeTopicsBrowserView(provider: store.selectedProvider) }
@@ -1700,20 +1696,32 @@ enum FranchiseThemeSuggestions {
 }
 
 private struct HanimeShowsBrowserView: View {
-    let posts: [Post]
-    let onPlay: (Post) -> Void
+    @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @State private var catalog: [Post]
+    @State private var search = ""
+    @State private var page = 1
+    @State private var hasMore = true
+    @State private var loading = false
+    @State private var error: String?
+    @State private var playingEpisodes: [Post] = []
+    @State private var playingID: String?
+    @State private var showPlayer = false
+
+    init(posts: [Post]) {
+        _catalog = State(initialValue: posts.filter { $0.providerKey == .hanime })
+    }
 
     private struct ShowGroup: Identifiable {
         let id: String
         let title: String
         let episodes: [Post]
         var cover: String { episodes.first(where: { !$0.thumbUrl.isEmpty })?.thumbUrl ?? "" }
+        var recent: Double { episodes.map { $0.createdAt ?? 0 }.max() ?? 0 }
     }
 
     private var shows: [ShowGroup] {
-        let hanime = posts.filter { $0.providerKey == .hanime }
-        let groups = Dictionary(grouping: hanime) { post -> String in
+        let groups = Dictionary(grouping: catalog) { post -> String in
             let slug = post.id.replacingOccurrences(of: #"-[0-9]+$"#, with: "", options: .regularExpression)
             return slug.isEmpty ? post.id : slug
         }
@@ -1722,69 +1730,150 @@ private struct HanimeShowsBrowserView: View {
             let title = (ordered.first?.caption ?? key.replacingOccurrences(of: "-", with: " "))
                 .replacingOccurrences(of: #"\s+[0-9]+$"#, with: "", options: .regularExpression)
             return ShowGroup(id: key, title: title, episodes: ordered)
-        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        }.sorted { a, b in
+            a.recent == b.recent ? a.title.localizedStandardCompare(b.title) == .orderedAscending : a.recent > b.recent
+        }
+    }
+
+    private var visible: [ShowGroup] {
+        search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? shows :
+            shows.filter { $0.title.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search) }
+    }
+
+    private var continuing: [ShowGroup] {
+        shows.filter { show in
+            show.episodes.contains { (store.resumePosition($0.stableID) ?? 0) > 5 }
+        }
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(shows) { show in
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(alignment: .top, spacing: 14) {
-                                if !show.cover.isEmpty {
-                                    CachedMediaImage(url: show.cover, pixels: 480, fill: true)
-                                        .frame(width: 100, height: 142).clipped()
-                                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                                } else {
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(AppTheme.elevatedSurface)
-                                        .frame(width: 100, height: 142)
-                                        .overlay(Image(systemName: "film").foregroundStyle(.secondary))
-                                }
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(show.title).font(.headline).lineLimit(3)
-                                    Text("\(show.episodes.count) available episode\(show.episodes.count == 1 ? "" : "s")")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                    Spacer(minLength: 0)
-                                    Button { if let first = show.episodes.first { onPlay(first) } } label: {
-                                        Label("Play", systemImage: "play.fill")
-                                            .font(.subheadline.weight(.semibold))
-                                            .frame(maxWidth: .infinity, minHeight: 38)
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                }
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    if search.isEmpty, let featured = shows.first {
+                        NavigationLink { detail(featured) } label: {
+                            VStack(alignment: .leading, spacing: 9) {
+                                artwork(featured.cover, height: 220)
+                                Text(featured.title).font(.title2.bold())
+                                Text("View episodes").font(.subheadline.weight(.semibold))
                             }
-                            ForEach(show.episodes, id: \.stableID) { episode in
-                                Button { onPlay(episode) } label: {
-                                    HStack {
-                                        Image(systemName: "play.circle.fill")
-                                        Text(episode.caption ?? episode.id.replacingOccurrences(of: "-", with: " "))
-                                            .lineLimit(1)
-                                        Spacer()
-                                        Image(systemName: "chevron.right").font(.caption)
-                                    }
-                                    .font(.subheadline)
-                                    .padding(.vertical, 7)
+                        }.buttonStyle(.plain)
+                    }
+                    if search.isEmpty, !continuing.isEmpty {
+                        Text("Continue watching").font(.headline)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(continuing.prefix(12)) { show in
+                                    NavigationLink { detail(show) } label: {
+                                        VStack(alignment: .leading) {
+                                            artwork(show.cover, height: 90)
+                                            Text(show.title).font(.caption).lineLimit(1)
+                                        }.frame(width: 155)
+                                    }.buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
-                        .padding(14)
-                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
                     }
-                    if shows.isEmpty {
-                        ContentUnavailableView("No shows loaded", systemImage: "film.stack",
-                                               description: Text("Load Hanime videos in Home to browse their series."))
+                    Text(search.isEmpty ? "Browse shows" : "Search results").font(.headline)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 12)], spacing: 16) {
+                        ForEach(visible) { show in
+                            NavigationLink { detail(show) } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    artwork(show.cover, height: 160)
+                                    Text(show.title).font(.caption.weight(.semibold)).lineLimit(2)
+                                    Text("\(show.episodes.count) available episodes").font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }.buttonStyle(.plain)
+                        }
                     }
-                }
-                .padding(16)
+                    if loading { ProgressView("Loading catalog…").frame(maxWidth: .infinity) }
+                    if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+                    if hasMore && !loading {
+                        Button("Load more shows") { Task { await loadNext() } }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    if visible.isEmpty && !loading && error == nil {
+                        ContentUnavailableView("No matching shows", systemImage: "film.stack",
+                                               description: Text("Try another search or load more of the catalog."))
+                    }
+                }.padding(16)
             }
+            .background(ThemeBackdrop())
             .navigationTitle("Shows")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) {
-                Button("Done") { dismiss() }
-            } }
+            .searchable(text: $search, prompt: "Search shows")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .task { await loadNext() }
         }
+        .fullScreenCover(isPresented: $showPlayer) {
+            ImmersiveFeedView(posts: playingEpisodes, offline: false, activePostID: $playingID,
+                              onClose: { showPlayer = false }, collectionTab: 0)
+                .environmentObject(store)
+        }
+    }
+
+    private func artwork(_ url: String, height: CGFloat) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 12).fill(AppTheme.elevatedSurface)
+            if !url.isEmpty {
+                CachedMediaImage(url: url, pixels: 540, fill: true)
+            } else { Image(systemName: "film").foregroundStyle(.secondary) }
+        }.frame(height: height).frame(maxWidth: .infinity)
+            .clipped().clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func detail(_ show: ShowGroup) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                artwork(show.cover, height: 240)
+                Text(show.title).font(.largeTitle.bold())
+                Text("\(show.episodes.count) episodes available").foregroundStyle(.secondary)
+                if let episode = show.episodes.first(where: { (store.resumePosition($0.stableID) ?? 0) > 5 }) ?? show.episodes.first {
+                    Button { play(episode, in: show) } label: {
+                        Label((store.resumePosition(episode.stableID) ?? 0) > 5 ? "Continue watching" : "Play",
+                              systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: 44)
+                    }.buttonStyle(.borderedProminent)
+                }
+                Text("Episodes").font(.title2.bold())
+                ForEach(Array(show.episodes.enumerated()), id: \.element.stableID) { index, episode in
+                    Button { play(episode, in: show) } label: {
+                        HStack(spacing: 12) {
+                            artwork(episode.thumbUrl, height: 72).frame(width: 112)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("Episode \(index + 1)").font(.headline)
+                                Text(episode.caption ?? episode.id).font(.caption).lineLimit(2)
+                                if let position = store.resumePosition(episode.stableID), position > 5 {
+                                    Text("Resume available").font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Image(systemName: "play.circle.fill").font(.title2)
+                        }.padding(.vertical, 5)
+                    }.buttonStyle(.plain)
+                }
+            }.padding(16)
+        }.background(ThemeBackdrop()).navigationTitle("Episodes")
+    }
+
+    private func play(_ episode: Post, in show: ShowGroup) {
+        playingEpisodes = show.episodes
+        playingID = episode.stableID
+        showPlayer = true
+    }
+
+    @MainActor private func loadNext() async {
+        guard hasMore, !loading else { return }
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            let response = try await store.api.posts(provider: .hanime,
+                query: QueryParser.parse(""), page: page, sort: "recent")
+            try Task.checkCancellation()
+            var seen = Set(catalog.map(\.stableID))
+            let incoming = response.items.filter { seen.insert($0.stableID).inserted }
+            catalog += incoming
+            hasMore = (response.hasMore ?? false) && !response.items.isEmpty && page < 100
+            page += 1
+        } catch is CancellationError {
+        } catch { self.error = error.localizedDescription }
     }
 }

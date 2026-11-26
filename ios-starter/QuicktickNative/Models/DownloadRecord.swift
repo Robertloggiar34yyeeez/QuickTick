@@ -31,6 +31,7 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var pageURL: String?
     /// Only set after a successful HLS task and explicit offline-cache validation.
     var offlineHLSVerified: Bool?
+    var videoValidationVersion: Int?
     var formattedSize: String {
         guard let fileSize, fileSize >= 0 else { return "Size unavailable" }
         return ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)

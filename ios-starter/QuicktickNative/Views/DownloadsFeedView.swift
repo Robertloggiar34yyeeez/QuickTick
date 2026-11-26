@@ -749,7 +749,7 @@ private struct DownloadCachedCardRow: View, Equatable {
                 ProgressView("Verifying offline video…")
                     .frame(maxWidth: .infinity, minHeight: 150)
             } else if !cacheReady {
-                ProgressView("Preparing offline preview…")
+                ProgressView("Preparing local media…")
                     .frame(maxWidth: .infinity, minHeight: 150)
             } else {
                 VStack(alignment: .leading, spacing: 12) {

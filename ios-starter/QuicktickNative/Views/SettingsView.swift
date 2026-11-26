@@ -501,136 +501,8 @@ struct SettingsView: View {
             SettingsGroup(title: "Persistent exclusions", icon: "line.3.horizontal.decrease.circle") {
                 PersistentExclusionEditor()
             }
-            SettingsGroup(title: "Visual intelligence & on-device models", icon: "eye") {
-                Toggle("Learn visual taste while browsing", isOn: $store.visualAnalysisEnabled)
-                    .modifier(SettingsControlRow())
-                Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
-                Button {
-                    guard !mobileCLIPInstalling, !mobileCLIPInstalled else { return }
-                    mobileCLIPInstalling = true; mobileCLIPError = nil
-                    Task {
-                        do {
-                            try await MobileCLIPRealLifeEncoder.shared.install()
-                            mobileCLIPInstalled = true
-                            store.visualModelDidInstall()
-                        } catch { mobileCLIPError = error.localizedDescription }
-                        mobileCLIPInstalling = false
-                    }
-                } label: {
-                    HStack(spacing: 10) {
-                        if mobileCLIPInstalling { InfinityLoader(size: 22) }
-                        else { Image(systemName: mobileCLIPInstalled ? "checkmark.circle.fill" : "arrow.down.circle") }
-                        Text(mobileCLIPInstalled ? "MobileCLIP ready" : (mobileCLIPInstalling ? "Installing MobileCLIP…" : "Install MobileCLIP · 23 MB"))
-                        Spacer()
-                    }
-                    .frame(minHeight: 44)
-                }
-                .buttonStyle(QuicktickPressStyle())
-                .disabled(mobileCLIPInstalling || mobileCLIPInstalled)
-                .accessibilityIdentifier("install-mobileclip-button")
-                Text("Optional Apple on-device model for real-life visual similarity. Keeps anime and photo tastes separate; existing tags still determine specific themes. Runs during idle visual analysis, never during video playback.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                TextField("HTTPS URL of converted .mlpackage folder", text: $mobileCLIP2PackageURL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .textContentType(.URL)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("mobileclip2-package-url")
-                    .disabled(mobileCLIP2Installing || mobileCLIP2Installed)
-                Button {
-                    let text = mobileCLIP2PackageURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard let url = URL(string: text),
-                          MobileCLIP2RealLifeEncoder.packageFileURLs(from: url) != nil else {
-                        mobileCLIPError = "Enter the HTTPS address of a converted Core ML .mlpackage directory."
-                        return
-                    }
-                    mobileCLIP2Installing = true; mobileCLIPError = nil
-                    Task {
-                        do {
-                            try await MobileCLIP2RealLifeEncoder.shared.install(fromRemotePackage: url)
-                            mobileCLIP2Installed = true
-                            store.visualModelDidInstall()
-                        } catch { mobileCLIPError = error.localizedDescription }
-                        mobileCLIP2Installing = false
-                    }
-                } label: {
-                    HStack(spacing: 10) {
-                        if mobileCLIP2Installing { InfinityLoader(size: 22) }
-                        else { Image(systemName: mobileCLIP2Installed ? "checkmark.circle.fill" : "arrow.down.circle") }
-                        Text(mobileCLIP2Installed ? "MobileCLIP2-S0 ready" :
-                             (mobileCLIP2Installing ? "Downloading / compiling MobileCLIP2…" : "Download MobileCLIP2-S0 Core ML"))
-                        Spacer()
-                    }
-                    .frame(minHeight: 44)
-                }
-                .buttonStyle(QuicktickPressStyle())
-                .disabled(mobileCLIP2Installing || mobileCLIP2Installed || mobileCLIP2PackageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("download-mobileclip2-button")
-                Button {
-                    importingMobileCLIP2 = true
-                } label: {
-                    HStack(spacing: 10) {
-                        if mobileCLIP2Installing { InfinityLoader(size: 22) }
-                        else { Image(systemName: mobileCLIP2Installed ? "checkmark.circle.fill" : "square.and.arrow.down") }
-                        Text(mobileCLIP2Installed ? "MobileCLIP2-S0 ready" : (mobileCLIP2Installing ? "Importing MobileCLIP2…" : "Import MobileCLIP2-S0 Core ML"))
-                        Spacer()
-                    }
-                    .frame(minHeight: 44)
-                }
-                .buttonStyle(QuicktickPressStyle())
-                .disabled(mobileCLIP2Installing || mobileCLIP2Installed)
-                .accessibilityIdentifier("import-mobileclip2-button")
-                Link(destination: URL(string: "https://huggingface.co/apple/MobileCLIP2-S0/blob/main/mobileclip2_s0.pt")!) {
-                    Label("Apple MobileCLIP2-S0 checkpoint · 300 MB", systemImage: "arrow.down.circle")
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                }
-                .accessibilityIdentifier("mobileclip2-official-download")
-                Text("Apple releases MobileCLIP2-S0 as a research-only PyTorch checkpoint, not a downloadable Core ML model. For permitted research use, enter the HTTPS folder URL of a separately converted 256×256 Core ML .mlpackage, or import one from Files. QuickTick validates it and uses it for idle analysis; no MobileCLIP2 weights are bundled. MobileCLIP-S0 and Vision remain available.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                if let mobileCLIPError {
-                    Text("Visual model installation failed: \(mobileCLIPError)")
-                        .font(.footnote).foregroundStyle(.orange)
-                }
-                ManualVisualRefreshPanel(manager: store.downloads)
-            }.id(SettingsDestination.models.rawValue)
-            SettingsGroup(title: "Playback", icon: "play.rectangle") {
-                Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
-                    .modifier(SettingsControlRow())
-                Toggle("Mute", isOn: $store.muted)
-                    .modifier(SettingsControlRow())
-                Toggle("Autoplay in Home & cards", isOn: $autoplayVideos)
-                    .modifier(SettingsControlRow())
-                    .accessibilityIdentifier("autoplay-videos-toggle")
-                Text("When off, videos in Home and other card views stay on previews until you tap Play. Immersive always autoplays as you swipe.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Stepper(value: $doubleTapSeekSeconds, in: 1...60, step: 1) {
-                    HStack {
-                        Text("Full-screen double-tap skip")
-                        Spacer()
-                        Text("\(doubleTapSeekSeconds) sec")
-                            .foregroundStyle(AppTheme.secondaryLabel)
-                    }
-                }
-                .modifier(SettingsControlRow())
-                .accessibilityIdentifier("fullscreen-seek-seconds")
-                Text("In full-screen and Immersive video, double-tap right to skip ahead or left to rewind. Double-tap the middle of Immersive to Like.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
-                    .modifier(SettingsControlRow())
-                    .accessibilityIdentifier("skip-video-intros-toggle")
-                Toggle("Skip Hanime introduction", isOn: $skipHanimeIntros)
-                if skipHanimeIntros {
-                    VStack(alignment: .leading) {
-                        Text("Start at " + String(format: "%d:%02d", Int(hanimeStartSeconds) / 60, Int(hanimeStartSeconds) % 60))
-                        Slider(value: $hanimeStartSeconds, in: 0...300, step: 15)
-                    }
-                }
-                    .modifier(SettingsControlRow())
-                    .accessibilityIdentifier("skip-hanime-intros-toggle")
-                Text("When enabled, the first 10 seconds are skipped for Pornhub or Hanime videos longer than 12 seconds, independently for each provider. Old saved Haven posts retain their previous preference.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }.id(SettingsDestination.playback.rawValue)
+            visualModelSettings
+            playbackSettings
             SettingsGroup(title: "Rhythm & floating player", icon: "waveform.path") {
                 RhythmSettingsControls(pipMuteFeed: $store.pipMuteFeed)
             }
@@ -727,6 +599,151 @@ struct SettingsView: View {
             .modifier(ProfileImportConfirmation())
             .task { await reloadAccessFields() }
             .onDisappear { store.cancelManualVisualRefresh() }
+    }
+
+    private var visualModelSettings: some View {
+        SettingsGroup(title: "Visual intelligence & on-device models", icon: "eye") {
+                Toggle("Learn visual taste while browsing", isOn: $store.visualAnalysisEnabled)
+                    .modifier(SettingsControlRow())
+                Text("Separate anime and real-life tastes. Reuses previews and gradually checks small favorite thumbnails on Wi-Fi. Pauses while scrolling, loading or playing media, and in Low Power Mode.").font(.footnote).foregroundStyle(.secondary)
+                Button {
+                    guard !mobileCLIPInstalling, !mobileCLIPInstalled else { return }
+                    mobileCLIPInstalling = true; mobileCLIPError = nil
+                    Task {
+                        do {
+                            try await MobileCLIPRealLifeEncoder.shared.install()
+                            mobileCLIPInstalled = true
+                            store.visualModelDidInstall()
+                        } catch { mobileCLIPError = error.localizedDescription }
+                        mobileCLIPInstalling = false
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        if mobileCLIPInstalling { InfinityLoader(size: 22) }
+                        else { Image(systemName: mobileCLIPInstalled ? "checkmark.circle.fill" : "arrow.down.circle") }
+                        Text(mobileCLIPInstalled ? "MobileCLIP ready" : (mobileCLIPInstalling ? "Installing MobileCLIP…" : "Install MobileCLIP · 23 MB"))
+                        Spacer()
+                    }
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .disabled(mobileCLIPInstalling || mobileCLIPInstalled)
+                .accessibilityIdentifier("install-mobileclip-button")
+                Text("Optional Apple on-device model for real-life visual similarity. Keeps anime and photo tastes separate; existing tags still determine specific themes. Runs during idle visual analysis, never during video playback.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                TextField("HTTPS URL of converted .mlpackage folder", text: $mobileCLIP2PackageURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .textContentType(.URL)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("mobileclip2-package-url")
+                    .disabled(mobileCLIP2Installing || mobileCLIP2Installed)
+                Button {
+                    let text = mobileCLIP2PackageURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard let url = URL(string: text),
+                          MobileCLIP2RealLifeEncoder.packageFileURLs(from: url) != nil else {
+                        mobileCLIPError = "Enter the HTTPS address of a converted Core ML .mlpackage directory."
+                        return
+                    }
+                    mobileCLIP2Installing = true; mobileCLIPError = nil
+                    Task {
+                        do {
+                            try await MobileCLIP2RealLifeEncoder.shared.install(fromRemotePackage: url)
+                            mobileCLIP2Installed = true
+                            store.visualModelDidInstall()
+                        } catch { mobileCLIPError = error.localizedDescription }
+                        mobileCLIP2Installing = false
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        if mobileCLIP2Installing { InfinityLoader(size: 22) }
+                        else { Image(systemName: mobileCLIP2Installed ? "checkmark.circle.fill" : "arrow.down.circle") }
+                        Text(mobileCLIP2Installed ? "MobileCLIP2-S0 ready" :
+                             (mobileCLIP2Installing ? "Downloading / compiling MobileCLIP2…" : "Download MobileCLIP2-S0 Core ML"))
+                        Spacer()
+                    }
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .disabled(mobileCLIP2Installing || mobileCLIP2Installed || mobileCLIP2PackageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("download-mobileclip2-button")
+                Button {
+                    importingMobileCLIP2 = true
+                } label: {
+                    HStack(spacing: 10) {
+                        if mobileCLIP2Installing { InfinityLoader(size: 22) }
+                        else { Image(systemName: mobileCLIP2Installed ? "checkmark.circle.fill" : "square.and.arrow.down") }
+                        Text(mobileCLIP2Installed ? "MobileCLIP2-S0 ready" : (mobileCLIP2Installing ? "Importing MobileCLIP2…" : "Import MobileCLIP2-S0 Core ML"))
+                        Spacer()
+                    }
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(QuicktickPressStyle())
+                .disabled(mobileCLIP2Installing || mobileCLIP2Installed)
+                .accessibilityIdentifier("import-mobileclip2-button")
+                Link(destination: URL(string: "https://huggingface.co/apple/MobileCLIP2-S0/blob/main/mobileclip2_s0.pt")!) {
+                    Label("Apple MobileCLIP2-S0 checkpoint · 300 MB", systemImage: "arrow.down.circle")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
+                .accessibilityIdentifier("mobileclip2-official-download")
+                Text("Apple releases MobileCLIP2-S0 as a research-only PyTorch checkpoint, not a downloadable Core ML model. For permitted research use, enter the HTTPS folder URL of a separately converted 256×256 Core ML .mlpackage, or import one from Files. QuickTick validates it and uses it for idle analysis; no MobileCLIP2 weights are bundled. MobileCLIP-S0 and Vision remain available.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let mobileCLIPError {
+                    Text("Visual model installation failed: \(mobileCLIPError)")
+                        .font(.footnote).foregroundStyle(.orange)
+                }
+                ManualVisualRefreshPanel(manager: store.downloads)
+            }.id(SettingsDestination.models.rawValue)
+    }
+
+    private var playbackSettings: some View {
+        SettingsGroup(title: "Playback", icon: "play.rectangle") {
+                Toggle("Immersion framing (fill)", isOn: $store.immersionFraming)
+                    .modifier(SettingsControlRow())
+                Toggle("Mute", isOn: $store.muted)
+                    .modifier(SettingsControlRow())
+                Toggle("Autoplay in Home & cards", isOn: $autoplayVideos)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("autoplay-videos-toggle")
+                Text("When off, videos in Home and other card views stay on previews until you tap Play. Immersive always autoplays as you swipe.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Stepper(value: $doubleTapSeekSeconds, in: 1...60, step: 1) {
+                    HStack {
+                        Text("Full-screen double-tap skip")
+                        Spacer()
+                        Text("\(doubleTapSeekSeconds) sec")
+                            .foregroundStyle(AppTheme.secondaryLabel)
+                    }
+                }
+                .modifier(SettingsControlRow())
+                .accessibilityIdentifier("fullscreen-seek-seconds")
+                Text("In full-screen and Immersive video, double-tap right to skip ahead or left to rewind. Double-tap the middle of Immersive to Like.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Toggle("Skip Pornhub intros (10 seconds)", isOn: $skipVideoIntros)
+                    .modifier(SettingsControlRow())
+                    .accessibilityIdentifier("skip-video-intros-toggle")
+                hanimeIntroControls
+                Text("Pornhub skips 10 seconds. Hanime uses your chosen starting position when the video is long enough.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }.id(SettingsDestination.playback.rawValue)
+    }
+
+    private var hanimeIntroControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Skip Hanime introduction", isOn: $skipHanimeIntros)
+                .modifier(SettingsControlRow())
+                .accessibilityIdentifier("skip-hanime-intros-toggle")
+            if skipHanimeIntros {
+                Text("Start at " + hanimeStartLabel).font(.subheadline)
+                Slider(value: $hanimeStartSeconds, in: 0...300, step: 15)
+            }
+        }
+    }
+
+    private var hanimeStartLabel: String {
+        let seconds = Int(hanimeStartSeconds)
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     @ViewBuilder private var settingsHero: some View {

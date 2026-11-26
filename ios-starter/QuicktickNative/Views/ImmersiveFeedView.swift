@@ -65,8 +65,8 @@ struct ImmersiveFeedView: View {
     private var playbackOwner: String { offline ? "offline-immersive" : (collectionTab == 2 ? "favorites-immersive" : (onClose != nil ? "home-immersive" : "immersive")) }
     private var interactiveCloseAllowed: Bool { true }
     private var smoothNichePaging: Bool {
-        !offline && onClose != nil && collectionTab == nil &&
-            store.selectedProvider == .redgifs && store.queryText.hasPrefix("niche:")
+        offline || (onClose != nil && collectionTab == nil &&
+            store.selectedProvider == .redgifs && store.queryText.hasPrefix("niche:"))
     }
 
     private var adjacentPost: Post? {
@@ -143,20 +143,28 @@ struct ImmersiveFeedView: View {
         .toolbar(.hidden, for: .navigationBar)
         .task(id: presentationActive) {
             guard presentationActive else { return }
-            if activeID == nil { activeID = mediaPosts.first?.stableID }
+            if let activeID, let index = mediaPosts.firstIndex(where: { $0.stableID == activeID }) {
+                activeIndex = index
+            } else {
+                activeIndex = 0
+                activeID = mediaPosts.first?.stableID
+            }
             activeSince = .now
         }
         .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")") { await prewarm() }
         .onChange(of: store.feedRevision) { _, _ in
+            guard !offline, collectionTab == nil else { return }
             activeSince = .distantPast
             activeIndex = 0; activeID = mediaPosts.first?.stableID
             settlingNicheSwipe = false; verticalDrag = 0
         }
         .onChange(of: mediaSignature) { _, _ in
             let keys = mediaPosts.map(\.stableID)
-            if activeID == nil || !keys.contains(activeID ?? "") {
-                activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
-                if keys.isEmpty { activeIndex = 0 }
+            if let activeID, let index = keys.firstIndex(of: activeID) {
+                activeIndex = index
+            } else {
+                activeIndex = keys.isEmpty ? 0 : min(activeIndex, keys.count - 1)
+                activeID = keys.isEmpty ? nil : keys[activeIndex]
             }
         }
         .onChange(of: activeID) { oldID, key in
@@ -288,7 +296,13 @@ struct ImmersiveFeedView: View {
     private func endPan(from origin: String, translation: CGSize,
                         velocity: CGSize, viewport: CGSize) {
         defer { dragAxis = nil }
-        guard !settlingNicheSwipe else { return }
+        guard !settlingNicheSwipe, !closing, activeID == origin else { return }
+        if translation == .zero && velocity == .zero {
+            withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.88)) {
+                verticalDrag = 0; horizontalCloseDrag = 0
+            }
+            return
+        }
         if dragAxis == .horizontal {
             let complete = horizontalCloseDrag >= viewport.width * 0.28 ||
                 (horizontalCloseDrag >= 50 && velocity.width >= 650)
@@ -314,6 +328,10 @@ struct ImmersiveFeedView: View {
             }
             return
         }
+        if dragAxis != .vertical {
+            withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.88)) { verticalDrag = 0 }
+            return
+        }
         if smoothNichePaging {
             smoothNichePageSwipe(from: origin, translation: translation,
                                 velocity: velocity, viewport: viewport)
@@ -331,7 +349,7 @@ struct ImmersiveFeedView: View {
     /// playing post without a second insertion/snap animation.
     private func smoothNichePageSwipe(from origin: String, translation: CGSize,
                                      velocity: CGSize, viewport: CGSize) {
-        guard presentationActive,
+        guard presentationActive, activeID == origin,
               let direction = ImmersivePageSwipePolicy.direction(
                   translation: translation, velocity: velocity,
                   viewportHeight: viewport.height),
@@ -379,7 +397,7 @@ struct ImmersiveFeedView: View {
             print("QUICKTICK_PAGING_INPUT origin=\(origin) dy=\(Int(translation.height)) dx=\(Int(translation.width)) active=\(presentationActive) count=\(mediaPosts.count)")
         }
         #endif
-        guard presentationActive,
+        guard presentationActive, activeID == origin,
               let direction = ImmersivePageSwipePolicy.direction(
                   translation: translation, velocity: velocity, viewportHeight: viewportHeight),
               let index = mediaPosts.firstIndex(where: { $0.stableID == origin }) else { return }
@@ -570,10 +588,17 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
         @objc func panned(_ recognizer: UIPanGestureRecognizer) {
             guard recognizer.state == .changed || recognizer.state == .ended || recognizer.state == .cancelled,
                   let surface = recognizer.view else { return }
-            let translation = recognizer.translation(in: surface)
-            let velocity = recognizer.velocity(in: surface)
+            if recognizer.state == .cancelled {
+                pan(.zero, .zero, true)
+                return
+            }
+            // The media view moves with the drag. Measuring in its own
+            // coordinate space feeds that movement back into the recognizer.
+            let reference = surface.window ?? surface
+            let translation = recognizer.translation(in: reference)
+            let velocity = recognizer.velocity(in: reference)
             pan(CGSize(width: translation.x, height: translation.y),
-                CGSize(width: velocity.x, height: velocity.y), recognizer.state != .changed)
+                CGSize(width: velocity.x, height: velocity.y), recognizer.state == .ended)
         }
     }
 }
@@ -696,8 +721,6 @@ private struct ImmersiveItemView: View {
                             VStack(spacing: 12) {
                                 Image(systemName: "play.rectangle.on.rectangle")
                                     .font(.system(size: 40, weight: .light))
-                                Text(post.caption?.isEmpty == false ? (post.caption ?? "") : post.provider)
-                                    .font(.headline).lineLimit(3).multilineTextAlignment(.center)
                                 Text("Preparing preview")
                                     .font(.caption).foregroundStyle(.white.opacity(0.6))
                             }

@@ -1,6 +1,22 @@
 import Foundation
 import CoreGraphics
 
+enum TopicDisplayIdentity {
+    static func key(_ raw: String) -> String {
+        raw.lowercased().replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    static func unique(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { value in
+            let normalized = key(value)
+            return !normalized.isEmpty && seen.insert(normalized).inserted
+        }
+    }
+}
+
 struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
     let key: String
     let id: String
@@ -34,7 +50,7 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
         let title = caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !title.isEmpty { return title }
         if providerKey == .redgifs {
-            let topics = tags.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            let topics = TopicDisplayIdentity.unique(tags)
                 .prefix(3)
                 .map { $0.replacingOccurrences(of: "_", with: " ") }
             if !topics.isEmpty { return "Topics: " + topics.joined(separator: " · ") }

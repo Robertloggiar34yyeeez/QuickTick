@@ -313,12 +313,11 @@ struct HomeFeedView: View {
                 }
                 if store.selectedProvider == .redgifs {
                     redgifsNicheRow
-                } else if store.selectedProvider == .hanime || store.selectedProvider == .rule34 ||
-                            store.selectedProvider == .pornhub || (suggestedThemesEnabled && !themeSuggestions.isEmpty) {
-                    suggestedThemeRow
-                }
-                if store.selectedProvider == .pornhub {
+                } else if store.selectedProvider == .pornhub {
                     homeCategoryRow
+                } else if store.selectedProvider == .hanime || store.selectedProvider == .rule34 ||
+                            (suggestedThemesEnabled && !themeSuggestions.isEmpty) {
+                    suggestedThemeRow
                 }
                 if store.posts.isEmpty && !store.bootstrapped {
                     RoundedRectangle(cornerRadius: 22)
@@ -705,7 +704,9 @@ struct HomeFeedView: View {
             excluded: store.exclusions + taste.notInto,
             limit: 5, rotation: themeRefreshCycle,
             mode: SuggestedThemeMode(rawValue: suggestedThemesMode) ?? .balanced)
-        if proposed != themeSuggestions { themeSuggestions = proposed }
+        var seen = Set<String>()
+        let unique = proposed.filter { seen.insert(TopicDisplayIdentity.key($0.label)).inserted }
+        if unique != themeSuggestions { themeSuggestions = unique }
     }
 
     /// Personal suggestions work on *every* provider and use real covers or
@@ -717,9 +718,6 @@ struct HomeFeedView: View {
                     Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
                     Text(store.selectedProvider == .hanime ? "Hanime topics" : "Suggested topics")
                         .font(.subheadline.weight(.bold))
-                    Text(store.selectedProvider == .rule34 && suggestedThemesMode == SuggestedThemeMode.franchises.rawValue
-                         ? "Franchise discovery" : "Based on your taste")
-                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
                     if [.hanime, .rule34, .pornhub].contains(store.selectedProvider) {
                         Button {
@@ -769,10 +767,6 @@ struct HomeFeedView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "square.grid.2x2.fill").foregroundStyle(AppTheme.accent)
                     Text("RedGIFs niches").font(.subheadline.weight(.bold))
-                    Text(store.favorites.values.contains(where: { $0.providerKey == .redgifs })
-                         ? "For you" : "Explore")
-                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel).lineLimit(1)
-                        .accessibilityLabel("Niches ranked from your Likes and related communities")
                     Spacer()
                     Button {
                         showAllRedgifsNiches = true
@@ -1281,14 +1275,15 @@ private struct HanimeTopicsBrowserView: View {
         let chosen = store.tasteChoice(for: provider).into
         let terms = (provider == .pornhub ? providerCategories : []) + chosen + store.learnedInterests + evidence
             .filter { $0.providerKey == provider }.flatMap(\.tags)
-        let excluded = Set(store.exclusions.map { $0.lowercased() })
+        let excluded = Set(store.exclusions.map(TopicDisplayIdentity.key))
         var seen = Set<String>()
         return terms.compactMap { raw -> String? in
             let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 .replacingOccurrences(of: "_", with: " ").lowercased()
             guard !value.isEmpty, value.count <= 80,
                   !value.contains(":"), !value.contains("/"),
-                  !excluded.contains(value), seen.insert(value).inserted else { return nil }
+                  !excluded.contains(TopicDisplayIdentity.key(value)),
+                  seen.insert(TopicDisplayIdentity.key(value)).inserted else { return nil }
             return value
         }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
@@ -1540,7 +1535,7 @@ enum HomeThemeSuggestions {
                 : [result[safe: index], franchises[safe: index]]
             for suggestion in candidates.compactMap({ $0 }) {
                 guard diverse.count < limit,
-                      !diverse.contains(where: { $0.term == suggestion.term }),
+                      !diverse.contains(where: { TopicDisplayIdentity.key($0.label) == TopicDisplayIdentity.key(suggestion.label) }),
                       seenImages.insert(suggestion.imageURL).inserted else { continue }
                 diverse.append(suggestion)
             }

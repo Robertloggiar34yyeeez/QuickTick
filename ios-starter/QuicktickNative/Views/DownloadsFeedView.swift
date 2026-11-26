@@ -235,6 +235,7 @@ private struct DownloadContent: View {
     @State private var immersive = false
     @State private var rhythm = false
     @State private var immersivePostID: String?
+    @State private var immersiveSnapshot: [Post] = []
     @State private var selecting = false
     @State private var selectedKeys: Set<String> = []
     @State private var confirmDelete = false
@@ -456,7 +457,7 @@ private struct DownloadContent: View {
                 .opacity(immersive ? 0 : 1)
                 .allowsHitTesting(!immersive)
             if immersive {
-                ImmersiveFeedView(posts: localPosts, offline: true, activePostID: $immersivePostID,
+                ImmersiveFeedView(posts: immersiveSnapshot, offline: true, activePostID: $immersivePostID,
                                   onClose: { immersive = false })
                     .transition(.move(edge: .trailing))
             }
@@ -519,7 +520,18 @@ private struct DownloadContent: View {
                                         (sortByProvider ? "Provider A–Z" :
                                         (downloadOrder.isShuffled ? "Shuffled" : "Original order")))
                     .accessibilityIdentifier("downloads-shuffle")
-                    Button(immersive ? "Feed" : "Offline Immersive") { immersive.toggle() }
+                    Button(immersive ? "Feed" : "Offline Immersive") {
+                        if immersive { immersive = false }
+                        else {
+                            var seen = Set<String>()
+                            immersiveSnapshot = localPosts.filter { $0.isImmersiveMedia && seen.insert($0.stableID).inserted }
+                            guard !immersiveSnapshot.isEmpty else { return }
+                            if !immersiveSnapshot.contains(where: { $0.stableID == immersivePostID }) {
+                                immersivePostID = immersiveSnapshot.first?.stableID
+                            }
+                            immersive = true
+                        }
+                    }
                         .disabled(!immersive && !localPosts.contains(where: \.isImmersiveMedia))
                     Button(selecting ? "Done" : "Select") {
                         selecting.toggle()
@@ -543,7 +555,10 @@ private struct DownloadContent: View {
                 onImmersiveChange(immersive)
             }
             .onReceive(manager.catalogDidChange) { refreshCatalog(manager.records) }
-            .onChange(of: immersive) { _, value in onImmersiveChange(value) }
+            .onChange(of: immersive) { _, value in
+                onImmersiveChange(value)
+                if !value { immersiveSnapshot = [] }
+            }
             .onChange(of: searchText) { _, _ in
                 selectedKeys.removeAll()
                 scheduleSearch(records: manager.records)

@@ -15,6 +15,23 @@ final class ImmersiveMediaTests: XCTestCase {
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 4, duration: 120, forward: true, interval: 999), 64)
     }
 
+    func testSwipeRejectsCancellationHorizontalMovementAndReversedFlick() {
+        XCTAssertNil(ImmersivePageSwipePolicy.direction(translation: .zero, velocity: .zero, viewportHeight: 844))
+        XCTAssertNil(ImmersivePageSwipePolicy.direction(translation: CGSize(width: 90, height: 20),
+            velocity: CGSize(width: 500, height: 400), viewportHeight: 844))
+        XCTAssertNil(ImmersivePageSwipePolicy.direction(translation: CGSize(width: 0, height: -20),
+            velocity: CGSize(width: 0, height: 600), viewportHeight: 844))
+        XCTAssertEqual(ImmersivePageSwipePolicy.direction(translation: CGSize(width: 0, height: -110),
+            velocity: .zero, viewportHeight: 844), 1)
+        XCTAssertEqual(ImmersivePageSwipePolicy.direction(translation: CGSize(width: 0, height: 110),
+            velocity: .zero, viewportHeight: 844), -1)
+    }
+
+    func testDisplayTopicsCollapseCaseAndSeparatorVariants() {
+        XCTAssertEqual(TopicDisplayIdentity.unique(["Space Art", "space_art", "SPACE-ART", "  space  art ", "Landscape"]),
+            ["Space Art", "Landscape"])
+    }
+
     func testRedgifsNicheSwipeFinishesAtAdjacentViewportWithoutExtraSnap() {
         XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: 1, viewportHeight: 844), -844)
         XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: -1, viewportHeight: 844), 844)

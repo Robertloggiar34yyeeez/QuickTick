@@ -194,7 +194,7 @@ struct PostCardView: View {
                     }
                 }
             }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros):\(mediaStreamRetry):\(manualPlaybackRequested)") {
+            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(offline ? 0 : store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros):\(mediaStreamRetry):\(manualPlaybackRequested)") {
                 // Images, comics and audio cards have no inline
                 // video player to reconcile on each global playback change.
                 guard !Task.isCancelled else { return }

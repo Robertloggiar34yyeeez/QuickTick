@@ -151,7 +151,7 @@ struct ImmersiveFeedView: View {
             }
             activeSince = .now
         }
-        .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")") { await prewarm() }
+        .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(offline ? 0 : store.feedRevision):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")") { await prewarm() }
         .onChange(of: store.feedRevision) { _, _ in
             guard !offline, collectionTab == nil else { return }
             activeSince = .distantPast
@@ -509,12 +509,16 @@ enum ImmersivePreloadPlan {
 enum ImmersivePageSwipePolicy {
     static func direction(translation: CGSize, velocity: CGSize,
                           viewportHeight: CGFloat) -> Int? {
+        guard viewportHeight.isFinite, viewportHeight > 0,
+              translation.width.isFinite, translation.height.isFinite,
+              velocity.width.isFinite, velocity.height.isFinite else { return nil }
         let travel = abs(translation.height)
         let sideways = abs(translation.width)
         let normalThreshold = min(54, max(34, viewportHeight * 0.045))
         let deliberateDrag = travel >= normalThreshold && travel > sideways * 1.15
         let quickFlick = travel >= 16 && travel > sideways * 0.8 &&
-            abs(velocity.height) >= 360 && abs(velocity.height) > abs(velocity.width) * 1.2
+            abs(velocity.height) >= 360 && abs(velocity.height) > abs(velocity.width) * 1.2 &&
+            translation.height * velocity.height > 0
         guard deliberateDrag || quickFlick else { return nil }
         return translation.height < 0 ? 1 : -1
     }
@@ -904,7 +908,7 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros)") {
+        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(offline ? 0 : store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros)") {
             guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else {
                 endExposure(); player = nil; ready = false; introReady = true; gifURL = nil
                 if !active { playing = true }

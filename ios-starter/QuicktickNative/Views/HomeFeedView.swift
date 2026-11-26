@@ -838,9 +838,14 @@ struct HomeFeedView: View {
         let provider = store.selectedProvider
         let selected = ProviderSearchCategories.split(QueryParser.parse(store.queryText), provider: provider).category
         return VStack(alignment: .leading, spacing: 10) {
-            Text("Categories")
-                .font(.subheadline.weight(.bold))
-                .padding(.horizontal, 16)
+            HStack {
+                Text("Categories").font(.subheadline.weight(.bold))
+                Spacer()
+                Button { showAllHanimeTopics = true } label: {
+                    Label("See more", systemImage: "square.grid.2x2")
+                        .font(.caption.weight(.semibold)).foregroundStyle(AppTheme.accent)
+                }.buttonStyle(.plain)
+            }.padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                 ForEach(ProviderSearchCategories.suggestions(provider: provider)) { item in
@@ -1269,6 +1274,7 @@ private struct HanimeTopicsBrowserView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
     @State private var catalogPosts: [Post] = []
+    @State private var providerCategories: [String] = []
     @State private var page = 1
     @State private var hasMore = true
     @State private var loading = false
@@ -1277,7 +1283,7 @@ private struct HanimeTopicsBrowserView: View {
     private var topics: [String] {
         let evidence = store.posts + Array(store.favorites.values) + catalogPosts
         let chosen = store.tasteChoice(for: provider).into
-        let terms = chosen + store.learnedInterests + evidence
+        let terms = (provider == .pornhub ? providerCategories : []) + chosen + store.learnedInterests + evidence
             .filter { $0.providerKey == provider }.flatMap(\.tags)
         let excluded = Set(store.exclusions.map { $0.lowercased() })
         var seen = Set<String>()
@@ -1323,8 +1329,19 @@ private struct HanimeTopicsBrowserView: View {
                     let preview = previews[term]
                     Button {
                         let current = QueryParser.parse(store.queryText)
-                        let query = provider == .rule34 ? term.replacingOccurrences(of: " ", with: "_") : term
-                        store.commitSuggestedTopic(query, excluded: current.excluded)
+                        if provider == .pornhub, let category = providerCategories.first(where: {
+                            PornhubSearchFilters.categoryKey($0) == PornhubSearchFilters.categoryKey(term)
+                        }) {
+                            var filters = PornhubSearchFilters.decode(store.queryText)
+                            if PornhubSearchFilters.isEthnicityCategory(category) { filters.includedEthnicity = category }
+                            else { filters.includedCategory = category }
+                            let keywords = ProviderSearchCategories.split(current, provider: provider).keywords
+                            store.commitSearch(query: filters.encodedQuery(QueryParser.formatted(ParsedQuery(
+                                included: keywords, excluded: current.excluded))), sort: store.feedSort)
+                        } else {
+                            let query = provider == .rule34 ? term.replacingOccurrences(of: " ", with: "_") : term
+                            store.commitSuggestedTopic(query, excluded: current.excluded)
+                        }
                         dismiss()
                         Task { await store.refresh() }
                     } label: {
@@ -1375,7 +1392,12 @@ private struct HanimeTopicsBrowserView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
         }
-        .task { await loadNextPage() }
+        .task {
+            if provider == .pornhub {
+                providerCategories = (try? await store.api.pornhubCategories()) ?? PornhubSearchFilters.commonCategories
+            }
+            await loadNextPage()
+        }
     }
 
     @MainActor private func loadNextPage() async {

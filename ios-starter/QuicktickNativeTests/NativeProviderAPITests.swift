@@ -419,8 +419,8 @@ final class NativeProviderAPITests: XCTestCase {
         let niches = try await api.redgifsNiches()
         XCTAssertEqual(niches.map(\.id), ["cosplay"])
         XCTAssertEqual(niches.first?.name, "Cosplay")
-        XCTAssertEqual(niches.first?.imageURL, "https://media.redgifs.com/nicheclip.jpg",
-                       "Niche icon should be the real poster from a popular post")
+        XCTAssertEqual(niches.first?.imageURL, "https://media.redgifs.com/niche.jpg",
+                       "Use the provider's own niche artwork before a clip poster")
         let page = try await api.posts(provider: .redgifs,
             query: ParsedQuery(included: ["niche:cosplay"], excluded: []),
             page: 1, sort: "popular", immersive: true)
@@ -465,7 +465,7 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(first.hasMore)
         let second = try await api.redgifsNichesPage(page: 2, limit: 24)
         XCTAssertEqual(second.items.map(\.id), ["gaming"])
-        XCTAssertEqual(second.items.first?.imageURL, "https://media.redgifs.com/gamingclip.jpg")
+        XCTAssertEqual(second.items.first?.imageURL, "https://media.redgifs.com/gaming.jpg")
         XCTAssertFalse(second.hasMore)
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { request in
             request.url?.path == "/v2/niches" &&

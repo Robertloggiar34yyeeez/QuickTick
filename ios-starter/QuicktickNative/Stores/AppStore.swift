@@ -998,6 +998,22 @@ final class AppStore: ObservableObject {
                 }
             }
         }
+        // A distinct recency lane increases catalog coverage without widening
+        // explicit searches or increasing the existing two-request budget.
+        var discoverySort = sort
+        if sort == "recommended", first.focused, !second.focused,
+           [.rule34, .redgifs, .pornhub].contains(provider),
+           !UserDefaults.standard.bool(forKey: "quicktick-recommendation-v2-only") {
+            let roundKey = context + "|fresh-round"
+            let round = candidateCursors[roundKey] ?? 0
+            candidateCursors[roundKey] = round + 1
+            if round.isMultiple(of: 2) {
+                let key = context + "|fresh"
+                second = RecommendationEngine.CandidateRequest(
+                    context: key, query: second.query, page: candidateCursors[key] ?? 1, focused: false)
+                discoverySort = "recent"
+            }
+        }
         func prepared(_ request: RecommendationEngine.CandidateRequest)
             -> (key: String, query: ParsedQuery, page: Int) {
             let cursor = candidateCursors[request.context] ?? request.page
@@ -1018,6 +1034,7 @@ final class AppStore: ObservableObject {
         let primaryPageNumber = a.page
         let secondaryQuery = b.query
         let secondaryPageNumber = b.page
+        let secondarySort = discoverySort
         let requestedGeneration = generation
         // Provider requests are independent: an archive cache miss can keep
         // fetching after its waiter is cancelled. A structured task group
@@ -1043,7 +1060,7 @@ final class AppStore: ObservableObject {
         // 100 duplicate fixture/source rows parse on the primary lane.
         let secondaryFlight = Task(priority: mediaOnly ? .userInitiated : .utility) {
             let response = try? await client.posts(provider: provider, query: secondaryQuery,
-                                                   page: secondaryPageNumber, sort: sort, immersive: mediaOnly)
+                                                   page: secondaryPageNumber, sort: secondarySort, immersive: mediaOnly)
             emitter.yield(.second(response))
         }
         let (firstPage, secondPage) = await withTaskCancellationHandler {

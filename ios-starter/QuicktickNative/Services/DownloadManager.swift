@@ -126,6 +126,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         let packages = await hlsSession.allTasks
         for task in files + packages { if let key = task.taskDescription { tasks[key] = task } }
         for var record in records where [.downloading, .queued, .paused].contains(record.state) && tasks[record.key] == nil {
+            if record.kind == .hlsPackage, record.state != .queued,
+               let path = record.localMediaPath, FileManager.default.fileExists(atPath: path) {
+                await finished(record.key, location: URL(fileURLWithPath: path))
+                continue
+            }
             record.state = .failed; record.errorMessage = "Interrupted transfer. Retry to download again."; upsert(record)
         }
     }
@@ -195,8 +200,9 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     let configuration = AVAssetDownloadConfiguration(asset: asset, title: record.title)
                     // Persist the actual preferred video/audio selection rather
                     // than letting the player choose a new remote rendition.
-                    let selection = try await asset.load(.preferredMediaSelection)
-                    configuration.primaryContentConfiguration.mediaSelections = [selection]
+                    if let selection = try? await asset.load(.preferredMediaSelection) {
+                        configuration.primaryContentConfiguration.mediaSelections = [selection]
+                    }
                     guard records.first(where: { $0.key == post.stableID })?.state == .queued else { return }
                     let transfer = hlsSession.makeAssetDownloadTask(downloadConfiguration: configuration)
                     task = transfer

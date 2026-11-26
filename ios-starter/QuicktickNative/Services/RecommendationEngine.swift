@@ -1338,6 +1338,13 @@ actor RecommendationEngine {
         let concepts = TasteConcepts.resolve(post.tags)
         topics.formUnion(concepts.franchises.map { "franchise:" + $0 })
         topics.formUnion(concepts.characters.map { "character:" + $0 })
+        if post.providerKey == .rule34 {
+            topics.formUnion(ArtistAttribution.credited(in: post, taxonomy: taxonomy).map { "creator:" + $0 })
+        }
+        if post.providerKey == .hanime {
+            let series = post.id.replacingOccurrences(of: #"-[0-9]+$"#, with: "", options: .regularExpression)
+            if !series.isEmpty { topics.insert("franchise:" + series) }
+        }
         if post.providerKey == .kemono || post.providerKey == .coomer {
             // Each archive API post can unfold into twelve media attachments.
             // Treat those files as one presentation cluster, not independent
@@ -1483,14 +1490,25 @@ actor RecommendationEngine {
         // sparse metadata could never compete in the final reranker.
         // scores() is cache-only; no network or Core ML inference runs here.
         let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
+        let useReferences = !UserDefaults.standard.bool(forKey: "quicktick-recommendation-v2-only")
+        let source = candidates.first?.providerKey
+        let generic = Self.genericTasteTerms.union(Self.lowSignalDiscoveryTags)
+        let references: [Set<String>] = useReferences ? currentFavorites.lazy
+            .filter { $0.providerKey == source }.prefix(32)
+            .map { Set(terms(for: $0)).subtracting(generic) } : []
+        let preferredArtists = Set(taste.artists.map(TasteConcepts.canonical))
         var scored: [(offset: Int, post: Post, metadata: Double)] = []
         for (offset, post) in candidates.prefix(512).enumerated() {
             guard !isHardDisliked(post, taste: taste),
                   !RecommendationQualityModel.rejects(visual: visualScores[post.stableID]) else { continue }
             if strict && !matchesExplicitInterest(post, taste: taste, visual: visualScores[post.stableID]) { continue }
-            scored.append((offset, post, score(post, taste: taste, recent: recent,
-                                               collaborativeScores: collaborativeScores,
-                                               cachedRecentTerms: recentTerms, alreadyApproved: true)))
+            let metadata = score(post, taste: taste, recent: recent,
+                                 collaborativeScores: collaborativeScores,
+                                 cachedRecentTerms: recentTerms, alreadyApproved: true)
+            let nearest = Self.referenceSimilarity(Set(terms(for: post)).subtracting(generic), references: references)
+            let credited = Set(ArtistAttribution.credited(in: post, taxonomy: taxonomy))
+            let artistBonus: Double = useReferences && !credited.isDisjoint(with: preferredArtists) ? 12 : 0
+            scored.append((offset, post, metadata + nearest * 12 + artistBonus))
         }
         let semanticScores = await semantic.scores(scored.map(\.post), taste: taste)
         let weights = semantic.weights

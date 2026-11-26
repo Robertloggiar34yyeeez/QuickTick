@@ -48,6 +48,9 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
 
     // The share sheet exports the existing file/package without decoding or copying it.
     var exportURL: URL? {
+        // An HLS package is not an ordinary MP4 file. Never offer it as
+        // one in a share sheet, where it may be represented by artwork.
+        if Provider.identify(provider) == .hanime && kind == .hlsPackage { return nil }
         guard !isHanimePosterOnly, (kind != .hlsPackage || offlineHLSVerified == true),
               state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }

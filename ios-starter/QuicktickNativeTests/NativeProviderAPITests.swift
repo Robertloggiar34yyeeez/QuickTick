@@ -576,6 +576,19 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertThrowsError(try HanimeHandshakeCodec.open("not-a-real-token"))
     }
 
+    func testCatalogPrefersAdvertisedStandaloneFile() {
+        XCTAssertEqual(NativeProviderAPI.hanimeCatalogStream([
+            "stream_url": "https://cdn.hanime.tv/sample.m3u8",
+            "video_url": "https://cdn.hanime.tv/sample.mp4"
+        ]), "https://cdn.hanime.tv/sample.mp4")
+    }
+
+    func testPreviewParsingRejectsPlaceholderAndKeepsLazyImage() {
+        let html = #"<li class="videoblock" data-video-vkey="fixture"><img src="https://cdn.pornhub.com/placeholder.png" data-src="https://cdn.pornhub.com/fixture.jpg" /></li>"#
+        let rows = NativeProviderAPI.pornhubHTMLPosts(html)
+        XCTAssertEqual(rows.first?.previewUrl, "https://cdn.pornhub.com/fixture.jpg")
+    }
+
     func testHanimeNativePlaybackAcceptsFirstPartyCatalogStream() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()

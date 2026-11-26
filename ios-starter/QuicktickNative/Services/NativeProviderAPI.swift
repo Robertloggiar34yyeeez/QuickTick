@@ -149,6 +149,27 @@ struct RedgifsNichePage: Sendable {
     let hasMore: Bool
 }
 
+/// Remember only definitively unavailable routes for a short period. A new
+/// session starts independently; authentication and rate limits are unchanged.
+private actor WebmasterRouteHealth {
+    static let shared = WebmasterRouteHealth()
+    private var unavailable: [ObjectIdentifier: [String: Date]] = [:]
+
+    func shouldTry(_ endpoint: String, session: URLSession) -> Bool {
+        (unavailable[ObjectIdentifier(session)]?[endpoint] ?? .distantPast) <= .now
+    }
+
+    func markMissing(_ endpoint: String, session: URLSession) {
+        unavailable = unavailable.compactMapValues { entries in
+            let active = entries.filter { $0.value > .now }
+            return active.isEmpty ? nil : active
+        }
+        let key = ObjectIdentifier(session)
+        guard unavailable.count < 16 || unavailable[key] != nil else { return }
+        unavailable[key, default: [:]][endpoint] = .now.addingTimeInterval(120)
+    }
+}
+
 enum NativeProviderAPI {
     static let userAgent = "QuickTickNative/1.0"
     // nHentai requests specifically ask clients for an identifying UA; keep
@@ -1346,18 +1367,24 @@ enum NativeProviderAPI {
         for endpoint in ["https://www.pornhub.com/webmasters/search",
                          "https://www.pornhub.com/webmasters/search/",
                          "https://api.pornhub.com/webmasters/search"] {
+            guard await WebmasterRouteHealth.shared.shouldTry(endpoint, session: session) else { continue }
             let bytes: Data
             do {
                 bytes = try await data(session: session, url: url(endpoint, parameters),
                                        provider: .pornhub, headers: cookieHeaders(credentials))
             } catch APIError.providerStatus(.pornhub, let status)
                 where [404, 410, 500, 502, 503, 504].contains(status) {
-                // Retired webmaster endpoints should never block the public
-                // first-party catalog fallback.
+                // Avoid repeating a definitively missing route on each page.
+                if status == 404 || status == 410 {
+                    await WebmasterRouteHealth.shared.markMissing(endpoint, session: session)
+                }
                 continue
             }
-            guard !unavailableHTML(bytes),
-                  let result = try? object(bytes), result["videos"] is [Any] else { continue }
+            if unavailableHTML(bytes) {
+                await WebmasterRouteHealth.shared.markMissing(endpoint, session: session)
+                continue
+            }
+            guard let result = try? object(bytes), result["videos"] is [Any] else { continue }
             return result
         }
         return nil

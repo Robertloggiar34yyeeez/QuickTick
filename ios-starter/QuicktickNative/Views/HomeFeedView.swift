@@ -1834,7 +1834,8 @@ private struct HanimeShowsBrowserView: View {
                     }.buttonStyle(.borderedProminent)
                 }
                 Text("Episodes").font(.title2.bold())
-                ForEach(Array(show.episodes.enumerated()), id: \.element.stableID) { index, episode in
+                ForEach(show.episodes, id: \.stableID) { episode in
+                    let index = show.episodes.firstIndex(where: { $0.stableID == episode.stableID }) ?? 0
                     Button { play(episode, in: show) } label: {
                         HStack(spacing: 12) {
                             artwork(episode.thumbUrl, height: 72).frame(width: 112)

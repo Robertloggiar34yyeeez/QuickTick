@@ -4,6 +4,7 @@ import Combine
 
 enum VideoIntroPolicy {
     static let hanimeSettingKey = "quicktick-skip-hanime-intros-v1"
+    static let hanimeStartSecondsKey = "quicktick-hanime-start-seconds-v1"
 
     static func isPornhub(_ provider: String) -> Bool {
         provider.lowercased() == "pornhub"
@@ -22,11 +23,12 @@ enum VideoIntroPolicy {
         isHaven(provider) ? haven : (isHanime(provider) ? hanime : (isPornhub(provider) && pornhub))
     }
 
-    static func startTime(duration: Double, enabled: Bool, provider: String) -> Double {
+    static func startTime(duration: Double, enabled: Bool, provider: String,
+                          defaults: UserDefaults = .standard) -> Double {
         guard enabled, duration.isFinite else { return 0 }
         if isHanime(provider) {
-            let configured = UserDefaults.standard.object(forKey: "quicktick-hanime-start-seconds-v1") as? Double ?? 180
-            let offset = min(300, max(0, configured))
+            let configured = defaults.object(forKey: hanimeStartSecondsKey) as? Double ?? 180
+            let offset = configured.isFinite ? min(300, max(0, configured)) : 180
             return duration > offset + 2 ? offset : 0
         }
         return (isPornhub(provider) || isHaven(provider)) && duration > 12 ? 10 : 0

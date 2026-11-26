@@ -33,8 +33,29 @@ final class QueryParserTests: XCTestCase {
                                               haven: false, hanime: true))
         XCTAssertFalse(VideoIntroPolicy.enabled(provider: "Hanime", pornhub: true,
                                                haven: true, hanime: false))
-        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 60, enabled: true, provider: "Hanime"), 10)
-        XCTAssertEqual(VideoIntroPolicy.startTime(duration: 12, enabled: true, provider: "Hanime"), 0)
+    }
+
+    func testHanimeIntroUsesThreeMinuteDefaultAndHonorsCustomSettings() throws {
+        let name = "QuicktickHanimeIntroTests-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        func start(_ duration: Double, enabled: Bool = true) -> Double {
+            VideoIntroPolicy.startTime(duration: duration, enabled: enabled, provider: "Hanime", defaults: defaults)
+        }
+        XCTAssertEqual(start(600), 180)
+        XCTAssertEqual(start(60), 0)
+        XCTAssertEqual(start(12), 0)
+        XCTAssertEqual(start(182), 0)
+        XCTAssertEqual(start(183), 180)
+        XCTAssertEqual(start(600, enabled: false), 0)
+        XCTAssertEqual(start(.nan), 0)
+        defaults.set(90.0, forKey: VideoIntroPolicy.hanimeStartSecondsKey)
+        XCTAssertEqual(start(600), 90)
+        XCTAssertEqual(start(90), 0)
+        defaults.set(600.0, forKey: VideoIntroPolicy.hanimeStartSecondsKey)
+        XCTAssertEqual(start(600), 300)
+        defaults.set(-30.0, forKey: VideoIntroPolicy.hanimeStartSecondsKey)
+        XCTAssertEqual(start(600), 0)
     }
 
     func testPornhubIntroMustHaveBufferedFramesAfterTenSeconds() {

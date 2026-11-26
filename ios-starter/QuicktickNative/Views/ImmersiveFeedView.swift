@@ -183,7 +183,8 @@ struct ImmersiveFeedView: View {
                     ContentUnavailableView {
                         Label(store.isLoading ? "Loading clips" : "No videos or GIFs", systemImage: "play.rectangle")
                     } description: {
-                        Text(store.lastError ?? (offline ? "Download a video or GIF to watch it here." : "No new clips matched. Try another source or adjust your interests."))
+                        Text(offline ? "Download a video or GIF to watch it here." :
+                             (store.lastError ?? "No new clips matched. Try another source or adjust your interests."))
                     } actions: {
                         if !offline && collectionTab == nil {
                             TimelineView(.periodic(from: .now, by: 1)) { context in

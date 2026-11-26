@@ -540,8 +540,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 160, height: 160)
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 2, preferredTimescale: 600)
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 2, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.25, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.25, preferredTimescale: 600)
         defer { generator.cancelAllCGImageGeneration() }
         for fraction in [0.02, 0.50, 0.95] {
             guard !Task.isCancelled,

@@ -38,6 +38,21 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNil(record.exportURL)
     }
 
+    @MainActor func testStandaloneVideoVerifierUsesRealLocalClipAndRejectsDisguisedPoster() async throws {
+        let posts = try await UITestMediaFactory.shared.posts(sort: "recommended")
+        let clip = try XCTUnwrap(URL(string: posts[0].mediaUrl))
+        let valid = await DownloadManager.verifyStandaloneVideo(clip)
+        XCTAssertTrue(valid, "The checked-in H.264/AAC fixture must be independently playable")
+        let fake = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        defer { try? FileManager.default.removeItem(at: fake) }
+        try Data([0xFF, 0xD8, 0xFF]).write(to: fake)
+        let invalid = await DownloadManager.verifyStandaloneVideo(fake)
+        XCTAssertFalse(invalid)
+        let remote = URL(string: "https://example.invalid/movie.mp4")!
+        let remoteValid = await DownloadManager.verifyStandaloneVideo(remote)
+        XCTAssertFalse(remoteValid)
+    }
+
     func testLocalMediaDimensionsPersistIntoOfflinePost() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
         try Data([0, 1, 2]).write(to: file)

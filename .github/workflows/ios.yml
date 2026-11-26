@@ -159,7 +159,7 @@ jobs:
         if: steps.spm-cache.outputs.cache-hit != 'true' && steps.spm.outputs.attempt == '1'
         with:
           path: ${{ runner.temp }}/quicktick-swiftpm-1
-          key: swiftpm-xcode26.3-arm64-v1-${{ hashFiles('ios-starter/QuicktickNative.xcodeproj/project.pbxproj', 'ios-starter/**/Package.swift', 'ios-starter/**/Package.resolved') }}
+          key: ${{ steps.spm-cache.outputs.cache-primary-key }}
       - name: Compile native app and tests before archiving
         shell: bash
         run: |
@@ -301,9 +301,27 @@ jobs:
           {
             echo '## Build failure summary'
             echo '~~~text'
-            grep -hE '(^|: )(fatal )?error:|Test Case .* failed|\\*\\* (BUILD|TEST|ARCHIVE) FAILED' logs/*.txt 2>/dev/null | tail -n 60 || true
+            grep -hE '(^|: )(fatal )?error:|Test Case .* failed|[*][*] (BUILD|TEST|ARCHIVE) FAILED' logs/*.txt 2>/dev/null | tail -n 60 || true
             echo '~~~'
           } >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY'
+          import glob, re
+          seen = set()
+          for path in glob.glob("logs/*.txt"):
+              with open(path, errors="replace") as log:
+                  for line in log:
+                      match = re.search(r'([^\s]+\.swift):(\d+):(\d+): error: (.*)', line)
+                      if not match:
+                          continue
+                      file, row, col, message = match.groups()
+                      entry = (file, row, col, message)
+                      if entry in seen or len(seen) >= 30:
+                          continue
+                      seen.add(entry)
+                      file = file.split("/QuickTick/QuickTick/", 1)[-1]
+                      message = message.strip().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                      print(f"::error file={file},line={row},col={col}::{message}")
+          PY
       - uses: actions/upload-artifact@v6
         if: always()
         with:

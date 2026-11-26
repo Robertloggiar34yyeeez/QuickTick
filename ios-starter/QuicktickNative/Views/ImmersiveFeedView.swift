@@ -74,11 +74,84 @@ struct ImmersiveFeedView: View {
         return mediaPosts.indices.contains(next) ? mediaPosts[next] : nil
     }
 
+    private var prewarmTaskID: String {
+        "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(offline ? "offline" : store.feedRevision.uuidString):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")"
+    }
+
     var body: some View {
         // Keep the media canvas edge-to-edge on *both* vertical edges. Only
         // extending into the bottom home-indicator inset moves the perceived
         // center below the device center by half the top safe-area inset.
         // Controls stay in the safe-area ZStack, above the notch/status bar.
+        immersiveCanvas
+        .background(ThemeBackdrop())
+        .navigationTitle(offline ? "Offline Immersive" : "Immersive")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(AppTheme.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbar(.hidden, for: .navigationBar)
+        .task(id: presentationActive) {
+            guard presentationActive else { return }
+            if let activeID, let index = mediaPosts.firstIndex(where: { $0.stableID == activeID }) {
+                activeIndex = index
+            } else {
+                activeIndex = 0
+                activeID = mediaPosts.first?.stableID
+            }
+            activeSince = .now
+        }
+        .task(id: prewarmTaskID) { await prewarm() }
+        .onChange(of: store.feedRevision) { _, _ in
+            guard !offline, collectionTab == nil else { return }
+            activeSince = .distantPast
+            activeIndex = 0; activeID = mediaPosts.first?.stableID
+            settlingNicheSwipe = false; verticalDrag = 0
+        }
+        .onChange(of: mediaSignature) { _, _ in
+            let keys = mediaPosts.map(\.stableID)
+            if let activeID, let index = keys.firstIndex(of: activeID) {
+                activeIndex = index
+            } else {
+                activeIndex = keys.isEmpty ? 0 : min(activeIndex, keys.count - 1)
+                activeID = keys.isEmpty ? nil : keys[activeIndex]
+            }
+        }
+        .onChange(of: activeID) { oldID, key in activePostChanged(from: oldID, to: key) }
+        .onDisappear {
+            settlingNicheSwipe = false
+            if store.players.activeOwner == playbackOwner { store.players.releaseAll() }
+        }
+        .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
+        .sheet(isPresented: $searchVisible) { NativeSearchBar(immersive: true) }
+        .quicktickEdgeBack {
+            // Nested viewers close to their originating feed. The primary
+            // Immersive tab returns to Home without affecting page navigation.
+            if let onClose { onClose() }
+            else { Task { await store.selectFeedTab(0) } }
+        }
+        .offset(x: horizontalCloseDrag)
+    }
+
+    private func activePostChanged(from oldID: String?, to key: String?) {
+            let now = Date()
+            if !offline, collectionTab == nil, presentationActive, store.isForeground,
+               store.feedSort == "recommended", let oldID, let key,
+               let previous = mediaPosts.firstIndex(where: { $0.stableID == oldID }),
+               let next = mediaPosts.firstIndex(where: { $0.stableID == key }) {
+                if QuickSkipDecision.dislikes(elapsed: now.timeIntervalSince(activeSince),
+                                             from: previous, to: next) {
+                    store.recordQuickSkip(mediaPosts[previous])
+                }
+                // Going back removes a prior instant-skip dislike; it does not
+                // generate positive feedback or undo an explicit thumbs-down.
+                store.neutralizeQuickSkip(mediaPosts[next])
+            }
+            activeSince = now
+            store.protectImmersivePost(key)
+            if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index }
+        }
+
+    private var immersiveCanvas: some View {
         ZStack(alignment: .top) {
             GeometryReader { geo in
             ZStack {
@@ -135,69 +208,6 @@ struct ImmersiveFeedView: View {
             .ignoresSafeArea(edges: [.top, .bottom])
             immersiveHeader
         }
-        .background(ThemeBackdrop())
-        .navigationTitle(offline ? "Offline Immersive" : "Immersive")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(AppTheme.background, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
-        .toolbar(.hidden, for: .navigationBar)
-        .task(id: presentationActive) {
-            guard presentationActive else { return }
-            if let activeID, let index = mediaPosts.firstIndex(where: { $0.stableID == activeID }) {
-                activeIndex = index
-            } else {
-                activeIndex = 0
-                activeID = mediaPosts.first?.stableID
-            }
-            activeSince = .now
-        }
-        .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(offline ? 0 : store.feedRevision):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")") { await prewarm() }
-        .onChange(of: store.feedRevision) { _, _ in
-            guard !offline, collectionTab == nil else { return }
-            activeSince = .distantPast
-            activeIndex = 0; activeID = mediaPosts.first?.stableID
-            settlingNicheSwipe = false; verticalDrag = 0
-        }
-        .onChange(of: mediaSignature) { _, _ in
-            let keys = mediaPosts.map(\.stableID)
-            if let activeID, let index = keys.firstIndex(of: activeID) {
-                activeIndex = index
-            } else {
-                activeIndex = keys.isEmpty ? 0 : min(activeIndex, keys.count - 1)
-                activeID = keys.isEmpty ? nil : keys[activeIndex]
-            }
-        }
-        .onChange(of: activeID) { oldID, key in
-            let now = Date()
-            if !offline, collectionTab == nil, presentationActive, store.isForeground,
-               store.feedSort == "recommended", let oldID, let key,
-               let previous = mediaPosts.firstIndex(where: { $0.stableID == oldID }),
-               let next = mediaPosts.firstIndex(where: { $0.stableID == key }) {
-                if QuickSkipDecision.dislikes(elapsed: now.timeIntervalSince(activeSince),
-                                             from: previous, to: next) {
-                    store.recordQuickSkip(mediaPosts[previous])
-                }
-                // Going back removes a prior instant-skip dislike; it does not
-                // generate positive feedback or undo an explicit thumbs-down.
-                store.neutralizeQuickSkip(mediaPosts[next])
-            }
-            activeSince = now
-            store.protectImmersivePost(key)
-            if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index }
-        }
-        .onDisappear {
-            settlingNicheSwipe = false
-            if store.players.activeOwner == playbackOwner { store.players.releaseAll() }
-        }
-        .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
-        .sheet(isPresented: $searchVisible) { NativeSearchBar(immersive: true) }
-        .quicktickEdgeBack {
-            // Nested viewers close to their originating feed. The primary
-            // Immersive tab returns to Home without affecting page navigation.
-            if let onClose { onClose() }
-            else { Task { await store.selectFeedTab(0) } }
-        }
-        .offset(x: horizontalCloseDrag)
     }
 
     private var immersiveHeader: some View {
@@ -696,6 +706,10 @@ private struct ImmersiveItemView: View {
         }
     }
 
+    private var playbackTaskID: String {
+        "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(offline ? "offline" : store.feedRevision.uuidString):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros)"
+    }
+
     var body: some View {
         GeometryReader { geo in
             let mediaSize = fillsNicheCanvas ? geo.size : fittedSize(geo.size)
@@ -908,7 +922,7 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(offline ? 0 : store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros)") {
+        .task(id: playbackTaskID) {
             guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else {
                 endExposure(); player = nil; ready = false; introReady = true; gifURL = nil
                 if !active { playing = true }

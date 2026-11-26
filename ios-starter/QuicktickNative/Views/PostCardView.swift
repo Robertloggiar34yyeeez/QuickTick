@@ -61,7 +61,150 @@ struct PostCardView: View {
             ? MediaSizing.feedCard(aspect: aspect, available: available)
             : MediaSizing.size(native: post.nativeSize, aspect: aspect, available: available)
     }
+    private var playbackTaskID: String {
+        "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(offline ? "offline" : store.feedRevision.uuidString):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros):\(mediaStreamRetry):\(manualPlaybackRequested)"
+    }
+
     var body: some View {
+        cardContent
+            .contextMenu {
+                ForEach(creditedArtists.prefix(3), id: \.self) { artist in
+                    Button {
+                        store.preferArtist(artist, from: post)
+                    } label: {
+                        Label("More from \(artist.replacingOccurrences(of: "_", with: " "))", systemImage: "paintbrush.pointed.fill")
+                    }
+                }
+            }
+            .task(id: "artists:\(post.stableID)") {
+                guard post.providerKey == .rule34 else {
+                    creditedArtists = ArtistAttribution.credited(in: post)
+                    return
+                }
+                let taxonomy = await store.visual.metadataTaxonomy()
+                guard !Task.isCancelled else { return }
+                creditedArtists = ArtistAttribution.credited(in: post, taxonomy: taxonomy)
+            }
+            .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
+            .sheet(isPresented: $comments) { CommentsView(post: post) }
+            .sheet(isPresented: $tags) { PostTagsView(post: post) }
+            .sheet(isPresented: $havenBrowser) {
+                if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
+            }
+            .sheet(isPresented: $pornhubBrowser) {
+                if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
+            }
+            .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
+                previewURL: post.cardPreviewURL) }
+            .fullScreenCover(isPresented: $readingManga) {
+                MangaReaderView(post: post).environmentObject(store)
+            }
+            .fullScreenCover(isPresented: Binding(
+                get: { store.fullScreenPlaybackID == post.stableID },
+                set: { if !$0 { store.fullScreenPlaybackID = nil } }
+            ), onDismiss: {
+                if store.isForeground, store.activeTab == playbackTab,
+                   store.pausedPlaybackID != post.stableID,
+                   (autoplayVideos || manualPlaybackRequested) { player?.play() }
+            }) {
+                if let player {
+                    FullScreenVideoView(player: player, postID: post.stableID,
+                                        exportURL: offline ? DownloadExporter.localFileURL(post.mediaUrl) : nil) {
+                        store.fullScreenPlaybackID = nil
+                    }
+                }
+            }
+            .task(id: playbackTaskID) { await reconcilePlayback() }
+            .onDisappear {
+                // Home visibility owns the active ID. A delayed disappearance
+                // from the outgoing tab must not clear a reactivated Home post.
+                if store.fullScreenPlaybackID != post.stableID,
+                   playbackTab != 0 || store.activeTab != playbackTab || store.inlinePlaybackID != post.stableID { stopPlayback() }
+            }
+            // An inactive card has no player and must not receive synthetic
+            // Just() emissions whenever its parent recomputes during scroll.
+            .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Empty<AVPlayer.TimeControlStatus, Never>(completeImmediately: false).eraseToAnyPublisher()) { playing = $0 == .playing }
+            .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Empty<AVPlayerItem.Status, Never>(completeImmediately: false).eraseToAnyPublisher()) { status in
+                if status == .failed {
+                    playing = false
+                    store.players.release(post.stableID)
+                    if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
+                       mediaStreamRetry < (post.providerKey == .hanime ? 2 : 1),
+                       store.inlinePlaybackID == post.stableID {
+                        // A short-lived signed playlist may expire between
+                        // prewarming and the first frame. Retry once with a
+                        // fresh handshake rather than keeping a dead player.
+                        mediaStreamRetry += 1
+                        player = nil; ready = false
+                        playbackError = nil
+                    } else {
+                        playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."
+                    }
+                }
+            }
+            .onChange(of: comments) { _, shown in
+                if shown {
+                    resumeAfterComments = store.pausedPlaybackID != post.stableID &&
+                        (autoplayVideos || manualPlaybackRequested)
+                    store.pausedPlaybackID = post.stableID
+                    store.players.pause(post.stableID)
+                } else {
+                    if resumeAfterComments, store.pausedPlaybackID == post.stableID,
+                       store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab,
+                       store.isForeground {
+                        store.pausedPlaybackID = nil
+                        player?.play()
+                    }
+                    resumeAfterComments = false
+                }
+            }
+            .onChange(of: fullImage) { _, shown in if shown { store.players.pauseAll() } }
+            .onChange(of: player != nil && introReady) { _, isPlayable in
+                guard isPlayable, pendingVideoFullscreen, store.activeTab == playbackTab else { return }
+                pendingVideoFullscreen = false
+                store.fullScreenPlaybackID = post.stableID
+            }
+            .onDisappear { pendingVideoFullscreen = false }
+            .onChange(of: store.muted) { _, value in player?.isMuted = value }
+            .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
+                guard let item = note.object as? AVPlayerItem, item === player?.currentItem else { return }
+                if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground {
+                    store.recordComplete(post); store.recordReplay(post)
+                    let length = player?.currentItem?.duration.seconds ?? 0
+                    let start = VideoIntroPolicy.startTime(duration: length, enabled: shouldSkipIntro, provider: post.provider)
+                    player?.seek(to: CMTime(seconds: start, preferredTimescale: 600))
+                    if store.pausedPlaybackID != post.stableID,
+                       (autoplayVideos || manualPlaybackRequested) { player?.play() }
+                }
+            }
+    }
+
+    private func reconcilePlayback() async {
+                // Images, comics and audio cards have no inline
+                // video player to reconcile on each global playback change.
+                guard !Task.isCancelled else { return }
+                guard post.isImmersiveMedia else { stopPlayback(); return }
+                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
+                guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
+                // Erome Home shows unresolved album summaries. Autoplaying
+                // them performs an album HTML fetch (and sometimes WebKit)
+                // every time the user scrolls past. Explicit Play still works.
+                guard !post.isUnresolvedEromePreview || manualPlaybackRequested else {
+                    stopPlayback(); return
+                }
+                // Autoplay is optional during a fast Home swipe. Wait for a
+                // stable candidate before opening a stream; explicit Play and
+                // Immersive playback remain immediate.
+                if playbackTab == 0 && !manualPlaybackRequested {
+                    do { try await Task.sleep(for: .milliseconds(230)) } catch { return }
+                    guard !Task.isCancelled, store.inlinePlaybackID == post.stableID,
+                          store.activeTab == playbackTab, store.isForeground,
+                          !store.isManualVisualScanRunning else { return }
+                }
+                await preparePlayback()
+            }
+
+    private var cardContent: some View {
         VStack(spacing: 0) {
             media.frame(width: mediaSize.width, height: mediaSize.height).clipped().contentShape(Rectangle())
                 .background {
@@ -147,139 +290,6 @@ struct PostCardView: View {
         }.frame(width: mediaSize.width).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: cardRadius))
             .clipShape(RoundedRectangle(cornerRadius: cardRadius))
             .overlay(RoundedRectangle(cornerRadius: cardRadius).stroke(.white.opacity(0.07), lineWidth: 1))
-            .contextMenu {
-                ForEach(creditedArtists.prefix(3), id: \.self) { artist in
-                    Button {
-                        store.preferArtist(artist, from: post)
-                    } label: {
-                        Label("More from \(artist.replacingOccurrences(of: "_", with: " "))", systemImage: "paintbrush.pointed.fill")
-                    }
-                }
-            }
-            .task(id: "artists:\(post.stableID)") {
-                guard post.providerKey == .rule34 else {
-                    creditedArtists = ArtistAttribution.credited(in: post)
-                    return
-                }
-                let taxonomy = await store.visual.metadataTaxonomy()
-                guard !Task.isCancelled else { return }
-                creditedArtists = ArtistAttribution.credited(in: post, taxonomy: taxonomy)
-            }
-            .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
-            .sheet(isPresented: $comments) { CommentsView(post: post) }
-            .sheet(isPresented: $tags) { PostTagsView(post: post) }
-            .sheet(isPresented: $havenBrowser) {
-                if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
-            }
-            .sheet(isPresented: $pornhubBrowser) {
-                if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
-            }
-            .fullScreenCover(isPresented: $fullImage) { FullComicView(url: post.mediaUrl.isEmpty ? post.cardPreviewURL : post.mediaUrl,
-                previewURL: post.cardPreviewURL) }
-            .fullScreenCover(isPresented: $readingManga) {
-                MangaReaderView(post: post).environmentObject(store)
-            }
-            .fullScreenCover(isPresented: Binding(
-                get: { store.fullScreenPlaybackID == post.stableID },
-                set: { if !$0 { store.fullScreenPlaybackID = nil } }
-            ), onDismiss: {
-                if store.isForeground, store.activeTab == playbackTab,
-                   store.pausedPlaybackID != post.stableID,
-                   (autoplayVideos || manualPlaybackRequested) { player?.play() }
-            }) {
-                if let player {
-                    FullScreenVideoView(player: player, postID: post.stableID,
-                                        exportURL: offline ? DownloadExporter.localFileURL(post.mediaUrl) : nil) {
-                        store.fullScreenPlaybackID = nil
-                    }
-                }
-            }
-            .task(id: "\(store.inlinePlaybackID ?? ""): \(store.pausedPlaybackID ?? ""): \(store.isForeground): \(store.isStudioPresented): \(store.activeTab): \(offline ? 0 : store.feedRevision):\(store.isManualVisualScanRunning):\(autoplayVideos):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros):\(mediaStreamRetry):\(manualPlaybackRequested)") {
-                // Images, comics and audio cards have no inline
-                // video player to reconcile on each global playback change.
-                guard !Task.isCancelled else { return }
-                guard post.isImmersiveMedia else { stopPlayback(); return }
-                guard store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, !store.isStudioPresented, !store.isManualVisualScanRunning else { stopPlayback(); return }
-                guard autoplayVideos || manualPlaybackRequested else { stopPlayback(); return }
-                // Erome Home shows unresolved album summaries. Autoplaying
-                // them performs an album HTML fetch (and sometimes WebKit)
-                // every time the user scrolls past. Explicit Play still works.
-                guard !post.isUnresolvedEromePreview || manualPlaybackRequested else {
-                    stopPlayback(); return
-                }
-                // Autoplay is optional during a fast Home swipe. Wait for a
-                // stable candidate before opening a stream; explicit Play and
-                // Immersive playback remain immediate.
-                if playbackTab == 0 && !manualPlaybackRequested {
-                    do { try await Task.sleep(for: .milliseconds(230)) } catch { return }
-                    guard !Task.isCancelled, store.inlinePlaybackID == post.stableID,
-                          store.activeTab == playbackTab, store.isForeground,
-                          !store.isManualVisualScanRunning else { return }
-                }
-                await preparePlayback()
-            }
-            .onDisappear {
-                // Home visibility owns the active ID. A delayed disappearance
-                // from the outgoing tab must not clear a reactivated Home post.
-                if store.fullScreenPlaybackID != post.stableID,
-                   playbackTab != 0 || store.activeTab != playbackTab || store.inlinePlaybackID != post.stableID { stopPlayback() }
-            }
-            // An inactive card has no player and must not receive synthetic
-            // Just() emissions whenever its parent recomputes during scroll.
-            .onReceive((player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()) ?? Empty<AVPlayer.TimeControlStatus, Never>(completeImmediately: false).eraseToAnyPublisher()) { playing = $0 == .playing }
-            .onReceive((player?.currentItem?.publisher(for: \.status).eraseToAnyPublisher()) ?? Empty<AVPlayerItem.Status, Never>(completeImmediately: false).eraseToAnyPublisher()) { status in
-                if status == .failed {
-                    playing = false
-                    store.players.release(post.stableID)
-                    if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
-                       mediaStreamRetry < (post.providerKey == .hanime ? 2 : 1),
-                       store.inlinePlaybackID == post.stableID {
-                        // A short-lived signed playlist may expire between
-                        // prewarming and the first frame. Retry once with a
-                        // fresh handshake rather than keeping a dead player.
-                        mediaStreamRetry += 1
-                        player = nil; ready = false
-                        playbackError = nil
-                    } else {
-                        playbackError = player?.currentItem?.error?.localizedDescription ?? "Video unavailable. Tap Play to retry."
-                    }
-                }
-            }
-            .onChange(of: comments) { _, shown in
-                if shown {
-                    resumeAfterComments = store.pausedPlaybackID != post.stableID &&
-                        (autoplayVideos || manualPlaybackRequested)
-                    store.pausedPlaybackID = post.stableID
-                    store.players.pause(post.stableID)
-                } else {
-                    if resumeAfterComments, store.pausedPlaybackID == post.stableID,
-                       store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab,
-                       store.isForeground {
-                        store.pausedPlaybackID = nil
-                        player?.play()
-                    }
-                    resumeAfterComments = false
-                }
-            }
-            .onChange(of: fullImage) { _, shown in if shown { store.players.pauseAll() } }
-            .onChange(of: player != nil && introReady) { _, isPlayable in
-                guard isPlayable, pendingVideoFullscreen, store.activeTab == playbackTab else { return }
-                pendingVideoFullscreen = false
-                store.fullScreenPlaybackID = post.stableID
-            }
-            .onDisappear { pendingVideoFullscreen = false }
-            .onChange(of: store.muted) { _, value in player?.isMuted = value }
-            .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
-                guard let item = note.object as? AVPlayerItem, item === player?.currentItem else { return }
-                if store.inlinePlaybackID == post.stableID, store.activeTab == 0, store.isForeground {
-                    store.recordComplete(post); store.recordReplay(post)
-                    let length = player?.currentItem?.duration.seconds ?? 0
-                    let start = VideoIntroPolicy.startTime(duration: length, enabled: shouldSkipIntro, provider: post.provider)
-                    player?.seek(to: CMTime(seconds: start, preferredTimescale: 600))
-                    if store.pausedPlaybackID != post.stableID,
-                       (autoplayVideos || manualPlaybackRequested) { player?.play() }
-                }
-            }
     }
 
     @ViewBuilder private var media: some View {

@@ -465,6 +465,11 @@ struct PostCardView: View {
                 }
                 return
             }
+            if offline {
+                try await store.players.prepareLocalPlayback(key: post.stableID, url: url)
+                guard !Task.isCancelled, store.inlinePlaybackID == post.stableID,
+                      store.activeTab == playbackTab, store.isForeground else { return }
+            }
             let p: AVPlayer
             if store.pausedPlaybackID == post.stableID {
                 p = store.players.player(for: post.stableID, url: url); p.pause()

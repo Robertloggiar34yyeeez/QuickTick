@@ -265,7 +265,7 @@ struct TasteOnboardingView: View {
 
     private var artistPreferences: some View {
         VStack(alignment: .leading, spacing: 11) {
-            Label("Artists & creators", systemImage: "paintbrush.pointed.fill")
+            Label(store.selectedProvider == .rule34 ? "Favorite artists" : "Artists & creators", systemImage: "paintbrush.pointed.fill")
                 .font(.headline)
             Text("Enter credited artists you like. QuickTick compares their saved posts for recurring poses, actions and styles, while still exploring new creators.")
                 .font(.caption).foregroundStyle(AppTheme.secondaryLabel)

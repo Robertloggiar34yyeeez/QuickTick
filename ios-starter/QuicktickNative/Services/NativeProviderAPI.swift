@@ -581,7 +581,7 @@ enum NativeProviderAPI {
             try Task.checkCancellation()
             let indices = Array(start..<min(start + 4, chosen.count))
             let collected = await withTaskGroup(of: (Int, String?).self) { group in
-                for index in indices {
+                for index in indices where chosen[index].imageURL.isEmpty {
                     let id = chosen[index].id
                     group.addTask {
                         do {
@@ -604,9 +604,10 @@ enum NativeProviderAPI {
             }
             for (index, image) in collected { if let image { covers[index] = image } }
         }
-        let enriched = chosen.enumerated().compactMap { index, niche -> RedgifsNiche? in
-            let image = covers[index] ?? niche.imageURL
-            guard !image.isEmpty else { return nil }
+        var usedImages = Set<String>()
+        let enriched = chosen.enumerated().map { index, niche -> RedgifsNiche in
+            let preferred = niche.imageURL.isEmpty ? (covers[index] ?? "") : niche.imageURL
+            let image = !preferred.isEmpty && usedImages.insert(preferred).inserted ? preferred : ""
             return RedgifsNiche(id: niche.id, name: niche.name, imageURL: image, postCount: niche.postCount)
         }
         return RedgifsNichePage(items: enriched, hasMore: hasMore)

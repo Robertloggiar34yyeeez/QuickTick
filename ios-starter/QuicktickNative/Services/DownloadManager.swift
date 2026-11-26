@@ -193,6 +193,11 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     let asset = mediaHeaders.isEmpty ? AVURLAsset(url: url)
                         : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": mediaHeaders])
                     let configuration = AVAssetDownloadConfiguration(asset: asset, title: record.title)
+                    // Persist the actual preferred video/audio selection rather
+                    // than letting the player choose a new remote rendition.
+                    let selection = try await asset.load(.preferredMediaSelection)
+                    configuration.primaryContentConfiguration.mediaSelections = [selection]
+                    guard records.first(where: { $0.key == post.stableID })?.state == .queued else { return }
                     let transfer = hlsSession.makeAssetDownloadTask(downloadConfiguration: configuration)
                     task = transfer
                 } else {
@@ -391,10 +396,14 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             let playable = (try? await offlineAsset.load(.isPlayable)) ?? false
             let duration = (try? await offlineAsset.load(.duration))?.seconds ?? 0
             let cacheReady = offlineAsset.assetCache?.isPlayableOffline
-            guard OfflineHLSReadiness.isVerified(playable: playable, duration: duration, cacheReady: cacheReady),
+            let audioReady: Bool
+            if let group = try? await offlineAsset.loadMediaSelectionGroup(for: .audible) {
+                audioReady = group.options.isEmpty || !(offlineAsset.assetCache?.mediaSelectionOptions(in: group).isEmpty ?? true)
+            } else { audioReady = true }
+            guard audioReady, OfflineHLSReadiness.isVerified(playable: playable, duration: duration, cacheReady: cacheReady),
                   let size = await DownloadSizeReader.shared.bytes(at: location), size > 0 else {
                 let cacheStatus = cacheReady.map { $0 ? "ready" : "not ready" } ?? "unavailable"
-                failedTransfer(key, reason: "Offline HLS verification failed (cache: \(cacheStatus)). The video was not saved.")
+                failedTransfer(key, reason: "Offline HLS verification failed (cache: \(cacheStatus), cached audio: \(audioReady ? "ready" : "missing")). The video was not saved.")
                 return
             }
         } else if Provider.identify(record.provider) == .hanime {

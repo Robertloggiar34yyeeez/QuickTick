@@ -164,7 +164,7 @@ struct HomeFeedView: View {
             })
         }
         .sheet(isPresented: $showAllHanimeTopics) {
-            NavigationStack { HanimeTopicsBrowserView() }
+            NavigationStack { HanimeTopicsBrowserView(provider: store.selectedProvider) }
                 .environmentObject(store)
         }
     }
@@ -317,8 +317,8 @@ struct HomeFeedView: View {
                 }
                 if store.selectedProvider == .redgifs {
                     redgifsNicheRow
-                } else if store.selectedProvider == .hanime ||
-                            (suggestedThemesEnabled && !themeSuggestions.isEmpty) {
+                } else if store.selectedProvider == .hanime || store.selectedProvider == .rule34 ||
+                            store.selectedProvider == .pornhub || (suggestedThemesEnabled && !themeSuggestions.isEmpty) {
                     suggestedThemeRow
                 }
                 if store.selectedProvider == .pornhub {
@@ -715,7 +715,7 @@ struct HomeFeedView: View {
     /// Personal suggestions work on *every* provider and use real covers or
     /// thumbnails from posts matching this provider's learned interests.
     @ViewBuilder private var suggestedThemeRow: some View {
-        if !themeSuggestions.isEmpty || store.selectedProvider == .hanime {
+        if !themeSuggestions.isEmpty || [.hanime, .rule34, .pornhub].contains(store.selectedProvider) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
@@ -725,7 +725,7 @@ struct HomeFeedView: View {
                          ? "Franchise discovery" : "Based on your taste")
                         .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
-                    if store.selectedProvider == .hanime {
+                    if [.hanime, .rule34, .pornhub].contains(store.selectedProvider) {
                         Button {
                             showAllHanimeTopics = true
                         } label: {
@@ -768,7 +768,7 @@ struct HomeFeedView: View {
     /// RedGIFs' actual communities, represented by thumbnails from their
     /// popular clips. Tapping one opens that niche's immersive vertical feed.
     @ViewBuilder private var redgifsNicheRow: some View {
-        if !redgifsNiches.isEmpty {
+        if store.selectedProvider == .redgifs {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "square.grid.2x2.fill").foregroundStyle(AppTheme.accent)
@@ -782,7 +782,7 @@ struct HomeFeedView: View {
                         showAllRedgifsNiches = true
                     } label: {
                         HStack(spacing: 4) {
-                            Text("Show all")
+                            Text("See more")
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
                         }
                         .font(.caption.weight(.semibold))
@@ -892,7 +892,8 @@ struct HomeFeedView: View {
             guard !Task.isCancelled, store.selectedProvider == .pornhub else { return }
             guard pornhubCategoryPreviews[category.value] == nil else { continue }
             if let preview = try? await store.api.pornhubCategoryPreview(token: category.value),
-               URL(string: preview)?.scheme == "https" {
+               URL(string: preview)?.scheme == "https",
+               !pornhubCategoryPreviews.values.contains(preview) {
                 pornhubCategoryPreviews[category.value] = preview
             }
             try? await Task.sleep(for: .milliseconds(350))
@@ -1037,14 +1038,27 @@ private struct RedgifsNicheBrowserView: View {
 
     private var filtered: [RedgifsNiche] {
         let matching = searchText.isEmpty ? niches
-            : niches.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+            : niches.filter { $0.name.localizedCaseInsensitiveContains(searchText) || $0.id.localizedCaseInsensitiveContains(searchText) }
         let taste = RedgifsNicheAffinity(liked: Array(store.favorites.values), observed: store.posts)
         return taste.rankNiches(matching)
     }
 
     var body: some View {
         Group {
-            if let selectedNiche {
+            if let selectedNiche, loadingNicheID != nil || selectedPostID == nil {
+                VStack(spacing: 16) {
+                    Text(selectedNiche.name).font(.title2.weight(.semibold))
+                    if loadingNicheID != nil { ProgressView("Loading niche…") }
+                    else {
+                        Text(errorMessage ?? "No clips available.").foregroundStyle(.secondary)
+                        Button("Retry") { openNiche(selectedNiche) }
+                    }
+                    Button("Back to niches") {
+                        selectionID = UUID(); loadingNicheID = nil
+                        self.selectedNiche = nil; selectedPostID = nil
+                    }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let selectedNiche {
                 // The niche player is a full-screen cover in its own right.
                 // Keeping it inside NavigationStack makes UIKit reserve the
                 // navigation/safe-area bounds and shrinks the video canvas
@@ -1103,7 +1117,15 @@ private struct RedgifsNicheBrowserView: View {
         .background(ThemeBackdrop())
         .navigationTitle("RedGIFs niches")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, prompt: "Filter loaded niches")
+        .searchable(text: $searchText, prompt: "Search niches")
+        .task(id: searchText) {
+            guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            for _ in 0..<6 {
+                guard !Task.isCancelled, hasMore, !loading, errorMessage == nil else { break }
+                await loadNextPage()
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button("Close") { dismiss() }
@@ -1179,6 +1201,8 @@ private struct RedgifsNicheBrowserView: View {
         let requestID = UUID()
         selectionID = requestID
         loadingNicheID = niche.id
+        selectedPostID = nil
+        selectedNiche = niche
         errorMessage = nil
         let query = "niche:" + niche.id
         store.commitSearch(query: query, sort: "popular")
@@ -1240,6 +1264,7 @@ private struct RedgifsNicheBrowserView: View {
 /// plus tags from saved posts. More catalog pages can be requested in place;
 /// the five personalized chips on Home are not the directory's limit.
 private struct HanimeTopicsBrowserView: View {
+    let provider: Provider
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
@@ -1251,9 +1276,9 @@ private struct HanimeTopicsBrowserView: View {
 
     private var topics: [String] {
         let evidence = store.posts + Array(store.favorites.values) + catalogPosts
-        let chosen = store.tasteChoice(for: .hanime).into
+        let chosen = store.tasteChoice(for: provider).into
         let terms = chosen + store.learnedInterests + evidence
-            .filter { $0.providerKey == .hanime }.flatMap(\.tags)
+            .filter { $0.providerKey == provider }.flatMap(\.tags)
         let excluded = Set(store.exclusions.map { $0.lowercased() })
         var seen = Set<String>()
         return terms.compactMap { raw -> String? in
@@ -1273,12 +1298,15 @@ private struct HanimeTopicsBrowserView: View {
 
     private var topicPreviews: [String: String] {
         var previews: [String: String] = [:]
+        var used = Set<String>()
         for post in catalogPosts + store.posts + Array(store.favorites.values)
-        where post.providerKey == .hanime && URL(string: post.cardPreviewURL)?.scheme == "https" {
+        where post.providerKey == provider && URL(string: post.cardPreviewURL)?.scheme == "https" {
             for tag in post.tags {
                 let key = tag.trimmingCharacters(in: .whitespacesAndNewlines)
                     .replacingOccurrences(of: "_", with: " ").lowercased()
-                if previews[key] == nil { previews[key] = post.cardPreviewURL }
+                if previews[key] == nil, used.insert(post.cardPreviewURL).inserted {
+                    previews[key] = post.cardPreviewURL
+                }
             }
         }
         return previews
@@ -1287,7 +1315,7 @@ private struct HanimeTopicsBrowserView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 9) {
-                Text("Topics from the available Hanime catalog and your saved videos")
+                Text("Topics from the available \(provider.displayName) catalog and your saved posts")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     .padding(.bottom, 8)
                 let previews = topicPreviews
@@ -1295,7 +1323,8 @@ private struct HanimeTopicsBrowserView: View {
                     let preview = previews[term]
                     Button {
                         let current = QueryParser.parse(store.queryText)
-                        store.commitSuggestedTopic(term, excluded: current.excluded)
+                        let query = provider == .rule34 ? term.replacingOccurrences(of: " ", with: "_") : term
+                        store.commitSuggestedTopic(query, excluded: current.excluded)
                         dismiss()
                         Task { await store.refresh() }
                     } label: {
@@ -1327,7 +1356,7 @@ private struct HanimeTopicsBrowserView: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("hanime-topic-\(term)")
                 }
-                if loading { ProgressView("Loading Hanime topics…").frame(maxWidth: .infinity).padding() }
+                if loading { ProgressView("Loading topics…").frame(maxWidth: .infinity).padding() }
                 if let errorMessage {
                     Text(errorMessage).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                 }
@@ -1340,7 +1369,7 @@ private struct HanimeTopicsBrowserView: View {
             .padding(16)
         }
         .background(ThemeBackdrop())
-        .navigationTitle("All Hanime topics")
+        .navigationTitle("All \(provider.displayName) topics")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search topics")
         .toolbar {
@@ -1350,11 +1379,11 @@ private struct HanimeTopicsBrowserView: View {
     }
 
     @MainActor private func loadNextPage() async {
-        guard !loading, hasMore, store.selectedProvider == .hanime else { return }
+        guard !loading, hasMore, store.selectedProvider == provider else { return }
         loading = true
         defer { loading = false }
         do {
-            let result = try await store.api.posts(provider: .hanime,
+            let result = try await store.api.posts(provider: provider,
                 query: QueryParser.parse(""), page: page, sort: "popular")
             guard !Task.isCancelled else { return }
             let known = Set(catalogPosts.map(\.stableID))
@@ -1465,8 +1494,6 @@ enum HomeThemeSuggestions {
             guard let sample = rotatedMatches.first(where: {
                 !$0.cardPreviewURL.isEmpty && !usedImages.contains($0.cardPreviewURL)
                     && URL(string: $0.cardPreviewURL)?.scheme == "https"
-            }) ?? rotatedMatches.first(where: {
-                !$0.cardPreviewURL.isEmpty && URL(string: $0.cardPreviewURL)?.scheme == "https"
             }) else { continue }
             usedImages.insert(sample.cardPreviewURL)
             let query = provider == .rule34 ? term : term.replacingOccurrences(of: "_", with: " ")
@@ -1531,11 +1558,14 @@ enum HomeThemeSuggestions {
         let lead = Array(terms.prefix(max(limit, 10)))
         let shift = lead.isEmpty ? 0 : (rotation % lead.count + lead.count) % lead.count
         let ordered = Array(lead.dropFirst(shift)) + Array(lead.prefix(shift))
+        var usedImages = Set<String>()
         return Array(ordered.prefix(limit)).map { tag in
             let sample = evidence.first { post in
                 post.tags.contains(where: { normalize($0) == tag }) &&
-                    URL(string: post.cardPreviewURL)?.scheme == "https"
+                    URL(string: post.cardPreviewURL)?.scheme == "https" &&
+                    !usedImages.contains(post.cardPreviewURL)
             }
+            if let sample { usedImages.insert(sample.cardPreviewURL) }
             return HomeThemeSuggestion(term: tag.replacingOccurrences(of: "_", with: " "),
                                        label: tag.replacingOccurrences(of: "_", with: " ").capitalized,
                                        imageURL: sample?.cardPreviewURL ?? "")

@@ -105,18 +105,49 @@ final class PlayerPool: ObservableObject {
         if let existing = players[key], urls[key] == url,
            existing.status != .failed, existing.currentItem?.status != .failed { touch(key); return existing }
         release(key)
-        let mediaHeaders = HanimeGeneratedAPI.mediaHeaders(for: url)
+        let mediaHeaders = url.isFileURL ? [:] : HanimeGeneratedAPI.mediaHeaders(for: url)
             .merging(EromeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
         let asset = mediaHeaders.isEmpty ? AVURLAsset(url: url)
             : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": mediaHeaders])
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 3
         let player = AVPlayer(playerItem: item)
+        if url.isFileURL && url.pathExtension.lowercased() == "movpkg" {
+            player.appliesMediaSelectionCriteriaAutomatically = false
+        }
         player.volume = feedVolumeScale
         // Start explicitly below, but let AVFoundation resume after a network stall.
         player.automaticallyWaitsToMinimizeStalling = true
         players[key] = player; urls[key] = url; touch(key); trim()
         return player
+    }
+
+    /// Never select a rendition outside the local HLS cache during offline playback.
+    func prepareLocalPlayback(key: String, url: URL) async throws {
+        guard url.isFileURL, url.pathExtension.lowercased() == "movpkg" else { return }
+        let player = player(for: key, url: url)
+        guard let item = player.currentItem, let asset = item.asset as? AVURLAsset else {
+            throw APIError.server("Offline video player is unavailable.")
+        }
+        _ = try await asset.load(.isPlayable)
+        guard let cache = asset.assetCache, cache.isPlayableOffline else {
+            throw APIError.server("The downloaded video package is not available offline. Restore the download.")
+        }
+        for characteristic: AVMediaCharacteristic in [.audible, .visual, .legible] {
+            guard let group = try await asset.loadMediaSelectionGroup(for: characteristic) else { continue }
+            try Task.checkCancellation()
+            guard players[key] === player, urls[key] == url else { throw CancellationError() }
+            let options = cache.mediaSelectionOptions(in: group)
+            if let selected = item.currentMediaSelection.selectedMediaOption(in: group),
+               options.contains(selected) { continue }
+            if let available = options.first {
+                item.select(available, in: group)
+            } else if group.allowsEmptySelection && characteristic == .legible {
+                item.select(nil, in: group)
+            } else if !group.options.isEmpty {
+                throw APIError.server("A required media track was not downloaded. Restore the video.")
+            }
+        }
     }
 
     func activate(key: String, url: URL, muted: Bool, owner: String = "home",

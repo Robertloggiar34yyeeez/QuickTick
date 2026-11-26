@@ -1055,6 +1055,10 @@ private struct ImmersiveItemView: View {
             }
             guard !Task.isCancelled, active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else { return }
             if post.type.lowercased() == "gif" { gifURL = url; return }
+            if offline {
+                try await store.players.prepareLocalPlayback(key: post.stableID, url: url)
+                guard !Task.isCancelled, active, presentationActive, store.isForeground else { return }
+            }
             introReady = !shouldSkipIntro
             let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) {
                 introReady = true

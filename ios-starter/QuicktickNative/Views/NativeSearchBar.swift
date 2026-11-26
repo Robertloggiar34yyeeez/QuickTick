@@ -439,6 +439,15 @@ private struct RedgifsSearchNichePicker: View {
                         selection = niche.id; dismiss()
                     } label: {
                         HStack {
+                            if !niche.imageURL.isEmpty {
+                                CachedMediaImage(url: niche.imageURL, pixels: 180, fill: true)
+                                    .frame(width: 64, height: 64).clipped()
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            } else {
+                                Image(systemName: "square.grid.2x2")
+                                    .frame(width: 64, height: 64)
+                                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 8))
+                            }
                             Text(niche.name)
                             Spacer()
                             if selection == niche.id { Image(systemName: "checkmark.circle.fill") }
@@ -464,7 +473,17 @@ private struct RedgifsSearchNichePicker: View {
             .navigationTitle("Choose a niche")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
-            .task { if niches.isEmpty { await loadNextPage() } }
+            .task(id: search) {
+                if niches.isEmpty { await loadNextPage() }
+                guard !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                // Search beyond the currently loaded directory, but bound work
+                // per query and retain the explicit Load More action.
+                do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+                for _ in 0..<6 {
+                    guard !Task.isCancelled, hasMore, !loading, error == nil else { break }
+                    await loadNextPage()
+                }
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -474,7 +493,7 @@ private struct RedgifsSearchNichePicker: View {
         loading = true; error = nil
         defer { loading = false }
         do {
-            let result = try await store.api.redgifsNichesPage(page: nextPage, limit: 24, includeArtwork: false)
+            let result = try await store.api.redgifsNichesPage(page: nextPage, limit: 24, includeArtwork: true)
             try Task.checkCancellation()
             var known = Set(niches.map(\.id))
             niches.append(contentsOf: result.items.filter { known.insert($0.id).inserted })

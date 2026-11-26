@@ -25,6 +25,14 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNil(record.exportURL)
     }
 
+    func testReferenceSimilarityPrefersMatchingMetadata() {
+        let references: [Set<String>] = [["alpha", "beta"], ["gamma", "delta"]]
+        XCTAssertEqual(RecommendationEngine.referenceSimilarity(["alpha", "beta"], references: references), 1)
+        XCTAssertEqual(RecommendationEngine.referenceSimilarity(["unrelated"], references: references), 0)
+        XCTAssertGreaterThan(RecommendationEngine.referenceSimilarity(["alpha"], references: references),
+                             RecommendationEngine.referenceSimilarity(["alpha", "other", "different"], references: references))
+    }
+
     func testHLSOfflineReadinessRequiresExplicitPositiveCacheStatus() {
         XCTAssertFalse(OfflineHLSReadiness.isVerified(playable: true, duration: 60, cacheReady: nil))
         XCTAssertFalse(OfflineHLSReadiness.isVerified(playable: true, duration: 60, cacheReady: false))

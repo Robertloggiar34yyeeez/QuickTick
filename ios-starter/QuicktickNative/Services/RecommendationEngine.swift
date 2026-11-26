@@ -1406,6 +1406,20 @@ actor RecommendationEngine {
         return chosen + pool.map(\.post)
     }
 
+    /// Small, bounded nearest-neighbour reference score. It uses only same-source
+    /// saved items and ignores generic tags, so common metadata cannot swamp taste.
+    static func referenceSimilarity(_ candidate: Set<String>, references: [Set<String>]) -> Double {
+        guard !candidate.isEmpty else { return 0 }
+        let nearest = references.compactMap { reference -> Double? in
+            guard !reference.isEmpty else { return nil }
+            let overlap = candidate.intersection(reference).count
+            guard overlap > 0 else { return nil }
+            return Double(overlap) / Double(candidate.union(reference).count)
+        }.sorted(by: >).prefix(3)
+        guard !nearest.isEmpty else { return 0 }
+        return nearest.reduce(0, +) / Double(nearest.count)
+    }
+
     func rankFast(_ candidates: [Post], taste: TasteChoice, recent: [Post], visualScores: [String: Double] = [:], strict: Bool = false) -> [Post] {
         let start = Date(); defer { FeedPerformance.emit("rank_fast", started: start, count: min(384, candidates.count)) }
         guard let first = candidates.first else { return [] }
@@ -1425,6 +1439,14 @@ actor RecommendationEngine {
             return diversifyFast(scored, recent: recent)
         }
         let recentTerms = Set(recent.suffix(10).flatMap { terms(for: $0) })
+        // Keep the previous ranker selectable for regression comparisons.
+        let useReferences = !UserDefaults.standard.bool(forKey: "quicktick-recommendation-v2-only")
+        let source = first.providerKey
+        let generic = Self.genericTasteTerms.union(Self.lowSignalDiscoveryTags)
+        let references: [Set<String>] = useReferences ? currentFavorites.lazy
+            .filter { $0.providerKey == source }.prefix(32)
+            .map { Set(terms(for: $0)).subtracting(generic) } : []
+        let preferredArtists = Set(taste.artists.map(TasteConcepts.canonical))
         var scored: [(post: Post, value: Double, offset: Int, topics: Set<String>)] = []
         for (offset, post) in candidates.prefix(384).enumerated() {
             guard !isHardDisliked(post, taste: taste),
@@ -1435,7 +1457,11 @@ actor RecommendationEngine {
                     visual: visualScores[post.stableID], cachedTerms: postTerms) { continue }
             let metadata = score(post, taste: taste, recent: recent, cachedTerms: postTerms,
                                  cachedRecentTerms: recentTerms, alreadyApproved: true)
-            let calibrated = RecommendationQualityModel.combined(metadata: metadata,
+            let nearest = Self.referenceSimilarity(Set(postTerms).subtracting(generic), references: references)
+            let credited = Set(ArtistAttribution.credited(in: post, taxonomy: taxonomy))
+            let artistBonus: Double = useReferences && !credited.isDisjoint(with: preferredArtists) ? 12 : 0
+            let adjustedMetadata = metadata + nearest * 12 + artistBonus
+            let calibrated = RecommendationQualityModel.combined(metadata: adjustedMetadata,
                 visual: visualScores[post.stableID])
             let topics = diversityTopics(for: post, terms: postTerms)
             scored.append((post: post, value: calibrated, offset: offset, topics: topics))

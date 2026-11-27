@@ -726,13 +726,14 @@ enum NativeProviderAPI {
 
     static func hanimeRows(_ payload: Any) throws -> [[String: Any]] {
         var current: Any = payload
-        for _ in 0..<4 {
+        for _ in 0..<8 {
             if let list = current as? [[String: Any]] { return list }
             if let encoded = current as? String, let bytes = encoded.data(using: .utf8) {
                 current = try JSONSerialization.jsonObject(with: bytes); continue
             }
             guard let object = current as? [String: Any],
-                  let next = object["hits"] ?? object["hentai_videos"] ?? object["videos"] ?? object["data"] else {
+                  let next = object["hits"] ?? object["hentai_videos"] ?? object["videos"] ??
+                        object["data"] ?? object["results"] ?? object["items"] else {
                 throw APIError.invalidResponse
             }
             current = next
@@ -858,6 +859,12 @@ enum NativeProviderAPI {
     static func hanime(session: URLSession, query: ParsedQuery, page: Int,
                        sort: String, immersive: Bool) async throws -> PostPage {
         guard (1...1000).contains(page) else { throw APIError.invalidResponse }
+        let catalog = try await hanimeCatalog(session: session)
+        return try hanimePage(catalog, query: query, page: page, sort: sort, immersive: immersive)
+    }
+
+    // Fetch the entire catalog once. Search and pagination use local metadata.
+    static func hanimeCatalog(session: URLSession) async throws -> [Post] {
         // The supplied API describes the current first-party v11 catalog.
         // It may require legitimate browser verification; HTTP 403 is never bypassed.
         let claim = String(Int(Date().timeIntervalSince1970))
@@ -897,6 +904,17 @@ enum NativeProviderAPI {
             post.createdAt = number(row["released_at_unix"] ?? row["created_at_unix"])
             return post
         }
+        var seen = Set<String>()
+        let unique = posts.filter { seen.insert($0.stableID).inserted }
+        guard raw.isEmpty || !unique.isEmpty else {
+            throw APIError.server("Hanime returned catalog entries in an unrecognized format.")
+        }
+        return unique
+    }
+
+    static func hanimePage(_ posts: [Post], query: ParsedQuery, page: Int,
+                           sort: String, immersive: Bool) throws -> PostPage {
+        guard (1...1000).contains(page) else { throw APIError.invalidResponse }
         let contains: (String, Post) -> Bool = { term, post in
             let needle = term.lowercased().replacingOccurrences(of: "_", with: " ")
             let haystack = ([post.caption ?? "", post.creator ?? ""] + post.tags)

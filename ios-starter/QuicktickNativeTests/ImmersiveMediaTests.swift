@@ -36,7 +36,7 @@ final class ImmersiveMediaTests: XCTestCase {
         XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: 1, viewportHeight: 844), -844)
         XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: -1, viewportHeight: 844), 844)
         XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: 1, viewportHeight: 0), 0)
-        XCTAssertEqual(ImmersiveNicheSwipeMotion.duration, 0.28, accuracy: 0.0001)
+        XCTAssertEqual(ImmersiveNicheSwipeMotion.duration, 0.20, accuracy: 0.0001)
     }
 
     func testImmersivePreloadsTwoUpcomingPostsAndRetainsPreviousForReverseSwipe() {

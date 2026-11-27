@@ -77,7 +77,11 @@ struct ImmersiveFeedView: View {
     }
 
     private var prewarmTaskID: String {
-        "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(offline ? "offline" : store.feedRevision.uuidString):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")"
+        // Only restart when the nearby preload window changes, not when
+        // another page is appended to the end of the feed.
+        let keys = ImmersivePreloadPlan.retainedIndices(current: activeIndex, count: mediaPosts.count)
+            .map { mediaPosts[$0].stableID }.joined(separator: "|")
+        return "\(activeID ?? ""):\(presentationActive):\(store.isForeground):\(store.isManualVisualScanRunning):\(offline ? "offline" : store.feedRevision.uuidString):\(keys)"
     }
 
     var body: some View {
@@ -386,7 +390,7 @@ struct ImmersiveFeedView: View {
                                                                     viewportHeight: viewport.height)
         }
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(290))
+            do { try await Task.sleep(for: .seconds(ImmersiveNicheSwipeMotion.duration + 0.01)) } catch { return }
             guard settlingNicheSwipe else { return }
             let stillCurrent = presentationActive && activeID == origin &&
                 mediaPosts.indices.contains(next) && mediaPosts[next].stableID == destinationID
@@ -467,7 +471,9 @@ struct ImmersiveFeedView: View {
                     group.addTask(priority: .utility) {
                         // Let the visible clip acquire its stream and render
                         // a frame before the next clip competes for bandwidth.
-                        do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
+                        if !offlineMode {
+                            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+                        }
                         guard !Task.isCancelled else { return }
                         let url: URL?
                         if offlineMode { url = URL(string: post.mediaUrl) }
@@ -495,7 +501,7 @@ private enum ImmersiveDragAxis { case vertical, horizontal }
 
 /// The gesture and the newly mounted page meet at the same viewport edge.
 enum ImmersiveNicheSwipeMotion {
-    static let duration = 0.28
+    static let duration = 0.20
 
     static func destinationOffset(direction: Int, viewportHeight: CGFloat) -> CGFloat {
         let height = max(0, viewportHeight)
@@ -783,7 +789,7 @@ private struct ImmersiveItemView: View {
                     NativePlayerSurface(player: player,
                         fill: false,
                         ready: $ready, accessibilityID: "immersive-video-surface")
-                        .frame(width: geo.size.width, height: geo.size.height)
+                        .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready && introReady ? 1 : 0)
                         .animation(.easeOut(duration: 0.18), value: ready && introReady)
                         .allowsHitTesting(false)
@@ -1373,7 +1379,13 @@ struct CachedMediaImage: View {
     @Published private(set) var images: [String: UIImage] = [:]
     private var retained: Set<String> = []
     private var loading: Set<String> = []
-    func retain(_ keys: Set<String>) { retained = keys; images = images.filter { keys.contains($0.key) } }
+    func retain(_ keys: Set<String>) {
+        guard keys != retained else { return }
+        retained = keys
+        if images.keys.contains(where: { !keys.contains($0) }) {
+            images = images.filter { keys.contains($0.key) }
+        }
+    }
     func load(_ post: Post) async {
         let key = post.stableID
         guard images[key] == nil, !loading.contains(key), retained.contains(key) else { return }

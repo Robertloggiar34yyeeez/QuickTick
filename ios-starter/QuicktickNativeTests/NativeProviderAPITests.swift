@@ -522,9 +522,21 @@ final class NativeProviderAPITests: XCTestCase {
         let second = try await api.posts(provider: .hanime, query: query, page: 1)
         XCTAssertEqual(first.items, second.items)
         XCTAssertEqual(first.hasMore, second.hasMore)
+        let sorted = try await api.posts(provider: .hanime, query: query, page: 1, sort: "recent", immersive: true)
+        let next = try await api.posts(provider: .hanime, query: query, page: 2)
+        let other = try await api.posts(provider: .hanime, query: ParsedQuery(included: ["nonexistent"], excluded: []), page: 1)
+        XCTAssertEqual(sorted.items.map(\.stableID), first.items.map(\.stableID))
+        XCTAssertTrue(next.items.isEmpty)
+        XCTAssertTrue(other.items.isEmpty)
         XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
             $0.url?.host == "auth.hanime.tv" && $0.url?.path == "/api/v11/search_hvs"
-        }.count, 1, "Switching back to Hanime should reuse the existing catalog")
+        }.count, 1, "Search, sorting and pages reuse the same catalog")
+    }
+
+    func testHanimeCatalogParserAcceptsNestedResultEnvelope() throws {
+        let fixture = #"{"data":{"results":{"items":[{"slug":"fixture","title":"Sample"}]}}}"#
+        let rows = try NativeProviderAPI.hanimeRows(JSONSerialization.jsonObject(with: Data(fixture.utf8)))
+        XCTAssertEqual(rows.first?["slug"] as? String, "fixture")
     }
 
     func testHanimeMissingPublicStreamSuggestsSupportedPlaybackOptions() async throws {

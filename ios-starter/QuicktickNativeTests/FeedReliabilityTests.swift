@@ -4,6 +4,19 @@ import CoreGraphics
 import ImageIO
 @testable import QuicktickNative
 
+// Each ordinary test owns a distinct state directory. Production restores the
+// most recently selected source; sharing the app's directory across tests
+// makes their initial provider depend on XCTest execution order.
+extension XCTestCase {
+    @MainActor
+    func makeIsolatedAppStore(api: QuicktickAPIClient = QuicktickAPIClient()) -> AppStore {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("QuicktickTest-" + UUID().uuidString, isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return AppStore(api: api, localStorage: LocalStateStore(directory: directory))
+    }
+}
+
 private final class FeedModeProtocol: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -63,6 +76,17 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(afterEmptySave.count, 1,
                        "Empty responses or temporary browsing modes must not erase the last usable Home feed")
     }
+    @MainActor func testIndependentStoresDoNotInheritAnotherTestsSource() {
+        let first = makeIsolatedAppStore()
+        XCTAssertEqual(first.selectedProvider, .rule34)
+        first.selectedProvider = .eporner
+        let second = makeIsolatedAppStore()
+        XCTAssertEqual(second.selectedProvider, .rule34)
+        second.queryText = "long_hair -jacket sort:random rating:general score:>=25"
+        second.selectedProvider = .eporner
+        XCTAssertEqual(second.queryText, "long_hair -jacket")
+    }
+
     @MainActor func testSourceSelectionPersistsWithoutSuccessfulFeed() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -203,7 +227,7 @@ final class FeedReliabilityTests: XCTestCase {
     @MainActor func testRecommendedContinuesPastPageRemovedByNegativePreferences() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
-        let store = AppStore(api: QuicktickAPIClient(baseURL: nil, session: session))
+        let store = makeIsolatedAppStore(api: QuicktickAPIClient(baseURL: nil, session: session))
         store.selectedProvider = .eporner; store.activeTab = 1
         store.tasteSetup.sources[Provider.eporner.rawValue] = TasteChoice(done: true, into: [], notInto: ["filtered"])
         await store.refresh(immersive: true)
@@ -214,7 +238,7 @@ final class FeedReliabilityTests: XCTestCase {
     @MainActor private func candidateStore() -> (AppStore, URLSession) {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [CandidatePageProtocol.self]
         let session = URLSession(configuration: config)
-        return (AppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"), session: session, credentials: ProviderCredentials(rule34User: "test-user", rule34Key: "synthetic-test-key"))), session)
+        return (makeIsolatedAppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"), session: session, credentials: ProviderCredentials(rule34User: "test-user", rule34Key: "synthetic-test-key"))), session)
     }
     @MainActor func testRecommendedRefreshAdvancesAndRestoresCandidateCursor() async {
         let (store, session) = candidateStore(); defer { session.invalidateAndCancel() }
@@ -268,7 +292,7 @@ final class FeedReliabilityTests: XCTestCase {
         record.state = .failed; XCTAssertNil(record.offlinePost)
     }
     @MainActor func testRecommendationAdaptationWaitsForVisibleHomeAnchor() async {
-        let store = AppStore(); store.selectedProvider = .eporner
+        let store = makeIsolatedAppStore(); store.selectedProvider = .eporner
         let first = Post(key: "first", id: "1", provider: "Eporner", tags: ["baking"], type: "video")
         let next = Post(key: "next", id: "2", provider: "Eporner", tags: ["racecar"], type: "video")
         let liked = Post(key: "liked", id: "3", provider: "Eporner", tags: ["racecar"])
@@ -285,7 +309,7 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(store.posts.map(\.stableID), ["first", "comic", "next"], "Ranking must not replace a visible comic with another video")
     }
     @MainActor func testLazyPaginationDoesNotFetchBeforeInitialRefresh() async {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         await store.loadMore()
         XCTAssertTrue(store.posts.isEmpty)
         XCTAssertNil(store.lastError)
@@ -294,7 +318,7 @@ final class FeedReliabilityTests: XCTestCase {
     @MainActor func testPaginationContinuesAfterFullyFilteredInitialPage() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
-        let store = AppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"), session: session))
+        let store = makeIsolatedAppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"), session: session))
         store.selectedProvider = .eporner; store.feedSort = "recent"; store.exclusions = ["filtered"]
         await store.refresh()
         // Refresh now skips the fully excluded page immediately instead of
@@ -307,7 +331,7 @@ final class FeedReliabilityTests: XCTestCase {
     @MainActor func testModeChangeInvalidatesPlaybackAndObsoleteRecommendationResult() async throws {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
         let session = URLSession(configuration: config);defer { session.invalidateAndCancel() }
-        let store = AppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"),session: session));store.selectedProvider = .eporner
+        let store = makeIsolatedAppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"),session: session));store.selectedProvider = .eporner
         let old = Task { await store.refresh() }
         try await Task.sleep(for: .milliseconds(25))
         store.inlinePlaybackID = "recommended:1";store.feedSort = "recent"
@@ -378,7 +402,7 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(VisiblePostSelector.select(frames: bothVisible, viewport: tablet, current: "first"), "first")
     }
     @MainActor func testRapidForegroundReturnResumesSameOwnerWithoutAViewTaskAndHonorsPause() throws {
-        let store = AppStore(); let url = try XCTUnwrap(Bundle.main.url(forResource: "UITestClip", withExtension: "mp4"))
+        let store = makeIsolatedAppStore(); let url = try XCTUnwrap(Bundle.main.url(forResource: "UITestClip", withExtension: "mp4"))
         store.inlinePlaybackID = "visible"
         let player = store.players.activate(key: "visible", url: url, muted: false, owner: "home")
         store.isForeground = false; XCTAssertNil(store.players.activeKey)
@@ -394,7 +418,7 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertNil(store.players.activeKey)
     }
     @MainActor func testPlayerPoolChangesURLForSameIdentityAndPausesOnTabAndBackground() {
-        let store = AppStore();let pool = store.players
+        let store = makeIsolatedAppStore();let pool = store.players
         let a = URL(fileURLWithPath: "/tmp/a.mp4"), b = URL(fileURLWithPath: "/tmp/b.mp4")
         let first = pool.activate(key: "one",url: a,muted: false)
         XCTAssertFalse(pool.player(for: "one",url: b) === first)
@@ -568,7 +592,7 @@ final class FeedReliabilityTests: XCTestCase {
     }
 
     @MainActor func testImmersiveRanksOnlyUnseenTailAndKeepsViewedPrefix() async {
-        let store = AppStore(); store.selectedProvider = .eporner; store.activeTab = 1
+        let store = makeIsolatedAppStore(); store.selectedProvider = .eporner; store.activeTab = 1
         let first = Post(key: "viewed", id: "1", provider: "Eporner", tags: ["baking"], type: "video")
         let current = Post(key: "current", id: "2", provider: "Eporner", tags: ["baking"], type: "video")
         let weak = Post(key: "weak", id: "3", provider: "Eporner", tags: ["baking"], type: "video")
@@ -584,7 +608,7 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(Array(store.posts.prefix(2)), [first, current])
     }
     @MainActor func testOrdinaryImmersiveFeedKeepsNextClipDuringBackgroundRanking() async {
-        let store = AppStore(); store.selectedProvider = .eporner; store.activeTab = 1
+        let store = makeIsolatedAppStore(); store.selectedProvider = .eporner; store.activeTab = 1
         // Two independent posts may resolve to one CDN video URL. A normal
         // (non-personalized) feed must not lose the only next page mid-swipe.
         let first = Post(key: "clip-a", id: "1", provider: "Eporner", tags: ["portrait"],
@@ -597,7 +621,7 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(store.posts.map(\.stableID), [first.stableID, next.stableID])
     }
     @MainActor func testSearchCommitRetainsFeedUntilNewResponse() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         let current = Post(key: "current", id: "1", provider: "Eporner", type: "video")
         store.posts = [current]
         store.commitSearch(query: "engineering -blocked", sort: "recent")
@@ -609,7 +633,7 @@ final class FeedReliabilityTests: XCTestCase {
     @MainActor func testTabSwitchRestoresIndependentQueriesAndFeeds() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FeedModeProtocol.self]
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
-        let store = AppStore(api: QuicktickAPIClient(baseURL: nil, session: session)); store.selectedProvider = .eporner
+        let store = makeIsolatedAppStore(api: QuicktickAPIClient(baseURL: nil, session: session)); store.selectedProvider = .eporner
         let home = Post(key: "home-saved", id: "1", provider: "Eporner", type: "image")
         let clip = Post(key: "clip-saved", id: "2", provider: "Eporner", type: "video")
         store.commitSearch(query: "home_tag", sort: "recent"); await store.refresh(); store.posts = [home]

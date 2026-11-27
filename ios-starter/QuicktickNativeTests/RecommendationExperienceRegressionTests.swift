@@ -4,7 +4,7 @@ import XCTest
 
 final class RecommendationExperienceRegressionTests: XCTestCase {
     @MainActor func testRetiredHavenSelectionMigratesToHanime() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         store.selectedProvider = .hhaven
         XCTAssertEqual(store.selectedProvider, .hanime)
     }
@@ -85,7 +85,7 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
     }
 
     @MainActor func testTypedArtistSelectionCanBeSavedFromTagsWithoutPrefix() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         let post = Post(key: "rule34:typed-artist", id: "typed-artist", provider: "rule34",
                         tags: ["sample_artist", "chun_li", "sitting"], type: "image")
         store.preferArtist("sample_artist", from: post)
@@ -93,7 +93,7 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
     }
 
     @MainActor func testChangingProviderDropsStaleArchiveCreatorRoute() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         store.commitSearch(query: "creator:fanbox:42", sort: "recommended")
         store.selectedProvider = .kemono
         XCTAssertEqual(store.queryText, "")
@@ -101,7 +101,7 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
     }
 
     @MainActor func testSuggestedTopicSurvivesTabReturnAndCanBeCleared() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         store.commitSuggestedTopic("space_opera", excluded: [])
         XCTAssertEqual(store.selectedTopicTerm, "space_opera")
         XCTAssertFalse(store.queryText.isEmpty)
@@ -268,7 +268,7 @@ final class RecommendationExperienceRegressionTests: XCTestCase {
     }
 
     @MainActor func testTopicChoiceSurvivesPopularSortButManualSearchClearsIt() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         store.commitSuggestedTopic("chun_li", excluded: [])
         XCTAssertEqual(store.selectedTopicTerm, "chun_li")
         XCTAssertTrue(QueryParser.parse(store.queryText).included.contains("chun_li"))

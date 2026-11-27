@@ -72,7 +72,7 @@ final class ImmersiveMediaTests: XCTestCase {
         XCTAssertNil(PlaybackPosition.resume(5, duration: 0))
     }
     @MainActor func testLateInlineSelectionCannotPauseImmersivePlayback() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         let url = URL(fileURLWithPath: "/tmp/clip.mp4")
         _ = store.players.activate(key: "clip", url: url, muted: true, owner: "immersive")
         store.inlinePlaybackID = "late-home-layout"

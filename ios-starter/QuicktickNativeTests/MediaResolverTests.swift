@@ -63,7 +63,7 @@ final class FeedPaginationTests: XCTestCase {
     @MainActor func testTenPostsContinuePastDuplicatePageWithoutRepeats() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PaginationProtocol.self]
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
-        let store = AppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"), session: session))
+        let store = makeIsolatedAppStore(api: QuicktickAPIClient(baseURL: URL(string: "https://example.invalid"), session: session))
         store.selectedProvider = .eporner
         await store.refresh()
         XCTAssertEqual(store.posts.count, 10)

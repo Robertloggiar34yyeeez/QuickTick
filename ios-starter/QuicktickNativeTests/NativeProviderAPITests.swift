@@ -1603,7 +1603,7 @@ final class NativeProviderAPITests: XCTestCase {
     }
     @MainActor func testReselectingFeedRefreshesAndPreservesSearch() async {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
-        let store = AppStore(api: api)
+        let store = makeIsolatedAppStore(api: api)
         store.selectedProvider = .eporner
         store.feedSort = "recent"; store.queryText = "old search"
         await store.selectFeedTab(0)

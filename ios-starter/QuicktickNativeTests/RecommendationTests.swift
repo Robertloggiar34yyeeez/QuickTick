@@ -684,7 +684,7 @@ final class RecommendationTests: XCTestCase {
     }
 
     @MainActor func testCandidateRoundCountersAreKeptWhenSavingAppState() async {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         _ = await store.recommendations.candidateRequest(context: "rule34|clips", provider: .rule34,
             taste: TasteChoice(done: true, into: ["portrait"]), excluded: [])
         let before = await store.recommendations.snapshot()
@@ -725,7 +725,7 @@ final class RecommendationTests: XCTestCase {
     }
 
     @MainActor func testImportCannotRaceInitialProfileRestoration() async {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         store.exclusions = ["existing"]
         let transfer = RecommendationTransfer(preferences: TasteSetup(), exclusions: ["incoming"], state: RecommendationState(), semanticProfiles: [:])
         await store.importRecommendationProfile(transfer)

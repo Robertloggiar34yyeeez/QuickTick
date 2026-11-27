@@ -409,7 +409,7 @@ final class VisualTasteTests: XCTestCase {
         print("QUICKTICK_METRIC wd_v3_fixture_inference_ms=\(ms)")
     }
     @MainActor func testScrollingPreventsTailRankingAndPreservesOrder() async {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         let a = Post(key: "a", id: "1", provider: "rule34", tags: ["other"])
         let b = Post(key: "b", id: "2", provider: "rule34", tags: ["favorite"])
         store.posts = [a, b]; store.protectVisibleHomePosts([a.stableID])

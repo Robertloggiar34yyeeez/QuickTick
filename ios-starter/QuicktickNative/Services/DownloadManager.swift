@@ -242,9 +242,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                     let configuration = AVAssetDownloadConfiguration(asset: asset, title: record.title)
                     // Persist the actual preferred video/audio selection rather
                     // than letting the player choose a new remote rendition.
-                    if let selection = try? await asset.load(.preferredMediaSelection) {
-                        configuration.primaryContentConfiguration.mediaSelections = [selection]
-                    }
+                    let selection = try await asset.load(.preferredMediaSelection)
+                    configuration.primaryContentConfiguration.mediaSelections = [selection]
                     guard records.first(where: { $0.key == post.stableID })?.state == .queued else { return }
                     let transfer = hlsSession.makeAssetDownloadTask(downloadConfiguration: configuration)
                     task = transfer
@@ -395,7 +394,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             return
         }
         let url = URL(fileURLWithPath: path)
-        let verified = await Self.verifiedOfflineHLS(url)
+        let failure = await Self.offlineHLSFailure(url, attempts: 2)
+        let verified = failure == nil
         let bookmark = verified ? try? url.bookmarkData() : nil
         guard records.contains(where: { $0.key == record.key && $0.createdAt == record.createdAt && $0.state == .complete }) else { return }
         update(record.key) {
@@ -404,7 +404,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
             $0.hlsAssetBookmark = bookmark
             if !verified {
                 $0.state = .failed; $0.progress = 0
-                $0.errorMessage = "The old package is not verified for offline playback. Retry the download."
+                $0.errorMessage = "Offline HLS verification failed: " + (failure ?? "Unknown error.")
             }
         }
     }
@@ -435,8 +435,10 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         if record.kind == .hlsPackage {
             // AVFoundation owns the downloaded package. Its local asset cache,
             // not MP4 exportability or a hard-coded extension, decides readiness.
-            guard await Self.verifiedOfflineHLS(location) else {
-                failedTransfer(key, reason: "Offline HLS package validation failed: missing local media, unavailable cached tracks, or incomplete video. Retry the download.")
+            if let failure = await Self.offlineHLSFailure(location, attempts: 4) {
+                guard records.contains(where: { $0.key == key && $0.createdAt == record.createdAt &&
+                    ($0.state == .downloading || $0.state == .paused) }) else { return }
+                failedTransfer(key, reason: "Offline HLS verification failed: " + failure)
                 return
             }
             // Adapted from AssetDownloadWrapper (MIT): retain the system URL
@@ -482,25 +484,57 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
     }
 
     static func verifiedOfflineHLS(_ url: URL) async -> Bool {
+        await offlineHLSFailure(url, attempts: 1) == nil
+    }
+
+    // AVFoundation may publish its persistent cache after task completion.
+    // Reopen the *local* URL for each probe; never resolve remote media here.
+    static func offlineHLSFailure(_ url: URL, attempts: Int) async -> String? {
+        var failure = "Unknown local asset error."
+        for attempt in 0..<max(1, min(4, attempts)) {
+            if Task.isCancelled { return "Verification cancelled." }
+            if attempt > 0 {
+                do { try await Task.sleep(for: .milliseconds(500 * attempt)) }
+                catch { return "Verification cancelled." }
+            }
+            if let reason = await inspectLocalHLS(url) { failure = reason }
+            else { return nil }
+        }
+        return failure
+    }
+
+    private static func inspectLocalHLS(_ url: URL) async -> String? {
         var directory: ObjCBool = false
-        guard url.isFileURL,
-              FileManager.default.fileExists(atPath: url.path, isDirectory: &directory),
-              directory.boolValue,
-              let size = await DownloadSizeReader.shared.bytes(at: url), size > 0 else { return false }
+        guard url.isFileURL else { return "The destination was not a local file URL." }
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) else {
+            return "The system-managed package is missing."
+        }
+        guard directory.boolValue else { return "The destination is not an HLS package directory." }
+        guard let size = await DownloadSizeReader.shared.bytes(at: url), size > 0 else {
+            return "The local package contains no saved media bytes."
+        }
         let asset = AVURLAsset(url: url)
         do {
+            guard try await asset.load(.hasProtectedContent) == false else {
+                return "Protected content requires a provider-supported offline entitlement."
+            }
             let playable = try await asset.load(.isPlayable)
+            guard playable else { return "AVFoundation reports that the local asset is not playable." }
             let duration = try await asset.load(.duration).seconds
-            guard OfflineHLSReadiness.isVerified(playable: playable, duration: duration,
-                                                cacheReady: asset.assetCache?.isPlayableOffline),
-                  try await asset.load(.hasProtectedContent) == false,
-                  let cache = asset.assetCache else { return false }
+            guard duration.isFinite, duration > 0 else { return "The local asset has no valid duration." }
+            guard let cache = asset.assetCache else { return "AVFoundation has not exposed a local asset cache." }
+            guard cache.isPlayableOffline else { return "AVAssetCache reports that the video is not playable offline." }
             for characteristic: AVMediaCharacteristic in [.audible, .visual] {
                 if let group = try await asset.loadMediaSelectionGroup(for: characteristic),
-                   !group.options.isEmpty && cache.mediaSelectionOptions(in: group).isEmpty { return false }
+                   !group.options.isEmpty && cache.mediaSelectionOptions(in: group).isEmpty {
+                    return characteristic == .audible ? "No audio rendition is cached." : "No video rendition is cached."
+                }
             }
-            return !Task.isCancelled
-        } catch { return false }
+            return Task.isCancelled ? "Verification cancelled." : nil
+        } catch {
+            let ns = error as NSError
+            return "\(ns.localizedDescription) [\(ns.domain):\(ns.code)]"
+        }
     }
 
     static func verifyStandaloneVideo(_ url: URL, expectedDuration: Double? = nil) async -> Bool {

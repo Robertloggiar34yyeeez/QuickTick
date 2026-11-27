@@ -104,6 +104,13 @@ final class ImmersiveMediaTests: XCTestCase {
         XCTAssertEqual(MediaSizing.size(native: CGSize(width: 320, height: 180), aspect: 16 / 9, available: available).width, 680,
                        "Small source thumbnails must not turn iPad feed videos into tiny cutouts")
     }
+    func testStandalonePlayerDoesNotReserveRootTabDock() {
+        XCTAssertEqual(ImmersiveChromeLayout.bottomClearance(viewportWidth: 390, safeAreaBottom: 34,
+            backgroundAudioVisible: false, standalone: true), 44)
+        XCTAssertEqual(ImmersiveChromeLayout.bottomClearance(viewportWidth: 390, safeAreaBottom: 34,
+            backgroundAudioVisible: false), 106)
+    }
+
     func testImmersiveAspectFitAcrossRotationAndSplitWindows() {
         for available in [CGSize(width: 1280, height: 900), CGSize(width: 900, height: 1280), CGSize(width: 600, height: 800)] {
             for ratio: CGFloat in [9 / 16, 16 / 9, 1, 4 / 3] {

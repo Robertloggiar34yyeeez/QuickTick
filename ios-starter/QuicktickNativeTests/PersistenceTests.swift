@@ -49,6 +49,8 @@ final class PersistenceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let verified = await DownloadManager.verifiedOfflineHLS(directory)
         XCTAssertFalse(verified)
+        let reason = await DownloadManager.offlineHLSFailure(directory, attempts: 1)
+        XCTAssertEqual(reason, "The local package contains no saved media bytes.")
     }
 
     @MainActor func testStandaloneVideoVerifierUsesRealLocalClipAndRejectsDisguisedPoster() async throws {

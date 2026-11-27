@@ -787,7 +787,7 @@ struct HomeFeedView: View {
                             Button {
                                 openRedgifsNiche(niche)
                             } label: {
-                                HomeArtworkChip(title: niche.name, imageURL: niche.imageURL)
+                                HomeArtworkChip(title: niche.name, imageURL: niche.imageURL, width: 254, height: 170)
                                     .overlay(alignment: .topTrailing) {
                                         if openingNicheID == niche.id {
                                             ProgressView().tint(.white).padding(12)
@@ -1061,7 +1061,7 @@ private struct RedgifsNicheBrowserView: View {
                 ImmersiveFeedView(posts: store.posts, offline: false,
                                   activePostID: $selectedPostID,
                                   onClose: { closeImmersive() },
-                                  showSettings: $showSettings)
+                                  showSettings: $showSettings, standalonePresentation: true)
                     .id(selectedNiche.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(AppTheme.canvas.ignoresSafeArea())
@@ -1078,7 +1078,7 @@ private struct RedgifsNicheBrowserView: View {
     private var directoryView: some View {
         GeometryReader { geometry in
             ScrollView {
-                LazyVGrid(columns: columns(for: geometry.size.width), spacing: 12) {
+                LazyVGrid(columns: columns(for: geometry.size.width), spacing: 8) {
                     ForEach(filtered) { niche in
                         nicheCard(niche, width: cardWidth(for: geometry.size.width))
                             .onAppear {
@@ -1089,8 +1089,8 @@ private struct RedgifsNicheBrowserView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
+                .padding(.horizontal, 4)
+                .padding(.top, 8)
                 if loading { ProgressView("Loading niches…").padding(18) }
                 if let errorMessage {
                     VStack(spacing: 9) {
@@ -1137,50 +1137,48 @@ private struct RedgifsNicheBrowserView: View {
     private func columns(for width: CGFloat) -> [GridItem] {
         let count = columnCount(for: width)
         let width = cardWidth(for: width)
-        return Array(repeating: GridItem(.fixed(width), spacing: 12), count: count)
+        return Array(repeating: GridItem(.fixed(width), spacing: 8), count: count)
     }
 
     private func columnCount(for width: CGFloat) -> Int {
-        if width >= 1050 { return 5 }
-        if width >= 720 { return 4 }
-        if width >= 560 { return 3 }
+        if width >= 1050 { return 4 }
+        if width >= 720 { return 3 }
+        if width < 260 { return 1 }
         return 2
     }
 
     private func cardWidth(for width: CGFloat) -> CGFloat {
         let count = columnCount(for: width)
-        return max(116, (width - 32 - CGFloat(count - 1) * 12) / CGFloat(count))
+        return max(1, (width - 8 - CGFloat(count - 1) * 8) / CGFloat(count))
     }
 
     private func nicheCard(_ niche: RedgifsNiche, width: CGFloat) -> some View {
-        let posterWidth = width - 18
+        let height = width * 1.28
         return Button {
             openNiche(niche)
         } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                CachedMediaImage(url: niche.imageURL, pixels: 420, fill: true)
-                    .frame(width: posterWidth, height: posterWidth * 1.2)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 13))
-                Text(niche.name)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .frame(width: posterWidth, height: 36, alignment: .topLeading)
-                HStack(spacing: 4) {
-                    Text(niche.postCount > 0 ? "\(niche.postCount) clips" : "Explore niche")
-                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
-                    if loadingNicheID == niche.id {
-                        ProgressView().controlSize(.mini)
-                    }
+            RoundedRectangle(cornerRadius: 10).fill(AppTheme.elevatedSurface)
+                .frame(width: width, height: height)
+                .overlay {
+                    CachedMediaImage(url: niche.imageURL, pixels: 720, fill: true)
+                        .frame(width: width, height: height).clipped()
                 }
-                .frame(width: posterWidth, height: 16, alignment: .leading)
-            }
-            .frame(width: posterWidth, alignment: .leading)
-            .padding(9)
-            .background(AppTheme.elevatedSurface,
-                        in: RoundedRectangle(cornerRadius: 19))
-            .overlay(RoundedRectangle(cornerRadius: 19).stroke(AppTheme.border))
+                .overlay {
+                    LinearGradient(colors: [.clear, .black.opacity(0.15), .black.opacity(0.88)],
+                                   startPoint: .center, endPoint: .bottom)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(niche.name).font(.title3.weight(.bold)).lineLimit(2)
+                        Text(niche.postCount > 0 ? "\(niche.postCount) clips" : "Explore collection")
+                            .font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.78))
+                    }.foregroundStyle(.white).padding(12)
+                }
+                .overlay(alignment: .topTrailing) {
+                    if loadingNicheID == niche.id { ProgressView().tint(.white).padding(12) }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .contentShape(Rectangle())
         }
         .buttonStyle(QuicktickPressStyle())
         .frame(width: width)
@@ -1858,9 +1856,10 @@ private struct HanimeShowsBrowserView: View {
                 Text("Episodes").font(.title2.bold())
                 ForEach(show.episodes, id: \.stableID) { episode in
                     let index = show.episodes.firstIndex(where: { $0.stableID == episode.stableID }) ?? 0
-                    Button { play(episode, in: show) } label: {
-                        HStack(spacing: 12) {
-                            artwork(episode.thumbUrl, height: 72).frame(width: 112)
+                    HStack(spacing: 8) {
+                        Button { play(episode, in: show) } label: {
+                            HStack(spacing: 10) {
+                            artwork(episode.thumbUrl, height: 63).frame(width: 112)
                             VStack(alignment: .leading, spacing: 5) {
                                 let number = episode.id.split(separator: "-").last.flatMap { Int($0) }
                                 Text("Episode \(number ?? (index + 1))").font(.headline)
@@ -1871,8 +1870,13 @@ private struct HanimeShowsBrowserView: View {
                             }
                             Spacer()
                             Image(systemName: "play.circle.fill").font(.title2)
-                        }.padding(.vertical, 5)
-                    }.buttonStyle(.plain)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        EpisodeDownloadButton(manager: store.downloads, post: episode)
+                    }.padding(.vertical, 6)
+                    Divider()
                 }
             }.padding(16)
                 .frame(maxWidth: 760)
@@ -1915,5 +1919,55 @@ struct ShowsGridLayout {
         let count = min(6, max(1, Int((contentWidth + 12) / 112)))
         columns = count
         cardWidth = max(1, (contentWidth - CGFloat(count - 1) * 12) / CGFloat(count))
+    }
+}
+
+private struct EpisodeDownloadButton: View {
+    @ObservedObject var manager: DownloadManager
+    let post: Post
+    @State private var showError = false
+    private var record: DownloadRecord? { manager.records.first { $0.key == post.stableID } }
+    private var symbol: String {
+        switch record?.state {
+        case .some(.complete): return "checkmark.circle.fill"
+        case .some(.downloading): return "pause.fill"
+        case .some(.paused): return "play.fill"
+        case .some(.failed), .some(.cancelled): return "arrow.clockwise"
+        default: return "arrow.down.to.line"
+        }
+    }
+    var body: some View {
+        Button {
+            if let record {
+                switch record.state {
+                case .downloading: manager.pause(record)
+                case .paused: manager.resume(record)
+                case .failed, .cancelled: manager.retry(record)
+                case .queued, .complete: break
+                }
+            } else { manager.download(post) }
+        } label: {
+            VStack(spacing: 3) {
+                if record?.state == .queued { ProgressView().controlSize(.small) }
+                else { Image(systemName: symbol).font(.system(size: 19, weight: .semibold)) }
+                if let record, record.state == .downloading || record.state == .paused {
+                    Text("\(Int(min(1, max(0, record.progress.isFinite ? record.progress : 0)) * 100))%")
+                        .font(.caption2.monospacedDigit())
+                }
+            }
+            .frame(width: 48, height: 52)
+            .foregroundStyle(record?.state == .complete ? AppTheme.accent : .primary)
+            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .disabled(record?.state == .queued || record?.state == .complete)
+        .accessibilityLabel("Download episode")
+        .accessibilityValue(record?.state.rawValue ?? "Not downloaded")
+        .accessibilityIdentifier("episode-download-\(post.stableID)")
+        .onChange(of: record?.state) { _, state in if state == .failed { showError = true } }
+        .alert("Download failed", isPresented: $showError) {
+            Button("Retry") { if let record { manager.retry(record) } }
+            Button("OK", role: .cancel) {}
+        } message: { Text(record?.errorMessage ?? "Try again.") }
     }
 }

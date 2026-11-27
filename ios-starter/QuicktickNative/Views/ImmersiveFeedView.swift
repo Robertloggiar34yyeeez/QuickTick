@@ -3,16 +3,16 @@ import AVKit
 import ImageIO
 import UIKit
 
-private enum ImmersiveChromeLayout {
+enum ImmersiveChromeLayout {
     static func bottomClearance(viewportWidth: CGFloat, safeAreaBottom: CGFloat,
-                                backgroundAudioVisible: Bool) -> CGFloat {
+                                backgroundAudioVisible: Bool, standalone: Bool = false) -> CGFloat {
         // The media fills the physical display, but the timeline must sit
         // *above* the root tab dock and home indicator. The fullscreen
         // GeometryReader may report zero safe-area insets after
         // ignoresSafeArea, so retain a conservative device inset.
         let sideDock = viewportWidth > 600
-        let deviceInset = max(safeAreaBottom, sideDock ? 20 : 34)
-        let tabDockHeight: CGFloat = sideDock ? 0 : 62
+        let deviceInset = standalone ? max(0, safeAreaBottom) : max(safeAreaBottom, sideDock ? 20 : 34)
+        let tabDockHeight: CGFloat = sideDock || standalone ? 0 : 62
         let audioControlsHeight: CGFloat = backgroundAudioVisible ? 80 : 0
         return deviceInset + tabDockHeight + audioControlsHeight + 10
     }
@@ -25,10 +25,12 @@ struct ImmersiveFeedView: View {
     let offline: Bool
     var onClose: (() -> Void)? = nil
     let collectionTab: Int?
+    let standalonePresentation: Bool
     @Binding var showSettings: Bool
-    init(posts: [Post], offline: Bool, activePostID: Binding<String?>, onClose: (() -> Void)? = nil, showSettings: Binding<Bool> = .constant(false), collectionTab: Int? = nil) {
+    init(posts: [Post], offline: Bool, activePostID: Binding<String?>, onClose: (() -> Void)? = nil, showSettings: Binding<Bool> = .constant(false), collectionTab: Int? = nil, standalonePresentation: Bool = false) {
         self.posts = posts; self.mediaPosts = collectionTab == 2 ? posts : posts.filter(\.isImmersiveMedia)
         self.offline = offline; self.onClose = onClose; self.collectionTab = collectionTab
+        self.standalonePresentation = standalonePresentation
         _showSettings = showSettings
         _activeID = activePostID
     }
@@ -152,6 +154,7 @@ struct ImmersiveFeedView: View {
         }
 
     private var immersiveCanvas: some View {
+        GeometryReader { safeViewport in
         ZStack(alignment: .top) {
             GeometryReader { geo in
             ZStack {
@@ -163,6 +166,8 @@ struct ImmersiveFeedView: View {
                     ImmersiveItemView(post: post, offline: offline, active: true,
                                       presentationActive: presentationActive, playbackOwner: playbackOwner,
                                       collection: collectionTab != nil, previews: previews,
+                                      standalonePresentation: standalonePresentation,
+                                      deviceBottomInset: safeViewport.safeAreaInsets.bottom,
                                       onPageSwipe: { translation, velocity, ended in
                                           if ended {
                                               endPan(from: post.stableID, translation: translation,
@@ -208,6 +213,7 @@ struct ImmersiveFeedView: View {
             }
             .ignoresSafeArea(edges: [.top, .bottom])
             immersiveHeader
+        }
         }
     }
 
@@ -631,6 +637,8 @@ private struct ImmersiveItemView: View {
     let playbackOwner: String
     let collection: Bool
     @ObservedObject var previews: ImmersivePreviewCache
+    let standalonePresentation: Bool
+    let deviceBottomInset: CGFloat
     let onPageSwipe: (CGSize, CGSize, Bool) -> Void
     @State private var player: AVPlayer?
     @State private var ready = false
@@ -678,13 +686,6 @@ private struct ImmersiveItemView: View {
               ["pornhub.com", "www.pornhub.com"].contains(url.host?.lowercased() ?? "") else { return nil }
         return url
     }
-    private var fillsNicheCanvas: Bool {
-        // A selected RedGIFs niche is a TikTok-style edge-to-edge feed. The
-        // regular player keeps aspect-fit for landscape and other providers.
-        !offline && post.providerKey == .redgifs && store.selectedProvider == .redgifs &&
-            store.queryText.hasPrefix("niche:")
-    }
-
     private func seekImmersive(forward: Bool) {
         guard let player else { return }
         let current = Date().timeIntervalSince(lastDoubleTapAt) < 1.5
@@ -713,11 +714,12 @@ private struct ImmersiveItemView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let mediaSize = fillsNicheCanvas ? geo.size : fittedSize(geo.size)
+            let mediaSize = fittedSize(geo.size)
             let controlsBottomClearance = ImmersiveChromeLayout.bottomClearance(
                 viewportWidth: geo.size.width,
-                safeAreaBottom: geo.safeAreaInsets.bottom,
-                backgroundAudioVisible: store.audio.currentPost != nil)
+                safeAreaBottom: max(deviceBottomInset, geo.safeAreaInsets.bottom),
+                backgroundAudioVisible: store.audio.currentPost != nil,
+                standalone: standalonePresentation)
             ZStack(alignment: .center) {
                 AppTheme.canvas
                 if post.type.lowercased() != "image" && gifURL == nil {
@@ -735,8 +737,8 @@ private struct ImmersiveItemView: View {
                     Group {
                         if let image = previews.images[post.stableID] {
                             Image(uiImage: image).resizable()
-                                .aspectRatio(contentMode: fillsNicheCanvas ? .fill : .fit)
-                        } else if active {
+                                .aspectRatio(contentMode: .fit)
+                        } else if active && error == nil {
                             VStack(spacing: 12) {
                                 Image(systemName: "play.rectangle.on.rectangle")
                                     .font(.system(size: 40, weight: .light))
@@ -779,9 +781,9 @@ private struct ImmersiveItemView: View {
                     // must retain the stream's real aspect ratio. Filling a
                     // fixed 16:9 canvas cropped portrait and square videos.
                     NativePlayerSurface(player: player,
-                        fill: fillsNicheCanvas,
+                        fill: false,
                         ready: $ready, accessibilityID: "immersive-video-surface")
-                        .frame(width: mediaSize.width, height: mediaSize.height)
+                        .frame(width: geo.size.width, height: geo.size.height)
                         .opacity(ready && introReady ? 1 : 0)
                         .animation(.easeOut(duration: 0.18), value: ready && introReady)
                         .allowsHitTesting(false)
@@ -832,7 +834,7 @@ private struct ImmersiveItemView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
                     .allowsHitTesting(false)
                 }
-                if !playing && !scrubbing {
+                if !playing && !scrubbing && error == nil {
                     Image(systemName: "play.fill").font(.system(size: 48)).foregroundStyle(.white.opacity(0.7))
                         .allowsHitTesting(false)
                 }
@@ -842,7 +844,7 @@ private struct ImmersiveItemView: View {
                 if active && presentationActive {
                     // Keep the action rail reachable on small iPhones, while
                     // giving the iPad canvas appropriately sized controls.
-                    let scale = min(1.12, max(1.0, geo.size.width / 430))
+                    let scale = min(1.12, max(0.72, min(geo.size.width / 390, (geo.size.height - controlsBottomClearance - 170) / 460)))
                     actionRail
                         .scaleEffect(scale, anchor: .bottomTrailing)
                         .padding(.trailing, geo.size.width > 600 ? 30 : 14)
@@ -874,12 +876,13 @@ private struct ImmersiveItemView: View {
                 }
                 .padding(.bottom, controlsBottomClearance)
             }
-            .overlay(alignment: .top) {
+            .overlay(alignment: .center) {
                 if let error {
                     VStack(spacing: 8) {
                         Text(error).font(.caption)
                         Button("Retry media") {
                             store.players.release(post.stableID); player = nil; ready = false; self.error = nil
+                            automaticProviderRetry = 0
                             mediaRetry += 1
                         }.frame(minHeight: 44)
                         if hanimePage != nil {
@@ -890,9 +893,11 @@ private struct ImmersiveItemView: View {
                             Button("Open original in QuickTick browser") { browsePornhub = true }
                                 .frame(minHeight: 44)
                         }
-                    }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
-                }
-                if active, !offline, !collection, let message = store.lastError {
+                    }.multilineTextAlignment(.center)
+                        .padding(16).frame(maxWidth: 260)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 65)
+                } else if active, !offline, !collection, let message = store.lastError {
                     Button { Task { await store.loadMore(immersive: true) } } label: {
                         VStack { Text(message); Text("Load more").bold() }.font(.caption).padding(12)
                     }.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
@@ -942,7 +947,7 @@ private struct ImmersiveItemView: View {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if let player {
                     if player.currentItem?.status == .failed {
-                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
+                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .redgifs),
                            automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
                             automaticProviderRetry += 1
                             store.players.release(post.stableID)
@@ -982,7 +987,7 @@ private struct ImmersiveItemView: View {
                     else { stalledSeconds = 0; if player.timeControlStatus == .playing { error = nil } }
                     lastTime = seconds
                     if stalledSeconds >= 12, !offline,
-                       (post.providerKey == .hanime || post.providerKey == .pornhub),
+                       (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .redgifs),
                        automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
                         automaticProviderRetry += 1
                         store.players.release(post.stableID)
@@ -1109,7 +1114,9 @@ private struct ImmersiveItemView: View {
             }
             player = p; p.isMuted = store.muted
             if !playing { p.pause() }; error = nil
-        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        } catch {
+            if !Task.isCancelled { self.error = error.localizedDescription }
+        }
     }
     private func fittedSize(_ available: CGSize) -> CGSize {
         // Every device letterboxes/pillarboxes to the source's own shape.

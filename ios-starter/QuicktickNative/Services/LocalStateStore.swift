@@ -17,6 +17,23 @@ struct LocalStateStore {
         let directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Quicktick")
         url = directory.appendingPathComponent("app-state-v1.json")
     }
+    // Selection is tiny, local-only and independent of successful feed
+    // requests. Updating it must not rewrite favorites or recommendation data.
+    private var selectedProviderURL: URL {
+        url.deletingLastPathComponent().appendingPathComponent("selected-provider-v1.txt")
+    }
+    func loadSelectedProvider() -> Provider? {
+        guard let raw = try? String(contentsOf: selectedProviderURL, encoding: .utf8),
+              let provider = Provider(rawValue: raw) else { return nil }
+        return provider == .hhaven ? .hanime : provider
+    }
+    func saveSelectedProvider(_ provider: Provider) throws {
+        let target = selectedProviderURL
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let canonical: Provider = provider == .hhaven ? .hanime : provider
+        try Data(canonical.rawValue.utf8).write(to: target, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
     func load() throws -> LocalAppState {
         guard FileManager.default.fileExists(atPath: url.path) else { return LocalAppState() }
         let state = try JSONDecoder().decode(LocalAppState.self, from: Data(contentsOf: url))
@@ -50,20 +67,24 @@ actor FeedPreviewPersistence {
     }
 
     func load(provider: Provider, query: String, sort: String, mediaOnly: Bool) -> [Post] {
-        guard let snapshot = validSnapshot(),
+        guard let snapshot = validSnapshot(at: providerURL(provider)) ?? validSnapshot(at: url),
               snapshot.provider == provider, snapshot.query == query,
               snapshot.sort == sort, snapshot.mediaOnly == mediaOnly else { return [] }
         return Array(snapshot.posts.prefix(48))
     }
 
     func recentProvider() -> Provider? {
-        guard let snapshot = validSnapshot(), snapshot.query.isEmpty,
+        guard let snapshot = validSnapshot(at: url), snapshot.query.isEmpty,
               snapshot.sort == "recommended", !snapshot.mediaOnly else { return nil }
         return snapshot.provider
     }
 
-    private func validSnapshot() -> FeedPreviewSnapshot? {
-        guard let data = try? Data(contentsOf: url),
+    private func providerURL(_ provider: Provider) -> URL {
+        url.deletingLastPathComponent().appendingPathComponent("feed-preview-v1-\(provider.rawValue).json")
+    }
+
+    private func validSnapshot(at location: URL) -> FeedPreviewSnapshot? {
+        guard let data = try? Data(contentsOf: location),
               let snapshot = try? JSONDecoder().decode(FeedPreviewSnapshot.self, from: data),
               snapshot.savedAt > Date().addingTimeInterval(-7 * 24 * 60 * 60) else { return nil }
         return snapshot
@@ -79,7 +100,10 @@ actor FeedPreviewPersistence {
                                            posts: Array(posts.prefix(48)))
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(snapshot).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            let bytes = try JSONEncoder().encode(snapshot)
+            try bytes.write(to: providerURL(provider), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            // Keep the legacy latest-preview pointer for migration only.
+            try bytes.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         } catch {
             // A temporary disk/file-protection failure must never make a
             // healthy network feed fail to render on its first paint.

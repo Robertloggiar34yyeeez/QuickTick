@@ -15,7 +15,17 @@ struct QuicktickNativeApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            Group {
+                if store.bootstrapped {
+                    RootView()
+                } else {
+                    ZStack {
+                        Color.black.ignoresSafeArea()
+                        ProgressView().tint(.white)
+                            .accessibilityLabel("Restoring your last source")
+                    }
+                }
+            }
                 .environmentObject(store)
                 .preferredColorScheme(.dark)
                 .task { await store.bootstrap() }

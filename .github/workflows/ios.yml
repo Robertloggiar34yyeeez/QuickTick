@@ -1,5 +1,5 @@
 name: Native iOS build and IPA
-run-name: QuickTick 1.1.2 · ${{ github.event_name }} · ${{ github.ref_name }}
+run-name: QuickTick 1.1.3 · ${{ github.event_name }} · ${{ github.ref_name }}
 on:
   push:
     # Feature branches are built by pull_request below. Triggering both
@@ -203,7 +203,7 @@ jobs:
         run: bash scripts/package-archive-ipa.sh
       - uses: actions/upload-artifact@v6
         with:
-          name: QuickTick-1.1.2-unsigned-IPA
+          name: QuickTick-1.1.3-unsigned-IPA
           path: build/export/
           if-no-files-found: error
           retention-days: 14

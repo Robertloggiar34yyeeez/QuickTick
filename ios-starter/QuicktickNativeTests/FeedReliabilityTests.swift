@@ -63,6 +63,35 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(afterEmptySave.count, 1,
                        "Empty responses or temporary browsing modes must not erase the last usable Home feed")
     }
+    @MainActor func testSourceSelectionPersistsWithoutSuccessfulFeed() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storage = LocalStateStore(directory: directory)
+        XCTAssertNil(storage.loadSelectedProvider())
+        let first = AppStore(localStorage: storage)
+        first.selectedProvider = .redgifs
+        XCTAssertEqual(storage.loadSelectedProvider(), .redgifs)
+        let relaunched = AppStore(localStorage: storage)
+        XCTAssertEqual(relaunched.selectedProvider, .redgifs)
+        relaunched.selectedProvider = .hhaven
+        XCTAssertEqual(storage.loadSelectedProvider(), .hanime)
+        XCTAssertEqual(AppStore(localStorage: storage).selectedProvider, .hanime)
+    }
+
+    func testPreviewCacheKeepsSeparateProviderSnapshots() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = FeedPreviewPersistence(directory: directory)
+        let first = Post(key: "redgifs:one", id: "one", provider: "redgifs", type: "video")
+        let second = Post(key: "eporner:two", id: "two", provider: "eporner", type: "video")
+        await cache.save([first], provider: .redgifs, query: "", sort: "recommended", mediaOnly: false)
+        await cache.save([second], provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        let restored = await cache.load(provider: .redgifs, query: "", sort: "recommended", mediaOnly: false)
+        XCTAssertEqual(restored.map(\.stableID), [first.stableID])
+        let latest = await cache.recentProvider()
+        XCTAssertEqual(latest, .eporner)
+    }
+
     func testSavedMediaSearchMatchesTitlesTagsAndProvidersWithoutNetwork() {
         var liked = Post(key: "rule34:star", id: "star", provider: "Rule34",
                          tags: ["space_opera", "blue_hair"], type: "image")

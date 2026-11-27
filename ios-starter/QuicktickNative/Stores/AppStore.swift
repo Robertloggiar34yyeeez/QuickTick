@@ -33,12 +33,21 @@ final class AppStore: ObservableObject {
             // Keep saved Haven items but migrate the old picker selection to Hanime.
             if selectedProvider == .hhaven { selectedProvider = .hanime }
             guard oldValue != selectedProvider else { return }
+            do { try localStorage.saveSelectedProvider(selectedProvider) }
+            catch { storageWarning = "Could not save the selected source: \(error.localizedDescription)" }
             savedFeeds.removeAll()
             // Home category chips are scoped to one provider. Never carry a
             // category route into another provider's keyword search.
             let previousQuery = QueryParser.parse(queryText)
+            // Do not carry another source's tag vocabulary or niche route
+            // into a newly selected catalog. Global exclusions stay intact.
+            if selectedProvider == .hanime && !previousQuery.included.isEmpty {
+                queryText = QueryParser.formatted(ParsedQuery(included: [], excluded: previousQuery.excluded))
+                return
+            }
             let retainedTerms = previousQuery.included.filter {
-                !ProviderSearchCategories.valid($0, provider: oldValue)
+                !ProviderSearchCategories.valid($0, provider: oldValue) &&
+                    !(oldValue == .redgifs && $0.hasPrefix("niche:"))
             }
             if retainedTerms.count != previousQuery.included.count {
                 queryText = QueryParser.formatted(ParsedQuery(included: retainedTerms,
@@ -272,6 +281,7 @@ final class AppStore: ObservableObject {
     private var syncFlight: Task<Void, Error>?
     private var syncRevision = 0
     @Published private(set) var bootstrapped = false
+    private var bootstrapInProgress = false
     private var lastSyncAttempt = Date.distantPast
     private var syncTask: Task<Void, Never>?
     private var restoreFailed = false
@@ -289,6 +299,7 @@ final class AppStore: ObservableObject {
         self.localStorage = localStorage
         self.feedPreviewPersistence = FeedPreviewPersistence(directory: localStorage.url.deletingLastPathComponent())
         self.api = api
+        if let saved = localStorage.loadSelectedProvider() { selectedProvider = saved }
         players.onPlaybackStart = { [weak self] in
             self?.idleTask?.cancel()
             self?.stopActiveLearning(); self?.startActiveLearning()
@@ -297,6 +308,9 @@ final class AppStore: ObservableObject {
     }
 
     func bootstrap() async {
+        guard !bootstrapped, !bootstrapInProgress else { return }
+        bootstrapInProgress = true
+        defer { bootstrapInProgress = false }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
             if ProcessInfo.processInfo.arguments.contains("--ui-testing-first-run") {
@@ -357,8 +371,14 @@ final class AppStore: ObservableObject {
         local.snapshot.pornhub.auth.session = credentials.pornhubSession
         await api.setCredentials(credentials)
         downloads.onCompleted = { [weak self] post in Task { await self?.record(.download, post: post) } }
-        if let previousProvider = await feedPreviewPersistence.recentProvider() {
+        // Migrate older installations only when no explicit selection exists.
+        // A late preview write must never override a more recent source choice.
+        if localStorage.loadSelectedProvider() == nil,
+           let previousProvider = await feedPreviewPersistence.recentProvider(),
+           localStorage.loadSelectedProvider() == nil {
             selectedProvider = previousProvider
+            do { try localStorage.saveSelectedProvider(selectedProvider) }
+            catch { storageWarning = "Could not restore the selected source: \(error.localizedDescription)" }
         }
         let cached = await feedPreviewPersistence.load(provider: selectedProvider, query: queryText,
                                                        sort: feedSort, mediaOnly: false)
@@ -451,6 +471,7 @@ final class AppStore: ObservableObject {
     }
 
     private func invalidateFeed() {
+        warmFeedRestored = false
         fullScreenPlaybackID = nil
         idleTask?.cancel(); plannedAcquisition = nil
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel(); semanticTask = nil
@@ -461,6 +482,9 @@ final class AppStore: ObservableObject {
     }
 
     func refresh(immersive: Bool = false, trainSearch: Bool = false) async {
+        // Only bootstrap itself can start the first feed, after restoring
+        // credentials, preferences and the selected source.
+        guard !bootstrapInProgress || bootstrapped else { return }
         if let deadline = feedRetryAfter, deadline > .now {
             let mediaOnly = immersive || activeTab == 1
             if feedMediaOnly != mediaOnly { invalidateFeed(); feedMediaOnly = mediaOnly }
@@ -817,6 +841,8 @@ final class AppStore: ObservableObject {
                         lastError = havenSafeCatalog.isEmpty
                             ? "Hentai Haven returned no catalog items. Try again when its catalog is available."
                             : "The available Hentai Haven posts were removed by saved favorites or explicit dislikes."
+                    } else if provider == .hanime && parsed.included.isEmpty {
+                        lastError = "No catalog posts matched the current filters. Try Popular or review your saved exclusions."
                     } else if provider == .eporner, parsed.included.isEmpty, parsed.excluded.isEmpty {
                         lastError = "Eporner has no available videos after your saved filters. Try Popular, adjust your interests, or refresh."
                     } else {
@@ -852,7 +878,7 @@ final class AppStore: ObservableObject {
             let parsed = QueryParser.parse(queryText)
             let explicitRedgifsNiche = provider == .redgifs ? NativeProviderAPI.redgifsSelectedNiche(parsed) : nil
             lastError = nil
-            let directCatalog = (provider == .hhaven || provider == .nhentai ||
+            let directCatalog = (provider == .hhaven || provider == .nhentai || provider == .hanime ||
                                  (provider == .erome && feedMediaOnly)) &&
                 feedSort == "recommended" && parsed.included.isEmpty
             let topicPersonalized = feedSort == "recommended" &&
@@ -896,7 +922,7 @@ final class AppStore: ObservableObject {
                 let cachedAppearance = await visual.scores(candidates)
                 let strict = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                     recent: Array(posts.suffix(10)), visualScores: cachedAppearance,
-                    strict: provider != .erome && provider != .redgifs &&
+                    strict: provider != .erome && provider != .redgifs && provider != .hanime &&
                         (!topicPersonalized || (favorites.count >= 5 &&
                             provider != .hhaven && provider != .nhentai)))
                 if strict.isEmpty && directCatalog {

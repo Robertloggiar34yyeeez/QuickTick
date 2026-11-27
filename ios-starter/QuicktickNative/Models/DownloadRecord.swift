@@ -31,14 +31,21 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var pageURL: String?
     /// Only set after a successful HLS task and explicit offline-cache validation.
     var offlineHLSVerified: Bool?
+    var offlineHLSValidationVersion: Int?
+    var hlsAssetBookmark: Data?
     var videoValidationVersion: Int?
     var mediaWidth: Double?
     var mediaHeight: Double?
 
     static let standaloneVideoValidationVersion = 3
+    static let currentHLSValidationVersion = 1
     var needsStandaloneVideoValidation: Bool {
-        Provider.identify(provider) == .hanime &&
-            (kind != .file || videoValidationVersion != Self.standaloneVideoValidationVersion)
+        Provider.identify(provider) == .hanime && kind == .file &&
+            videoValidationVersion != Self.standaloneVideoValidationVersion
+    }
+    var needsHLSValidation: Bool {
+        kind == .hlsPackage && (offlineHLSVerified != true ||
+            (Provider.identify(provider) == .hanime && offlineHLSValidationVersion != Self.currentHLSValidationVersion))
     }
     var formattedSize: String {
         guard let fileSize, fileSize >= 0 else { return "Size unavailable" }
@@ -58,15 +65,15 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var exportURL: URL? {
         // An HLS package is not an ordinary MP4 file. Never offer it as
         // one in a share sheet, where it may be represented by artwork.
-        if needsStandaloneVideoValidation { return nil }
-        guard !isHanimePosterOnly, (kind != .hlsPackage || offlineHLSVerified == true),
+        if needsStandaloneVideoValidation || kind == .hlsPackage { return nil }
+        guard !isHanimePosterOnly,
               state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }
         return URL(fileURLWithPath: path)
     }
 
     var offlinePost: Post? {
-        guard !needsStandaloneVideoValidation, !isHanimePosterOnly, (kind != .hlsPackage || offlineHLSVerified == true),
+        guard !needsStandaloneVideoValidation, !isHanimePosterOnly, !needsHLSValidation,
               state == .complete, let path = localMediaPath,
               FileManager.default.fileExists(atPath: path) else { return nil }
         let media = URL(fileURLWithPath: path)

@@ -25,7 +25,7 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNil(record.exportURL)
     }
 
-    func testHanimePackageCannotPassStandaloneFileGate() throws {
+    func testHanimePackageRequiresCurrentOfflineValidationAndCannotExport() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".movpkg")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -34,8 +34,21 @@ final class PersistenceTests: XCTestCase {
             kind: .hlsPackage, state: .complete, progress: 1, createdAt: .now)
         record.offlineHLSVerified = true
         record.videoValidationVersion = DownloadRecord.standaloneVideoValidationVersion
-        XCTAssertNil(record.offlinePost)
+        XCTAssertNil(record.offlinePost, "Old cache flags alone must not publish a Hanime package")
         XCTAssertNil(record.exportURL)
+        record.offlineHLSValidationVersion = DownloadRecord.currentHLSValidationVersion
+        XCTAssertEqual(record.offlinePost?.type, "video")
+        XCTAssertNil(record.exportURL, "Native HLS is not a standalone export")
+        record.offlineHLSVerified = false
+        XCTAssertNil(record.offlinePost)
+    }
+
+    @MainActor func testEmptyHLSPackageFailsActualAssetVerification() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".movpkg")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let verified = await DownloadManager.verifiedOfflineHLS(directory)
+        XCTAssertFalse(verified)
     }
 
     @MainActor func testStandaloneVideoVerifierUsesRealLocalClipAndRejectsDisguisedPoster() async throws {
@@ -72,6 +85,17 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(RecommendationEngine.referenceSimilarity(["unrelated"], references: references), 0)
         XCTAssertGreaterThan(RecommendationEngine.referenceSimilarity(["alpha"], references: references),
                              RecommendationEngine.referenceSimilarity(["alpha", "other", "different"], references: references))
+    }
+
+    func testShowsGridFitsPhoneAndTabletWidths() {
+        for width: CGFloat in [320, 375, 430, 600, 768, 1024, 1366] {
+            let layout = ShowsGridLayout(availableWidth: width)
+            XCTAssertGreaterThan(layout.cardWidth, 0)
+            XCTAssertLessThanOrEqual(layout.columns, 6)
+            XCTAssertEqual(CGFloat(layout.columns) * layout.cardWidth + CGFloat(layout.columns - 1) * 12,
+                           layout.contentWidth, accuracy: 0.01)
+            XCTAssertLessThanOrEqual(layout.contentWidth + 32, width + 0.01)
+        }
     }
 
     func testHLSOfflineReadinessRequiresExplicitPositiveCacheStatus() {

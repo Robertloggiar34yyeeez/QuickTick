@@ -119,7 +119,7 @@ final class PlayerPool: ObservableObject {
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 3
         let player = AVPlayer(playerItem: item)
-        if url.isFileURL && url.pathExtension.lowercased() == "movpkg" {
+        if Self.isLocalHLSPackage(url) {
             player.appliesMediaSelectionCriteriaAutomatically = false
         }
         player.volume = feedVolumeScale
@@ -129,9 +129,15 @@ final class PlayerPool: ObservableObject {
         return player
     }
 
+    private static func isLocalHLSPackage(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        var directory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
+    }
+
     /// Never select a rendition outside the local HLS cache during offline playback.
     func prepareLocalPlayback(key: String, url: URL) async throws {
-        guard url.isFileURL, url.pathExtension.lowercased() == "movpkg" else { return }
+        guard Self.isLocalHLSPackage(url) else { return }
         let player = player(for: key, url: url)
         guard let item = player.currentItem, let asset = item.asset as? AVURLAsset else {
             throw APIError.server("Offline video player is unavailable.")

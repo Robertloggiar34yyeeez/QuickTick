@@ -1721,7 +1721,9 @@ private struct HanimeShowsBrowserView: View {
             return slug.isEmpty ? post.id : slug
         }
         return groups.map { key, episodes in
-            let ordered = episodes.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+            var seen = Set<String>()
+            let ordered = episodes.filter { seen.insert($0.stableID).inserted }
+                .sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
             let title = (ordered.first?.caption ?? key.replacingOccurrences(of: "-", with: " "))
                 .replacingOccurrences(of: #"\s+[0-9]+$"#, with: "", options: .regularExpression)
             return ShowGroup(id: key, title: title, episodes: ordered)
@@ -1743,15 +1745,21 @@ private struct HanimeShowsBrowserView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
+            GeometryReader { geometry in
+                let layout = ShowsGridLayout(availableWidth: geometry.size.width)
+                ScrollView {
+                LazyVStack(alignment: .leading, spacing: 24) {
                     if search.isEmpty, let featured = shows.first {
                         NavigationLink { detail(featured) } label: {
-                            VStack(alignment: .leading, spacing: 9) {
-                                artwork(featured.cover, height: 220)
-                                Text(featured.title).font(.title2.bold())
-                                Text("View episodes").font(.subheadline.weight(.semibold))
-                            }
+                            VStack(alignment: .leading, spacing: 10) {
+                                artwork(featured.cover, height: min(270, layout.contentWidth * 0.56))
+                                Text(featured.title).font(.title2.bold()).lineLimit(2)
+                                Text("\(featured.episodes.count) episodes available").font(.subheadline).foregroundStyle(.secondary)
+                                Label("View episodes", systemImage: "play.rectangle")
+                                    .font(.subheadline.weight(.semibold))
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 12))
+                            }.frame(width: layout.contentWidth, alignment: .leading)
                         }.buttonStyle(.plain)
                     }
                     if search.isEmpty, !continuing.isEmpty {
@@ -1770,15 +1778,21 @@ private struct HanimeShowsBrowserView: View {
                         }
                     }
                     Text(search.isEmpty ? "Browse shows" : "Search results").font(.headline)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 12)], spacing: 16) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(layout.cardWidth), spacing: 12, alignment: .top), count: layout.columns), alignment: .leading, spacing: 20) {
                         ForEach(visible) { show in
                             NavigationLink { detail(show) } label: {
                                 VStack(alignment: .leading, spacing: 6) {
-                                    artwork(show.cover, height: 160)
-                                    Text(show.title).font(.caption.weight(.semibold)).lineLimit(2)
-                                    Text("\(show.episodes.count) available episodes").font(.caption2).foregroundStyle(.secondary)
+                                    artwork(show.cover, height: layout.cardWidth * 1.5)
+                                    Text(show.title).font(.subheadline.weight(.semibold))
+                                        .lineLimit(2, reservesSpace: true)
+                                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                                    Text("\(show.episodes.count) episodes")
+                                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                                 }
+                                .frame(width: layout.cardWidth, alignment: .topLeading)
+                                .contentShape(Rectangle())
                             }.buttonStyle(.plain)
+                                .accessibilityIdentifier("show-card-\(show.id)")
                         }
                     }
                     if loading { ProgressView("Loading catalog…").frame(maxWidth: .infinity) }
@@ -1791,7 +1805,10 @@ private struct HanimeShowsBrowserView: View {
                         ContentUnavailableView("No matching shows", systemImage: "film.stack",
                                                description: Text("Try another search or load more of the catalog."))
                     }
-                }.padding(16)
+                }.frame(width: layout.contentWidth, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.vertical, 16)
+                    .frame(maxWidth: .infinity)
+                }
             }
             .background(ThemeBackdrop())
             .navigationTitle("Shows")
@@ -1807,12 +1824,22 @@ private struct HanimeShowsBrowserView: View {
     }
 
     private func artwork(_ url: String, height: CGFloat) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 12).fill(AppTheme.elevatedSurface)
-            if !url.isEmpty {
-                CachedMediaImage(url: url, pixels: 540, fill: true)
-            } else { Image(systemName: "film").foregroundStyle(.secondary) }
-        }.frame(height: height).frame(maxWidth: .infinity)
+        // An overlay takes the base view's bounds rather than proposing the
+        // image's intrinsic width to the surrounding grid or episode row.
+        RoundedRectangle(cornerRadius: 12).fill(AppTheme.elevatedSurface)
+            .frame(height: height)
+            .overlay {
+                GeometryReader { geometry in
+                    if !url.isEmpty {
+                        CachedMediaImage(url: url, pixels: 540, fill: true)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .clipped()
+                    } else {
+                        Image(systemName: "film").foregroundStyle(.secondary)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                    }
+                }
+            }
             .clipped().clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
@@ -1835,7 +1862,8 @@ private struct HanimeShowsBrowserView: View {
                         HStack(spacing: 12) {
                             artwork(episode.thumbUrl, height: 72).frame(width: 112)
                             VStack(alignment: .leading, spacing: 5) {
-                                Text("Episode \(index + 1)").font(.headline)
+                                let number = episode.id.split(separator: "-").last.flatMap { Int($0) }
+                                Text("Episode \(number ?? (index + 1))").font(.headline)
                                 Text(episode.caption ?? episode.id).font(.caption).lineLimit(2)
                                 if let position = store.resumePosition(episode.stableID), position > 5 {
                                     Text("Resume available").font(.caption2).foregroundStyle(.secondary)
@@ -1847,6 +1875,8 @@ private struct HanimeShowsBrowserView: View {
                     }.buttonStyle(.plain)
                 }
             }.padding(16)
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
         }.background(ThemeBackdrop()).navigationTitle("Episodes")
     }
 
@@ -1871,5 +1901,19 @@ private struct HanimeShowsBrowserView: View {
             page += 1
         } catch is CancellationError {
         } catch { self.error = error.localizedDescription }
+    }
+}
+
+
+// Equal-width columns are calculated from the actual viewport, including iPad split view.
+struct ShowsGridLayout {
+    let contentWidth: CGFloat
+    let columns: Int
+    let cardWidth: CGFloat
+    init(availableWidth: CGFloat) {
+        contentWidth = max(1, min(availableWidth - 32, 1000))
+        let count = min(6, max(1, Int((contentWidth + 12) / 112)))
+        columns = count
+        cardWidth = max(1, (contentWidth - CGFloat(count - 1) * 12) / CGFloat(count))
     }
 }

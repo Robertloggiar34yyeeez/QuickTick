@@ -92,7 +92,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "www.erome.com", path == "/a/IMGONLY" {
             payload = #"<html><title>Photo set - Erome</title><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div></html>"#
         }
-        else if host == "auth.hanime.tv", path == "/api/v11/search_hvs" {
+        else if host == "guest.freeanimehentai.net", path == "/api/v11/search_hvs" {
             payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
         }
         else if host == "auth.hanime.tv", path == "/api/v11/handshake" {
@@ -505,7 +505,7 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(page.items.map(\.stableID), ["hanime:sample"])
         XCTAssertEqual(page.items.first?.tags, ["fantasy", "dark skin"])
         let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first)
-        XCTAssertEqual(request.url?.host, "auth.hanime.tv")
+        XCTAssertEqual(request.url?.host, "guest.freeanimehentai.net")
         XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature-version"), "app2")
         XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature")?.count, 64)
         XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "https://hanime.tv")
@@ -529,8 +529,11 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(next.items.isEmpty)
         XCTAssertTrue(other.items.isEmpty)
         XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
-            $0.url?.host == "auth.hanime.tv" && $0.url?.path == "/api/v11/search_hvs"
+            $0.url?.host == "guest.freeanimehentai.net" && $0.url?.path == "/api/v11/search_hvs"
         }.count, 1, "Search, sorting and pages reuse the same catalog")
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains {
+            $0.url?.host == "auth.hanime.tv" && $0.url?.path == "/api/v11/search_hvs"
+        }, "The guest catalog must not be requested from the playback auth host")
     }
 
     func testHanimeCatalogParserAcceptsNestedResultEnvelope() throws {

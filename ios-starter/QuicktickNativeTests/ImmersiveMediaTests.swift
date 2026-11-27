@@ -3,6 +3,15 @@ import AVFoundation
 @testable import QuicktickNative
 
 final class ImmersiveMediaTests: XCTestCase {
+    func testPlaybackRetriesKeepDirectOnlyAttachments() {
+        XCTAssertFalse(MediaResolver.canResolveFreshURL(.coomer))
+        XCTAssertFalse(MediaResolver.canResolveFreshURL(.kemono))
+        XCTAssertFalse(MediaResolver.canResolveFreshURL(nil))
+        XCTAssertTrue(MediaResolver.canResolveFreshURL(.redgifs))
+        XCTAssertTrue(MediaResolver.canResolveFreshURL(.rule34))
+        XCTAssertEqual(VideoIntroPolicy.maximumStartupWait, .seconds(8))
+    }
+
     func testFullscreenDoubleTapSeekClampsAndRespectsSettingsInterval() {
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: true, interval: 10), 52)
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: false, interval: 10), 32)

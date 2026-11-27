@@ -128,7 +128,7 @@ struct PostCardView: View {
                 if status == .failed {
                     playing = false
                     store.players.release(post.stableID)
-                    if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
+                    if !offline,
                        mediaStreamRetry < (post.providerKey == .hanime ? 2 : 1),
                        store.inlinePlaybackID == post.stableID {
                         // A short-lived signed playlist may expire between
@@ -411,7 +411,14 @@ struct PostCardView: View {
                     .padding(10)
             } else if post.isImmersiveMedia {
                 Button {
-                    if !autoplayVideos && !manualPlaybackRequested {
+                    if playbackError != nil {
+                        store.players.release(post.stableID)
+                        player = nil; ready = false; playbackError = nil
+                        mediaStreamRetry += 1
+                        manualPlaybackRequested = true
+                        store.pausedPlaybackID = nil
+                        store.inlinePlaybackID = post.stableID
+                    } else if !autoplayVideos && !manualPlaybackRequested {
                         manualPlaybackRequested = true
                         store.pausedPlaybackID = nil
                         store.inlinePlaybackID = post.stableID
@@ -464,7 +471,7 @@ struct PostCardView: View {
                 resolved = ResolvedMedia(mediaUrl: post.mediaUrl, type: post.type)
             } else { resolved = try await store.resolver.resolve(post,
                 refresh: mediaStreamRetry > 0,
-                hanimeVariant: post.providerKey == .hanime ? mediaStreamRetry : 0) }
+                hanimeVariant: post.providerKey == .hanime ? min(2, mediaStreamRetry) : 0) }
             guard !Task.isCancelled, store.inlinePlaybackID == post.stableID, store.activeTab == playbackTab, store.isForeground, let url = URL(string: resolved.mediaUrl) else { return }
             if post.type.lowercased() == "gif" {
                 gifURL = url; playing = store.pausedPlaybackID != post.stableID; preparing = false

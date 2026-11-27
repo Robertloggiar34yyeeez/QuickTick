@@ -5,6 +5,7 @@ import Combine
 enum VideoIntroPolicy {
     static let hanimeSettingKey = "quicktick-skip-hanime-intros-v1"
     static let hanimeStartSecondsKey = "quicktick-hanime-start-seconds-v1"
+    static let maximumStartupWait: Duration = .seconds(8)
 
     static func isPornhub(_ provider: String) -> Bool {
         provider.lowercased() == "pornhub"
@@ -208,13 +209,26 @@ final class PlayerPool: ObservableObject {
         guard let item = player.currentItem else { onIntroReady?(); return }
         let attempt = UUID()
         introAttempts[key] = attempt
+        // A ready-to-play callback, duration load or seek may never finish.
+        // Bound the entire intro gate, not just the final buffer wait.
+        Task { @MainActor [weak self, weak player] in
+            do { try await Task.sleep(for: VideoIntroPolicy.maximumStartupWait) } catch { return }
+            guard let self, let player, self.players[key] === player,
+                  self.activeKey == key, player.currentItem === item,
+                  self.introAttempts[key] == attempt else { return }
+            self.introAttempts.removeValue(forKey: key)
+            self.introObservers.removeValue(forKey: key)
+            item.cancelPendingSeeks()
+            if autoplay { player.play() }
+            onIntroReady?()
+        }
         introObservers[key] = item.observe(\.status, options: [.initial, .new]) { [weak self, weak player] item, _ in
             Task { @MainActor in
                 guard let self, let player, self.players[key] === player,
                       self.activeKey == key, player.currentItem === item,
                       self.introAttempts[key] == attempt, item.status == .readyToPlay else { return }
                 self.introObservers.removeValue(forKey: key)
-                let loadedDuration = (try? await item.asset.load(.duration))?.seconds ?? 0
+                let loadedDuration = item.duration.seconds
                 // A VOD HLS playlist can initially report an indefinite
                 // asset duration. Its seekable range still gives the intro
                 // skip a safe end bound once AVPlayerItem is ready.

@@ -958,9 +958,8 @@ private struct ImmersiveItemView: View {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if let player {
-                    if player.currentItem?.status == .failed {
-                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .redgifs),
-                           automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
+                    if player.status == .failed || player.currentItem?.status == .failed {
+                        if !offline, automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
                             automaticProviderRetry += 1
                             store.players.release(post.stableID)
                             self.player = nil; ready = false; mediaRetry += 1
@@ -999,7 +998,6 @@ private struct ImmersiveItemView: View {
                     else { stalledSeconds = 0; if player.timeControlStatus == .playing { error = nil } }
                     lastTime = seconds
                     if stalledSeconds >= 12, !offline,
-                       (post.providerKey == .hanime || post.providerKey == .pornhub || post.providerKey == .redgifs),
                        automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
                         automaticProviderRetry += 1
                         store.players.release(post.stableID)
@@ -1110,7 +1108,7 @@ private struct ImmersiveItemView: View {
                 url = prepared
             } else {
                 let resolved = try await store.resolver.resolve(post,
-                    refresh: mediaRetry > 0, hanimeVariant: mediaRetry)
+                    refresh: mediaRetry > 0, hanimeVariant: min(2, mediaRetry))
                 guard let remote = URL(string: resolved.mediaUrl) else { throw URLError(.badURL) }
                 url = remote
             }
@@ -1121,8 +1119,10 @@ private struct ImmersiveItemView: View {
                 guard !Task.isCancelled, active, presentationActive, store.isForeground else { return }
             }
             introReady = !shouldSkipIntro
-            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) {
+            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted,
+                                           owner: playbackOwner, autoplay: playing) {
                 introReady = true
+                if !playing { player?.pause() }
             }
             player = p; p.isMuted = store.muted
             if !playing { p.pause() }; error = nil

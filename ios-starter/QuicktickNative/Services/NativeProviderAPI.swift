@@ -881,7 +881,7 @@ enum NativeProviderAPI {
         let bytes: Data
         do {
             bytes = try await data(session: session,
-                url: url("https://auth.hanime.tv/api/v11/search_hvs"), provider: .hanime,
+                url: url("https://guest.freeanimehentai.net/api/v11/search_hvs"), provider: .hanime,
                 headers: headers, maxBytes: 12 * 1024 * 1024, timeout: 20)
         } catch APIError.providerStatus(.hanime, 403) {
             throw APIError.server("Hanime denied native catalog access (HTTP 403). Browsing the website is separate from API access. Configure an authorized Hanime API in Settings or try again later.")

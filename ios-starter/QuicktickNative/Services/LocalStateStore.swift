@@ -67,7 +67,7 @@ actor FeedPreviewPersistence {
     }
 
     func load(provider: Provider, query: String, sort: String, mediaOnly: Bool) -> [Post] {
-        guard let snapshot = validSnapshot(at: providerURL(provider)) ?? validSnapshot(at: url),
+        guard let snapshot = validSnapshot(at: providerURL(provider, mediaOnly: mediaOnly)) ?? (mediaOnly ? nil : validSnapshot(at: url)),
               snapshot.provider == provider, snapshot.query == query,
               snapshot.sort == sort, snapshot.mediaOnly == mediaOnly else { return [] }
         return Array(snapshot.posts.prefix(48))
@@ -79,8 +79,9 @@ actor FeedPreviewPersistence {
         return snapshot.provider
     }
 
-    private func providerURL(_ provider: Provider) -> URL {
-        url.deletingLastPathComponent().appendingPathComponent("feed-preview-v1-\(provider.rawValue).json")
+    private func providerURL(_ provider: Provider, mediaOnly: Bool) -> URL {
+        let suffix = mediaOnly ? "-immersive" : ""
+        return url.deletingLastPathComponent().appendingPathComponent("feed-preview-v1-\(provider.rawValue)\(suffix).json")
     }
 
     private func validSnapshot(at location: URL) -> FeedPreviewSnapshot? {
@@ -91,19 +92,22 @@ actor FeedPreviewPersistence {
     }
 
     func save(_ posts: [Post], provider: Provider, query: String, sort: String, mediaOnly: Bool) {
-        // Only the normal Recommended Home feed is restored at launch. A
-        // temporary search, Popular tab or immersive clip page must not evict
-        // the last usable startup snapshot.
-        guard !posts.isEmpty, query.isEmpty, sort == "recommended", !mediaOnly else { return }
+        // Keep Home and Immersive independent. Temporary searches and
+        // Popular must not overwrite either Recommended snapshot.
+        guard !posts.isEmpty, query.isEmpty, sort == "recommended" else { return }
+        let scoped = posts.filter { $0.providerKey == provider && (!mediaOnly || $0.isImmersiveMedia) }
+        guard !scoped.isEmpty else { return }
         let snapshot = FeedPreviewSnapshot(provider: provider, query: query, sort: sort,
                                            mediaOnly: mediaOnly, savedAt: .now,
-                                           posts: Array(posts.prefix(48)))
+                                           posts: Array(scoped.prefix(48)))
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let bytes = try JSONEncoder().encode(snapshot)
-            try bytes.write(to: providerURL(provider), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            // Keep the legacy latest-preview pointer for migration only.
-            try bytes.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            try bytes.write(to: providerURL(provider, mediaOnly: mediaOnly), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            // The legacy startup pointer remains Home-only.
+            if !mediaOnly {
+                try bytes.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            }
         } catch {
             // A temporary disk/file-protection failure must never make a
             // healthy network feed fail to render on its first paint.

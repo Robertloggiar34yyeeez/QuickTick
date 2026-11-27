@@ -102,6 +102,37 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertEqual(AppStore(localStorage: storage).selectedProvider, .hanime)
     }
 
+    func testImmersivePreviewDoesNotReplaceHomeAndKeepsProviderScope() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = FeedPreviewPersistence(directory: directory)
+        let home = Post(key: "eporner:home", id: "home", provider: "eporner", type: "video")
+        let clip = Post(key: "eporner:clip", id: "clip", provider: "eporner", type: "video")
+        await cache.save([home], provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        await cache.save([clip], provider: .eporner, query: "", sort: "recommended", mediaOnly: true)
+        let restoredHome = await cache.load(provider: .eporner, query: "", sort: "recommended", mediaOnly: false)
+        let restoredClips = await cache.load(provider: .eporner, query: "", sort: "recommended", mediaOnly: true)
+        let other = await cache.load(provider: .rule34, query: "", sort: "recommended", mediaOnly: true)
+        XCTAssertEqual(restoredHome.map(\.stableID), [home.stableID])
+        XCTAssertEqual(restoredClips.map(\.stableID), [clip.stableID])
+        XCTAssertTrue(other.isEmpty)
+    }
+
+    func testImmersiveCandidateGracePreservesSparseBatches() {
+        XCTAssertEqual(CandidatePoolMix.graceMilliseconds(unique: 2, immersive: true), 720)
+        XCTAssertLessThan(CandidatePoolMix.graceMilliseconds(unique: 10, immersive: true),
+                          CandidatePoolMix.graceMilliseconds(unique: 10, immersive: false))
+    }
+
+    func testChallengeHeaderIsNotInferredFromHTTPStatus() throws {
+        let url = try XCTUnwrap(URL(string: "https://example.invalid/api"))
+        let challenge = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 503, httpVersion: nil,
+            headerFields: ["cf-mitigated": "challenge"]))
+        let forbidden = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: [:]))
+        XCTAssertTrue(NativeProviderAPI.isBrowserChallenge(challenge))
+        XCTAssertFalse(NativeProviderAPI.isBrowserChallenge(forbidden))
+    }
+
     func testPreviewCacheKeepsSeparateProviderSnapshots() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

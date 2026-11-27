@@ -190,7 +190,7 @@ struct ImmersiveFeedView: View {
                 }
                 if mediaPosts.isEmpty {
                     ContentUnavailableView {
-                        Label(store.isLoading ? "Loading clips" : "No videos or GIFs", systemImage: "play.rectangle")
+                        Label((store.isLoading || (!offline && !store.bootstrapped)) ? "Loading clips" : "No videos or GIFs", systemImage: "play.rectangle")
                     } description: {
                         Text(offline ? "Download a video or GIF to watch it here." :
                              (store.lastError ?? "No new clips matched. Try another source or adjust your interests."))
@@ -201,6 +201,12 @@ struct ImmersiveFeedView: View {
                                 Button(seconds > 0 ? "Retry in \(seconds)s" : "Try again") {
                                     Task { await store.refresh(immersive: true) }
                                 }.disabled(store.isLoading || seconds > 0)
+                            }
+                            if store.selectedProvider == .hanime, store.lastError != nil {
+                                if let website = URL(string: "https://hanime.tv/") {
+                                    Link("Open Hanime in Safari", destination: website)
+                                }
+                                Button("Configure Hanime API") { showSettings = true }
                             }
                             Button("Adjust interests") { preferencesVisible = true }.disabled(store.isLoading)
                             if !store.queryText.isEmpty {

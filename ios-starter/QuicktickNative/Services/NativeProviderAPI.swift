@@ -248,6 +248,9 @@ enum NativeProviderAPI {
             let (data, response) = try await session.data(for: request)
             try Task.checkCancellation()
             guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+            if provider == .hanime, isBrowserChallenge(http) {
+                throw APIError.server("Hanime requires browser verification. Native API access is unavailable on this connection. Browse the website or configure an authorized API in Settings.")
+            }
             if http.statusCode == 429 {
                 let advertised = retryDeadline(http, attempt: attempt)
                 let deadline = attempt == 2 ? max(advertised, Date.now.addingTimeInterval(1)) : advertised
@@ -263,6 +266,10 @@ enum NativeProviderAPI {
             return data
         }
         throw APIError.invalidResponse
+    }
+
+    static func isBrowserChallenge(_ response: HTTPURLResponse) -> Bool {
+        response.value(forHTTPHeaderField: "cf-mitigated")?.lowercased() == "challenge"
     }
 
     static func retryDeadline(_ response: HTTPURLResponse, now: Date = .now, attempt: Int = 0) -> Date {
@@ -877,7 +884,7 @@ enum NativeProviderAPI {
                 url: url("https://auth.hanime.tv/api/v11/search_hvs"), provider: .hanime,
                 headers: headers, maxBytes: 12 * 1024 * 1024, timeout: 20)
         } catch APIError.providerStatus(.hanime, 403) {
-            throw APIError.server("Hanime requires normal browser verification on this connection. Open the site in Safari or configure a reachable Hanime API in Settings.")
+            throw APIError.server("Hanime denied native catalog access (HTTP 403). Browsing the website is separate from API access. Configure an authorized Hanime API in Settings or try again later.")
         }
         let raw = try hanimeRows(JSONSerialization.jsonObject(with: bytes))
         guard raw.count <= 20_000 else { throw APIError.invalidResponse }

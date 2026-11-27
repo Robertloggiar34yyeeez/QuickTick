@@ -15,6 +15,12 @@ struct VisualRefreshProgress: Equatable, Sendable {
 /// from filling the ranker's first 384 slots before broad discovery is seen.
 /// Keep both streams in their original provider order for stable pagination.
 enum CandidatePoolMix {
+    static func graceMilliseconds(unique: Int, immersive: Bool) -> Int {
+        if unique < 3 { return 720 }
+        if immersive { return unique < 10 ? 180 : 80 }
+        return unique < 10 ? 420 : 260
+    }
+
     static func interleave(_ focused: [Post], _ broad: [Post]) -> [Post] {
         var mixed: [Post] = []
         mixed.reserveCapacity(focused.count + broad.count)
@@ -380,19 +386,25 @@ final class AppStore: ObservableObject {
             do { try localStorage.saveSelectedProvider(selectedProvider) }
             catch { storageWarning = "Could not restore the selected source: \(error.localizedDescription)" }
         }
-        let cached = await feedPreviewPersistence.load(provider: selectedProvider, query: queryText,
-                                                       sort: feedSort, mediaOnly: false)
-        if !cached.isEmpty {
+        let startupProvider = selectedProvider
+        let startupQuery = queryText
+        let startupSort = feedSort
+        let startupMediaOnly = activeTab == 1
+        let cached = await feedPreviewPersistence.load(provider: startupProvider, query: startupQuery,
+                                                       sort: startupSort, mediaOnly: startupMediaOnly)
+        if activeTab < 2, startupProvider == selectedProvider, startupQuery == queryText,
+           startupSort == feedSort, startupMediaOnly == (activeTab == 1), !cached.isEmpty {
             let banned = exclusions + QueryParser.parse(queryText).excluded + tasteChoice(for: selectedProvider).notInto
             let visible = cached.filter { !RecommendationTagRules.rejects($0, exclusions: banned) }
             if !visible.isEmpty {
                 posts = visible; encountered = Set(visible.map(\.stableID))
+                feedMediaOnly = startupMediaOnly
                 warmFeedRestored = true
             }
         }
         bootstrapped = true
         visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil
-        await refresh()
+        if activeTab < 2 { await refresh(immersive: activeTab == 1) }
         FeedFrameMonitor.shared.startIfRequested()
         Task(priority: .utility) { await downloads.restoreTasks(); await syncWhenActive() }
     }
@@ -574,10 +586,10 @@ final class AppStore: ObservableObject {
     }
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
-        let previousVisible = posts
-        let keepWarmFeed = warmFeedRestored && !previousVisible.isEmpty && activeTab == 0
-        warmFeedRestored = false
+        var previousVisible = posts
         let mediaOnly = immersive || activeTab == 1
+        var keepWarmFeed = warmFeedRestored && !previousVisible.isEmpty && feedMediaOnly == mediaOnly
+        warmFeedRestored = false
         feedMediaOnly = mediaOnly
         protectedImmersiveIDs = []; immersivePlaybackID = nil
         generation = UUID(); feedRevision = generation; inlinePlaybackID = nil; players.pauseAll()
@@ -604,6 +616,21 @@ final class AppStore: ObservableObject {
         isLoading = true
         var releasedLoading = false
         defer { if generation == token && !releasedLoading { isLoading = false } }
+        if mediaOnly, previousVisible.isEmpty, requestedQuery.isEmpty, requestedSort == "recommended" {
+            let cached = await feedPreviewPersistence.load(provider: provider, query: requestedQuery,
+                                                           sort: requestedSort, mediaOnly: true)
+            guard generation == token, !Task.isCancelled else { return }
+            let banned = exclusions + tasteChoice(for: provider).notInto
+            let visible = feedExclusions.filter(cached.filter {
+                $0.providerKey == provider && $0.isImmersiveMedia &&
+                    !RecommendationTagRules.rejects($0, exclusions: banned)
+            }, favorites: Array(favorites.values), recommended: false, favoriteIDs: favoriteExclusionIDs)
+            if !visible.isEmpty {
+                previousVisible = visible
+                keepWarmFeed = true
+                posts = visible
+            }
+        }
         do {
             let parsed = QueryParser.parse(requestedQuery)
             let explicitRedgifsNiche = provider == .redgifs ? NativeProviderAPI.redgifsSelectedNiche(parsed) : nil
@@ -853,7 +880,10 @@ final class AppStore: ObservableObject {
                 } else { lastError = nil }
             }
         } catch {
-            if generation == token, !Task.isCancelled, !keepWarmFeed { recordFeedError(error, provider: provider) }
+            if generation == token, !Task.isCancelled {
+                if !keepWarmFeed || provider == .hanime { recordFeedError(error, provider: provider) }
+                if keepWarmFeed { hasMore = false }
+            }
         }
     }
 
@@ -1103,8 +1133,8 @@ final class AppStore: ObservableObject {
                 if completed == 2 { break }
                 if case .graceExpired = result { break }
                 let available = (primary?.items.count ?? 0) + (secondary?.items.count ?? 0)
-                let unique = Set((primary?.items ?? []).map(\.stableID)
-                               + (secondary?.items ?? []).map(\.stableID)).count
+                let usable = ((primary?.items ?? []) + (secondary?.items ?? [])).filter { !mediaOnly || $0.isImmersiveMedia }
+                let unique = Set(usable.map(\.stableID)).count
                 // The old unconditional 120 ms deadline discarded the broad
                 // lane on almost every focused response. Give it a bounded
                 // chance to contribute, especially for sparse pages, without
@@ -1113,7 +1143,7 @@ final class AppStore: ObservableObject {
                     // Huge archive/booru pages can consist of repeated IDs.
                     // Their raw row count is not a useful measure of whether
                     // the first response contains enough to scroll through.
-                    let grace = unique < 3 ? 720 : (unique < 10 ? 420 : 260)
+                    let grace = CandidatePoolMix.graceMilliseconds(unique: unique, immersive: mediaOnly)
                     deadline = Task {
                         do { try await Task.sleep(for: .milliseconds(grace)) } catch { return }
                         emitter.yield(.graceExpired)

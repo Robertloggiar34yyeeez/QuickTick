@@ -319,6 +319,17 @@ struct HomeFeedView: View {
                             (suggestedThemesEnabled && !themeSuggestions.isEmpty) {
                     suggestedThemeRow
                 }
+                if store.selectedProvider == .hanime, let error = store.lastError,
+                   !store.posts.isEmpty, !store.isLoading {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Showing saved feed", systemImage: "exclamationmark.circle")
+                            .font(.subheadline.weight(.semibold))
+                        Text(error).font(.caption)
+                        Button("Configure Hanime API") { showSettings = true }
+                    }
+                    .foregroundStyle(AppTheme.secondaryLabel)
+                    .padding(.horizontal, 16)
+                }
                 if store.posts.isEmpty && !store.bootstrapped {
                     RoundedRectangle(cornerRadius: 22)
                         .fill(AppTheme.surface)
@@ -333,7 +344,7 @@ struct HomeFeedView: View {
                         }
                         if store.selectedProvider == .hanime,
                            let website = URL(string: "https://hanime.tv/") {
-                            Link("Verify Hanime in Safari", destination: website)
+                            Link("Open Hanime in Safari", destination: website)
                             Button("Configure Hanime API") { showSettings = true }
                         }
                     }
@@ -611,7 +622,8 @@ struct HomeFeedView: View {
                 await discoverRedgifsNiches()
             }
         let visualScroll = nicheScroll
-            .task(id: store.selectedProvider) {
+            .task(id: "visual-themes:\(store.selectedProvider.rawValue):\(store.bootstrapped)") {
+                guard store.bootstrapped else { return }
                 await discoverVisualThemes()
             }
         let postChangeScroll = visualScroll

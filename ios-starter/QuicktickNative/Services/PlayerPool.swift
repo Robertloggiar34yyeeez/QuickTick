@@ -4,6 +4,8 @@ import Combine
 
 enum VideoIntroPolicy {
     static let hanimeSettingKey = "quicktick-skip-hanime-intros-v1"
+    static let hanimeStartSecondsKey = "quicktick-hanime-start-seconds-v1"
+    static let maximumStartupWait: Duration = .seconds(8)
 
     static func isPornhub(_ provider: String) -> Bool {
         provider.lowercased() == "pornhub"
@@ -22,9 +24,15 @@ enum VideoIntroPolicy {
         isHaven(provider) ? haven : (isHanime(provider) ? hanime : (isPornhub(provider) && pornhub))
     }
 
-    static func startTime(duration: Double, enabled: Bool, provider: String) -> Double {
-        enabled && (isPornhub(provider) || isHaven(provider) || isHanime(provider)) &&
-            duration.isFinite && duration > 12 ? 10 : 0
+    static func startTime(duration: Double, enabled: Bool, provider: String,
+                          defaults: UserDefaults = .standard) -> Double {
+        guard enabled, duration.isFinite else { return 0 }
+        if isHanime(provider) {
+            let configured = defaults.object(forKey: hanimeStartSecondsKey) as? Double ?? 180
+            let offset = configured.isFinite ? min(300, max(0, configured)) : 180
+            return duration > offset + 2 ? offset : 0
+        }
+        return (isPornhub(provider) || isHaven(provider)) && duration > 12 ? 10 : 0
     }
 
     static func bufferedFrom(_ start: Double, ranges: [CMTimeRange], requiredSeconds: Double = 0.7) -> Bool {
@@ -105,18 +113,55 @@ final class PlayerPool: ObservableObject {
         if let existing = players[key], urls[key] == url,
            existing.status != .failed, existing.currentItem?.status != .failed { touch(key); return existing }
         release(key)
-        let mediaHeaders = HanimeGeneratedAPI.mediaHeaders(for: url)
+        let mediaHeaders = url.isFileURL ? [:] : HanimeGeneratedAPI.mediaHeaders(for: url)
             .merging(EromeGeneratedAPI.mediaHeaders(for: url)) { _, new in new }
         let asset = mediaHeaders.isEmpty ? AVURLAsset(url: url)
             : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": mediaHeaders])
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 3
         let player = AVPlayer(playerItem: item)
+        if Self.isLocalHLSPackage(url) {
+            player.appliesMediaSelectionCriteriaAutomatically = false
+        }
         player.volume = feedVolumeScale
         // Start explicitly below, but let AVFoundation resume after a network stall.
         player.automaticallyWaitsToMinimizeStalling = true
         players[key] = player; urls[key] = url; touch(key); trim()
         return player
+    }
+
+    private static func isLocalHLSPackage(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        var directory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
+    }
+
+    /// Never select a rendition outside the local HLS cache during offline playback.
+    func prepareLocalPlayback(key: String, url: URL) async throws {
+        guard Self.isLocalHLSPackage(url) else { return }
+        let player = player(for: key, url: url)
+        guard let item = player.currentItem, let asset = item.asset as? AVURLAsset else {
+            throw APIError.server("Offline video player is unavailable.")
+        }
+        _ = try await asset.load(.isPlayable)
+        guard let cache = asset.assetCache, cache.isPlayableOffline else {
+            throw APIError.server("The downloaded video package is not available offline. Restore the download.")
+        }
+        for characteristic: AVMediaCharacteristic in [.audible, .visual, .legible] {
+            guard let group = try await asset.loadMediaSelectionGroup(for: characteristic) else { continue }
+            try Task.checkCancellation()
+            guard players[key] === player, urls[key] == url else { throw CancellationError() }
+            let options = cache.mediaSelectionOptions(in: group)
+            if let selected = item.currentMediaSelection.selectedMediaOption(in: group),
+               options.contains(selected) { continue }
+            if let available = options.first {
+                item.select(available, in: group)
+            } else if group.allowsEmptySelection && characteristic == .legible {
+                item.select(nil, in: group)
+            } else if !group.options.isEmpty {
+                throw APIError.server("A required media track was not downloaded. Restore the video.")
+            }
+        }
     }
 
     func activate(key: String, url: URL, muted: Bool, owner: String = "home",
@@ -144,8 +189,8 @@ final class PlayerPool: ObservableObject {
         let skipIntro = VideoIntroPolicy.enabled(provider: provider,
             pornhub: UserDefaults.standard.bool(forKey: "quicktick-skip-video-intros-v1"),
             haven: UserDefaults.standard.object(forKey: "quicktick-skip-hhaven-intros-v1") as? Bool ?? true,
-            hanime: UserDefaults.standard.bool(forKey: VideoIntroPolicy.hanimeSettingKey))
-        if skipIntro, !introSkipped.contains(key),
+            hanime: UserDefaults.standard.object(forKey: VideoIntroPolicy.hanimeSettingKey) as? Bool ?? true)
+        if skipIntro, !url.isFileURL, !introSkipped.contains(key),
            p.currentItem != nil {
             // Crucially: never decode 0:00 and seek a playing video afterward.
             // Keep the poster visible while metadata, the seek, and the first
@@ -164,13 +209,26 @@ final class PlayerPool: ObservableObject {
         guard let item = player.currentItem else { onIntroReady?(); return }
         let attempt = UUID()
         introAttempts[key] = attempt
+        // A ready-to-play callback, duration load or seek may never finish.
+        // Bound the entire intro gate, not just the final buffer wait.
+        Task { @MainActor [weak self, weak player] in
+            do { try await Task.sleep(for: VideoIntroPolicy.maximumStartupWait) } catch { return }
+            guard let self, let player, self.players[key] === player,
+                  self.activeKey == key, player.currentItem === item,
+                  self.introAttempts[key] == attempt else { return }
+            self.introAttempts.removeValue(forKey: key)
+            self.introObservers.removeValue(forKey: key)
+            item.cancelPendingSeeks()
+            if autoplay { player.play() }
+            onIntroReady?()
+        }
         introObservers[key] = item.observe(\.status, options: [.initial, .new]) { [weak self, weak player] item, _ in
             Task { @MainActor in
                 guard let self, let player, self.players[key] === player,
                       self.activeKey == key, player.currentItem === item,
                       self.introAttempts[key] == attempt, item.status == .readyToPlay else { return }
                 self.introObservers.removeValue(forKey: key)
-                let loadedDuration = (try? await item.asset.load(.duration))?.seconds ?? 0
+                let loadedDuration = item.duration.seconds
                 // A VOD HLS playlist can initially report an indefinite
                 // asset duration. Its seekable range still gives the intro
                 // skip a safe end bound once AVPlayerItem is ready.

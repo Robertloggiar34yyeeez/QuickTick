@@ -83,8 +83,8 @@ actor QuicktickAPIClient {
     private var nhentaiPageTasks: [String: Task<PostPage, Error>] = [:]
     private var eromePages: [String: (page: PostPage, expiry: Date)] = [:]
     private var eromePageTasks: [String: Task<PostPage, Error>] = [:]
-    private var hanimePages: [String: (page: PostPage, expiry: Date)] = [:]
-    private var hanimePageTasks: [String: Task<PostPage, Error>] = [:]
+    private var hanimeCatalogSnapshot: (posts: [Post], expiry: Date)?
+    private var hanimeCatalogTask: Task<[Post], Error>?
     private var archivePages: [String: (page: PostPage, expiry: Date)] = [:]
     private var archivePageTasks: [String: Task<PostPage, Error>] = [:]
     private var archiveCreators: [Provider: [ArchiveCreator]] = [:]
@@ -195,16 +195,16 @@ actor QuicktickAPIClient {
             credentials: credentials, token: token)
     }
 
-    func redgifsNichesPage(page: Int, limit: Int = 24) async throws -> RedgifsNichePage {
+    func redgifsNichesPage(page: Int, limit: Int = 24, includeArtwork: Bool = true) async throws -> RedgifsNichePage {
         let token = try await redgifsAuth.value(session: session)
         do {
             return try await NativeProviderAPI.redgifsNichesPage(session: session, token: token,
-                                                                 page: page, limit: limit)
+                                                                 page: page, limit: limit, includeArtwork: includeArtwork)
         } catch APIError.providerStatus(.redgifs, 401) {
             await redgifsAuth.invalidate(expecting: token)
             let refreshed = try await redgifsAuth.value(session: session)
             return try await NativeProviderAPI.redgifsNichesPage(session: session, token: refreshed,
-                                                                 page: page, limit: limit)
+                                                                 page: page, limit: limit, includeArtwork: includeArtwork)
         }
     }
 
@@ -231,36 +231,44 @@ actor QuicktickAPIClient {
     }
 
     private func cachedHanimePosts(query: ParsedQuery, page: Int, sort: String,
-                                   immersive: Bool) async throws -> PostPage {
-        let key = "\(page)|\(sort)|\(immersive)|\(QueryParser.formatted(query))"
-        if let saved = hanimePages[key], saved.expiry > .now { return saved.page }
-        if let pending = hanimePageTasks[key] { return try await pending.value }
+                                    immersive: Bool) async throws -> PostPage {
+        let catalog = try await cachedHanimeCatalog()
+        try Task.checkCancellation()
+        return try NativeProviderAPI.hanimePage(catalog, query: query, page: page,
+                                                sort: sort, immersive: immersive)
+    }
+
+    private func cachedHanimeCatalog() async throws -> [Post] {
+        if let saved = hanimeCatalogSnapshot, saved.expiry > .now { return saved.posts }
+        if let running = hanimeCatalogTask {
+            do { return try await running.value }
+            catch { return try hanimeCatalogFallback(error) }
+        }
         let clientSession = session
-        let request = Task<PostPage, Error> {
-            try await NativeProviderAPI.hanime(session: clientSession, query: query,
-                                               page: page, sort: sort, immersive: immersive)
-        }
-        hanimePageTasks[key] = request
-        defer { hanimePageTasks[key] = nil }
+        let pending = Task { try await NativeProviderAPI.hanimeCatalog(session: clientSession) }
+        hanimeCatalogTask = pending
+        defer { hanimeCatalogTask = nil }
         do {
-            let result = try await request.value
-            // Avoid turning a transient empty first page into a cached result.
-            if !result.items.isEmpty || page > 1 {
-                hanimePages[key] = (result, .now.addingTimeInterval(120))
+            let catalog = try await pending.value
+            if !catalog.isEmpty {
+                hanimeCatalogSnapshot = (catalog, .now.addingTimeInterval(120))
             }
-            if hanimePages.count > 24 {
-                hanimePages = hanimePages.filter { $0.value.expiry > .now.addingTimeInterval(-15 * 60) }
-            }
-            return result
-        } catch {
-            // Temporary browser verification or provider outages should not
-            // wipe a previously loaded catalog while the user is browsing.
-            if !Task.isCancelled, let saved = hanimePages[key],
-               saved.expiry > .now.addingTimeInterval(-15 * 60) {
-                return saved.page
-            }
-            throw error
-        }
+            return catalog
+        } catch { return try hanimeCatalogFallback(error) }
+    }
+
+    private func hanimeCatalogFallback(_ error: Error) throws -> [Post] {
+        // Cached metadata may survive ordinary server or transport outages.
+        // Access restrictions and rate limits still surface.
+        let transient: Bool
+        if let failure = error as? APIError, case .providerStatus(_, let status) = failure {
+            transient = (500...599).contains(status)
+        } else if let network = error as? URLError {
+            transient = [.timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost].contains(network.code)
+        } else { transient = false }
+        if !Task.isCancelled, transient, let saved = hanimeCatalogSnapshot,
+           saved.expiry > .now.addingTimeInterval(-15 * 60) { return saved.posts }
+        throw error
     }
 
     private func cachedNHentaiPosts(query: ParsedQuery, page: Int, sort: String,

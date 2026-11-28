@@ -20,7 +20,7 @@ actor MediaResolver {
         if refresh {
             // Do not coalesce a user retry with an old signed URL resolution.
             var fresh = post
-            fresh.mediaUrl = ""
+            if Self.canResolveFreshURL(post.providerKey) { fresh.mediaUrl = "" }
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ui-testing"), URL(string: post.mediaUrl)?.isFileURL == true { fresh = post }
             #endif
@@ -39,6 +39,12 @@ actor MediaResolver {
             defer { finish(key,waiter:waiter,cancel:false) }
             let value = try await task.value;try Task.checkCancellation();return value
         } onCancel: { Task { await self.finish(key,waiter:waiter,cancel:true) } }
+    }
+    // Direct-only archive/unknown attachments have no per-post resolver.
+    // Retrying them must retain the validated original file URL.
+    nonisolated static func canResolveFreshURL(_ provider: Provider?) -> Bool {
+        guard let provider else { return false }
+        return provider != .coomer && provider != .kemono && provider != .nhentai
     }
     private func finish(_ key: String,waiter: UUID,cancel: Bool) {
         guard waiters[key]?.remove(waiter) != nil else { return }

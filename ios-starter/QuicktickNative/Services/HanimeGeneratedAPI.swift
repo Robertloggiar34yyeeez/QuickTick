@@ -5,6 +5,13 @@ import CryptoKit
 /// The iOS app never assumes the Node service is running on the phone.
 enum HanimeGeneratedAPI {
     static let settingKey = "quicktick-hanime-api-url"
+    static let nativeAccessDeniedMessage = "Native playback was denied by Hanime. Open the original web player to complete any required verification, or use an authorized API in Settings."
+    static func watchURL(for post: Post) -> URL? {
+        guard post.providerKey == .hanime, let url = URL(string: post.pageUrl), url.scheme == "https",
+              url.user == nil, url.password == nil, ["hanime.tv", "www.hanime.tv"].contains(url.host?.lowercased() ?? ""),
+              url.path.hasPrefix("/videos/hentai/") else { return nil }
+        return url
+    }
 
     static func mediaHeaders(for url: URL) -> [String: String] {
         guard url.scheme == "https" else { return [:] }

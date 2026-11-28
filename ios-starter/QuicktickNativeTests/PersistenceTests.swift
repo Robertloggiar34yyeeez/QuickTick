@@ -25,6 +25,136 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNil(record.exportURL)
     }
 
+    func testHanimePackageRequiresCurrentOfflineValidationAndCannotExport() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".movpkg")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var record = DownloadRecord(key: "hanime:fixture", provider: "Hanime", postID: "fixture",
+            title: "Fixture", tags: [], thumbnailRemoteURL: "", localMediaPath: directory.path,
+            kind: .hlsPackage, state: .complete, progress: 1, createdAt: .now)
+        record.offlineHLSVerified = true
+        record.videoValidationVersion = DownloadRecord.standaloneVideoValidationVersion
+        XCTAssertNil(record.offlinePost, "Old cache flags alone must not publish a Hanime package")
+        XCTAssertNil(record.exportURL)
+        record.offlineHLSValidationVersion = DownloadRecord.currentHLSValidationVersion
+        XCTAssertEqual(record.offlinePost?.type, "video")
+        XCTAssertNil(record.exportURL, "Native HLS is not a standalone export")
+        record.offlineHLSVerified = false
+        XCTAssertNil(record.offlinePost)
+    }
+
+    @MainActor func testEmptyHLSPackageFailsActualAssetVerification() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".movpkg")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let verified = await DownloadManager.verifiedOfflineHLS(directory)
+        XCTAssertFalse(verified)
+        let reason = await DownloadManager.offlineHLSFailure(directory, attempts: 1)
+        XCTAssertEqual(reason, "The local package contains no saved media bytes.")
+    }
+
+    @MainActor func testStandaloneVideoVerifierUsesRealLocalClipAndRejectsDisguisedPoster() async throws {
+        let posts = try await UITestMediaFactory.shared.posts(sort: "recommended")
+        let clip = try XCTUnwrap(URL(string: posts[0].mediaUrl))
+        let valid = await DownloadManager.verifyStandaloneVideo(clip)
+        XCTAssertTrue(valid, "The checked-in H.264/AAC fixture must be independently playable")
+        let fake = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        defer { try? FileManager.default.removeItem(at: fake) }
+        try Data([0xFF, 0xD8, 0xFF]).write(to: fake)
+        let invalid = await DownloadManager.verifyStandaloneVideo(fake)
+        XCTAssertFalse(invalid)
+        let remote = URL(string: "https://example.invalid/movie.mp4")!
+        let remoteValid = await DownloadManager.verifyStandaloneVideo(remote)
+        XCTAssertFalse(remoteValid)
+    }
+
+    func testLocalMediaDimensionsPersistIntoOfflinePost() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        try Data([0, 1, 2]).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        var record = DownloadRecord(key: "fixture:1", provider: "Fixture", postID: "1",
+            title: "Fixture", tags: [], thumbnailRemoteURL: "", localMediaPath: file.path,
+            kind: .file, state: .complete, progress: 1, createdAt: .now)
+        record.mediaWidth = 720; record.mediaHeight = 1280; record.mediaType = "video"
+        let restored = try JSONDecoder().decode(DownloadRecord.self, from: JSONEncoder().encode(record))
+        XCTAssertEqual(restored.offlinePost?.width, 720)
+        XCTAssertEqual(restored.offlinePost?.height, 1280)
+    }
+
+    func testReferenceSimilarityPrefersMatchingMetadata() {
+        let references: [Set<String>] = [["alpha", "beta"], ["gamma", "delta"]]
+        XCTAssertEqual(RecommendationEngine.referenceSimilarity(["alpha", "beta"], references: references), 1)
+        XCTAssertEqual(RecommendationEngine.referenceSimilarity(["unrelated"], references: references), 0)
+        XCTAssertGreaterThan(RecommendationEngine.referenceSimilarity(["alpha"], references: references),
+                             RecommendationEngine.referenceSimilarity(["alpha", "other", "different"], references: references))
+    }
+
+    func testSeriesPosterNeverUsesRandomEpisodePreview() throws {
+        var later = Post(key: "hanime:series-3", id: "series-3", provider: "Hanime",
+                         thumbUrl: "https://example.invalid/preview.jpg", type: "video")
+        later.episodePosterURL = "https://example.invalid/episode3.jpg"
+        XCTAssertEqual(Post.hanimeShowPoster(in: [later]), "")
+        var first = Post(key: "hanime:series-1", id: "series-1", provider: "Hanime", type: "video")
+        first.episodePosterURL = "https://example.invalid/poster.jpg"
+        XCTAssertEqual(Post.hanimeShowPoster(in: [later, first]), "https://example.invalid/poster.jpg")
+        later.seriesPosterURL = "https://example.invalid/series.jpg"
+        later.seriesTitle = "Series title"
+        XCTAssertEqual(Post.hanimeShowPoster(in: [first, later]), "https://example.invalid/series.jpg")
+        let decoded = try JSONDecoder().decode(Post.self, from: JSONEncoder().encode(later))
+        XCTAssertEqual(decoded.seriesPosterURL, later.seriesPosterURL)
+        XCTAssertEqual(decoded.hanimeShowTitle, "Series title")
+        XCTAssertEqual(ShowsGridLayout(availableWidth: 390).columns, 2)
+        XCTAssertGreaterThan(ShowsGridLayout(availableWidth: 390).cardWidth, 165)
+    }
+
+    func testShowsGridFitsPhoneAndTabletWidths() {
+        for width: CGFloat in [320, 375, 430, 600, 768, 1024, 1366] {
+            let layout = ShowsGridLayout(availableWidth: width)
+            XCTAssertGreaterThan(layout.cardWidth, 0)
+            XCTAssertLessThanOrEqual(layout.columns, 6)
+            XCTAssertEqual(CGFloat(layout.columns) * layout.cardWidth + CGFloat(layout.columns - 1) * 12,
+                           layout.contentWidth, accuracy: 0.01)
+            XCTAssertLessThanOrEqual(layout.contentWidth + 32, width + 0.01)
+        }
+    }
+
+    func testHLSOfflineReadinessRequiresExplicitPositiveCacheStatus() {
+        XCTAssertFalse(OfflineHLSReadiness.isVerified(playable: true, duration: 60, cacheReady: nil))
+        XCTAssertFalse(OfflineHLSReadiness.isVerified(playable: true, duration: 60, cacheReady: false))
+        XCTAssertFalse(OfflineHLSReadiness.isVerified(playable: false, duration: 60, cacheReady: true))
+        XCTAssertFalse(OfflineHLSReadiness.isVerified(playable: true, duration: 0, cacheReady: true))
+        XCTAssertTrue(OfflineHLSReadiness.isVerified(playable: true, duration: 60, cacheReady: true))
+    }
+
+    func testUnverifiedHLSPackageCannotAppearAsOfflineMedia() throws {
+        let package = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".movpkg")
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: package) }
+        var record = DownloadRecord(key: "sample:1", provider: "sample", postID: "1",
+                                    title: "Fixture", tags: [], thumbnailRemoteURL: "",
+                                    localMediaPath: package.path, kind: .hlsPackage,
+                                    state: .complete, progress: 1, createdAt: .now)
+        XCTAssertNil(record.offlinePost)
+        XCTAssertNil(record.exportURL)
+        record.offlineHLSVerified = true
+        record.mediaType = "image"
+        XCTAssertEqual(record.offlinePost?.type, "video")
+    }
+
+    func testVideoDownloadRejectsNonVideoPayloads() {
+        let response = HTTPURLResponse(url: URL(string: "https://example.invalid/video.mp4")!,
+                                       statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "application/octet-stream"])!
+        let bad = [Data(), Data([0xFF, 0xD8, 0xFF]),
+                   Data("RIFF1234WEBP".utf8), Data("1234ftypavif".utf8),
+                   Data("#EXTM3U\n#EXTINF:5".utf8), Data("<html>error</html>".utf8)]
+        for header in bad {
+            XCTAssertNotNil(DownloadResponseValidator.failure(response: response, header: header, expectedVideo: true))
+        }
+        XCTAssertNil(DownloadResponseValidator.failure(response: response,
+            header: Data("1234ftypisom".utf8), expectedVideo: true))
+    }
+
     @MainActor func testFavoritesNewestFirstUsesLikeTimeAcrossProviders() {
         let posts = [
             Post(key: "rule34:900", id: "900", provider: "Rule34"),

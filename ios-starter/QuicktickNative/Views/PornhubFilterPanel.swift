@@ -8,7 +8,7 @@ struct PornhubFilterPanel: View {
     @State private var categoryPicker: CategoryPicker?
 
     private enum CategoryPicker: String, Identifiable {
-        case included, excluded
+        case included, ethnicity, excluded
         var id: String { rawValue }
     }
 
@@ -56,10 +56,17 @@ struct PornhubFilterPanel: View {
                 .tint(AppTheme.accent)
                 .accessibilityIdentifier("pornhub-duration-max")
 
-            categoryButton(title: "Included category",
-                           detail: filters.includedCategory ?? "All categories",
-                           subtitle: "Choose up to 1 category") { categoryPicker = .included }
+            Label("Categories", systemImage: "tag").font(.headline)
+            categoryButton(title: "Topic",
+                           detail: filters.includedCategory ?? "Any topic",
+                           subtitle: "Choose one topic") { categoryPicker = .included }
                 .accessibilityIdentifier("pornhub-included-category")
+            categoryButton(title: "Ethnicity",
+                           detail: filters.includedEthnicity ?? "Any ethnicity",
+                           subtitle: "Provider category") { categoryPicker = .ethnicity }
+                .accessibilityIdentifier("pornhub-ethnicity-category")
+            Text("Both selections must match when combined. Categories are supplied by the provider.")
+                .font(.caption).foregroundStyle(.secondary)
             categoryButton(title: "Excluded categories",
                            detail: filters.excludedCategories.isEmpty ? "None" : "\(filters.excludedCategories.count) selected",
                            subtitle: "Exclude up to 10 categories") { categoryPicker = .excluded }
@@ -76,7 +83,7 @@ struct PornhubFilterPanel: View {
         }
         .sheet(item: $categoryPicker) { picker in
             PornhubCategoryPicker(filters: $filters, categories: categories,
-                                  excluding: picker == .excluded)
+                                  excluding: picker == .excluded, ethnicity: picker == .ethnicity)
         }
     }
 
@@ -115,23 +122,42 @@ private struct PornhubCategoryPicker: View {
     @Binding var filters: PornhubSearchFilters
     let categories: [String]
     let excluding: Bool
+    let ethnicity: Bool
     @State private var search = ""
 
     private var visible: [String] {
-        categories.filter { search.isEmpty || $0.localizedCaseInsensitiveContains(search) }
+        categories.filter {
+            (excluding || PornhubSearchFilters.isEthnicityCategory($0) == ethnicity) &&
+                (search.isEmpty || $0.localizedCaseInsensitiveContains(search))
+        }
+    }
+
+    private var selectedCategory: String? {
+        ethnicity ? filters.includedEthnicity : filters.includedCategory
+    }
+
+    private func choose(_ value: String?) {
+        if ethnicity { filters.includedEthnicity = value }
+        else { filters.includedCategory = value }
+        filters = filters.normalized
+    }
+
+    private var title: String {
+        if excluding { return "Exclude categories (\(filters.excludedCategories.count)/10)" }
+        return ethnicity ? "Ethnicity" : "Topic"
     }
 
     var body: some View {
         NavigationStack {
             List {
                 if !excluding {
-                    categoryRow("All categories", selected: filters.includedCategory == nil,
-                                disabled: false) { filters.includedCategory = nil }
+                    categoryRow(ethnicity ? "Any ethnicity" : "Any topic", selected: selectedCategory == nil,
+                                disabled: false) { choose(nil) }
                 }
                 ForEach(visible, id: \.self) { category in
                     let selected = excluding
                         ? filters.excludedCategories.contains(category)
-                        : filters.includedCategory == category
+                        : selectedCategory == category
                     categoryRow(category, selected: selected,
                                 disabled: excluding && !selected && filters.excludedCategories.count >= 10) {
                         if excluding {
@@ -139,16 +165,16 @@ private struct PornhubCategoryPicker: View {
                             else if filters.excludedCategories.count < 10 {
                                 filters.excludedCategories.append(category)
                                 if filters.includedCategory == category { filters.includedCategory = nil }
+                                if filters.includedEthnicity == category { filters.includedEthnicity = nil }
                             }
                         } else {
-                            filters.includedCategory = selected ? nil : category
-                            filters.excludedCategories.removeAll { $0 == category }
+                            choose(selected ? nil : category)
                         }
                     }
                 }
             }
             .searchable(text: $search, prompt: "Find category")
-            .navigationTitle(excluding ? "Exclude categories (\(filters.excludedCategories.count)/10)" : "Included category")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }

@@ -3,16 +3,16 @@ import AVKit
 import ImageIO
 import UIKit
 
-private enum ImmersiveChromeLayout {
+enum ImmersiveChromeLayout {
     static func bottomClearance(viewportWidth: CGFloat, safeAreaBottom: CGFloat,
-                                backgroundAudioVisible: Bool) -> CGFloat {
+                                backgroundAudioVisible: Bool, standalone: Bool = false) -> CGFloat {
         // The media fills the physical display, but the timeline must sit
         // *above* the root tab dock and home indicator. The fullscreen
         // GeometryReader may report zero safe-area insets after
         // ignoresSafeArea, so retain a conservative device inset.
         let sideDock = viewportWidth > 600
-        let deviceInset = max(safeAreaBottom, sideDock ? 20 : 34)
-        let tabDockHeight: CGFloat = sideDock ? 0 : 62
+        let deviceInset = standalone ? max(0, safeAreaBottom) : max(safeAreaBottom, sideDock ? 20 : 34)
+        let tabDockHeight: CGFloat = sideDock || standalone ? 0 : 62
         let audioControlsHeight: CGFloat = backgroundAudioVisible ? 80 : 0
         return deviceInset + tabDockHeight + audioControlsHeight + 10
     }
@@ -25,10 +25,12 @@ struct ImmersiveFeedView: View {
     let offline: Bool
     var onClose: (() -> Void)? = nil
     let collectionTab: Int?
+    let standalonePresentation: Bool
     @Binding var showSettings: Bool
-    init(posts: [Post], offline: Bool, activePostID: Binding<String?>, onClose: (() -> Void)? = nil, showSettings: Binding<Bool> = .constant(false), collectionTab: Int? = nil) {
+    init(posts: [Post], offline: Bool, activePostID: Binding<String?>, onClose: (() -> Void)? = nil, showSettings: Binding<Bool> = .constant(false), collectionTab: Int? = nil, standalonePresentation: Bool = false) {
         self.posts = posts; self.mediaPosts = collectionTab == 2 ? posts : posts.filter(\.isImmersiveMedia)
         self.offline = offline; self.onClose = onClose; self.collectionTab = collectionTab
+        self.standalonePresentation = standalonePresentation
         _showSettings = showSettings
         _activeID = activePostID
     }
@@ -65,8 +67,8 @@ struct ImmersiveFeedView: View {
     private var playbackOwner: String { offline ? "offline-immersive" : (collectionTab == 2 ? "favorites-immersive" : (onClose != nil ? "home-immersive" : "immersive")) }
     private var interactiveCloseAllowed: Bool { true }
     private var smoothNichePaging: Bool {
-        !offline && onClose != nil && collectionTab == nil &&
-            store.selectedProvider == .redgifs && store.queryText.hasPrefix("niche:")
+        offline || (onClose != nil && collectionTab == nil &&
+            store.selectedProvider == .redgifs && store.queryText.hasPrefix("niche:"))
     }
 
     private var adjacentPost: Post? {
@@ -74,11 +76,89 @@ struct ImmersiveFeedView: View {
         return mediaPosts.indices.contains(next) ? mediaPosts[next] : nil
     }
 
+    private var prewarmTaskID: String {
+        // Only restart when the nearby preload window changes, not when
+        // another page is appended to the end of the feed.
+        let keys = ImmersivePreloadPlan.retainedIndices(current: activeIndex, count: mediaPosts.count)
+            .map { mediaPosts[$0].stableID }.joined(separator: "|")
+        return "\(activeID ?? ""):\(presentationActive):\(store.isForeground):\(store.isManualVisualScanRunning):\(offline ? "offline" : store.feedRevision.uuidString):\(keys)"
+    }
+
     var body: some View {
         // Keep the media canvas edge-to-edge on *both* vertical edges. Only
         // extending into the bottom home-indicator inset moves the perceived
         // center below the device center by half the top safe-area inset.
         // Controls stay in the safe-area ZStack, above the notch/status bar.
+        immersiveCanvas
+        .background(ThemeBackdrop())
+        .navigationTitle(offline ? "Offline Immersive" : "Immersive")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(AppTheme.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbar(.hidden, for: .navigationBar)
+        .task(id: presentationActive) {
+            guard presentationActive else { return }
+            if let activeID, let index = mediaPosts.firstIndex(where: { $0.stableID == activeID }) {
+                activeIndex = index
+            } else {
+                activeIndex = 0
+                activeID = mediaPosts.first?.stableID
+            }
+            activeSince = .now
+        }
+        .task(id: prewarmTaskID) { await prewarm() }
+        .onChange(of: store.feedRevision) { _, _ in
+            guard !offline, collectionTab == nil else { return }
+            activeSince = .distantPast
+            activeIndex = 0; activeID = mediaPosts.first?.stableID
+            settlingNicheSwipe = false; verticalDrag = 0
+        }
+        .onChange(of: mediaSignature) { _, _ in
+            let keys = mediaPosts.map(\.stableID)
+            if let activeID, let index = keys.firstIndex(of: activeID) {
+                activeIndex = index
+            } else {
+                activeIndex = keys.isEmpty ? 0 : min(activeIndex, keys.count - 1)
+                activeID = keys.isEmpty ? nil : keys[activeIndex]
+            }
+        }
+        .onChange(of: activeID) { oldID, key in activePostChanged(from: oldID, to: key) }
+        .onDisappear {
+            settlingNicheSwipe = false
+            if store.players.activeOwner == playbackOwner { store.players.releaseAll() }
+        }
+        .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
+        .sheet(isPresented: $searchVisible) { NativeSearchBar(immersive: true) }
+        .quicktickEdgeBack {
+            // Nested viewers close to their originating feed. The primary
+            // Immersive tab returns to Home without affecting page navigation.
+            if let onClose { onClose() }
+            else { Task { await store.selectFeedTab(0) } }
+        }
+        .offset(x: horizontalCloseDrag)
+    }
+
+    private func activePostChanged(from oldID: String?, to key: String?) {
+            let now = Date()
+            if !offline, collectionTab == nil, presentationActive, store.isForeground,
+               store.feedSort == "recommended", let oldID, let key,
+               let previous = mediaPosts.firstIndex(where: { $0.stableID == oldID }),
+               let next = mediaPosts.firstIndex(where: { $0.stableID == key }) {
+                if QuickSkipDecision.dislikes(elapsed: now.timeIntervalSince(activeSince),
+                                             from: previous, to: next) {
+                    store.recordQuickSkip(mediaPosts[previous])
+                }
+                // Going back removes a prior instant-skip dislike; it does not
+                // generate positive feedback or undo an explicit thumbs-down.
+                store.neutralizeQuickSkip(mediaPosts[next])
+            }
+            activeSince = now
+            store.protectImmersivePost(key)
+            if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index }
+        }
+
+    private var immersiveCanvas: some View {
+        GeometryReader { safeViewport in
         ZStack(alignment: .top) {
             GeometryReader { geo in
             ZStack {
@@ -90,6 +170,8 @@ struct ImmersiveFeedView: View {
                     ImmersiveItemView(post: post, offline: offline, active: true,
                                       presentationActive: presentationActive, playbackOwner: playbackOwner,
                                       collection: collectionTab != nil, previews: previews,
+                                      standalonePresentation: standalonePresentation,
+                                      deviceBottomInset: safeViewport.safeAreaInsets.bottom,
                                       onPageSwipe: { translation, velocity, ended in
                                           if ended {
                                               endPan(from: post.stableID, translation: translation,
@@ -108,9 +190,10 @@ struct ImmersiveFeedView: View {
                 }
                 if mediaPosts.isEmpty {
                     ContentUnavailableView {
-                        Label(store.isLoading ? "Loading clips" : "No videos or GIFs", systemImage: "play.rectangle")
+                        Label((store.isLoading || (!offline && !store.bootstrapped)) ? "Loading clips" : "No videos or GIFs", systemImage: "play.rectangle")
                     } description: {
-                        Text(store.lastError ?? (offline ? "Download a video or GIF to watch it here." : "No new clips matched. Try another source or adjust your interests."))
+                        Text(offline ? "Download a video or GIF to watch it here." :
+                             (store.lastError ?? "No new clips matched. Try another source or adjust your interests."))
                     } actions: {
                         if !offline && collectionTab == nil {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -118,6 +201,12 @@ struct ImmersiveFeedView: View {
                                 Button(seconds > 0 ? "Retry in \(seconds)s" : "Try again") {
                                     Task { await store.refresh(immersive: true) }
                                 }.disabled(store.isLoading || seconds > 0)
+                            }
+                            if store.selectedProvider == .hanime, store.lastError != nil {
+                                if let website = URL(string: "https://hanime.tv/") {
+                                    Link("Open Hanime in Safari", destination: website)
+                                }
+                                Button("Configure Hanime API") { showSettings = true }
                             }
                             Button("Adjust interests") { preferencesVisible = true }.disabled(store.isLoading)
                             if !store.queryText.isEmpty {
@@ -135,61 +224,7 @@ struct ImmersiveFeedView: View {
             .ignoresSafeArea(edges: [.top, .bottom])
             immersiveHeader
         }
-        .background(ThemeBackdrop())
-        .navigationTitle(offline ? "Offline Immersive" : "Immersive")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(AppTheme.background, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
-        .toolbar(.hidden, for: .navigationBar)
-        .task(id: presentationActive) {
-            guard presentationActive else { return }
-            if activeID == nil { activeID = mediaPosts.first?.stableID }
-            activeSince = .now
         }
-        .task(id: "\(activeID ?? ""):\(mediaPosts.count):\(presentationActive):\(store.feedMediaOnly):\(store.isForeground):\(store.feedRevision):\(mediaPosts.dropFirst(activeIndex + 1).first?.stableID ?? "")") { await prewarm() }
-        .onChange(of: store.feedRevision) { _, _ in
-            activeSince = .distantPast
-            activeIndex = 0; activeID = mediaPosts.first?.stableID
-            settlingNicheSwipe = false; verticalDrag = 0
-        }
-        .onChange(of: mediaSignature) { _, _ in
-            let keys = mediaPosts.map(\.stableID)
-            if activeID == nil || !keys.contains(activeID ?? "") {
-                activeID = keys.isEmpty ? nil : keys[min(activeIndex, keys.count - 1)]
-                if keys.isEmpty { activeIndex = 0 }
-            }
-        }
-        .onChange(of: activeID) { oldID, key in
-            let now = Date()
-            if !offline, collectionTab == nil, presentationActive, store.isForeground,
-               store.feedSort == "recommended", let oldID, let key,
-               let previous = mediaPosts.firstIndex(where: { $0.stableID == oldID }),
-               let next = mediaPosts.firstIndex(where: { $0.stableID == key }) {
-                if QuickSkipDecision.dislikes(elapsed: now.timeIntervalSince(activeSince),
-                                             from: previous, to: next) {
-                    store.recordQuickSkip(mediaPosts[previous])
-                }
-                // Going back removes a prior instant-skip dislike; it does not
-                // generate positive feedback or undo an explicit thumbs-down.
-                store.neutralizeQuickSkip(mediaPosts[next])
-            }
-            activeSince = now
-            store.protectImmersivePost(key)
-            if let index = mediaPosts.firstIndex(where: { $0.stableID == key }) { activeIndex = index }
-        }
-        .onDisappear {
-            settlingNicheSwipe = false
-            if store.players.activeOwner == playbackOwner { store.players.releaseAll() }
-        }
-        .sheet(isPresented: $preferencesVisible) { TasteOnboardingView() }
-        .sheet(isPresented: $searchVisible) { NativeSearchBar(immersive: true) }
-        .quicktickEdgeBack {
-            // Nested viewers close to their originating feed. The primary
-            // Immersive tab returns to Home without affecting page navigation.
-            if let onClose { onClose() }
-            else { Task { await store.selectFeedTab(0) } }
-        }
-        .offset(x: horizontalCloseDrag)
     }
 
     private var immersiveHeader: some View {
@@ -207,7 +242,12 @@ struct ImmersiveFeedView: View {
                     Spacer(minLength: 0)
                     if !offline && onClose == nil {
                         Menu { ForEach(Provider.allCases) { provider in
-                            Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
+                            Button {
+                                store.selectedProvider = provider
+                                Task { await store.refresh(immersive: true) }
+                            } label: {
+                                Label(provider.displayName, systemImage: ProviderLogoView.symbol(for: provider))
+                            }
                         }; Divider(); Button("Personalize recommendations") { preferencesVisible = true } } label: {
                             ProviderLogoView(provider: store.selectedProvider)
                                 .frame(width: 58, height: 52)
@@ -288,7 +328,13 @@ struct ImmersiveFeedView: View {
     private func endPan(from origin: String, translation: CGSize,
                         velocity: CGSize, viewport: CGSize) {
         defer { dragAxis = nil }
-        guard !settlingNicheSwipe else { return }
+        guard !settlingNicheSwipe, !closing, activeID == origin else { return }
+        if translation == .zero && velocity == .zero {
+            withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.88)) {
+                verticalDrag = 0; horizontalCloseDrag = 0
+            }
+            return
+        }
         if dragAxis == .horizontal {
             let complete = horizontalCloseDrag >= viewport.width * 0.28 ||
                 (horizontalCloseDrag >= 50 && velocity.width >= 650)
@@ -314,6 +360,10 @@ struct ImmersiveFeedView: View {
             }
             return
         }
+        if dragAxis != .vertical {
+            withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.88)) { verticalDrag = 0 }
+            return
+        }
         if smoothNichePaging {
             smoothNichePageSwipe(from: origin, translation: translation,
                                 velocity: velocity, viewport: viewport)
@@ -331,7 +381,7 @@ struct ImmersiveFeedView: View {
     /// playing post without a second insertion/snap animation.
     private func smoothNichePageSwipe(from origin: String, translation: CGSize,
                                      velocity: CGSize, viewport: CGSize) {
-        guard presentationActive,
+        guard presentationActive, activeID == origin,
               let direction = ImmersivePageSwipePolicy.direction(
                   translation: translation, velocity: velocity,
                   viewportHeight: viewport.height),
@@ -351,7 +401,7 @@ struct ImmersiveFeedView: View {
                                                                     viewportHeight: viewport.height)
         }
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(290))
+            do { try await Task.sleep(for: .seconds(ImmersiveNicheSwipeMotion.duration + 0.01)) } catch { return }
             guard settlingNicheSwipe else { return }
             let stillCurrent = presentationActive && activeID == origin &&
                 mediaPosts.indices.contains(next) && mediaPosts[next].stableID == destinationID
@@ -379,7 +429,7 @@ struct ImmersiveFeedView: View {
             print("QUICKTICK_PAGING_INPUT origin=\(origin) dy=\(Int(translation.height)) dx=\(Int(translation.width)) active=\(presentationActive) count=\(mediaPosts.count)")
         }
         #endif
-        guard presentationActive,
+        guard presentationActive, activeID == origin,
               let direction = ImmersivePageSwipePolicy.direction(
                   translation: translation, velocity: velocity, viewportHeight: viewportHeight),
               let index = mediaPosts.firstIndex(where: { $0.stableID == origin }) else { return }
@@ -432,7 +482,9 @@ struct ImmersiveFeedView: View {
                     group.addTask(priority: .utility) {
                         // Let the visible clip acquire its stream and render
                         // a frame before the next clip competes for bandwidth.
-                        do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
+                        if !offlineMode {
+                            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+                        }
                         guard !Task.isCancelled else { return }
                         let url: URL?
                         if offlineMode { url = URL(string: post.mediaUrl) }
@@ -460,7 +512,7 @@ private enum ImmersiveDragAxis { case vertical, horizontal }
 
 /// The gesture and the newly mounted page meet at the same viewport edge.
 enum ImmersiveNicheSwipeMotion {
-    static let duration = 0.28
+    static let duration = 0.20
 
     static func destinationOffset(direction: Int, viewportHeight: CGFloat) -> CGFloat {
         let height = max(0, viewportHeight)
@@ -491,12 +543,16 @@ enum ImmersivePreloadPlan {
 enum ImmersivePageSwipePolicy {
     static func direction(translation: CGSize, velocity: CGSize,
                           viewportHeight: CGFloat) -> Int? {
+        guard viewportHeight.isFinite, viewportHeight > 0,
+              translation.width.isFinite, translation.height.isFinite,
+              velocity.width.isFinite, velocity.height.isFinite else { return nil }
         let travel = abs(translation.height)
         let sideways = abs(translation.width)
         let normalThreshold = min(54, max(34, viewportHeight * 0.045))
         let deliberateDrag = travel >= normalThreshold && travel > sideways * 1.15
         let quickFlick = travel >= 16 && travel > sideways * 0.8 &&
-            abs(velocity.height) >= 360 && abs(velocity.height) > abs(velocity.width) * 1.2
+            abs(velocity.height) >= 360 && abs(velocity.height) > abs(velocity.width) * 1.2 &&
+            translation.height * velocity.height > 0
         guard deliberateDrag || quickFlick else { return nil }
         return translation.height < 0 ? 1 : -1
     }
@@ -570,10 +626,17 @@ private struct ImmersiveTouchSurface: UIViewRepresentable {
         @objc func panned(_ recognizer: UIPanGestureRecognizer) {
             guard recognizer.state == .changed || recognizer.state == .ended || recognizer.state == .cancelled,
                   let surface = recognizer.view else { return }
-            let translation = recognizer.translation(in: surface)
-            let velocity = recognizer.velocity(in: surface)
+            if recognizer.state == .cancelled {
+                pan(.zero, .zero, true)
+                return
+            }
+            // The media view moves with the drag. Measuring in its own
+            // coordinate space feeds that movement back into the recognizer.
+            let reference = surface.window ?? surface
+            let translation = recognizer.translation(in: reference)
+            let velocity = recognizer.velocity(in: reference)
             pan(CGSize(width: translation.x, height: translation.y),
-                CGSize(width: velocity.x, height: velocity.y), recognizer.state != .changed)
+                CGSize(width: velocity.x, height: velocity.y), recognizer.state == .ended)
         }
     }
 }
@@ -582,7 +645,7 @@ private struct ImmersiveItemView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("quicktick-skip-video-intros-v1") private var skipVideoIntros = false
     @AppStorage("quicktick-skip-hhaven-intros-v1") private var skipHavenIntros = true
-    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = false
+    @AppStorage(VideoIntroPolicy.hanimeSettingKey) private var skipHanimeIntros = true
     @AppStorage(FullscreenSeekPolicy.settingKey) private var doubleTapSeconds = 10
     let post: Post
     let offline: Bool
@@ -591,6 +654,8 @@ private struct ImmersiveItemView: View {
     let playbackOwner: String
     let collection: Bool
     @ObservedObject var previews: ImmersivePreviewCache
+    let standalonePresentation: Bool
+    let deviceBottomInset: CGFloat
     let onPageSwipe: (CGSize, CGSize, Bool) -> Void
     @State private var player: AVPlayer?
     @State private var ready = false
@@ -623,14 +688,11 @@ private struct ImmersiveItemView: View {
     @State private var lastDoubleTapTarget: Double?
     @State private var lastDoubleTapAt = Date.distantPast
     private var shouldSkipIntro: Bool {
-        VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
+        !offline && VideoIntroPolicy.enabled(provider: post.provider, pornhub: skipVideoIntros,
                                  haven: skipHavenIntros, hanime: skipHanimeIntros)
     }
     private var hanimePage: URL? {
-        guard post.providerKey == .hanime,
-              let url = URL(string: post.pageUrl), url.scheme == "https",
-              ["hanime.tv", "www.hanime.tv"].contains(url.host ?? "") else { return nil }
-        return url
+        offline ? nil : HanimeGeneratedAPI.watchURL(for: post)
     }
     private var pornhubPage: URL? {
         guard post.providerKey == .pornhub,
@@ -638,13 +700,6 @@ private struct ImmersiveItemView: View {
               ["pornhub.com", "www.pornhub.com"].contains(url.host?.lowercased() ?? "") else { return nil }
         return url
     }
-    private var fillsNicheCanvas: Bool {
-        // A selected RedGIFs niche is a TikTok-style edge-to-edge feed. The
-        // regular player keeps aspect-fit for landscape and other providers.
-        post.providerKey == .redgifs && store.selectedProvider == .redgifs &&
-            store.queryText.hasPrefix("niche:")
-    }
-
     private func seekImmersive(forward: Bool) {
         guard let player else { return }
         let current = Date().timeIntervalSince(lastDoubleTapAt) < 1.5
@@ -667,13 +722,18 @@ private struct ImmersiveItemView: View {
         }
     }
 
+    private var playbackTaskID: String {
+        "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(offline ? "offline" : store.feedRevision.uuidString):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros)"
+    }
+
     var body: some View {
         GeometryReader { geo in
-            let mediaSize = fillsNicheCanvas ? geo.size : fittedSize(geo.size)
+            let mediaSize = fittedSize(geo.size)
             let controlsBottomClearance = ImmersiveChromeLayout.bottomClearance(
                 viewportWidth: geo.size.width,
-                safeAreaBottom: geo.safeAreaInsets.bottom,
-                backgroundAudioVisible: store.audio.currentPost != nil)
+                safeAreaBottom: max(deviceBottomInset, geo.safeAreaInsets.bottom),
+                backgroundAudioVisible: store.audio.currentPost != nil,
+                standalone: standalonePresentation)
             ZStack(alignment: .center) {
                 AppTheme.canvas
                 if post.type.lowercased() != "image" && gifURL == nil {
@@ -691,13 +751,11 @@ private struct ImmersiveItemView: View {
                     Group {
                         if let image = previews.images[post.stableID] {
                             Image(uiImage: image).resizable()
-                                .aspectRatio(contentMode: fillsNicheCanvas ? .fill : .fit)
-                        } else if active {
+                                .aspectRatio(contentMode: .fit)
+                        } else if active && error == nil {
                             VStack(spacing: 12) {
                                 Image(systemName: "play.rectangle.on.rectangle")
                                     .font(.system(size: 40, weight: .light))
-                                Text(post.caption?.isEmpty == false ? (post.caption ?? "") : post.provider)
-                                    .font(.headline).lineLimit(3).multilineTextAlignment(.center)
                                 Text("Preparing preview")
                                     .font(.caption).foregroundStyle(.white.opacity(0.6))
                             }
@@ -737,7 +795,7 @@ private struct ImmersiveItemView: View {
                     // must retain the stream's real aspect ratio. Filling a
                     // fixed 16:9 canvas cropped portrait and square videos.
                     NativePlayerSurface(player: player,
-                        fill: fillsNicheCanvas,
+                        fill: false,
                         ready: $ready, accessibilityID: "immersive-video-surface")
                         .frame(width: mediaSize.width, height: mediaSize.height)
                         .opacity(ready && introReady ? 1 : 0)
@@ -790,7 +848,7 @@ private struct ImmersiveItemView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
                     .allowsHitTesting(false)
                 }
-                if !playing && !scrubbing {
+                if !playing && !scrubbing && error == nil {
                     Image(systemName: "play.fill").font(.system(size: 48)).foregroundStyle(.white.opacity(0.7))
                         .allowsHitTesting(false)
                 }
@@ -800,7 +858,7 @@ private struct ImmersiveItemView: View {
                 if active && presentationActive {
                     // Keep the action rail reachable on small iPhones, while
                     // giving the iPad canvas appropriately sized controls.
-                    let scale = min(1.12, max(1.0, geo.size.width / 430))
+                    let scale = min(1.12, max(0.72, min(geo.size.width / 390, (geo.size.height - controlsBottomClearance - 170) / 460)))
                     actionRail
                         .scaleEffect(scale, anchor: .bottomTrailing)
                         .padding(.trailing, geo.size.width > 600 ? 30 : 14)
@@ -832,25 +890,32 @@ private struct ImmersiveItemView: View {
                 }
                 .padding(.bottom, controlsBottomClearance)
             }
-            .overlay(alignment: .top) {
+            .overlay(alignment: .center) {
                 if let error {
                     VStack(spacing: 8) {
                         Text(error).font(.caption)
                         Button("Retry media") {
                             store.players.release(post.stableID); player = nil; ready = false; self.error = nil
+                            automaticProviderRetry = 0
                             mediaRetry += 1
                         }.frame(minHeight: 44)
                         if hanimePage != nil {
-                            Button("Open on Hanime inside QuickTick") { browseHanime = true }
+                            Button("Open original player") {
+                                player?.pause()
+                                playing = false
+                                browseHanime = true
+                            }.buttonStyle(.borderedProminent)
                                 .frame(minHeight: 44)
                         }
                         if pornhubPage != nil {
                             Button("Open original in QuickTick browser") { browsePornhub = true }
                                 .frame(minHeight: 44)
                         }
-                    }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
-                }
-                if active, !offline, !collection, let message = store.lastError {
+                    }.multilineTextAlignment(.center)
+                        .padding(16).frame(maxWidth: 260)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 65)
+                } else if active, !offline, !collection, let message = store.lastError {
                     Button { Task { await store.loadMore(immersive: true) } } label: {
                         VStack { Text(message); Text("Load more").bold() }.font(.caption).padding(12)
                     }.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
@@ -881,7 +946,7 @@ private struct ImmersiveItemView: View {
             do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
             withAnimation(.easeOut(duration: 0.2)) { likePulse = false }
         }
-        .task(id: "\(active):\(presentationActive):\(store.activeTab):\(store.isForeground):\(store.feedRevision):\(store.isManualVisualScanRunning):\(mediaRetry):\(skipVideoIntros):\(skipHavenIntros):\(skipHanimeIntros)") {
+        .task(id: playbackTaskID) {
             guard active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else {
                 endExposure(); player = nil; ready = false; introReady = true; gifURL = nil
                 if !active { playing = true }
@@ -899,15 +964,21 @@ private struct ImmersiveItemView: View {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 if let player {
-                    if player.currentItem?.status == .failed {
-                        if !offline, (post.providerKey == .hanime || post.providerKey == .pornhub),
-                           automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
+                    if player.status == .failed || player.currentItem?.status == .failed {
+                        if !offline, automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
                             automaticProviderRetry += 1
                             store.players.release(post.stableID)
                             self.player = nil; ready = false; mediaRetry += 1
                             break
                         }
-                        error = "This clip could not load. Retry or scroll to the next clip."; ready = false
+                        if offline {
+                            let failure = player.currentItem?.error as NSError?
+                            error = failure.map { "Offline playback failed (\($0.domain) \($0.code)). Retry the saved video." }
+                                ?? "Offline playback failed. Retry the saved video."
+                        } else {
+                            error = "This clip could not load. Retry or scroll to the next clip."
+                        }
+                        ready = false
                         continue
                     }
                     let seconds = player.currentTime().seconds
@@ -920,7 +991,9 @@ private struct ImmersiveItemView: View {
                         // An additional resume seek races with the 10-second
                         // Pornhub seek and can bounce the clip back to 0:00.
                         let skippingIntro = shouldSkipIntro
-                        if !skippingIntro, let resume = PlaybackPosition.resume(store.resumePosition(post.stableID), duration: length), abs(seconds - resume) > 2 {
+                        if let resume = PlaybackPosition.resume(store.resumePosition(post.stableID), duration: length),
+                           (!skippingIntro || (post.providerKey == .hanime && resume > VideoIntroPolicy.startTime(duration: length, enabled: true, provider: post.provider) + 2)),
+                           abs(seconds - resume) > 2 {
                             player.seek(to: CMTime(seconds: resume, preferredTimescale: 600), toleranceBefore: CMTime(seconds: 0.25, preferredTimescale: 600), toleranceAfter: CMTime(seconds: 0.25, preferredTimescale: 600), completionHandler: { _ in })
                         }
                     }
@@ -931,7 +1004,6 @@ private struct ImmersiveItemView: View {
                     else { stalledSeconds = 0; if player.timeControlStatus == .playing { error = nil } }
                     lastTime = seconds
                     if stalledSeconds >= 12, !offline,
-                       (post.providerKey == .hanime || post.providerKey == .pornhub),
                        automaticProviderRetry < (post.providerKey == .hanime ? 2 : 1) {
                         automaticProviderRetry += 1
                         store.players.release(post.stableID)
@@ -1042,19 +1114,27 @@ private struct ImmersiveItemView: View {
                 url = prepared
             } else {
                 let resolved = try await store.resolver.resolve(post,
-                    refresh: mediaRetry > 0, hanimeVariant: mediaRetry)
+                    refresh: mediaRetry > 0, hanimeVariant: min(2, mediaRetry))
                 guard let remote = URL(string: resolved.mediaUrl) else { throw URLError(.badURL) }
                 url = remote
             }
             guard !Task.isCancelled, active, presentationActive, store.isForeground, !store.isManualVisualScanRunning else { return }
             if post.type.lowercased() == "gif" { gifURL = url; return }
+            if offline {
+                try await store.players.prepareLocalPlayback(key: post.stableID, url: url)
+                guard !Task.isCancelled, active, presentationActive, store.isForeground else { return }
+            }
             introReady = !shouldSkipIntro
-            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted, owner: playbackOwner) {
+            let p = store.players.activate(key: post.stableID, url: url, muted: store.muted,
+                                           owner: playbackOwner, autoplay: playing) {
                 introReady = true
+                if !playing { player?.pause() }
             }
             player = p; p.isMuted = store.muted
             if !playing { p.pause() }; error = nil
-        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        } catch {
+            if !Task.isCancelled { self.error = error.localizedDescription }
+        }
     }
     private func fittedSize(_ available: CGSize) -> CGSize {
         // Every device letterboxes/pillarboxes to the source's own shape.
@@ -1311,7 +1391,13 @@ struct CachedMediaImage: View {
     @Published private(set) var images: [String: UIImage] = [:]
     private var retained: Set<String> = []
     private var loading: Set<String> = []
-    func retain(_ keys: Set<String>) { retained = keys; images = images.filter { keys.contains($0.key) } }
+    func retain(_ keys: Set<String>) {
+        guard keys != retained else { return }
+        retained = keys
+        if images.keys.contains(where: { !keys.contains($0) }) {
+            images = images.filter { keys.contains($0.key) }
+        }
+    }
     func load(_ post: Post) async {
         let key = post.stableID
         guard images[key] == nil, !loading.contains(key), retained.contains(key) else { return }

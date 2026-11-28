@@ -24,3 +24,7 @@ Use the same pause/resume/double-tap-like/scrub/mute behavior where meaningful. 
 ## Sync boundary
 
 Cloud sync should continue to sync Favorites/exclusions/preferences/supported auth state only. Do not upload local video files, local URLs or downloaded HLS packages. Keep download metadata local unless a future versioned, backwards-compatible cloud schema is explicitly introduced.
+
+## Version 1.1: native HLS persistence
+
+The downloader adapts the local URL bookmark persistence pattern from [AssetDownloadWrapper](https://github.com/t-osawa-009/AssetDownloadWrapper) (MIT, copyright 2020 Takuya Ohsawa; see THIRD_PARTY_ASSET_DOWNLOAD_WRAPPER_LICENSE.md). The current AVAssetDownloadConfiguration and background task machinery remain native to QuickTick. A verified local HLS package is playable in-app but not offered as a standalone export. Direct, verified video files remain exportable. No remote segment extraction, DRM removal or access-control bypass is implemented. Actual provider compatibility must be verified on a physical iOS device.

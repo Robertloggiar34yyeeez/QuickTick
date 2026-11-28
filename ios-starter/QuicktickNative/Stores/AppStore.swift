@@ -15,6 +15,25 @@ struct VisualRefreshProgress: Equatable, Sendable {
 /// from filling the ranker's first 384 slots before broad discovery is seen.
 /// Keep both streams in their original provider order for stable pagination.
 enum CandidatePoolMix {
+    static func graceMilliseconds(unique: Int, immersive: Bool) -> Int {
+        if unique < 3 { return 720 }
+        if immersive { return unique < 10 ? 180 : 80 }
+        return unique < 10 ? 420 : 260
+    }
+
+    // Consecutive pages share one cursor; a fast second page cannot stand
+    // in for an unfinished first page, and the last page decides exhaustion.
+    static func consecutiveNextPage(first: Int, firstReceived: Bool, secondReceived: Bool) -> Int {
+        guard firstReceived else { return first }
+        return first + (secondReceived ? 2 : 1)
+    }
+
+    static func consecutiveHasMore(first: PostPage?, second: PostPage?) -> Bool {
+        guard let first else { return true }
+        let last = second ?? first
+        return last.hasMore ?? !last.items.isEmpty
+    }
+
     static func interleave(_ focused: [Post], _ broad: [Post]) -> [Post] {
         var mixed: [Post] = []
         mixed.reserveCapacity(focused.count + broad.count)
@@ -33,12 +52,21 @@ final class AppStore: ObservableObject {
             // Keep saved Haven items but migrate the old picker selection to Hanime.
             if selectedProvider == .hhaven { selectedProvider = .hanime }
             guard oldValue != selectedProvider else { return }
+            do { try localStorage.saveSelectedProvider(selectedProvider) }
+            catch { storageWarning = "Could not save the selected source: \(error.localizedDescription)" }
             savedFeeds.removeAll()
             // Home category chips are scoped to one provider. Never carry a
             // category route into another provider's keyword search.
             let previousQuery = QueryParser.parse(queryText)
+            // Do not carry another source's tag vocabulary or niche route
+            // into a newly selected catalog. Global exclusions stay intact.
+            if selectedProvider == .hanime && !previousQuery.included.isEmpty {
+                queryText = QueryParser.formatted(ParsedQuery(included: [], excluded: previousQuery.excluded))
+                return
+            }
             let retainedTerms = previousQuery.included.filter {
-                !ProviderSearchCategories.valid($0, provider: oldValue)
+                !ProviderSearchCategories.valid($0, provider: oldValue) &&
+                    !(oldValue == .redgifs && $0.hasPrefix("niche:"))
             }
             if retainedTerms.count != previousQuery.included.count {
                 queryText = QueryParser.formatted(ParsedQuery(included: retainedTerms,
@@ -272,6 +300,7 @@ final class AppStore: ObservableObject {
     private var syncFlight: Task<Void, Error>?
     private var syncRevision = 0
     @Published private(set) var bootstrapped = false
+    private var bootstrapInProgress = false
     private var lastSyncAttempt = Date.distantPast
     private var syncTask: Task<Void, Never>?
     private var restoreFailed = false
@@ -289,6 +318,7 @@ final class AppStore: ObservableObject {
         self.localStorage = localStorage
         self.feedPreviewPersistence = FeedPreviewPersistence(directory: localStorage.url.deletingLastPathComponent())
         self.api = api
+        if let saved = localStorage.loadSelectedProvider() { selectedProvider = saved }
         players.onPlaybackStart = { [weak self] in
             self?.idleTask?.cancel()
             self?.stopActiveLearning(); self?.startActiveLearning()
@@ -297,6 +327,9 @@ final class AppStore: ObservableObject {
     }
 
     func bootstrap() async {
+        guard !bootstrapped, !bootstrapInProgress else { return }
+        bootstrapInProgress = true
+        defer { bootstrapInProgress = false }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
             if ProcessInfo.processInfo.arguments.contains("--ui-testing-first-run") {
@@ -357,22 +390,34 @@ final class AppStore: ObservableObject {
         local.snapshot.pornhub.auth.session = credentials.pornhubSession
         await api.setCredentials(credentials)
         downloads.onCompleted = { [weak self] post in Task { await self?.record(.download, post: post) } }
-        if let previousProvider = await feedPreviewPersistence.recentProvider() {
+        // Migrate older installations only when no explicit selection exists.
+        // A late preview write must never override a more recent source choice.
+        if localStorage.loadSelectedProvider() == nil,
+           let previousProvider = await feedPreviewPersistence.recentProvider(),
+           localStorage.loadSelectedProvider() == nil {
             selectedProvider = previousProvider
+            do { try localStorage.saveSelectedProvider(selectedProvider) }
+            catch { storageWarning = "Could not restore the selected source: \(error.localizedDescription)" }
         }
-        let cached = await feedPreviewPersistence.load(provider: selectedProvider, query: queryText,
-                                                       sort: feedSort, mediaOnly: false)
-        if !cached.isEmpty {
+        let startupProvider = selectedProvider
+        let startupQuery = queryText
+        let startupSort = feedSort
+        let startupMediaOnly = activeTab == 1
+        let cached = await feedPreviewPersistence.load(provider: startupProvider, query: startupQuery,
+                                                       sort: startupSort, mediaOnly: startupMediaOnly)
+        if activeTab < 2, startupProvider == selectedProvider, startupQuery == queryText,
+           startupSort == feedSort, startupMediaOnly == (activeTab == 1), !cached.isEmpty {
             let banned = exclusions + QueryParser.parse(queryText).excluded + tasteChoice(for: selectedProvider).notInto
             let visible = cached.filter { !RecommendationTagRules.rejects($0, exclusions: banned) }
             if !visible.isEmpty {
                 posts = visible; encountered = Set(visible.map(\.stableID))
+                feedMediaOnly = startupMediaOnly
                 warmFeedRestored = true
             }
         }
         bootstrapped = true
         visualScanStatus = visualAnalysisEnabled ? "Updating visual recommendations…" : nil
-        await refresh()
+        if activeTab < 2 { await refresh(immersive: activeTab == 1) }
         FeedFrameMonitor.shared.startIfRequested()
         Task(priority: .utility) { await downloads.restoreTasks(); await syncWhenActive() }
     }
@@ -451,6 +496,7 @@ final class AppStore: ObservableObject {
     }
 
     private func invalidateFeed() {
+        warmFeedRestored = false
         fullScreenPlaybackID = nil
         idleTask?.cancel(); plannedAcquisition = nil
         refreshFlight?.cancel(); pageFlight?.cancel(); semanticTask?.cancel(); semanticTask = nil
@@ -461,6 +507,9 @@ final class AppStore: ObservableObject {
     }
 
     func refresh(immersive: Bool = false, trainSearch: Bool = false) async {
+        // Only bootstrap itself can start the first feed, after restoring
+        // credentials, preferences and the selected source.
+        guard !bootstrapInProgress || bootstrapped else { return }
         if let deadline = feedRetryAfter, deadline > .now {
             let mediaOnly = immersive || activeTab == 1
             if feedMediaOnly != mediaOnly { invalidateFeed(); feedMediaOnly = mediaOnly }
@@ -550,10 +599,10 @@ final class AppStore: ObservableObject {
     }
     private func performRefresh(immersive: Bool, trainSearch: Bool) async {
         guard !Task.isCancelled else { return }
-        let previousVisible = posts
-        let keepWarmFeed = warmFeedRestored && !previousVisible.isEmpty && activeTab == 0
-        warmFeedRestored = false
+        var previousVisible = posts
         let mediaOnly = immersive || activeTab == 1
+        var keepWarmFeed = warmFeedRestored && !previousVisible.isEmpty && feedMediaOnly == mediaOnly
+        warmFeedRestored = false
         feedMediaOnly = mediaOnly
         protectedImmersiveIDs = []; immersivePlaybackID = nil
         generation = UUID(); feedRevision = generation; inlinePlaybackID = nil; players.pauseAll()
@@ -580,15 +629,30 @@ final class AppStore: ObservableObject {
         isLoading = true
         var releasedLoading = false
         defer { if generation == token && !releasedLoading { isLoading = false } }
+        if mediaOnly, previousVisible.isEmpty, requestedQuery.isEmpty, requestedSort == "recommended" {
+            let cached = await feedPreviewPersistence.load(provider: provider, query: requestedQuery,
+                                                           sort: requestedSort, mediaOnly: true)
+            guard generation == token, !Task.isCancelled else { return }
+            let banned = exclusions + tasteChoice(for: provider).notInto
+            let visible = feedExclusions.filter(cached.filter {
+                $0.providerKey == provider && $0.isImmersiveMedia &&
+                    !RecommendationTagRules.rejects($0, exclusions: banned)
+            }, favorites: Array(favorites.values), recommended: false, favoriteIDs: favoriteExclusionIDs)
+            if !visible.isEmpty {
+                previousVisible = visible
+                keepWarmFeed = true
+                posts = visible
+            }
+        }
         do {
             let parsed = QueryParser.parse(requestedQuery)
-            let explicitRedgifsNiche = provider == .redgifs && parsed.included.count == 1
-                ? NativeProviderAPI.redgifsNicheID(parsed.included[0]) : nil
+            let explicitRedgifsNiche = provider == .redgifs ? NativeProviderAPI.redgifsSelectedNiche(parsed) : nil
             if trainSearch && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let search = SearchFilters.split(queryText).tags
                 Task(priority: .utility) { await recordSearch(provider: provider, query: search) }
             }
-            let personalized = requestedSort == "recommended" && parsed.included.isEmpty
+            let explicitPornhubFilters = provider == .pornhub && (parsed.pornhub?.normalized ?? PornhubSearchFilters()) != PornhubSearchFilters()
+            let personalized = requestedSort == "recommended" && parsed.included.isEmpty && !explicitPornhubFilters
             let topicPersonalized = requestedSort == "recommended" &&
                 selectedTopicTerm.map { parsed.included.contains($0) } == true
             let tasteRanked = personalized || topicPersonalized
@@ -774,7 +838,7 @@ final class AppStore: ObservableObject {
                         visualScores: appearance, strict: true)).prefix(24))
                 }
             }
-            if immediate.isEmpty, explicitRedgifsNiche == nil, provider != .rule34,
+            if immediate.isEmpty, explicitRedgifsNiche == nil, !explicitPornhubFilters, provider != .rule34,
                !parsed.included.isEmpty || !parsed.excluded.isEmpty {
                 // Some video providers search titles but omit searchable
                 // keywords/tags from their index. Keep *verified* matches
@@ -787,7 +851,7 @@ final class AppStore: ObservableObject {
                     favoriteIDs: favoriteExclusionIDs)
             }
             guard generation == token, !Task.isCancelled else { return }
-            posts = immediate.isEmpty && keepWarmFeed && explicitRedgifsNiche == nil
+            posts = immediate.isEmpty && keepWarmFeed && explicitRedgifsNiche == nil && !explicitPornhubFilters
                 ? previousVisible : immediate
             if !immediate.isEmpty {
                 let snapshot = immediate
@@ -817,6 +881,8 @@ final class AppStore: ObservableObject {
                         lastError = havenSafeCatalog.isEmpty
                             ? "Hentai Haven returned no catalog items. Try again when its catalog is available."
                             : "The available Hentai Haven posts were removed by saved favorites or explicit dislikes."
+                    } else if provider == .hanime && parsed.included.isEmpty {
+                        lastError = "No catalog posts matched the current filters. Try Popular or review your saved exclusions."
                     } else if provider == .eporner, parsed.included.isEmpty, parsed.excluded.isEmpty {
                         lastError = "Eporner has no available videos after your saved filters. Try Popular, adjust your interests, or refresh."
                     } else {
@@ -827,7 +893,10 @@ final class AppStore: ObservableObject {
                 } else { lastError = nil }
             }
         } catch {
-            if generation == token, !Task.isCancelled, !keepWarmFeed { recordFeedError(error, provider: provider) }
+            if generation == token, !Task.isCancelled {
+                if !keepWarmFeed || provider == .hanime { recordFeedError(error, provider: provider) }
+                if keepWarmFeed { hasMore = false }
+            }
         }
     }
 
@@ -850,10 +919,9 @@ final class AppStore: ObservableObject {
         let provider = selectedProvider
         do {
             let parsed = QueryParser.parse(queryText)
-            let explicitRedgifsNiche = provider == .redgifs && parsed.included.count == 1
-                ? NativeProviderAPI.redgifsNicheID(parsed.included[0]) : nil
+            let explicitRedgifsNiche = provider == .redgifs ? NativeProviderAPI.redgifsSelectedNiche(parsed) : nil
             lastError = nil
-            let directCatalog = (provider == .hhaven || provider == .nhentai ||
+            let directCatalog = (provider == .hhaven || provider == .nhentai || provider == .hanime ||
                                  (provider == .erome && feedMediaOnly)) &&
                 feedSort == "recommended" && parsed.included.isEmpty
             let topicPersonalized = feedSort == "recommended" &&
@@ -897,7 +965,7 @@ final class AppStore: ObservableObject {
                 let cachedAppearance = await visual.scores(candidates)
                 let strict = await recommendations.rankFast(candidates, taste: tasteChoice(for: provider),
                     recent: Array(posts.suffix(10)), visualScores: cachedAppearance,
-                    strict: provider != .erome && provider != .redgifs &&
+                    strict: provider != .erome && provider != .redgifs && provider != .hanime &&
                         (!topicPersonalized || (favorites.count >= 5 &&
                             provider != .hhaven && provider != .nhentai)))
                 if strict.isEmpty && directCatalog {
@@ -999,6 +1067,22 @@ final class AppStore: ObservableObject {
                 }
             }
         }
+        // A distinct recency lane increases catalog coverage without widening
+        // explicit searches or increasing the existing two-request budget.
+        var discoverySort = sort
+        if sort == "recommended", first.focused, !second.focused,
+           [.rule34, .redgifs, .pornhub].contains(provider),
+           !UserDefaults.standard.bool(forKey: "quicktick-recommendation-v2-only") {
+            let roundKey = context + "|fresh-round"
+            let round = candidateCursors[roundKey] ?? 0
+            candidateCursors[roundKey] = round + 1
+            if round.isMultiple(of: 2) {
+                let key = context + "|fresh"
+                second = RecommendationEngine.CandidateRequest(
+                    context: key, query: second.query, page: candidateCursors[key] ?? 1, focused: false)
+                discoverySort = "recent"
+            }
+        }
         func prepared(_ request: RecommendationEngine.CandidateRequest)
             -> (key: String, query: ParsedQuery, page: Int) {
             let cursor = candidateCursors[request.context] ?? request.page
@@ -1015,10 +1099,12 @@ final class AppStore: ObservableObject {
         // Structured concurrent child tasks capture immutable query snapshots
         // rather than AppStore's mutable local, satisfying Swift 6 isolation.
         let b = proposedB
+        let consecutive = a.key == b.key && b.page == a.page + 1
         let primaryQuery = a.query
         let primaryPageNumber = a.page
         let secondaryQuery = b.query
         let secondaryPageNumber = b.page
+        let secondarySort = discoverySort
         let requestedGeneration = generation
         // Provider requests are independent: an archive cache miss can keep
         // fetching after its waiter is cancelled. A structured task group
@@ -1042,9 +1128,9 @@ final class AppStore: ObservableObject {
         // Immersive's second lane supplies the next distinct clip. Scheduling
         // it as background utility work often loses the grace race while
         // 100 duplicate fixture/source rows parse on the primary lane.
-        let secondaryFlight = Task(priority: mediaOnly ? .userInitiated : .utility) {
+        let secondaryFlight = Task(priority: (mediaOnly || consecutive) ? .userInitiated : .utility) {
             let response = try? await client.posts(provider: provider, query: secondaryQuery,
-                                                   page: secondaryPageNumber, sort: sort, immersive: mediaOnly)
+                                                   page: secondaryPageNumber, sort: secondarySort, immersive: mediaOnly)
             emitter.yield(.second(response))
         }
         let (firstPage, secondPage) = await withTaskCancellationHandler {
@@ -1061,17 +1147,20 @@ final class AppStore: ObservableObject {
                 if completed == 2 { break }
                 if case .graceExpired = result { break }
                 let available = (primary?.items.count ?? 0) + (secondary?.items.count ?? 0)
-                let unique = Set((primary?.items ?? []).map(\.stableID)
-                               + (secondary?.items ?? []).map(\.stableID)).count
+                let usable = ((primary?.items ?? []) + (secondary?.items ?? [])).filter { !mediaOnly || $0.isImmersiveMedia }
+                let unique = Set(usable.map(\.stableID)).count
                 // The old unconditional 120 ms deadline discarded the broad
                 // lane on almost every focused response. Give it a bounded
                 // chance to contribute, especially for sparse pages, without
                 // blocking first paint on an indefinitely slow provider.
-                if available > 0 && deadline == nil {
+                // Shared cursor pages must finish together (within normal
+                // request timeouts). The host rate gate alone can exceed the
+                // fast grace interval, even when both responses are healthy.
+                if !consecutive && available > 0 && deadline == nil {
                     // Huge archive/booru pages can consist of repeated IDs.
                     // Their raw row count is not a useful measure of whether
                     // the first response contains enough to scroll through.
-                    let grace = unique < 3 ? 720 : (unique < 10 ? 420 : 260)
+                    let grace = CandidatePoolMix.graceMilliseconds(unique: unique, immersive: mediaOnly)
                     deadline = Task {
                         do { try await Task.sleep(for: .milliseconds(grace)) } catch { return }
                         emitter.yield(.graceExpired)
@@ -1101,18 +1190,29 @@ final class AppStore: ObservableObject {
                 context: context, page: page, sort: sort, mediaOnly: mediaOnly)
         }
         if generation == requestedGeneration {
-            if firstPage != nil {
-                candidateCursors[a.key] = a.page + 1
-                await recommendations.advanceCandidatePage(context: a.key, nextPage: a.page + 1)
-            }
-            if secondPage != nil {
-                candidateCursors[b.key] = b.page + 1
-                await recommendations.advanceCandidatePage(context: b.key, nextPage: b.page + 1)
+            if consecutive {
+                let next = CandidatePoolMix.consecutiveNextPage(first: a.page,
+                    firstReceived: firstPage != nil, secondReceived: secondPage != nil)
+                if next > a.page {
+                    candidateCursors[a.key] = next
+                    await recommendations.advanceCandidatePage(context: a.key, nextPage: next)
+                }
+            } else {
+                if firstPage != nil {
+                    candidateCursors[a.key] = a.page + 1
+                    await recommendations.advanceCandidatePage(context: a.key, nextPage: a.page + 1)
+                }
+                if secondPage != nil {
+                    candidateCursors[b.key] = b.page + 1
+                    await recommendations.advanceCandidatePage(context: b.key, nextPage: b.page + 1)
+                }
             }
         }
         let combined = PostPage(
             items: CandidatePoolMix.interleave(firstPage?.items ?? [], secondPage?.items ?? []),
-            hasMore: (firstPage?.hasMore ?? false) || (secondPage?.hasMore ?? false))
+            hasMore: consecutive
+                ? CandidatePoolMix.consecutiveHasMore(first: firstPage, second: secondPage)
+                : (firstPage == nil || secondPage == nil || firstPage?.hasMore == true || secondPage?.hasMore == true))
         if provider == .eporner, parsed.included.isEmpty, combined.items.isEmpty,
            a.page > 1 || b.page > 1, generation == requestedGeneration {
             // A persisted recommendation cursor can run past Eporner's
@@ -1478,7 +1578,7 @@ final class AppStore: ObservableObject {
                         && fullScreenPlaybackID == nil && Date().timeIntervalSince(lastFeedMotion) >= 1.5
                     let token = generation
                     if await visual.processNext(heavy: heavy, resolver: resolver), !Task.isCancelled {
-                        let scores = await visual.scores(Array(posts.prefix(128)))
+                        let scores = await visual.scores(Array(posts.prefix(512)))
                         let fingerprints = await visual.fingerprints()
                         guard !Task.isCancelled else { return }
                         if token == generation { visualScores = scores; feedExclusions.setFingerprints(fingerprints) }
@@ -1555,7 +1655,8 @@ final class AppStore: ObservableObject {
                     // Haven recommendations need visual evidence from poster
                     // images even when the corresponding video was not opened.
                     // Enqueue only; all network/model work remains idle-only.
-                    for post in posts.prefix(selectedProvider == .hhaven ? 8 : 4) {
+                    let visualBatch = [.rule34, .redgifs, .hhaven].contains(selectedProvider) ? 12 : 4
+                    for post in posts.prefix(visualBatch) {
                         guard !Task.isCancelled, generation == token else { return }
                         _ = await visual.enqueue(post, priority: 1)
                     }

@@ -40,7 +40,7 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertEqual(filter.filter([signed, resigned, different], favorites: [], recommended: false), [signed, different])
     }
     @MainActor func testCachedVisualDuplicatesAreRemovedOnlyFromTheUnseenTail() async {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         // Match a real refresh's revision setup before injecting fixture posts.
         store.feedSort = "recent"; store.feedSort = "recommended"
         let head = post("visible", media: "https://one.test/a.jpg")
@@ -56,7 +56,7 @@ final class FastFeedVisualTests: XCTestCase {
         store.selectedProvider = .eporner
     }
     @MainActor func testProviderSwitchStripsRule34FiltersBeforeRequestAndMemoryPressureStopsManualScan() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         store.queryText = "long_hair -jacket sort:random rating:general score:>=25"
         store.selectedProvider = .eporner
         XCTAssertEqual(store.queryText, "long_hair -jacket")
@@ -64,7 +64,7 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertFalse(store.isManualVisualScanRunning)
     }
     @MainActor func testCombinedRecommendationRefreshRejectsDuplicateTapsAndCanBeStopped() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         store.refreshRecommendationsAndProfile()
         XCTAssertTrue(store.isUnifiedRecommendationRefreshRunning)
         store.refreshRecommendationsAndProfile()
@@ -74,7 +74,7 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertFalse(store.isManualVisualScanRunning)
     }
     @MainActor func testManualVisualRefreshProgressReusesLikeLedgerAndCanBeCancelled() async {
-        let store = AppStore(), suffix = UUID().uuidString
+        let store = makeIsolatedAppStore(), suffix = UUID().uuidString
         let a = post("manual-a-" + suffix, tags: ["long_hair"])
         let b = post("manual-b-" + suffix, tags: ["qipao"])
         store.favorites = [a.stableID: a, b.stableID: b]
@@ -198,7 +198,7 @@ final class FastFeedVisualTests: XCTestCase {
         XCTAssertEqual(ranked, [candidate])
     }
     @MainActor func testActualStoreTransitionPreservesUpcomingPreparation() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         let url = URL(fileURLWithPath: "/tmp/not-loaded.mp4")
         store.inlinePlaybackID = "first"
         _ = store.players.activate(key: "first", url: url, muted: false)
@@ -215,7 +215,7 @@ final class FastFeedVisualTests: XCTestCase {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [FastFeedProtocol.self]
         let credentials = ProviderCredentials(rule34User: "fixture-user", rule34Key: "fixture-key")
-        let store = AppStore(api: QuicktickAPIClient(session: URLSession(configuration: config), credentials: credentials))
+        let store = makeIsolatedAppStore(api: QuicktickAPIClient(session: URLSession(configuration: config), credentials: credentials))
         let liked = Post(key: "rule34:liked", id: "liked", provider: "rule34", tags: ["sitting"])
         await store.recommendations.record(.like, post: liked)
         await store.refresh()
@@ -259,7 +259,7 @@ final class FastFeedVisualTests: XCTestCase {
     @MainActor func testFeedPublishesProviderOrderWithoutAIAndPaginationAdvances() async {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FastFeedProtocol.self]
         let credentials = ProviderCredentials(rule34User: "fixture-user", rule34Key: "fixture-key")
-        let store = AppStore(api: QuicktickAPIClient(session: URLSession(configuration: config), credentials: credentials))
+        let store = makeIsolatedAppStore(api: QuicktickAPIClient(session: URLSession(configuration: config), credentials: credentials))
         let start = Date()
         await store.refresh()
         print("QUICKTICK_METRIC fixture_first_posts_ms=\(Date().timeIntervalSince(start) * 1000)")

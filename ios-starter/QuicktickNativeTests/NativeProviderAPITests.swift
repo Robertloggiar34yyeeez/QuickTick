@@ -92,8 +92,8 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
         else if host == "www.erome.com", path == "/a/IMGONLY" {
             payload = #"<html><title>Photo set - Erome</title><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div></html>"#
         }
-        else if host == "auth.hanime.tv", path == "/api/v11/search_hvs" {
-            payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
+        else if host == "guest.freeanimehentai.net", path == "/api/v11/search_hvs" {
+            payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","cover_url":"https://cdn.hanime.tv/wide.jpg","hentai_franchise":{"slug":"fixture-series","title":"Fixture Series","poster_url":"https://cdn.hanime.tv/series.jpg"},"hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
         }
         else if host == "auth.hanime.tv", path == "/api/v11/handshake" {
             let object = (Self.requestBody(request).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
@@ -101,6 +101,11 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             let clear = try? HanimeHandshakeCodec.open(token)
             let input = clear.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
             let slug = input?["slug"] as? String ?? ""
+            if slug == "blocked-fixture" {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
+                    httpVersion: nil, headerFields: ["cf-mitigated": "challenge"])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
             if slug == "missing-404" {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404,
                     httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
@@ -419,8 +424,8 @@ final class NativeProviderAPITests: XCTestCase {
         let niches = try await api.redgifsNiches()
         XCTAssertEqual(niches.map(\.id), ["cosplay"])
         XCTAssertEqual(niches.first?.name, "Cosplay")
-        XCTAssertEqual(niches.first?.imageURL, "https://media.redgifs.com/nicheclip.jpg",
-                       "Niche icon should be the real poster from a popular post")
+        XCTAssertEqual(niches.first?.imageURL, "https://media.redgifs.com/niche.jpg",
+                       "Use the provider's own niche artwork before a clip poster")
         let page = try await api.posts(provider: .redgifs,
             query: ParsedQuery(included: ["niche:cosplay"], excluded: []),
             page: 1, sort: "popular", immersive: true)
@@ -444,6 +449,20 @@ final class NativeProviderAPITests: XCTestCase {
             .allSatisfy { $0.value(forHTTPHeaderField: "Referer") == "https://www.redgifs.com/" })
     }
 
+    func testRedgifsNicheSearchKeepsKeywordIntersectionAndPagination() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        let directory = try await api.redgifsNichesPage(page: 1, includeArtwork: false)
+        XCTAssertEqual(directory.items.map(\.id), ["cosplay"])
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/v2/niches/cosplay/gifs" })
+        let matching = try await api.posts(provider: .redgifs,
+            query: QueryParser.parse("niche:cosplay clip"), page: 1, sort: "popular", immersive: true)
+        XCTAssertEqual(matching.items.map(\.id), ["nicheclip"])
+        let missing = try await api.posts(provider: .redgifs,
+            query: QueryParser.parse("niche:cosplay impossible-keyword"), page: 1, sort: "popular", immersive: true)
+        XCTAssertTrue(missing.items.isEmpty)
+        XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/v2/niches/cosplay/gifs" })
+    }
+
     func testRedgifsShowAllNichesPaginatesAndUsesRealPopularPosters() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         let first = try await api.redgifsNichesPage(page: 1, limit: 24)
@@ -451,7 +470,7 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertTrue(first.hasMore)
         let second = try await api.redgifsNichesPage(page: 2, limit: 24)
         XCTAssertEqual(second.items.map(\.id), ["gaming"])
-        XCTAssertEqual(second.items.first?.imageURL, "https://media.redgifs.com/gamingclip.jpg")
+        XCTAssertEqual(second.items.first?.imageURL, "https://media.redgifs.com/gaming.jpg")
         XCTAssertFalse(second.hasMore)
         XCTAssertTrue(NativeProviderProtocol.log.snapshot().contains { request in
             request.url?.path == "/v2/niches" &&
@@ -490,8 +509,12 @@ final class NativeProviderAPITests: XCTestCase {
             query: ParsedQuery(included: ["dark skin"], excluded: []), page: 1)
         XCTAssertEqual(page.items.map(\.stableID), ["hanime:sample"])
         XCTAssertEqual(page.items.first?.tags, ["fantasy", "dark skin"])
+        XCTAssertEqual(page.items.first?.seriesID, "fixture-series")
+        XCTAssertEqual(page.items.first?.hanimeShowTitle, "Fixture Series")
+        XCTAssertEqual(page.items.first?.episodeCoverURL, "https://cdn.hanime.tv/wide.jpg")
+        XCTAssertEqual(Post.hanimeShowPoster(in: page.items), "https://cdn.hanime.tv/series.jpg")
         let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first)
-        XCTAssertEqual(request.url?.host, "auth.hanime.tv")
+        XCTAssertEqual(request.url?.host, "guest.freeanimehentai.net")
         XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature-version"), "app2")
         XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature")?.count, 64)
         XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "https://hanime.tv")
@@ -508,9 +531,24 @@ final class NativeProviderAPITests: XCTestCase {
         let second = try await api.posts(provider: .hanime, query: query, page: 1)
         XCTAssertEqual(first.items, second.items)
         XCTAssertEqual(first.hasMore, second.hasMore)
+        let sorted = try await api.posts(provider: .hanime, query: query, page: 1, sort: "recent", immersive: true)
+        let next = try await api.posts(provider: .hanime, query: query, page: 2)
+        let other = try await api.posts(provider: .hanime, query: ParsedQuery(included: ["nonexistent"], excluded: []), page: 1)
+        XCTAssertEqual(sorted.items.map(\.stableID), first.items.map(\.stableID))
+        XCTAssertTrue(next.items.isEmpty)
+        XCTAssertTrue(other.items.isEmpty)
         XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
+            $0.url?.host == "guest.freeanimehentai.net" && $0.url?.path == "/api/v11/search_hvs"
+        }.count, 1, "Search, sorting and pages reuse the same catalog")
+        XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains {
             $0.url?.host == "auth.hanime.tv" && $0.url?.path == "/api/v11/search_hvs"
-        }.count, 1, "Switching back to Hanime should reuse the existing catalog")
+        }, "The guest catalog must not be requested from the playback auth host")
+    }
+
+    func testHanimeCatalogParserAcceptsNestedResultEnvelope() throws {
+        let fixture = #"{"data":{"results":{"items":[{"slug":"fixture","title":"Sample"}]}}}"#
+        let rows = try NativeProviderAPI.hanimeRows(JSONSerialization.jsonObject(with: Data(fixture.utf8)))
+        XCTAssertEqual(rows.first?["slug"] as? String, "fixture")
     }
 
     func testHanimeMissingPublicStreamSuggestsSupportedPlaybackOptions() async throws {
@@ -562,6 +600,19 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertThrowsError(try HanimeHandshakeCodec.open("not-a-real-token"))
     }
 
+    func testCatalogPrefersAdvertisedStandaloneFile() {
+        XCTAssertEqual(NativeProviderAPI.hanimeCatalogStream([
+            "stream_url": "https://cdn.hanime.tv/sample.m3u8",
+            "video_url": "https://cdn.hanime.tv/sample.mp4"
+        ]), "https://cdn.hanime.tv/sample.mp4")
+    }
+
+    func testPreviewParsingRejectsPlaceholderAndKeepsLazyImage() {
+        let html = #"<li class="videoblock" data-video-vkey="fixture"><img src="https://cdn.pornhub.com/placeholder.png" data-src="https://cdn.pornhub.com/fixture.jpg" /></li>"#
+        let rows = NativeProviderAPI.pornhubHTMLPosts(html)
+        XCTAssertEqual(rows.first?.previewUrl, "https://cdn.pornhub.com/fixture.jpg")
+    }
+
     func testHanimeNativePlaybackAcceptsFirstPartyCatalogStream() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
@@ -580,6 +631,23 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(resolved.type, "hls")
         XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v8/video" },
                        "Play native HLS immediately instead of hitting the removed v8 endpoint")
+    }
+
+    func testHanimeDeniedHandshakeStopsAndExposesOriginalPlayer() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let post = Post(key: "hanime:blocked-fixture", id: "blocked-fixture", provider: "Hanime",
+                        pageUrl: "https://hanime.tv/videos/hentai/blocked-fixture", type: "video")
+        do {
+            _ = try await api.resolveMedia(post)
+            XCTFail("Denied playback must not be reported as playable")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, HanimeGeneratedAPI.nativeAccessDeniedMessage)
+            XCTAssertNotNil(HanimeGeneratedAPI.watchURL(for: post))
+            XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
+                $0.url?.path == "/api/v11/handshake"
+            }.count, 1)
+        }
     }
 
     func testHanimeRemovedEndpointShowsAuthorizedPlaybackFallback() async throws {
@@ -1122,6 +1190,17 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertNil(NativeProviderAPI.pornhubDurationSeconds("unknown"))
     }
 
+    func testSeparateCategoryFiltersRequireStructuredIntersection() {
+        let filters = PornhubSearchFilters(includedCategory: "Cosplay", includedEthnicity: "Asian")
+        XCTAssertTrue(NativeProviderAPI.pornhubMatches(["categories": ["Cosplay", "Asian"]], filters: filters))
+        XCTAssertFalse(NativeProviderAPI.pornhubMatches(["categories": ["Cosplay"]], filters: filters))
+        XCTAssertFalse(NativeProviderAPI.pornhubMatches(["categories": ["Asian"]], filters: filters))
+        XCTAssertFalse(NativeProviderAPI.pornhubMatches([:], filters: filters))
+        let query = QueryParser.parse(filters.encodedQuery("sample"))
+        let params = NativeProviderAPI.pornhubSearchParameters(query: query, page: 1, sort: "recent")
+        XCTAssertEqual(params.filter { $0.name == "category" }.map(\.value), ["Cosplay"])
+    }
+
     func testPornhubWebmaster404UsesSameSitePublicCatalog() async throws {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
         NativeProviderProtocol.log.reset()
@@ -1553,7 +1632,7 @@ final class NativeProviderAPITests: XCTestCase {
     }
     @MainActor func testReselectingFeedRefreshesAndPreservesSearch() async {
         let (api, session) = client(); defer { session.invalidateAndCancel() }
-        let store = AppStore(api: api)
+        let store = makeIsolatedAppStore(api: api)
         store.selectedProvider = .eporner
         store.feedSort = "recent"; store.queryText = "old search"
         await store.selectFeedTab(0)

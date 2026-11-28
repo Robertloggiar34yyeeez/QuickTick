@@ -196,6 +196,21 @@ final class VisualTasteTests: XCTestCase {
         let audio = Post(key: "hhaven:audio", id: "audio", provider: "hhaven", type: "audio")
         XCTAssertFalse(AnimeVisualRecommendationPolicy.usesWDTagger(audio, domain: .anime))
     }
+    func testWDSubjectsRankByConfidenceAndCandidatePreviewDoesNotRequireLike() {
+        let labels = ["first", "second", "third", "strongest"].map {
+            WDAnimeTagger.Label(name: $0, category: 4)
+        }
+        let result = WDAnimeTagger.signals(labels: labels, probabilities: [0.91, 0.92, 0.93, 0.99])
+        XCTAssertEqual(result.subjects, ["strongest", "third", "second"])
+        for provider in ["rule34", "redgifs"] {
+            let post = Post(key: provider + ":1", id: "1", provider: provider, type: "video")
+            XCTAssertTrue(AnimeVisualRecommendationPolicy.fetchesIdlePreview(post, domain: .uncertain,
+                favorite: false, disliked: false, lightweight: false))
+            XCTAssertFalse(AnimeVisualRecommendationPolicy.fetchesIdlePreview(post, domain: .uncertain,
+                favorite: false, disliked: false, lightweight: true))
+        }
+    }
+
     func testHavenWDVisualSignalsImproveRankingBeyondAnimeTitleTags() async {
         let labels = [WDAnimeTagger.Label(name: "long_hair", category: 0),
                       WDAnimeTagger.Label(name: "blue_eyes", category: 0),
@@ -273,6 +288,8 @@ final class VisualTasteTests: XCTestCase {
             XCTAssertFalse(VisualAppearanceEncoder.prefersMobileCLIP(domain: .threeD, provider: provider))
         }
         XCTAssertFalse(VisualAppearanceEncoder.prefersMobileCLIP(domain: .uncertain, provider: "rule34"))
+        XCTAssertTrue(VisualAppearanceEncoder.prefersMobileCLIP(domain: .anime, provider: "rule34"))
+        XCTAssertTrue(VisualAppearanceEncoder.prefersMobileCLIP(domain: .threeD, provider: "rule34"))
         let unknownVideo = Post(key: "unknown", id: "1", provider: "redgifs", tags: ["solo"], type: "video")
         XCTAssertEqual(VisualDomain.classify(unknownVideo), .realLife)
         let taggedAnime = Post(key: "anime", id: "2", provider: "redgifs", tags: ["2d", "anime"], type: "video")
@@ -392,7 +409,7 @@ final class VisualTasteTests: XCTestCase {
         print("QUICKTICK_METRIC wd_v3_fixture_inference_ms=\(ms)")
     }
     @MainActor func testScrollingPreventsTailRankingAndPreservesOrder() async {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         let a = Post(key: "a", id: "1", provider: "rule34", tags: ["other"])
         let b = Post(key: "b", id: "2", provider: "rule34", tags: ["favorite"])
         store.posts = [a, b]; store.protectVisibleHomePosts([a.stableID])

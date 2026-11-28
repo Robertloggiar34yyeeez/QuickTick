@@ -3,6 +3,15 @@ import AVFoundation
 @testable import QuicktickNative
 
 final class ImmersiveMediaTests: XCTestCase {
+    func testPlaybackRetriesKeepDirectOnlyAttachments() {
+        XCTAssertFalse(MediaResolver.canResolveFreshURL(.coomer))
+        XCTAssertFalse(MediaResolver.canResolveFreshURL(.kemono))
+        XCTAssertFalse(MediaResolver.canResolveFreshURL(nil))
+        XCTAssertTrue(MediaResolver.canResolveFreshURL(.redgifs))
+        XCTAssertTrue(MediaResolver.canResolveFreshURL(.rule34))
+        XCTAssertEqual(VideoIntroPolicy.maximumStartupWait, .seconds(8))
+    }
+
     func testFullscreenDoubleTapSeekClampsAndRespectsSettingsInterval() {
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: true, interval: 10), 52)
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 42, duration: 120, forward: false, interval: 10), 32)
@@ -15,11 +24,28 @@ final class ImmersiveMediaTests: XCTestCase {
         XCTAssertEqual(FullscreenSeekPolicy.target(current: 4, duration: 120, forward: true, interval: 999), 64)
     }
 
+    func testSwipeRejectsCancellationHorizontalMovementAndReversedFlick() {
+        XCTAssertNil(ImmersivePageSwipePolicy.direction(translation: .zero, velocity: .zero, viewportHeight: 844))
+        XCTAssertNil(ImmersivePageSwipePolicy.direction(translation: CGSize(width: 90, height: 20),
+            velocity: CGSize(width: 500, height: 400), viewportHeight: 844))
+        XCTAssertNil(ImmersivePageSwipePolicy.direction(translation: CGSize(width: 0, height: -20),
+            velocity: CGSize(width: 0, height: 600), viewportHeight: 844))
+        XCTAssertEqual(ImmersivePageSwipePolicy.direction(translation: CGSize(width: 0, height: -110),
+            velocity: .zero, viewportHeight: 844), 1)
+        XCTAssertEqual(ImmersivePageSwipePolicy.direction(translation: CGSize(width: 0, height: 110),
+            velocity: .zero, viewportHeight: 844), -1)
+    }
+
+    func testDisplayTopicsCollapseCaseAndSeparatorVariants() {
+        XCTAssertEqual(TopicDisplayIdentity.unique(["Space Art", "space_art", "SPACE-ART", "  space  art ", "Landscape"]),
+            ["Space Art", "Landscape"])
+    }
+
     func testRedgifsNicheSwipeFinishesAtAdjacentViewportWithoutExtraSnap() {
         XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: 1, viewportHeight: 844), -844)
         XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: -1, viewportHeight: 844), 844)
         XCTAssertEqual(ImmersiveNicheSwipeMotion.destinationOffset(direction: 1, viewportHeight: 0), 0)
-        XCTAssertEqual(ImmersiveNicheSwipeMotion.duration, 0.28, accuracy: 0.0001)
+        XCTAssertEqual(ImmersiveNicheSwipeMotion.duration, 0.20, accuracy: 0.0001)
     }
 
     func testImmersivePreloadsTwoUpcomingPostsAndRetainsPreviousForReverseSwipe() {
@@ -55,7 +81,7 @@ final class ImmersiveMediaTests: XCTestCase {
         XCTAssertNil(PlaybackPosition.resume(5, duration: 0))
     }
     @MainActor func testLateInlineSelectionCannotPauseImmersivePlayback() {
-        let store = AppStore()
+        let store = makeIsolatedAppStore()
         let url = URL(fileURLWithPath: "/tmp/clip.mp4")
         _ = store.players.activate(key: "clip", url: url, muted: true, owner: "immersive")
         store.inlinePlaybackID = "late-home-layout"
@@ -87,6 +113,13 @@ final class ImmersiveMediaTests: XCTestCase {
         XCTAssertEqual(MediaSizing.size(native: CGSize(width: 320, height: 180), aspect: 16 / 9, available: available).width, 680,
                        "Small source thumbnails must not turn iPad feed videos into tiny cutouts")
     }
+    func testStandalonePlayerDoesNotReserveRootTabDock() {
+        XCTAssertEqual(ImmersiveChromeLayout.bottomClearance(viewportWidth: 390, safeAreaBottom: 34,
+            backgroundAudioVisible: false, standalone: true), 44)
+        XCTAssertEqual(ImmersiveChromeLayout.bottomClearance(viewportWidth: 390, safeAreaBottom: 34,
+            backgroundAudioVisible: false), 106)
+    }
+
     func testImmersiveAspectFitAcrossRotationAndSplitWindows() {
         for available in [CGSize(width: 1280, height: 900), CGSize(width: 900, height: 1280), CGSize(width: 600, height: 800)] {
             for ratio: CGFloat in [9 / 16, 16 / 9, 1, 4 / 3] {

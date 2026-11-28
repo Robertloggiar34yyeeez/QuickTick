@@ -149,6 +149,51 @@ struct RedgifsNichePage: Sendable {
     let hasMore: Bool
 }
 
+/// Remember only definitively unavailable routes for a short period. A new
+/// session starts independently; authentication and rate limits are unchanged.
+private actor WebmasterRouteHealth {
+    static let shared = WebmasterRouteHealth()
+    // ObjectIdentifier alone is not a lifetime identity: a new URLSession
+    // can reuse an address after the previous session has been deallocated.
+    private final class SessionEntry {
+        weak var session: URLSession?
+        var endpoints: [String: Date] = [:]
+
+        init(session: URLSession) {
+            self.session = session
+        }
+    }
+
+    private var unavailable: [ObjectIdentifier: SessionEntry] = [:]
+
+    func shouldTry(_ endpoint: String, session: URLSession) -> Bool {
+        let key = ObjectIdentifier(session)
+        guard let entry = unavailable[key], entry.session === session else {
+            unavailable.removeValue(forKey: key)
+            return true
+        }
+        return (entry.endpoints[endpoint] ?? .distantPast) <= .now
+    }
+
+    func markMissing(_ endpoint: String, session: URLSession) {
+        let now = Date()
+        unavailable = unavailable.filter { _, entry in
+            guard entry.session != nil else { return false }
+            entry.endpoints = entry.endpoints.filter { $0.value > now }
+            return !entry.endpoints.isEmpty
+        }
+        let key = ObjectIdentifier(session)
+        if let entry = unavailable[key], entry.session === session {
+            entry.endpoints[endpoint] = now.addingTimeInterval(120)
+            return
+        }
+        guard unavailable.count < 16 || unavailable[key] != nil else { return }
+        let entry = SessionEntry(session: session)
+        entry.endpoints[endpoint] = now.addingTimeInterval(120)
+        unavailable[key] = entry
+    }
+}
+
 enum NativeProviderAPI {
     static let userAgent = "QuickTickNative/1.0"
     // nHentai requests specifically ask clients for an identifying UA; keep
@@ -203,6 +248,9 @@ enum NativeProviderAPI {
             let (data, response) = try await session.data(for: request)
             try Task.checkCancellation()
             guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+            if provider == .hanime, isBrowserChallenge(http) {
+                throw APIError.server("Hanime requires browser verification. Native API access is unavailable on this connection. Browse the website or configure an authorized API in Settings.")
+            }
             if http.statusCode == 429 {
                 let advertised = retryDeadline(http, attempt: attempt)
                 let deadline = attempt == 2 ? max(advertised, Date.now.addingTimeInterval(1)) : advertised
@@ -218,6 +266,10 @@ enum NativeProviderAPI {
             return data
         }
         throw APIError.invalidResponse
+    }
+
+    static func isBrowserChallenge(_ response: HTTPURLResponse) -> Bool {
+        response.value(forHTTPHeaderField: "cf-mitigated")?.lowercased() == "challenge"
     }
 
     static func retryDeadline(_ response: HTTPURLResponse, now: Date = .now, attempt: Int = 0) -> Date {
@@ -530,6 +582,12 @@ enum NativeProviderAPI {
         return id
     }
 
+    static func redgifsSelectedNiche(_ query: ParsedQuery) -> String? {
+        let tokens = query.included.filter { $0.hasPrefix("niche:") }
+        guard tokens.count == 1 else { return nil }
+        return redgifsNicheID(tokens[0])
+    }
+
     private static func redgifsPreview(_ raw: String) -> String {
         guard let address = mediaURL(raw, provider: .redgifs),
               let host = address.host?.lowercased(),
@@ -547,7 +605,7 @@ enum NativeProviderAPI {
     }
 
     static func redgifsNichesPage(session: URLSession, token: String,
-                                 page: Int = 1, limit: Int = 24) async throws -> RedgifsNichePage {
+                                 page: Int = 1, limit: Int = 24, includeArtwork: Bool = true) async throws -> RedgifsNichePage {
         guard (1...1000).contains(page), (1...32).contains(limit) else { throw APIError.invalidResponse }
         let response = try object(await data(session: session,
             url: url("https://api.redgifs.com/v2/niches",
@@ -565,12 +623,17 @@ enum NativeProviderAPI {
                                       postCount: Int(number(item["gifs"] ?? item["count"]))))
             if chosen.count >= limit { break }
         }
+        let declaredPages = Int(number(response["pages"] ?? response["total_pages"]))
+        let hasMore = declaredPages > 0 ? page < declaredPages : entries.count >= limit
+        // Text-only search needs every real directory entry, even when an
+        // artwork request fails or the niche has no cover.
+        if !includeArtwork { return RedgifsNichePage(items: chosen, hasMore: hasMore) }
         var covers: [Int: String] = [:]
         for start in stride(from: 0, to: chosen.count, by: 4) {
             try Task.checkCancellation()
             let indices = Array(start..<min(start + 4, chosen.count))
             let collected = await withTaskGroup(of: (Int, String?).self) { group in
-                for index in indices {
+                for index in indices where chosen[index].imageURL.isEmpty {
                     let id = chosen[index].id
                     group.addTask {
                         do {
@@ -593,19 +656,20 @@ enum NativeProviderAPI {
             }
             for (index, image) in collected { if let image { covers[index] = image } }
         }
-        let enriched = chosen.enumerated().compactMap { index, niche -> RedgifsNiche? in
-            let image = covers[index] ?? niche.imageURL
-            guard !image.isEmpty else { return nil }
+        var usedImages = Set<String>()
+        let enriched = chosen.enumerated().map { index, niche -> RedgifsNiche in
+            let preferred = niche.imageURL.isEmpty ? (covers[index] ?? "") : niche.imageURL
+            let image = !preferred.isEmpty && usedImages.insert(preferred).inserted ? preferred : ""
             return RedgifsNiche(id: niche.id, name: niche.name, imageURL: image, postCount: niche.postCount)
         }
-        let declaredPages = Int(number(response["pages"] ?? response["total_pages"]))
-        return RedgifsNichePage(items: enriched,
-                               hasMore: declaredPages > 0 ? page < declaredPages : entries.count >= limit)
+        return RedgifsNichePage(items: enriched, hasMore: hasMore)
     }
 
     static func redgifs(session: URLSession, token: String, query: ParsedQuery, page: Int, sort: String, immersive: Bool) async throws -> PostPage {
         let result: [String: Any]
-        let selectedNicheID = query.included.count == 1 ? redgifsNicheID(query.included[0]) : nil
+        let selectedNicheID = redgifsSelectedNiche(query)
+        let keywords = query.included.filter { !$0.hasPrefix("niche:") }
+        if selectedNicheID == nil, keywords.count != query.included.count { throw APIError.invalidResponse }
         if let niche = selectedNicheID {
             result = try object(await data(session: session,
                 url: url("https://api.redgifs.com/v2/niches/\(niche)/gifs",
@@ -613,7 +677,6 @@ enum NativeProviderAPI {
                      .init(name: "count", value: "40"), .init(name: "page", value: String(page))]),
                 provider: .redgifs, headers: redgifsHeaders(token: token)))
         } else {
-            guard !query.included.contains(where: { $0.hasPrefix("niche:") }) else { throw APIError.invalidResponse }
             let items = [URLQueryItem(name: "order", value: sort == "recent" ? "latest" : sort == "popular" ? "top7" : "trending"),
                          .init(name: "count", value: "40"), .init(name: "page", value: String(page))] + (query.included.isEmpty ? [] : [.init(name: "search_text", value: query.included.joined(separator: " "))])
             var found: [String: Any]?
@@ -655,7 +718,12 @@ enum NativeProviderAPI {
             post.category = selectedNicheID
             post.creator = text(row["userName"]); post.createdAt = number(row["createDate"]); return post
         }
-        return self.page(posts, hasMore: number(result["pages"]) > 0 ? page < Int(number(result["pages"])) : !raw.isEmpty, query: query, immersive: immersive)
+        let matching = selectedNicheID == nil ? posts : posts.filter { post in
+            keywords.allSatisfy { containsKeyword($0, in: post) }
+        }
+        // Preserve server pagination even when local niche keyword matching
+        // removes every item on this particular page.
+        return self.page(matching, hasMore: number(result["pages"]) > 0 ? page < Int(number(result["pages"])) : !raw.isEmpty, query: query, immersive: immersive)
     }
 
     static func hanimeSignature(claim: String) -> String {
@@ -665,13 +733,14 @@ enum NativeProviderAPI {
 
     static func hanimeRows(_ payload: Any) throws -> [[String: Any]] {
         var current: Any = payload
-        for _ in 0..<4 {
+        for _ in 0..<8 {
             if let list = current as? [[String: Any]] { return list }
             if let encoded = current as? String, let bytes = encoded.data(using: .utf8) {
                 current = try JSONSerialization.jsonObject(with: bytes); continue
             }
             guard let object = current as? [String: Any],
-                  let next = object["hits"] ?? object["hentai_videos"] ?? object["videos"] ?? object["data"] else {
+                  let next = object["hits"] ?? object["hentai_videos"] ?? object["videos"] ??
+                        object["data"] ?? object["results"] ?? object["items"] else {
                 throw APIError.invalidResponse
             }
             current = next
@@ -692,17 +761,7 @@ enum NativeProviderAPI {
         do {
             return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
         } catch APIError.providerStatus(.hanime, 403) {
-            // A normal first-party page visit can establish an ordinary guest
-            // session cookie. No challenge solving or access bypass is used.
-            if let watch = URL(string: "https://hanime.tv/videos/hentai/" + post.id) {
-                _ = try? await data(session: session, url: watch, provider: .hanime,
-                                    maxBytes: 1024 * 1024, timeout: 8)
-            }
-            do {
-                return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
-            } catch APIError.providerStatus(.hanime, 403) {
-                throw APIError.server("Hanime requires browser verification before native HLS playback. Use Browse inside QuickTick or configure your authorized Hanime API in Settings.")
-            }
+            throw APIError.server(HanimeGeneratedAPI.nativeAccessDeniedMessage)
         } catch APIError.server(let message) where message.contains("HLS playlist") {
             // Signed HLS paths can expire between the handshake and the first
             // request. Retry the legitimate first-party handshake once before
@@ -740,9 +799,16 @@ enum NativeProviderAPI {
         try await ProviderRequestGate.shared.wait(host: "auth.hanime.tv", provider: .hanime)
         let (bytes, response) = try await session.data(for: request)
         try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse, bytes.count <= 1024 * 1024 else {
-            throw APIError.invalidResponse
+        guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        if isBrowserChallenge(http) || http.statusCode == 403 {
+            throw APIError.server(HanimeGeneratedAPI.nativeAccessDeniedMessage)
         }
+        if http.statusCode == 429 {
+            let deadline = retryDeadline(http)
+            await ProviderRequestGate.shared.block(host: "auth.hanime.tv", until: deadline)
+            throw APIError.rateLimited(.hanime, deadline)
+        }
+        guard bytes.count <= 1024 * 1024 else { throw APIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
             throw APIError.providerStatus(.hanime, http.statusCode)
         }
@@ -788,13 +854,21 @@ enum NativeProviderAPI {
             .flatMap { rows($0["streams"]) }
             .sorted { number($0["height"]) > number($1["height"]) }
             .map { text($0["url"]) }
-        return (direct + embedded).compactMap { mediaURL($0, provider: .hanime) }
-            .first(where: HanimeGeneratedAPI.permittedStreamURL)?.absoluteString ?? ""
+        let permitted = (direct + embedded).compactMap { mediaURL($0, provider: .hanime) }
+            .filter(HanimeGeneratedAPI.permittedStreamURL)
+        return (permitted.first { ["mp4", "m4v"].contains($0.pathExtension.lowercased()) }
+                ?? permitted.first)?.absoluteString ?? ""
     }
 
     static func hanime(session: URLSession, query: ParsedQuery, page: Int,
                        sort: String, immersive: Bool) async throws -> PostPage {
         guard (1...1000).contains(page) else { throw APIError.invalidResponse }
+        let catalog = try await hanimeCatalog(session: session)
+        return try hanimePage(catalog, query: query, page: page, sort: sort, immersive: immersive)
+    }
+
+    // Fetch the entire catalog once. Search and pagination use local metadata.
+    static func hanimeCatalog(session: URLSession) async throws -> [Post] {
         // The supplied API describes the current first-party v11 catalog.
         // It may require legitimate browser verification; HTTP 403 is never bypassed.
         let claim = String(Int(Date().timeIntervalSince1970))
@@ -804,10 +878,10 @@ enum NativeProviderAPI {
         let bytes: Data
         do {
             bytes = try await data(session: session,
-                url: url("https://auth.hanime.tv/api/v11/search_hvs"), provider: .hanime,
+                url: url("https://guest.freeanimehentai.net/api/v11/search_hvs"), provider: .hanime,
                 headers: headers, maxBytes: 12 * 1024 * 1024, timeout: 20)
         } catch APIError.providerStatus(.hanime, 403) {
-            throw APIError.server("Hanime requires normal browser verification on this connection. Open the site in Safari or configure a reachable Hanime API in Settings.")
+            throw APIError.server("Hanime denied native catalog access (HTTP 403). Browsing the website is separate from API access. Configure an authorized Hanime API in Settings or try again later.")
         }
         let raw = try hanimeRows(JSONSerialization.jsonObject(with: bytes))
         guard raw.count <= 20_000 else { throw APIError.invalidResponse }
@@ -821,19 +895,45 @@ enum NativeProviderAPI {
                 guard let object = entry as? [String: Any] else { return nil }
                 return object["name"] as? String ?? object["text"] as? String ?? object["slug"] as? String
             }
-            let thumb = text(row["poster_url"] ?? row["cover_url"] ?? row["thumbnail"])
-            let cover = URL(string: thumb)
-            let safeThumb = cover?.scheme == "https" ? thumb : ""
+            func artwork(_ value: Any?) -> String? {
+                let raw = text(value)
+                guard let image = URL(string: raw), image.scheme == "https", image.host != nil,
+                      image.user == nil, image.password == nil,
+                      !["mp4", "m3u8", "webm", "mov"].contains(image.pathExtension.lowercased()) else { return nil }
+                return raw
+            }
+            let poster = artwork(row["poster_url"])
+            let episodeCover = artwork(row["cover_url"])
+            let safeThumb = poster ?? episodeCover ?? artwork(row["thumbnail"]) ?? ""
             let stream = hanimeCatalogStream(row)
             var post = Post(key: "hanime:\(id)", id: id, provider: "Hanime",
                             score: number(row["views"] ?? row["views_count"]), tags: tags,
                             mediaUrl: stream, thumbUrl: safeThumb,
                             pageUrl: "https://hanime.tv/videos/hentai/\(id)", type: "video")
             post.caption = text(row["name"] ?? row["title"])
+            post.episodePosterURL = poster
+            post.episodeCoverURL = episodeCover
+            let series = (row["hentai_franchise"] as? [String: Any]) ?? (row["franchise"] as? [String: Any]) ?? (row["series"] as? [String: Any]) ?? [:]
+            let seriesID = text(series["slug"] ?? row["franchise_slug"] ?? row["series_slug"])
+            let seriesTitle = text(series["title"] ?? series["name"] ?? row["franchise_title"] ?? row["series_title"])
+            post.seriesID = seriesID.isEmpty ? nil : seriesID
+            post.seriesTitle = seriesTitle.isEmpty ? nil : seriesTitle
+            post.seriesPosterURL = artwork(series["poster_url"] ?? row["franchise_poster_url"] ?? row["series_poster_url"])
             post.creator = text((row["brand"] as? [String: Any])?["name"] ?? row["brand"])
             post.createdAt = number(row["released_at_unix"] ?? row["created_at_unix"])
             return post
         }
+        var seen = Set<String>()
+        let unique = posts.filter { seen.insert($0.stableID).inserted }
+        guard raw.isEmpty || !unique.isEmpty else {
+            throw APIError.server("Hanime returned catalog entries in an unrecognized format.")
+        }
+        return unique
+    }
+
+    static func hanimePage(_ posts: [Post], query: ParsedQuery, page: Int,
+                           sort: String, immersive: Bool) throws -> PostPage {
+        guard (1...1000).contains(page) else { throw APIError.invalidResponse }
         let contains: (String, Post) -> Bool = { term, post in
             let needle = term.lowercased().replacingOccurrences(of: "_", with: " ")
             let haystack = ([post.caption ?? "", post.creator ?? ""] + post.tags)
@@ -1232,7 +1332,7 @@ enum NativeProviderAPI {
         if !selection.keywords.isEmpty {
             params.insert(.init(name: "search", value: selection.keywords.joined(separator: " ")), at: 0)
         }
-        if let category = filters.includedCategory ?? selection.category.map({ String($0.dropFirst("category:".count)) }) {
+        if let category = filters.includedCategory ?? filters.includedEthnicity ?? selection.category.map({ String($0.dropFirst("category:".count)) }) {
             params.append(.init(name: "category", value: category))
         }
         if ordering != "featured" { params.append(.init(name: "period", value: "monthly")) }
@@ -1257,12 +1357,15 @@ enum NativeProviderAPI {
             if seconds < options.minimumMinutes * 60 { return false }
             if options.maximumMinutes < 40 && seconds > options.maximumMinutes * 60 { return false }
         }
-        func key(_ value: String) -> String {
-            value.lowercased().replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
-        }
-        let available = Set(strings(row["categories"]).map(key))
-        if let category = options.includedCategory, !available.isEmpty, !available.contains(key(category)) { return false }
-        if options.excludedCategories.contains(where: { available.contains(key($0)) }) { return false }
+        let available = Set(strings(row["categories"]).map(PornhubSearchFilters.categoryKey))
+        let selected = [options.includedCategory, options.includedEthnicity].compactMap { $0 }
+        // The upstream API exposes a single category parameter. The second
+        // selection is an intersection verified against structured metadata.
+        if selected.count > 1 {
+            guard selected.allSatisfy({ available.contains(PornhubSearchFilters.categoryKey($0)) }) else { return false }
+        } else if let category = selected.first, !available.isEmpty,
+                  !available.contains(PornhubSearchFilters.categoryKey(category)) { return false }
+        if options.excludedCategories.contains(where: { available.contains(PornhubSearchFilters.categoryKey($0)) }) { return false }
         let production = text(row["production"] ?? row["production_type"]).lowercased()
         if options.production != .all, !production.isEmpty, production != options.production.rawValue { return false }
         return true
@@ -1325,18 +1428,24 @@ enum NativeProviderAPI {
         for endpoint in ["https://www.pornhub.com/webmasters/search",
                          "https://www.pornhub.com/webmasters/search/",
                          "https://api.pornhub.com/webmasters/search"] {
+            guard await WebmasterRouteHealth.shared.shouldTry(endpoint, session: session) else { continue }
             let bytes: Data
             do {
                 bytes = try await data(session: session, url: url(endpoint, parameters),
                                        provider: .pornhub, headers: cookieHeaders(credentials))
             } catch APIError.providerStatus(.pornhub, let status)
                 where [404, 410, 500, 502, 503, 504].contains(status) {
-                // Retired webmaster endpoints should never block the public
-                // first-party catalog fallback.
+                // Avoid repeating a definitively missing route on each page.
+                if status == 404 || status == 410 {
+                    await WebmasterRouteHealth.shared.markMissing(endpoint, session: session)
+                }
                 continue
             }
-            guard !unavailableHTML(bytes),
-                  let result = try? object(bytes), result["videos"] is [Any] else { continue }
+            if unavailableHTML(bytes) {
+                await WebmasterRouteHealth.shared.markMissing(endpoint, session: session)
+                continue
+            }
+            guard let result = try? object(bytes), result["videos"] is [Any] else { continue }
             return result
         }
         return nil
@@ -1351,9 +1460,15 @@ enum NativeProviderAPI {
         let selection = ProviderSearchCategories.split(query, provider: .pornhub)
         let filters = (query.pornhub ?? PornhubSearchFilters()).normalized
         let searching = !selection.keywords.isEmpty
-        let category = filters.includedCategory ?? selection.category.map { String($0.dropFirst("category:".count)) }
+        if filters.includedCategory != nil && filters.includedEthnicity != nil {
+            // Public HTML cards do not expose reliable category membership
+            // for a two-category intersection. Never return unrelated cards.
+            throw APIError.server("Combined topic and ethnicity filters require the provider's structured category results. Try again or select just one filter.")
+        }
+        let category = filters.includedCategory ?? filters.includedEthnicity ?? selection.category.map { String($0.dropFirst("category:".count)) }
+        let categorySlug = category.map { PornhubSearchFilters.categoryKey($0).replacingOccurrences(of: " ", with: "-") }
         let route = searching ? "https://www.pornhub.com/video/search" :
-            category.map { "https://www.pornhub.com/categories/" + $0 } ?? "https://www.pornhub.com/video"
+            categorySlug.map { "https://www.pornhub.com/categories/" + $0 } ?? "https://www.pornhub.com/video"
         var parameters: [URLQueryItem] = [.init(name: "page", value: String(max(1, page)))]
         let selectedOrder = query.pornhub?.order ?? (sort == "recent" ? .newest : sort == "popular" ? .mostViewed : .relevance)
         let browserOrder: String
@@ -1417,7 +1532,7 @@ enum NativeProviderAPI {
             let html = String(decoding: bytes.prefix(2 * 1024 * 1024), as: UTF8.self)
             var posts = pornhubHTMLPosts(html, filters: filters)
             if !posts.isEmpty {
-                if let category, !searching, candidate.path.hasPrefix("/categories/" + category) {
+                if let category = categorySlug, !searching, candidate.path == "/categories/" + category {
                     // A first-party category page is source evidence for its
                     // own cards; title words in a generic feed are not.
                     for index in posts.indices { posts[index].category = "category:" + category }
@@ -1453,9 +1568,18 @@ enum NativeProviderAPI {
                 .replacingOccurrences(of: "&#39;", with: "'")
             let posterCandidates = [#"data-thumb_url\s*=\s*["']([^"']+)["']"#,
                           #"data-mediumthumb\s*=\s*["']([^"']+)["']"#,
-                          #"\bsrc\s*=\s*["']([^"']+)["']"#]
-                .compactMap { matches(block, $0).first }
+                          #"data-src\s*=\s*["']([^"']+)["']"#,
+                          #"data-original\s*=\s*["']([^"']+)["']"#,
+                          #"<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']"#]
+                .flatMap { matches(block, $0) }
                 .compactMap { mediaURL($0.replacingOccurrences(of: "&amp;", with: "&")) }
+                .filter { address in
+                    let path = address.path.lowercased()
+                    let ext = address.pathExtension.lowercased()
+                    return !["mp4", "m3u8", "webm", "svg", "gif"].contains(ext) &&
+                        !path.contains("placeholder") && !path.contains("transparent") &&
+                        !path.contains("loading") && !path.contains("blank")
+                }
                 .map(\.absoluteString)
             let poster = posterCandidates.reduce(into: [String]()) { result, candidate in
                 if !result.contains(candidate) { result.append(candidate) }

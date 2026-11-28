@@ -155,6 +155,22 @@ struct PornhubSearchFilters: Codable, Equatable, Sendable {
     var maximumMinutes = 40 // 40 means 40+ / no upper bound.
     var includedCategory: String? = nil
     var excludedCategories: [String] = []
+    // Optional for backwards-compatible decoding of previously saved filters.
+    var includedEthnicity: String? = nil
+
+    static func categoryKey(_ raw: String) -> String {
+        raw.lowercased().replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    // Classify only explicit category labels returned by the provider. Never
+    // infer a person's ethnicity from a name, image or free-text description.
+    static func isEthnicityCategory(_ raw: String) -> Bool {
+        ["asian", "ebony", "latina", "latino", "interracial", "black", "white",
+         "indian", "japanese", "korean", "chinese", "arab", "middle eastern"]
+            .contains(categoryKey(raw))
+    }
 
     var normalized: Self {
         var value = self
@@ -162,11 +178,19 @@ struct PornhubSearchFilters: Codable, Equatable, Sendable {
         value.maximumMinutes = max(value.minimumMinutes, min(40, max(0, maximumMinutes)))
         value.includedCategory = includedCategory?.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.includedCategory?.isEmpty == true { value.includedCategory = nil }
-        let includedKey = value.includedCategory?.lowercased()
+        value.includedEthnicity = includedEthnicity?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let ethnicity = value.includedEthnicity, !Self.isEthnicityCategory(ethnicity) {
+            value.includedEthnicity = nil
+        }
+        if let legacy = value.includedCategory, Self.isEthnicityCategory(legacy) {
+            if value.includedEthnicity == nil { value.includedEthnicity = legacy }
+            value.includedCategory = nil
+        }
+        let includedKeys = Set([value.includedCategory, value.includedEthnicity].compactMap { $0 }.map(Self.categoryKey))
         var seen = Set<String>()
         value.excludedCategories = excludedCategories.filter {
-            let key = $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return !key.isEmpty && key != includedKey && seen.insert(key).inserted
+            let key = Self.categoryKey($0)
+            return !key.isEmpty && !includedKeys.contains(key) && seen.insert(key).inserted
         }.prefix(10).map { $0 }
         return value
     }
@@ -257,6 +281,7 @@ struct SearchDraft: Sendable {
     var filters = SearchFilters()
     var pornhub = PornhubSearchFilters()
     var sort = "recommended"
+    var redgifsNiche: String? = nil
     // Do not reuse a tag-based draft after switching to a keyword provider.
     var provider: Provider? = nil
 }

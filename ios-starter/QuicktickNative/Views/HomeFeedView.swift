@@ -156,15 +156,11 @@ struct HomeFeedView: View {
             })
             .environmentObject(store)
         }
-        .sheet(isPresented: $showHanimeShows) {
-            HanimeShowsBrowserView(posts: store.posts, onPlay: { post in
-                showHanimeShows = false
-                immersivePostID = post.stableID
-                immersive = true
-            })
+        .fullScreenCover(isPresented: $showHanimeShows) {
+            HanimeShowsBrowserView(posts: store.posts).environmentObject(store)
         }
         .sheet(isPresented: $showAllHanimeTopics) {
-            NavigationStack { HanimeTopicsBrowserView() }
+            NavigationStack { HanimeTopicsBrowserView(provider: store.selectedProvider) }
                 .environmentObject(store)
         }
     }
@@ -306,8 +302,8 @@ struct HomeFeedView: View {
                 if store.selectedProvider == .hanime {
                     Button { showHanimeShows = true } label: {
                         Label("Shows", systemImage: "rectangle.stack.fill")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(maxWidth: .infinity, minHeight: 46)
+                            .font(.title2.bold())
+                            .frame(maxWidth: .infinity, minHeight: 84)
                             .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14))
                             .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppTheme.border))
                     }
@@ -317,12 +313,22 @@ struct HomeFeedView: View {
                 }
                 if store.selectedProvider == .redgifs {
                     redgifsNicheRow
-                } else if store.selectedProvider == .hanime ||
+                } else if store.selectedProvider == .pornhub {
+                    homeCategoryRow
+                } else if store.selectedProvider == .hanime || store.selectedProvider == .rule34 ||
                             (suggestedThemesEnabled && !themeSuggestions.isEmpty) {
                     suggestedThemeRow
                 }
-                if store.selectedProvider == .pornhub {
-                    homeCategoryRow
+                if store.selectedProvider == .hanime, let error = store.lastError,
+                   !store.posts.isEmpty, !store.isLoading {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Showing saved feed", systemImage: "exclamationmark.circle")
+                            .font(.subheadline.weight(.semibold))
+                        Text(error).font(.caption)
+                        Button("Configure Hanime API") { showSettings = true }
+                    }
+                    .foregroundStyle(AppTheme.secondaryLabel)
+                    .padding(.horizontal, 16)
                 }
                 if store.posts.isEmpty && !store.bootstrapped {
                     RoundedRectangle(cornerRadius: 22)
@@ -338,7 +344,7 @@ struct HomeFeedView: View {
                         }
                         if store.selectedProvider == .hanime,
                            let website = URL(string: "https://hanime.tv/") {
-                            Link("Verify Hanime in Safari", destination: website)
+                            Link("Open Hanime in Safari", destination: website)
                             Button("Configure Hanime API") { showSettings = true }
                         }
                     }
@@ -587,7 +593,14 @@ struct HomeFeedView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 6) {
-                    Menu { ForEach(Provider.allCases) { p in Button(p.displayName) { store.selectedProvider = p; Task { await store.refresh() } } } } label: {
+                    Menu {
+                        ForEach(Provider.allCases) { p in
+                            Button {
+                                store.selectedProvider = p
+                                Task { await store.refresh() }
+                            } label: { Label(p.displayName, systemImage: ProviderLogoView.symbol(for: p)) }
+                        }
+                    } label: {
                         ProviderLogoView(provider: store.selectedProvider)
                             .frame(width: 52, height: 44)
                             .background(AppTheme.surface, in: Capsule())
@@ -616,7 +629,8 @@ struct HomeFeedView: View {
                 await discoverRedgifsNiches()
             }
         let visualScroll = nicheScroll
-            .task(id: store.selectedProvider) {
+            .task(id: "visual-themes:\(store.selectedProvider.rawValue):\(store.bootstrapped)") {
+                guard store.bootstrapped else { return }
                 await discoverVisualThemes()
             }
         let postChangeScroll = visualScroll
@@ -709,23 +723,22 @@ struct HomeFeedView: View {
             excluded: store.exclusions + taste.notInto,
             limit: 5, rotation: themeRefreshCycle,
             mode: SuggestedThemeMode(rawValue: suggestedThemesMode) ?? .balanced)
-        if proposed != themeSuggestions { themeSuggestions = proposed }
+        var seen = Set<String>()
+        let unique = proposed.filter { seen.insert(TopicDisplayIdentity.key($0.label)).inserted }
+        if unique != themeSuggestions { themeSuggestions = unique }
     }
 
     /// Personal suggestions work on *every* provider and use real covers or
     /// thumbnails from posts matching this provider's learned interests.
     @ViewBuilder private var suggestedThemeRow: some View {
-        if !themeSuggestions.isEmpty || store.selectedProvider == .hanime {
+        if !themeSuggestions.isEmpty || [.hanime, .rule34, .pornhub].contains(store.selectedProvider) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkles").foregroundStyle(AppTheme.accent)
                     Text(store.selectedProvider == .hanime ? "Hanime topics" : "Suggested topics")
                         .font(.subheadline.weight(.bold))
-                    Text(store.selectedProvider == .rule34 && suggestedThemesMode == SuggestedThemeMode.franchises.rawValue
-                         ? "Franchise discovery" : "Based on your taste")
-                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
                     Spacer()
-                    if store.selectedProvider == .hanime {
+                    if [.hanime, .rule34, .pornhub].contains(store.selectedProvider) {
                         Button {
                             showAllHanimeTopics = true
                         } label: {
@@ -768,21 +781,17 @@ struct HomeFeedView: View {
     /// RedGIFs' actual communities, represented by thumbnails from their
     /// popular clips. Tapping one opens that niche's immersive vertical feed.
     @ViewBuilder private var redgifsNicheRow: some View {
-        if !redgifsNiches.isEmpty {
+        if store.selectedProvider == .redgifs {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "square.grid.2x2.fill").foregroundStyle(AppTheme.accent)
                     Text("RedGIFs niches").font(.subheadline.weight(.bold))
-                    Text(store.favorites.values.contains(where: { $0.providerKey == .redgifs })
-                         ? "For you" : "Explore")
-                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel).lineLimit(1)
-                        .accessibilityLabel("Niches ranked from your Likes and related communities")
                     Spacer()
                     Button {
                         showAllRedgifsNiches = true
                     } label: {
                         HStack(spacing: 4) {
-                            Text("Show all")
+                            Text("See more")
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
                         }
                         .font(.caption.weight(.semibold))
@@ -797,7 +806,7 @@ struct HomeFeedView: View {
                             Button {
                                 openRedgifsNiche(niche)
                             } label: {
-                                HomeArtworkChip(title: niche.name, imageURL: niche.imageURL)
+                                HomeArtworkChip(title: niche.name, imageURL: niche.imageURL, width: 254, height: 170)
                                     .overlay(alignment: .topTrailing) {
                                         if openingNicheID == niche.id {
                                             ProgressView().tint(.white).padding(12)
@@ -838,9 +847,14 @@ struct HomeFeedView: View {
         let provider = store.selectedProvider
         let selected = ProviderSearchCategories.split(QueryParser.parse(store.queryText), provider: provider).category
         return VStack(alignment: .leading, spacing: 10) {
-            Text("Categories")
-                .font(.subheadline.weight(.bold))
-                .padding(.horizontal, 16)
+            HStack {
+                Text("Categories").font(.subheadline.weight(.bold))
+                Spacer()
+                Button { showAllHanimeTopics = true } label: {
+                    Label("See more", systemImage: "square.grid.2x2")
+                        .font(.caption.weight(.semibold)).foregroundStyle(AppTheme.accent)
+                }.buttonStyle(.plain)
+            }.padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                 ForEach(ProviderSearchCategories.suggestions(provider: provider)) { item in
@@ -892,7 +906,8 @@ struct HomeFeedView: View {
             guard !Task.isCancelled, store.selectedProvider == .pornhub else { return }
             guard pornhubCategoryPreviews[category.value] == nil else { continue }
             if let preview = try? await store.api.pornhubCategoryPreview(token: category.value),
-               URL(string: preview)?.scheme == "https" {
+               URL(string: preview)?.scheme == "https",
+               !pornhubCategoryPreviews.values.contains(preview) {
                 pornhubCategoryPreviews[category.value] = preview
             }
             try? await Task.sleep(for: .milliseconds(350))
@@ -1037,14 +1052,27 @@ private struct RedgifsNicheBrowserView: View {
 
     private var filtered: [RedgifsNiche] {
         let matching = searchText.isEmpty ? niches
-            : niches.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+            : niches.filter { $0.name.localizedCaseInsensitiveContains(searchText) || $0.id.localizedCaseInsensitiveContains(searchText) }
         let taste = RedgifsNicheAffinity(liked: Array(store.favorites.values), observed: store.posts)
         return taste.rankNiches(matching)
     }
 
     var body: some View {
         Group {
-            if let selectedNiche {
+            if let selectedNiche, loadingNicheID != nil || selectedPostID == nil {
+                VStack(spacing: 16) {
+                    Text(selectedNiche.name).font(.title2.weight(.semibold))
+                    if loadingNicheID != nil { ProgressView("Loading niche…") }
+                    else {
+                        Text(errorMessage ?? "No clips available.").foregroundStyle(.secondary)
+                        Button("Retry") { openNiche(selectedNiche) }
+                    }
+                    Button("Back to niches") {
+                        selectionID = UUID(); loadingNicheID = nil
+                        self.selectedNiche = nil; selectedPostID = nil
+                    }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let selectedNiche {
                 // The niche player is a full-screen cover in its own right.
                 // Keeping it inside NavigationStack makes UIKit reserve the
                 // navigation/safe-area bounds and shrinks the video canvas
@@ -1052,7 +1080,7 @@ private struct RedgifsNicheBrowserView: View {
                 ImmersiveFeedView(posts: store.posts, offline: false,
                                   activePostID: $selectedPostID,
                                   onClose: { closeImmersive() },
-                                  showSettings: $showSettings)
+                                  showSettings: $showSettings, standalonePresentation: true)
                     .id(selectedNiche.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(AppTheme.canvas.ignoresSafeArea())
@@ -1069,7 +1097,7 @@ private struct RedgifsNicheBrowserView: View {
     private var directoryView: some View {
         GeometryReader { geometry in
             ScrollView {
-                LazyVGrid(columns: columns(for: geometry.size.width), spacing: 12) {
+                LazyVGrid(columns: columns(for: geometry.size.width), spacing: 8) {
                     ForEach(filtered) { niche in
                         nicheCard(niche, width: cardWidth(for: geometry.size.width))
                             .onAppear {
@@ -1080,8 +1108,8 @@ private struct RedgifsNicheBrowserView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
+                .padding(.horizontal, 4)
+                .padding(.top, 8)
                 if loading { ProgressView("Loading niches…").padding(18) }
                 if let errorMessage {
                     VStack(spacing: 9) {
@@ -1103,7 +1131,15 @@ private struct RedgifsNicheBrowserView: View {
         .background(ThemeBackdrop())
         .navigationTitle("RedGIFs niches")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, prompt: "Filter loaded niches")
+        .searchable(text: $searchText, prompt: "Search niches")
+        .task(id: searchText) {
+            guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            for _ in 0..<6 {
+                guard !Task.isCancelled, hasMore, !loading, errorMessage == nil else { break }
+                await loadNextPage()
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button("Close") { dismiss() }
@@ -1120,50 +1156,48 @@ private struct RedgifsNicheBrowserView: View {
     private func columns(for width: CGFloat) -> [GridItem] {
         let count = columnCount(for: width)
         let width = cardWidth(for: width)
-        return Array(repeating: GridItem(.fixed(width), spacing: 12), count: count)
+        return Array(repeating: GridItem(.fixed(width), spacing: 8), count: count)
     }
 
     private func columnCount(for width: CGFloat) -> Int {
-        if width >= 1050 { return 5 }
-        if width >= 720 { return 4 }
-        if width >= 560 { return 3 }
+        if width >= 1050 { return 4 }
+        if width >= 720 { return 3 }
+        if width < 260 { return 1 }
         return 2
     }
 
     private func cardWidth(for width: CGFloat) -> CGFloat {
         let count = columnCount(for: width)
-        return max(116, (width - 32 - CGFloat(count - 1) * 12) / CGFloat(count))
+        return max(1, (width - 8 - CGFloat(count - 1) * 8) / CGFloat(count))
     }
 
     private func nicheCard(_ niche: RedgifsNiche, width: CGFloat) -> some View {
-        let posterWidth = width - 18
+        let height = width * 1.28
         return Button {
             openNiche(niche)
         } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                CachedMediaImage(url: niche.imageURL, pixels: 420, fill: true)
-                    .frame(width: posterWidth, height: posterWidth * 1.2)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 13))
-                Text(niche.name)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .frame(width: posterWidth, height: 36, alignment: .topLeading)
-                HStack(spacing: 4) {
-                    Text(niche.postCount > 0 ? "\(niche.postCount) clips" : "Explore niche")
-                        .font(.caption2).foregroundStyle(AppTheme.secondaryLabel)
-                    if loadingNicheID == niche.id {
-                        ProgressView().controlSize(.mini)
-                    }
+            RoundedRectangle(cornerRadius: 10).fill(AppTheme.elevatedSurface)
+                .frame(width: width, height: height)
+                .overlay {
+                    CachedMediaImage(url: niche.imageURL, pixels: 720, fill: true)
+                        .frame(width: width, height: height).clipped()
                 }
-                .frame(width: posterWidth, height: 16, alignment: .leading)
-            }
-            .frame(width: posterWidth, alignment: .leading)
-            .padding(9)
-            .background(AppTheme.elevatedSurface,
-                        in: RoundedRectangle(cornerRadius: 19))
-            .overlay(RoundedRectangle(cornerRadius: 19).stroke(AppTheme.border))
+                .overlay {
+                    LinearGradient(colors: [.clear, .black.opacity(0.15), .black.opacity(0.88)],
+                                   startPoint: .center, endPoint: .bottom)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(niche.name).font(.title3.weight(.bold)).lineLimit(2)
+                        Text(niche.postCount > 0 ? "\(niche.postCount) clips" : "Explore collection")
+                            .font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.78))
+                    }.foregroundStyle(.white).padding(12)
+                }
+                .overlay(alignment: .topTrailing) {
+                    if loadingNicheID == niche.id { ProgressView().tint(.white).padding(12) }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .contentShape(Rectangle())
         }
         .buttonStyle(QuicktickPressStyle())
         .frame(width: width)
@@ -1179,6 +1213,8 @@ private struct RedgifsNicheBrowserView: View {
         let requestID = UUID()
         selectionID = requestID
         loadingNicheID = niche.id
+        selectedPostID = nil
+        selectedNiche = niche
         errorMessage = nil
         let query = "niche:" + niche.id
         store.commitSearch(query: query, sort: "popular")
@@ -1240,10 +1276,12 @@ private struct RedgifsNicheBrowserView: View {
 /// plus tags from saved posts. More catalog pages can be requested in place;
 /// the five personalized chips on Home are not the directory's limit.
 private struct HanimeTopicsBrowserView: View {
+    let provider: Provider
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
     @State private var catalogPosts: [Post] = []
+    @State private var providerCategories: [String] = []
     @State private var page = 1
     @State private var hasMore = true
     @State private var loading = false
@@ -1251,17 +1289,18 @@ private struct HanimeTopicsBrowserView: View {
 
     private var topics: [String] {
         let evidence = store.posts + Array(store.favorites.values) + catalogPosts
-        let chosen = store.tasteChoice(for: .hanime).into
-        let terms = chosen + store.learnedInterests + evidence
-            .filter { $0.providerKey == .hanime }.flatMap(\.tags)
-        let excluded = Set(store.exclusions.map { $0.lowercased() })
+        let chosen = store.tasteChoice(for: provider).into
+        let terms = (provider == .pornhub ? providerCategories : []) + chosen + store.learnedInterests + evidence
+            .filter { $0.providerKey == provider }.flatMap(\.tags)
+        let excluded = Set(store.exclusions.map(TopicDisplayIdentity.key))
         var seen = Set<String>()
         return terms.compactMap { raw -> String? in
             let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 .replacingOccurrences(of: "_", with: " ").lowercased()
             guard !value.isEmpty, value.count <= 80,
                   !value.contains(":"), !value.contains("/"),
-                  !excluded.contains(value), seen.insert(value).inserted else { return nil }
+                  !excluded.contains(TopicDisplayIdentity.key(value)),
+                  seen.insert(TopicDisplayIdentity.key(value)).inserted else { return nil }
             return value
         }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
@@ -1273,12 +1312,15 @@ private struct HanimeTopicsBrowserView: View {
 
     private var topicPreviews: [String: String] {
         var previews: [String: String] = [:]
+        var used = Set<String>()
         for post in catalogPosts + store.posts + Array(store.favorites.values)
-        where post.providerKey == .hanime && URL(string: post.cardPreviewURL)?.scheme == "https" {
+        where post.providerKey == provider && URL(string: post.cardPreviewURL)?.scheme == "https" {
             for tag in post.tags {
                 let key = tag.trimmingCharacters(in: .whitespacesAndNewlines)
                     .replacingOccurrences(of: "_", with: " ").lowercased()
-                if previews[key] == nil { previews[key] = post.cardPreviewURL }
+                if previews[key] == nil, used.insert(post.cardPreviewURL).inserted {
+                    previews[key] = post.cardPreviewURL
+                }
             }
         }
         return previews
@@ -1287,7 +1329,7 @@ private struct HanimeTopicsBrowserView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 9) {
-                Text("Topics from the available Hanime catalog and your saved videos")
+                Text("Topics from the available \(provider.displayName) catalog and your saved posts")
                     .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     .padding(.bottom, 8)
                 let previews = topicPreviews
@@ -1295,7 +1337,19 @@ private struct HanimeTopicsBrowserView: View {
                     let preview = previews[term]
                     Button {
                         let current = QueryParser.parse(store.queryText)
-                        store.commitSuggestedTopic(term, excluded: current.excluded)
+                        if provider == .pornhub, let category = providerCategories.first(where: {
+                            PornhubSearchFilters.categoryKey($0) == PornhubSearchFilters.categoryKey(term)
+                        }) {
+                            var filters = PornhubSearchFilters.decode(store.queryText)
+                            if PornhubSearchFilters.isEthnicityCategory(category) { filters.includedEthnicity = category }
+                            else { filters.includedCategory = category }
+                            let keywords = ProviderSearchCategories.split(current, provider: provider).keywords
+                            store.commitSearch(query: filters.encodedQuery(QueryParser.formatted(ParsedQuery(
+                                included: keywords, excluded: current.excluded))), sort: store.feedSort)
+                        } else {
+                            let query = provider == .rule34 ? term.replacingOccurrences(of: " ", with: "_") : term
+                            store.commitSuggestedTopic(query, excluded: current.excluded)
+                        }
                         dismiss()
                         Task { await store.refresh() }
                     } label: {
@@ -1327,7 +1381,7 @@ private struct HanimeTopicsBrowserView: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("hanime-topic-\(term)")
                 }
-                if loading { ProgressView("Loading Hanime topics…").frame(maxWidth: .infinity).padding() }
+                if loading { ProgressView("Loading topics…").frame(maxWidth: .infinity).padding() }
                 if let errorMessage {
                     Text(errorMessage).font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                 }
@@ -1340,21 +1394,26 @@ private struct HanimeTopicsBrowserView: View {
             .padding(16)
         }
         .background(ThemeBackdrop())
-        .navigationTitle("All Hanime topics")
+        .navigationTitle("All \(provider.displayName) topics")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search topics")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
         }
-        .task { await loadNextPage() }
+        .task {
+            if provider == .pornhub {
+                providerCategories = (try? await store.api.pornhubCategories()) ?? PornhubSearchFilters.commonCategories
+            }
+            await loadNextPage()
+        }
     }
 
     @MainActor private func loadNextPage() async {
-        guard !loading, hasMore, store.selectedProvider == .hanime else { return }
+        guard !loading, hasMore, store.selectedProvider == provider else { return }
         loading = true
         defer { loading = false }
         do {
-            let result = try await store.api.posts(provider: .hanime,
+            let result = try await store.api.posts(provider: provider,
                 query: QueryParser.parse(""), page: page, sort: "popular")
             guard !Task.isCancelled else { return }
             let known = Set(catalogPosts.map(\.stableID))
@@ -1465,8 +1524,6 @@ enum HomeThemeSuggestions {
             guard let sample = rotatedMatches.first(where: {
                 !$0.cardPreviewURL.isEmpty && !usedImages.contains($0.cardPreviewURL)
                     && URL(string: $0.cardPreviewURL)?.scheme == "https"
-            }) ?? rotatedMatches.first(where: {
-                !$0.cardPreviewURL.isEmpty && URL(string: $0.cardPreviewURL)?.scheme == "https"
             }) else { continue }
             usedImages.insert(sample.cardPreviewURL)
             let query = provider == .rule34 ? term : term.replacingOccurrences(of: "_", with: " ")
@@ -1495,7 +1552,7 @@ enum HomeThemeSuggestions {
                 : [result[safe: index], franchises[safe: index]]
             for suggestion in candidates.compactMap({ $0 }) {
                 guard diverse.count < limit,
-                      !diverse.contains(where: { $0.term == suggestion.term }),
+                      !diverse.contains(where: { TopicDisplayIdentity.key($0.label) == TopicDisplayIdentity.key(suggestion.label) }),
                       seenImages.insert(suggestion.imageURL).inserted else { continue }
                 diverse.append(suggestion)
             }
@@ -1531,11 +1588,14 @@ enum HomeThemeSuggestions {
         let lead = Array(terms.prefix(max(limit, 10)))
         let shift = lead.isEmpty ? 0 : (rotation % lead.count + lead.count) % lead.count
         let ordered = Array(lead.dropFirst(shift)) + Array(lead.prefix(shift))
+        var usedImages = Set<String>()
         return Array(ordered.prefix(limit)).map { tag in
             let sample = evidence.first { post in
                 post.tags.contains(where: { normalize($0) == tag }) &&
-                    URL(string: post.cardPreviewURL)?.scheme == "https"
+                    URL(string: post.cardPreviewURL)?.scheme == "https" &&
+                    !usedImages.contains(post.cardPreviewURL)
             }
+            if let sample { usedImages.insert(sample.cardPreviewURL) }
             return HomeThemeSuggestion(term: tag.replacingOccurrences(of: "_", with: " "),
                                        label: tag.replacingOccurrences(of: "_", with: " ").capitalized,
                                        imageURL: sample?.cardPreviewURL ?? "")
@@ -1648,91 +1708,282 @@ enum FranchiseThemeSuggestions {
 }
 
 private struct HanimeShowsBrowserView: View {
-    let posts: [Post]
-    let onPlay: (Post) -> Void
+    @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @State private var catalog: [Post]
+    @State private var search = ""
+    @State private var page = 1
+    @State private var hasMore = true
+    @State private var loading = false
+    @State private var error: String?
+    @State private var playingEpisodes: [Post] = []
+    @State private var playingID: String?
+    @State private var showPlayer = false
+
+    init(posts: [Post]) {
+        _catalog = State(initialValue: posts.filter { $0.providerKey == .hanime })
+    }
 
     private struct ShowGroup: Identifiable {
         let id: String
         let title: String
         let episodes: [Post]
-        var cover: String { episodes.first(where: { !$0.thumbUrl.isEmpty })?.thumbUrl ?? "" }
+        var cover: String { Post.hanimeShowPoster(in: episodes) }
+        var recent: Double { episodes.map { $0.createdAt ?? 0 }.max() ?? 0 }
     }
 
     private var shows: [ShowGroup] {
-        let hanime = posts.filter { $0.providerKey == .hanime }
-        let groups = Dictionary(grouping: hanime) { post -> String in
-            let slug = post.id.replacingOccurrences(of: #"-[0-9]+$"#, with: "", options: .regularExpression)
-            return slug.isEmpty ? post.id : slug
-        }
+        let groups = Dictionary(grouping: catalog, by: \.hanimeSeriesKey)
         return groups.map { key, episodes in
-            let ordered = episodes.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
-            let title = (ordered.first?.caption ?? key.replacingOccurrences(of: "-", with: " "))
-                .replacingOccurrences(of: #"\s+[0-9]+$"#, with: "", options: .regularExpression)
+            var seen = Set<String>()
+            let ordered = episodes.filter { seen.insert($0.stableID).inserted }
+                .sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+            let title = ordered.compactMap(\.seriesTitle).first(where: { !$0.isEmpty })
+                ?? ordered.first?.hanimeShowTitle ?? key.replacingOccurrences(of: "-", with: " ")
             return ShowGroup(id: key, title: title, episodes: ordered)
-        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        }.sorted { a, b in
+            a.recent == b.recent ? a.title.localizedStandardCompare(b.title) == .orderedAscending : a.recent > b.recent
+        }
+    }
+
+    private var visible: [ShowGroup] {
+        search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? shows :
+            shows.filter { $0.title.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search) }
+    }
+
+    private var continuing: [ShowGroup] {
+        shows.filter { show in
+            show.episodes.contains { (store.resumePosition($0.stableID) ?? 0) > 5 }
+        }
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(shows) { show in
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(alignment: .top, spacing: 14) {
-                                if !show.cover.isEmpty {
-                                    CachedMediaImage(url: show.cover, pixels: 480, fill: true)
-                                        .frame(width: 100, height: 142).clipped()
-                                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                                } else {
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(AppTheme.elevatedSurface)
-                                        .frame(width: 100, height: 142)
-                                        .overlay(Image(systemName: "film").foregroundStyle(.secondary))
+            GeometryReader { geometry in
+                let layout = ShowsGridLayout(availableWidth: geometry.size.width)
+                ScrollView {
+                LazyVStack(alignment: .leading, spacing: 24) {
+                    if search.isEmpty, let featured = shows.first {
+                        NavigationLink { detail(featured) } label: {
+                            VStack(alignment: .leading, spacing: 10) {
+                                artwork(featured.cover, height: min(420, layout.contentWidth * 0.95))
+                                Text(featured.title).font(.title2.bold()).lineLimit(2)
+                                Text("\(featured.episodes.count) episodes available").font(.subheadline).foregroundStyle(.secondary)
+                                Label("View episodes", systemImage: "play.rectangle")
+                                    .font(.subheadline.weight(.semibold))
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 12))
+                            }.frame(width: layout.contentWidth, alignment: .leading)
+                        }.buttonStyle(.plain)
+                    }
+                    if search.isEmpty, !continuing.isEmpty {
+                        Text("Continue watching").font(.headline)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(continuing.prefix(12)) { show in
+                                    NavigationLink { detail(show) } label: {
+                                        VStack(alignment: .leading) {
+                                            artwork(show.cover, height: 250)
+                                            Text(show.title).font(.caption).lineLimit(1)
+                                        }.frame(width: 166)
+                                    }.buttonStyle(.plain)
                                 }
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(show.title).font(.headline).lineLimit(3)
-                                    Text("\(show.episodes.count) available episode\(show.episodes.count == 1 ? "" : "s")")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                    Spacer(minLength: 0)
-                                    Button { if let first = show.episodes.first { onPlay(first) } } label: {
-                                        Label("Play", systemImage: "play.fill")
-                                            .font(.subheadline.weight(.semibold))
-                                            .frame(maxWidth: .infinity, minHeight: 38)
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                }
-                            }
-                            ForEach(show.episodes, id: \.stableID) { episode in
-                                Button { onPlay(episode) } label: {
-                                    HStack {
-                                        Image(systemName: "play.circle.fill")
-                                        Text(episode.caption ?? episode.id.replacingOccurrences(of: "-", with: " "))
-                                            .lineLimit(1)
-                                        Spacer()
-                                        Image(systemName: "chevron.right").font(.caption)
-                                    }
-                                    .font(.subheadline)
-                                    .padding(.vertical, 7)
-                                }
-                                .buttonStyle(.plain)
                             }
                         }
-                        .padding(14)
-                        .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18))
                     }
-                    if shows.isEmpty {
-                        ContentUnavailableView("No shows loaded", systemImage: "film.stack",
-                                               description: Text("Load Hanime videos in Home to browse their series."))
+                    Text(search.isEmpty ? "Browse shows" : "Search results").font(.title2.bold())
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(layout.cardWidth), spacing: 12, alignment: .top), count: layout.columns), alignment: .leading, spacing: 20) {
+                        ForEach(visible) { show in
+                            NavigationLink { detail(show) } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    artwork(show.cover, height: layout.cardWidth * 1.5)
+                                    Text(show.title).font(.subheadline.weight(.semibold))
+                                        .lineLimit(2, reservesSpace: true)
+                                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                                    Text("\(show.episodes.count) episodes")
+                                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                .frame(width: layout.cardWidth, alignment: .topLeading)
+                                .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                                .accessibilityIdentifier("show-card-\(show.id)")
+                        }
+                    }
+                    if loading { ProgressView("Loading catalog…").frame(maxWidth: .infinity) }
+                    if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+                    if hasMore && !loading {
+                        Button("Load more shows") { Task { await loadNext() } }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    if visible.isEmpty && !loading && error == nil {
+                        ContentUnavailableView("No matching shows", systemImage: "film.stack",
+                                               description: Text("Try another search or load more of the catalog."))
+                    }
+                }.frame(width: layout.contentWidth, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.vertical, 16)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .background(ThemeBackdrop())
+            .navigationTitle("Shows")
+            .searchable(text: $search, prompt: "Search shows")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .task { await loadNext() }
+        }
+        .fullScreenCover(isPresented: $showPlayer) {
+            ImmersiveFeedView(posts: playingEpisodes, offline: false, activePostID: $playingID,
+                              onClose: { showPlayer = false }, collectionTab: 0)
+                .environmentObject(store)
+        }
+    }
+
+    private func artwork(_ url: String, height: CGFloat, fill: Bool = false) -> some View {
+        // An overlay takes the base view's bounds rather than proposing the
+        // image's intrinsic width to the surrounding grid or episode row.
+        RoundedRectangle(cornerRadius: 12).fill(AppTheme.elevatedSurface)
+            .frame(height: height)
+            .overlay {
+                GeometryReader { geometry in
+                    if !url.isEmpty {
+                        CachedMediaImage(url: url, pixels: 900, fill: fill)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .clipped()
+                    } else {
+                        Image(systemName: "film").foregroundStyle(.secondary)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
                     }
                 }
-                .padding(16)
             }
-            .navigationTitle("Shows")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) {
-                Button("Done") { dismiss() }
-            } }
+            .clipped().clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func detail(_ show: ShowGroup) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                artwork(show.cover, height: 420)
+                Text(show.title).font(.largeTitle.bold())
+                Text("\(show.episodes.count) episodes available").foregroundStyle(.secondary)
+                if let episode = show.episodes.first(where: { (store.resumePosition($0.stableID) ?? 0) > 5 }) ?? show.episodes.first {
+                    Button { play(episode, in: show) } label: {
+                        Label((store.resumePosition(episode.stableID) ?? 0) > 5 ? "Continue watching" : "Play",
+                              systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: 44)
+                    }.buttonStyle(.borderedProminent)
+                }
+                Text("Episodes").font(.title2.bold())
+                ForEach(show.episodes, id: \.stableID) { episode in
+                    let index = show.episodes.firstIndex(where: { $0.stableID == episode.stableID }) ?? 0
+                    HStack(spacing: 8) {
+                        Button { play(episode, in: show) } label: {
+                            HStack(spacing: 10) {
+                            artwork(episode.episodeCoverURL ?? episode.thumbUrl, height: 90, fill: true).frame(width: 150)
+                            VStack(alignment: .leading, spacing: 5) {
+                                let number = episode.id.split(separator: "-").last.flatMap { Int($0) }
+                                Text("Episode \(number ?? (index + 1))").font(.headline)
+                                Text(episode.caption ?? episode.id).font(.caption).lineLimit(2)
+                                if let position = store.resumePosition(episode.stableID), position > 5 {
+                                    Text("Resume available").font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Image(systemName: "play.circle.fill").font(.title2)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        EpisodeDownloadButton(manager: store.downloads, post: episode)
+                    }.padding(.vertical, 6)
+                    Divider()
+                }
+            }.padding(16)
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
+        }.background(ThemeBackdrop()).navigationTitle("Episodes")
+    }
+
+    private func play(_ episode: Post, in show: ShowGroup) {
+        playingEpisodes = show.episodes
+        playingID = episode.stableID
+        showPlayer = true
+    }
+
+    @MainActor private func loadNext() async {
+        guard hasMore, !loading else { return }
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            let response = try await store.api.posts(provider: .hanime,
+                query: QueryParser.parse(""), page: page, sort: "recent")
+            try Task.checkCancellation()
+            var merged = Dictionary(catalog.map { ($0.stableID, $0) }, uniquingKeysWith: { _, new in new })
+            for item in response.items { merged[item.stableID] = item }
+            catalog = Array(merged.values)
+            hasMore = (response.hasMore ?? false) && !response.items.isEmpty && page < 100
+            page += 1
+        } catch is CancellationError {
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+
+// Equal-width columns are calculated from the actual viewport, including iPad split view.
+struct ShowsGridLayout {
+    let contentWidth: CGFloat
+    let columns: Int
+    let cardWidth: CGFloat
+    init(availableWidth: CGFloat) {
+        contentWidth = max(1, min(availableWidth - 32, 1000))
+        let count = min(4, max(1, Int((contentWidth + 12) / 160)))
+        columns = count
+        cardWidth = max(1, (contentWidth - CGFloat(count - 1) * 12) / CGFloat(count))
+    }
+}
+
+private struct EpisodeDownloadButton: View {
+    @ObservedObject var manager: DownloadManager
+    let post: Post
+    @State private var showError = false
+    private var record: DownloadRecord? { manager.records.first { $0.key == post.stableID } }
+    private var symbol: String {
+        switch record?.state {
+        case .some(.complete): return "checkmark.circle.fill"
+        case .some(.downloading): return "pause.fill"
+        case .some(.paused): return "play.fill"
+        case .some(.failed), .some(.cancelled): return "arrow.clockwise"
+        default: return "arrow.down.to.line"
         }
+    }
+    var body: some View {
+        Button {
+            if let record {
+                switch record.state {
+                case .downloading: manager.pause(record)
+                case .paused: manager.resume(record)
+                case .failed, .cancelled: manager.retry(record)
+                case .queued, .complete: break
+                }
+            } else { manager.download(post) }
+        } label: {
+            VStack(spacing: 3) {
+                if record?.state == .queued { ProgressView().controlSize(.small) }
+                else { Image(systemName: symbol).font(.system(size: 19, weight: .semibold)) }
+                if let record, record.state == .downloading || record.state == .paused {
+                    Text("\(Int(min(1, max(0, record.progress.isFinite ? record.progress : 0)) * 100))%")
+                        .font(.caption2.monospacedDigit())
+                }
+            }
+            .frame(width: 48, height: 52)
+            .foregroundStyle(record?.state == .complete ? AppTheme.accent : .primary)
+            .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .disabled(record?.state == .queued || record?.state == .complete)
+        .accessibilityLabel("Download episode")
+        .accessibilityValue(record?.state.rawValue ?? "Not downloaded")
+        .accessibilityIdentifier("episode-download-\(post.stableID)")
+        .onChange(of: record?.state) { _, state in if state == .failed { showError = true } }
+        .alert("Download failed", isPresented: $showError) {
+            Button("Retry") { if let record { manager.retry(record) } }
+            Button("OK", role: .cancel) {}
+        } message: { Text(record?.errorMessage ?? "Try again.") }
     }
 }

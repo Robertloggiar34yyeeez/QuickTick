@@ -10,6 +10,8 @@ enum VisualAppearanceEncoder {
     // visual similarity from their preview frames in the idle worker.
     static func prefersMobileCLIP(domain: VisualDomain, provider: String) -> Bool {
         if domain == .realLife { return true }
+        // Optional semantic embeddings remain scoped by visual domain.
+        if provider.lowercased() == "rule34", domain == .anime || domain == .threeD { return true }
         return domain == .uncertain && ["pornhub", "eporner", "redgifs", "erome", "coomer"].contains(provider.lowercased())
     }
     private final class Cancellation: @unchecked Sendable {
@@ -24,8 +26,7 @@ enum VisualAppearanceEncoder {
             return (vector, MobileCLIP2RealLifeEncoder.version)
         }
         if let domain, prefersMobileCLIP(domain: domain, provider: provider), MobileCLIPRealLifeEncoder.isInstalled() {
-            // Explicit download enables this encoder; anime, 3D, and other
-            // unclassified providers retain their existing Vision path.
+            // Vision remains the fallback when the optional model is absent.
             let vector = try await MobileCLIPRealLifeEncoder.shared.embedding(image)
             return (vector, MobileCLIPRealLifeEncoder.version)
         }

@@ -39,7 +39,7 @@ enum AnimeVisualRecommendationPolicy {
         guard !post.isAudio else { return false }
         return domain == .anime || (domain == .uncertain &&
             (post.providerKey == .kemono || post.providerKey == .hhaven ||
-             post.providerKey == .hanime || post.providerKey == .nhentai))
+             post.providerKey == .hanime || post.providerKey == .nhentai || post.providerKey == .rule34))
     }
 
     static func fetchesIdlePreview(_ post: Post, domain: VisualDomain,
@@ -50,6 +50,7 @@ enum AnimeVisualRecommendationPolicy {
         // existing serial, Wi-Fi-only idle worker so visual ranking can learn
         // from more than just previously opened posts.
         return favorite || disliked ||
+            (post.providerKey == .rule34 || post.providerKey == .redgifs) ||
             ((post.providerKey == .hhaven || post.providerKey == .hanime ||
               post.providerKey == .nhentai) && usesWDTagger(post, domain: domain))
     }
@@ -86,6 +87,7 @@ actor VisualAnalysisService {
         var outbox: [FeedbackEnvelope]? = nil
         var schema: Int? = 2
         var archivedProfiles: [String: VisualProfile]? = nil
+        var featureOrder: [String]? = nil
     }
     private var state = State()
     private var restored = false
@@ -277,7 +279,8 @@ actor VisualAnalysisService {
     func pendingCount() -> Int { restore(); return state.pending?.count ?? 0 }
     @discardableResult func enqueue(_ post: Post, priority: Int) -> Bool {
         restore()
-        if state.analysisVersions?[post.stableID] == revision(post) { return true }
+        if state.analysisVersions?[post.stableID] == revision(post),
+           state.features[post.stableID] != nil || state.liked.contains(post.stableID) { return true }
         if state.pending == nil { state.pending = [] }
         if let index = state.pending!.firstIndex(where: { $0.post.stableID == post.stableID }) {
             state.pending![index].priority = max(priority, state.pending![index].priority)
@@ -334,7 +337,8 @@ actor VisualAnalysisService {
         // Only invalidate these two providers' old visual snapshots when the
         // source-to-encoder policy changes; don't rescan every saved source.
         let routingRevision = post.providerKey == .hanime ? "|hanime-wd-v2"
-            : (post.providerKey == .erome ? "|erome-irl-v2" : "")
+            : (post.providerKey == .erome ? "|erome-irl-v2"
+                : (post.providerKey == .rule34 || post.providerKey == .redgifs ? "|context-v4" : ""))
         return TasteConcepts.version + "|kemono-wd-v1|hhaven-wd-v1|irl-frames-v1|appearance-wd-v3-fp16|" + encoderVersion + routingRevision
             + "|" + (taxonomy?.version ?? "no-taxonomy") + "|" + SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
@@ -375,7 +379,10 @@ actor VisualAnalysisService {
         }
         if favorite { record(.like, post: post) }
         let revision = revision(post)
-        if state.analysisVersions?[post.stableID] == revision { cacheHits += 1; return }
+        if state.analysisVersions?[post.stableID] == revision,
+           state.features[post.stableID] != nil || state.liked.contains(post.stableID) {
+            cacheHits += 1; return
+        }
         guard (useVision || lightweight), resourcesAllowAnalysis() else { return }
         if lightweight, lightVersions[post.stableID] == revision { return }
         let before = state.features[post.stableID]?.domain == metadata.domain ? state.features[post.stableID]! : metadata
@@ -476,6 +483,10 @@ actor VisualAnalysisService {
         }
         state.profiles[profileKey(post)] = profile
         state.features[post.stableID] = enriched
+        var order = state.featureOrder ?? []
+        order.removeAll { $0 == post.stableID }
+        order.append(post.stableID)
+        state.featureOrder = order
         if state.liked.contains(post.stableID) { state.likedEvidence?[post.stableID] = likeEvidence(enriched) }
         if state.analysisVersions == nil { state.analysisVersions = [:] }
         if !lightweight, !taggerCoolingDown { state.analysisVersions?[post.stableID] = revision; inferenceRuns += 1 }
@@ -503,9 +514,17 @@ actor VisualAnalysisService {
     }
     private func trimFeatures() {
         if state.features.count > 512 {
-            let removable = state.features.keys.sorted()
-            for key in removable.prefix(state.features.count - 512) { state.features.removeValue(forKey: key) }
+            let knownOrder = (state.featureOrder ?? []).filter { state.features[$0] != nil }
+            let known = Set(knownOrder)
+            let ordered = state.features.keys.filter { !known.contains($0) }.sorted() + knownOrder
+            for key in ordered.prefix(state.features.count - 512) {
+                state.features.removeValue(forKey: key)
+                if !state.liked.contains(key) && !state.disliked.contains(key) {
+                    state.analysisVersions?.removeValue(forKey: key)
+                }
+            }
         }
+        if let order = state.featureOrder { state.featureOrder = order.filter { state.features[$0] != nil } }
         if let versions = state.analysisVersions, versions.count > 8192 {
             state.analysisVersions = Dictionary(uniqueKeysWithValues: versions.sorted { $0.key < $1.key }.suffix(8192).map { ($0.key, $0.value) })
         }

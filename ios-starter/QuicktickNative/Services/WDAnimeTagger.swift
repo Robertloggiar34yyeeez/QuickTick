@@ -26,10 +26,16 @@ actor WDAnimeTagger {
     }
     static func signals(labels: [Label], probabilities: [Float]) -> Result {
         var result = Result()
-        for (label, value) in zip(labels, probabilities) where value.isFinite {
+        // Label-file order is not confidence order.
+        let ranked = zip(labels, probabilities).filter { $0.1.isFinite && (0...1).contains($0.1) }
+            .sorted { left, right in
+                left.1 == right.1 ? left.0.name < right.0.name : left.1 > right.1
+            }
+        for (label, value) in ranked {
             if label.category == 4, value >= 0.9, result.subjects.count < 3 {
                 let name = label.name.lowercased()
-                result.subjects.append(name.hasPrefix("chun-li") || name.hasPrefix("chun_li") ? "chun_li" : name)
+                let canonical = name.hasPrefix("chun-li") || name.hasPrefix("chun_li") ? "chun_li" : name
+                if !result.subjects.contains(canonical) { result.subjects.append(canonical) }
             } else if label.category == 0, value >= 0.65 {
                 let confidence = Double(value) * 0.8
                 let raw = axis(label.name) + ":" + label.name
@@ -46,7 +52,9 @@ actor WDAnimeTagger {
                 }
             }
         }
-        result.attributes = Dictionary(uniqueKeysWithValues: result.attributes.sorted { $0.value > $1.value }.prefix(48).map { ($0.key,$0.value) })
+        result.attributes = Dictionary(uniqueKeysWithValues: result.attributes.sorted {
+            $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
+        }.prefix(64).map { ($0.key, $0.value) })
         return result
     }
     func analyze(_ image: DecodedMediaImage, domain: VisualDomain) -> Result? {

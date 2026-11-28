@@ -1,4 +1,5 @@
 name: Native iOS build and IPA
+run-name: QuickTick 1.1.3 · ${{ github.event_name }} · ${{ github.ref_name }}
 on:
   push:
     # Feature branches are built by pull_request below. Triggering both
@@ -27,6 +28,16 @@ jobs:
         run: |
           test "$(uname -m)" = arm64
           xcodebuild -version
+      - name: Validate Swift syntax and Xcode project before dependency preparation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+          plutil -lint ios-starter/QuicktickNative.xcodeproj/project.pbxproj
+          for target in QuicktickNative QuicktickNativeTests QuicktickNativeUITests; do
+            find "ios-starter/$target" -name '*.swift' -type f -print0 |
+              xargs -0 xcrun swiftc -frontend -parse 2>&1 | tee -a logs/swift-syntax.txt
+          done
       - uses: actions/cache/restore@v5
         id: mirage-lora-cache
         with:
@@ -69,8 +80,23 @@ jobs:
         with:
           path: ios-starter/QuicktickNative/SemanticAssets
           key: bge-coreml-macos15-arm64-${{ hashFiles('scripts/prepare-semantic-model.py') }}
+      - uses: actions/cache/restore@v5
+        id: taxonomy-cache
+        with:
+          path: |
+            ios-starter/QuicktickNative/SemanticAssets/visual-tag-taxonomy.json
+            ios-starter/QuicktickNative/SemanticAssets/visual-tag-attribution.txt
+          key: taxonomy-v1-${{ hashFiles('scripts/prepare-visual-taxonomy.py') }}
       - name: Prepare pinned offline artist and character taxonomy
+        if: steps.taxonomy-cache.outputs.cache-hit != 'true'
         run: python scripts/prepare-visual-taxonomy.py
+      - uses: actions/cache/save@v5
+        if: steps.taxonomy-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ios-starter/QuicktickNative/SemanticAssets/visual-tag-taxonomy.json
+            ios-starter/QuicktickNative/SemanticAssets/visual-tag-attribution.txt
+          key: taxonomy-v1-${{ hashFiles('scripts/prepare-visual-taxonomy.py') }}
       - uses: actions/cache/restore@v5
         id: wd-cache
         with:
@@ -95,7 +121,13 @@ jobs:
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-labels.json
             ios-starter/QuicktickNative/SemanticAssets/wd-v3-model-card.md
           key: wd-vit-v3-7f6b584-fp16-coreml8.3-arm64-v5
+      - uses: actions/cache/restore@v5
+        id: spm-cache
+        with:
+          path: ${{ runner.temp }}/quicktick-swiftpm-1
+          key: swiftpm-xcode26.3-arm64-v1-${{ hashFiles('ios-starter/QuicktickNative.xcodeproj/project.pbxproj', 'ios-starter/**/Package.swift', 'ios-starter/**/Package.resolved') }}
       - name: Resolve Swift packages with clean-checkout retries
+        id: spm
         shell: bash
         run: |
           set -euo pipefail
@@ -113,6 +145,7 @@ jobs:
                 -clonedSourcePackagesDirPath "$packages" \
                 -disablePackageRepositoryCache > "logs/xcodebuild-swiftpm-$attempt.txt" 2>&1; then
               echo "QUICKTICK_SPM_DIR=$packages" >> "$GITHUB_ENV"
+              echo "attempt=$attempt" >> "$GITHUB_OUTPUT"
               resolved=1
               break
             fi
@@ -123,19 +156,54 @@ jobs:
             echo "::error::Swift package resolution failed after three isolated attempts"
             exit 1
           fi
+      - uses: actions/cache/save@v5
+        if: steps.spm-cache.outputs.cache-hit != 'true' && steps.spm.outputs.attempt == '1'
+        with:
+          path: ${{ runner.temp }}/quicktick-swiftpm-1
+          key: ${{ steps.spm-cache.outputs.cache-primary-key }}
+      - name: Compile native app and tests before archiving
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')
+          echo "QUICKTICK_IPHONE=$DEVICE" >> "$GITHUB_ENV"
+          echo "QUICKTICK_SIM_BUILD=$RUNNER_TEMP/quicktick-simulator-build" >> "$GITHUB_ENV"
+          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative \
+            -destination "platform=iOS Simulator,id=$DEVICE" \
+            -derivedDataPath "$RUNNER_TEMP/quicktick-simulator-build" \
+            -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -warn-long-expression-type-checking=250 -Xfrontend -warn-long-function-bodies=500' \
+            -parallel-testing-enabled NO build-for-testing 2>&1 | tee logs/xcodebuild-preflight.txt
+      - name: Native unit tests gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEVICE="$QUICKTICK_IPHONE"
+          xcrun simctl shutdown "$DEVICE" || true
+          xcrun simctl erase "$DEVICE"
+          xcrun simctl boot "$DEVICE"
+          xcrun simctl bootstatus "$DEVICE" -b
+          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative \
+            -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath "$QUICKTICK_SIM_BUILD" \
+            -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
+            -parallel-testing-enabled NO -only-testing:QuicktickNativeTests \
+            -resultBundlePath logs/QuicktickUnitTests.xcresult test-without-building 2>&1 | tee logs/xcodebuild-unit-test.txt
       - name: Archive real iPhone build without signing
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p logs
-          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination 'generic/platform=iOS' -archivePath build/QuicktickNative.xcarchive -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive | tee logs/xcodebuild-archive.txt
+          xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -configuration Release -destination 'generic/platform=iOS' -archivePath build/QuicktickNative.xcarchive -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES archive 2>&1 | tee logs/xcodebuild-archive.txt
       - name: Package unsigned IPA from verified Xcode archive
         id: ipa-package
         shell: bash
         run: bash scripts/package-archive-ipa.sh
       - uses: actions/upload-artifact@v6
         with:
-          name: QuickTick-1.0-unsigned-IPA
+          name: QuickTick-1.1.3-unsigned-IPA
           path: build/export/
           if-no-files-found: error
           retention-days: 14
@@ -145,7 +213,7 @@ jobs:
           set -euo pipefail
           mkdir -p logs
           xcodebuild -version | tee logs/xcode-version.txt
-          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')
+          DEVICE="$QUICKTICK_IPHONE"
           boot_clean_iphone() {
             xcrun simctl shutdown "$DEVICE" || true
             xcrun simctl erase "$DEVICE"
@@ -155,11 +223,10 @@ jobs:
           run_iphone_tests() {
             local bundle="$1" log="$2"
             shift 2
-            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO "$@" -resultBundlePath "logs/$bundle.xcresult" test | tee "logs/$log.txt"
+            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath "$QUICKTICK_SIM_BUILD" -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO "$@" -resultBundlePath "logs/$bundle.xcresult" test-without-building 2>&1 | tee "logs/$log.txt"
           }
           failures=0
-          boot_clean_iphone
-          run_iphone_tests QuicktickUnitTests xcodebuild-unit-test -only-testing:QuicktickNativeTests || failures=1
+          # The mandatory unit suite already passed before archive.
           # XCTest's accessibility service can become unresponsive after a long
           # series of UI cases. Run the sensitive end-to-end scenarios with
           # fresh simulator state; do not skip or relax their assertions.
@@ -200,7 +267,7 @@ jobs:
           xcrun simctl boot "$IPAD" || true
           xcrun simctl bootstatus "$IPAD" -b
           run_ipad_tests() {
-            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$IPAD" -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -only-testing:QuicktickNativeUITests/NavigationTests/testAdaptiveMediaAcrossOrientationsAndForeground -only-testing:QuicktickNativeUITests/NavigationTests/testHomeInlinePlaybackAndComicClose -only-testing:QuicktickNativeUITests/NavigationTests/testImmersiveIPadCanvasAndSideNavigation -only-testing:QuicktickNativeUITests/NavigationTests/testSearchAppearsOnceBeforeAndAfterSubmitting -only-testing:QuicktickNativeUITests/NavigationTests/testDownloadedImagesUseNormalFeedAndCloseFullComic -resultBundlePath "logs/$1.xcresult" test | tee "logs/$2"
+            xcodebuild -project ios-starter/QuicktickNative.xcodeproj -scheme QuicktickNative -destination "platform=iOS Simulator,id=$IPAD" -derivedDataPath "$QUICKTICK_SIM_BUILD" -clonedSourcePackagesDirPath "$QUICKTICK_SPM_DIR" -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual -parallel-testing-enabled NO -only-testing:QuicktickNativeUITests/NavigationTests/testAdaptiveMediaAcrossOrientationsAndForeground -only-testing:QuicktickNativeUITests/NavigationTests/testHomeInlinePlaybackAndComicClose -only-testing:QuicktickNativeUITests/NavigationTests/testImmersiveIPadCanvasAndSideNavigation -only-testing:QuicktickNativeUITests/NavigationTests/testSearchAppearsOnceBeforeAndAfterSubmitting -only-testing:QuicktickNativeUITests/NavigationTests/testDownloadedImagesUseNormalFeedAndCloseFullComic -resultBundlePath "logs/$1.xcresult" test-without-building 2>&1 | tee "logs/$2"
           }
           if ! run_ipad_tests QuicktickIPadTests xcodebuild-ipad-test.txt; then
             # The previous run aborted inside Apple's AX symbol-localization
@@ -228,6 +295,34 @@ jobs:
               xcrun xcresulttool export diagnostics --path "logs/$suite.xcresult" --output-path "logs/diagnostics/$suite" || true
             fi
           done
+      - name: Summarize compiler and test failures
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '## Build failure summary'
+            echo '~~~text'
+            grep -hE '(^|: )(fatal )?error:|Test Case .* failed|[*][*] (BUILD|TEST|ARCHIVE) FAILED' logs/*.txt 2>/dev/null | tail -n 60 || true
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY'
+          import glob, re
+          seen = set()
+          for path in glob.glob("logs/*.txt"):
+              with open(path, errors="replace") as log:
+                  for line in log:
+                      match = re.search(r'([^\s]+\.swift):(\d+):(\d+): error: (.*)', line)
+                      if not match:
+                          continue
+                      file, row, col, message = match.groups()
+                      entry = (file, row, col, message)
+                      if entry in seen or len(seen) >= 30:
+                          continue
+                      seen.add(entry)
+                      file = file.split("/QuickTick/QuickTick/", 1)[-1]
+                      message = message.strip().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                      print(f"::error file={file},line={row},col={col}::{message}")
+          PY
       - uses: actions/upload-artifact@v6
         if: always()
         with:

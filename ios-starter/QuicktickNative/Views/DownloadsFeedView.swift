@@ -191,6 +191,10 @@ private struct DownloadSearchIdentity: Equatable {
     let thumbnailLocalPath: String?
     let fileSize: Int64?
     let errorMessage: String?
+    let offlineHLSVerified: Bool?
+    let videoValidationVersion: Int?
+    let mediaWidth: Double?
+    let mediaHeight: Double?
 
     init(_ record: DownloadRecord) {
         key = record.key; title = record.title; provider = record.provider
@@ -198,6 +202,9 @@ private struct DownloadSearchIdentity: Equatable {
         mediaType = record.mediaType; localMediaPath = record.localMediaPath
         thumbnailLocalPath = record.thumbnailLocalPath
         fileSize = record.fileSize; errorMessage = record.errorMessage
+        offlineHLSVerified = record.offlineHLSVerified
+        videoValidationVersion = record.videoValidationVersion
+        mediaWidth = record.mediaWidth; mediaHeight = record.mediaHeight
     }
 }
 
@@ -233,6 +240,7 @@ private struct DownloadContent: View {
     @State private var immersive = false
     @State private var rhythm = false
     @State private var immersivePostID: String?
+    @State private var immersiveSnapshot: [Post] = []
     @State private var selecting = false
     @State private var selectedKeys: Set<String> = []
     @State private var confirmDelete = false
@@ -296,7 +304,7 @@ private struct DownloadContent: View {
         // File sizes, error strings and sort changes must not discard all
         // decoded offline posts. Rebuild only when playable paths change.
         let playable = records.filter { $0.state == .complete }
-            .map { "\($0.key)|\($0.localMediaPath ?? "")|\($0.thumbnailLocalPath ?? "")|\($0.mediaType ?? "")" }
+            .map { "\($0.key)|\($0.localMediaPath ?? "")|\($0.thumbnailLocalPath ?? "")|\($0.mediaType ?? "")|\($0.offlineHLSVerified == true)|\($0.videoValidationVersion ?? 0)|\($0.mediaWidth ?? 0)|\($0.mediaHeight ?? 0)" }
         guard playable != offlineMediaIdentity else { return }
         offlineMediaIdentity = playable
         recordRevision &+= 1
@@ -454,7 +462,7 @@ private struct DownloadContent: View {
                 .opacity(immersive ? 0 : 1)
                 .allowsHitTesting(!immersive)
             if immersive {
-                ImmersiveFeedView(posts: localPosts, offline: true, activePostID: $immersivePostID,
+                ImmersiveFeedView(posts: immersiveSnapshot, offline: true, activePostID: $immersivePostID,
                                   onClose: { immersive = false })
                     .transition(.move(edge: .trailing))
             }
@@ -517,7 +525,18 @@ private struct DownloadContent: View {
                                         (sortByProvider ? "Provider A–Z" :
                                         (downloadOrder.isShuffled ? "Shuffled" : "Original order")))
                     .accessibilityIdentifier("downloads-shuffle")
-                    Button(immersive ? "Feed" : "Offline Immersive") { immersive.toggle() }
+                    Button(immersive ? "Feed" : "Offline Immersive") {
+                        if immersive { immersive = false }
+                        else {
+                            var seen = Set<String>()
+                            immersiveSnapshot = localPosts.filter { $0.isImmersiveMedia && seen.insert($0.stableID).inserted }
+                            guard !immersiveSnapshot.isEmpty else { return }
+                            if !immersiveSnapshot.contains(where: { $0.stableID == immersivePostID }) {
+                                immersivePostID = immersiveSnapshot.first?.stableID
+                            }
+                            immersive = true
+                        }
+                    }
                         .disabled(!immersive && !localPosts.contains(where: \.isImmersiveMedia))
                     Button(selecting ? "Done" : "Select") {
                         selecting.toggle()
@@ -541,7 +560,10 @@ private struct DownloadContent: View {
                 onImmersiveChange(immersive)
             }
             .onReceive(manager.catalogDidChange) { refreshCatalog(manager.records) }
-            .onChange(of: immersive) { _, value in onImmersiveChange(value) }
+            .onChange(of: immersive) { _, value in
+                onImmersiveChange(value)
+                if !value { immersiveSnapshot = [] }
+            }
             .onChange(of: searchText) { _, _ in
                 selectedKeys.removeAll()
                 scheduleSearch(records: manager.records)
@@ -620,6 +642,13 @@ private struct DownloadTransferRow: View {
     let selected: Bool
     let onSelect: () -> Void
 
+    private func transferLabel(_ record: DownloadRecord) -> String {
+        let video = record.mediaType == "video" || record.mediaType == "hls" || record.kind == .hlsPackage
+        if video && record.state == .queued { return "Preparing video" }
+        if video && record.state == .downloading { return "Downloading video" }
+        return record.state.rawValue.capitalized
+    }
+
     var body: some View {
         let record = manager.records.first(where: { $0.key == fallback.key }) ?? fallback
         return VStack(alignment: .leading, spacing: 12) {
@@ -627,13 +656,14 @@ private struct DownloadTransferRow: View {
                 if let path = record.thumbnailLocalPath {
                     CachedMediaImage(url: URL(fileURLWithPath: path).absoluteString, pixels: 216)
                         .frame(width: 72, height: 72).clipped()
+                        .accessibilityLabel("Preview artwork")
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         if record.state == .downloading { InfinityLoader(size: 27) }
                         Text(record.title).font(.subheadline.weight(.semibold)).lineLimit(2)
                     }
-                    Text("\(record.provider) · \(record.state.rawValue)")
+                    Text("\(record.provider) · \(transferLabel(record))")
                         .font(.caption).foregroundStyle(AppTheme.secondaryLabel)
                     Text(record.formattedSize).font(.caption.monospacedDigit())
                     ProgressView(value: record.progress).tint(AppTheme.accent)
@@ -709,8 +739,14 @@ private struct DownloadCachedCardRow: View, Equatable {
         VStack(spacing: 8) {
             if let post = offlinePost {
                 HStack {
-                    Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("download-size-\(record.key)")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(record.formattedSize).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("download-size-\(record.key)")
+                        if post.type == "video" {
+                            Text(record.kind == .hlsPackage ? "Offline video · HLS" : "Video file")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer()
                     if !selecting, let url = record.exportURL {
                         Button { DownloadExporter.share([url]) } label: {
@@ -729,8 +765,11 @@ private struct DownloadCachedCardRow: View, Equatable {
                              onDelete: { manager.delete(record) })
                     .frame(maxWidth: .infinity)
                     .overlay { if selecting { selectionOverlay } }
+            } else if record.needsStandaloneVideoValidation || (record.kind == .hlsPackage && record.offlineHLSVerified == nil) {
+                ProgressView("Verifying offline video…")
+                    .frame(maxWidth: .infinity, minHeight: 150)
             } else if !cacheReady {
-                ProgressView("Preparing offline preview…")
+                ProgressView("Preparing local media…")
                     .frame(maxWidth: .infinity, minHeight: 150)
             } else {
                 VStack(alignment: .leading, spacing: 12) {

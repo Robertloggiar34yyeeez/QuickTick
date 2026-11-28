@@ -21,6 +21,7 @@ struct PostCardView: View {
     @State private var comments = false
     @State private var resumeAfterComments = false
     @State private var tags = false
+    @State private var hanimeBrowser = false
     @State private var havenBrowser = false
     @State private var pornhubBrowser = false
     @State private var creditedArtists: [String] = []
@@ -88,6 +89,11 @@ struct PostCardView: View {
             .sensoryFeedback(.selection, trigger: store.favorites[post.stableID] != nil)
             .sheet(isPresented: $comments) { CommentsView(post: post) }
             .sheet(isPresented: $tags) { PostTagsView(post: post) }
+            .fullScreenCover(isPresented: $hanimeBrowser) {
+                if let url = HanimeGeneratedAPI.watchURL(for: post) {
+                    SourceWebsiteView(url: url).ignoresSafeArea()
+                }
+            }
             .sheet(isPresented: $havenBrowser) {
                 if let url = URL(string: post.pageUrl) { SourceWebsiteView(url: url).ignoresSafeArea() }
             }
@@ -219,6 +225,18 @@ struct PostCardView: View {
             if let playbackError {
                 VStack(spacing: 8) {
                     Text(playbackError).font(.caption).foregroundStyle(.orange)
+                    if !offline, HanimeGeneratedAPI.watchURL(for: post) != nil {
+                        Button {
+                            pendingVideoFullscreen = false
+                            store.players.pause(post.stableID, owner: playbackOwner)
+                            hanimeBrowser = true
+                        } label: {
+                            Label("Open original player", systemImage: "play.rectangle")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                        }.buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("hanime-web-playback")
+                    }
                     if post.providerKey == .hhaven,
                        let url = URL(string: post.pageUrl),
                        url.scheme == "https",

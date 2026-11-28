@@ -93,7 +93,7 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             payload = #"<html><title>Photo set - Erome</title><div class="img"><img data-src="https://s7.erome.com/123/ABC123/photo.jpg"></div></html>"#
         }
         else if host == "guest.freeanimehentai.net", path == "/api/v11/search_hvs" {
-            payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
+            payload = #"{"hits":[{"slug":"sample","name":"Fantasy at night","poster_url":"https://cdn.hanime.tv/thumb.jpg","cover_url":"https://cdn.hanime.tv/wide.jpg","hentai_franchise":{"slug":"fixture-series","title":"Fixture Series","poster_url":"https://cdn.hanime.tv/series.jpg"},"hentai_tags":[{"text":"fantasy"},{"text":"dark skin"}],"views":42,"released_at_unix":1760000000}]}"#
         }
         else if host == "auth.hanime.tv", path == "/api/v11/handshake" {
             let object = (Self.requestBody(request).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
@@ -504,6 +504,10 @@ final class NativeProviderAPITests: XCTestCase {
             query: ParsedQuery(included: ["dark skin"], excluded: []), page: 1)
         XCTAssertEqual(page.items.map(\.stableID), ["hanime:sample"])
         XCTAssertEqual(page.items.first?.tags, ["fantasy", "dark skin"])
+        XCTAssertEqual(page.items.first?.seriesID, "fixture-series")
+        XCTAssertEqual(page.items.first?.hanimeShowTitle, "Fixture Series")
+        XCTAssertEqual(page.items.first?.episodeCoverURL, "https://cdn.hanime.tv/wide.jpg")
+        XCTAssertEqual(Post.hanimeShowPoster(in: page.items), "https://cdn.hanime.tv/series.jpg")
         let request = try XCTUnwrap(NativeProviderProtocol.log.snapshot().first)
         XCTAssertEqual(request.url?.host, "guest.freeanimehentai.net")
         XCTAssertEqual(request.value(forHTTPHeaderField: "x-signature-version"), "app2")

@@ -761,17 +761,7 @@ enum NativeProviderAPI {
         do {
             return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
         } catch APIError.providerStatus(.hanime, 403) {
-            // A normal first-party page visit can establish an ordinary guest
-            // session cookie. No challenge solving or access bypass is used.
-            if let watch = URL(string: "https://hanime.tv/videos/hentai/" + post.id) {
-                _ = try? await data(session: session, url: watch, provider: .hanime,
-                                    maxBytes: 1024 * 1024, timeout: 8)
-            }
-            do {
-                return try await hanimeHLSHandshake(session: session, slug: post.id, variant: variant)
-            } catch APIError.providerStatus(.hanime, 403) {
-                throw APIError.server("Hanime requires browser verification before native HLS playback. Use Browse inside QuickTick or configure your authorized Hanime API in Settings.")
-            }
+            throw APIError.server(HanimeGeneratedAPI.nativeAccessDeniedMessage)
         } catch APIError.server(let message) where message.contains("HLS playlist") {
             // Signed HLS paths can expire between the handshake and the first
             // request. Retry the legitimate first-party handshake once before
@@ -809,9 +799,16 @@ enum NativeProviderAPI {
         try await ProviderRequestGate.shared.wait(host: "auth.hanime.tv", provider: .hanime)
         let (bytes, response) = try await session.data(for: request)
         try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse, bytes.count <= 1024 * 1024 else {
-            throw APIError.invalidResponse
+        guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        if isBrowserChallenge(http) || http.statusCode == 403 {
+            throw APIError.server(HanimeGeneratedAPI.nativeAccessDeniedMessage)
         }
+        if http.statusCode == 429 {
+            let deadline = retryDeadline(http)
+            await ProviderRequestGate.shared.block(host: "auth.hanime.tv", until: deadline)
+            throw APIError.rateLimited(.hanime, deadline)
+        }
+        guard bytes.count <= 1024 * 1024 else { throw APIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
             throw APIError.providerStatus(.hanime, http.statusCode)
         }
@@ -898,15 +895,30 @@ enum NativeProviderAPI {
                 guard let object = entry as? [String: Any] else { return nil }
                 return object["name"] as? String ?? object["text"] as? String ?? object["slug"] as? String
             }
-            let thumb = text(row["poster_url"] ?? row["cover_url"] ?? row["thumbnail"])
-            let cover = URL(string: thumb)
-            let safeThumb = cover?.scheme == "https" ? thumb : ""
+            func artwork(_ value: Any?) -> String? {
+                let raw = text(value)
+                guard let image = URL(string: raw), image.scheme == "https", image.host != nil,
+                      image.user == nil, image.password == nil,
+                      !["mp4", "m3u8", "webm", "mov"].contains(image.pathExtension.lowercased()) else { return nil }
+                return raw
+            }
+            let poster = artwork(row["poster_url"])
+            let episodeCover = artwork(row["cover_url"])
+            let safeThumb = poster ?? episodeCover ?? artwork(row["thumbnail"]) ?? ""
             let stream = hanimeCatalogStream(row)
             var post = Post(key: "hanime:\(id)", id: id, provider: "Hanime",
                             score: number(row["views"] ?? row["views_count"]), tags: tags,
                             mediaUrl: stream, thumbUrl: safeThumb,
                             pageUrl: "https://hanime.tv/videos/hentai/\(id)", type: "video")
             post.caption = text(row["name"] ?? row["title"])
+            post.episodePosterURL = poster
+            post.episodeCoverURL = episodeCover
+            let series = (row["hentai_franchise"] as? [String: Any]) ?? (row["franchise"] as? [String: Any]) ?? (row["series"] as? [String: Any]) ?? [:]
+            let seriesID = text(series["slug"] ?? row["franchise_slug"] ?? row["series_slug"])
+            let seriesTitle = text(series["title"] ?? series["name"] ?? row["franchise_title"] ?? row["series_title"])
+            post.seriesID = seriesID.isEmpty ? nil : seriesID
+            post.seriesTitle = seriesTitle.isEmpty ? nil : seriesTitle
+            post.seriesPosterURL = artwork(series["poster_url"] ?? row["franchise_poster_url"] ?? row["series_poster_url"])
             post.creator = text((row["brand"] as? [String: Any])?["name"] ?? row["brand"])
             post.createdAt = number(row["released_at_unix"] ?? row["created_at_unix"])
             return post

@@ -156,7 +156,7 @@ struct HomeFeedView: View {
             })
             .environmentObject(store)
         }
-        .sheet(isPresented: $showHanimeShows) {
+        .fullScreenCover(isPresented: $showHanimeShows) {
             HanimeShowsBrowserView(posts: store.posts).environmentObject(store)
         }
         .sheet(isPresented: $showAllHanimeTopics) {
@@ -302,8 +302,8 @@ struct HomeFeedView: View {
                 if store.selectedProvider == .hanime {
                     Button { showHanimeShows = true } label: {
                         Label("Shows", systemImage: "rectangle.stack.fill")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(maxWidth: .infinity, minHeight: 46)
+                            .font(.title2.bold())
+                            .frame(maxWidth: .infinity, minHeight: 84)
                             .background(AppTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 14))
                             .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppTheme.border))
                     }
@@ -593,7 +593,14 @@ struct HomeFeedView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 6) {
-                    Menu { ForEach(Provider.allCases) { p in Button(p.displayName) { store.selectedProvider = p; Task { await store.refresh() } } } } label: {
+                    Menu {
+                        ForEach(Provider.allCases) { p in
+                            Button {
+                                store.selectedProvider = p
+                                Task { await store.refresh() }
+                            } label: { Label(p.displayName, systemImage: ProviderLogoView.symbol(for: p)) }
+                        }
+                    } label: {
                         ProviderLogoView(provider: store.selectedProvider)
                             .frame(width: 52, height: 44)
                             .background(AppTheme.surface, in: Capsule())
@@ -1721,21 +1728,18 @@ private struct HanimeShowsBrowserView: View {
         let id: String
         let title: String
         let episodes: [Post]
-        var cover: String { episodes.first(where: { !$0.thumbUrl.isEmpty })?.thumbUrl ?? "" }
+        var cover: String { Post.hanimeShowPoster(in: episodes) }
         var recent: Double { episodes.map { $0.createdAt ?? 0 }.max() ?? 0 }
     }
 
     private var shows: [ShowGroup] {
-        let groups = Dictionary(grouping: catalog) { post -> String in
-            let slug = post.id.replacingOccurrences(of: #"-[0-9]+$"#, with: "", options: .regularExpression)
-            return slug.isEmpty ? post.id : slug
-        }
+        let groups = Dictionary(grouping: catalog, by: \.hanimeSeriesKey)
         return groups.map { key, episodes in
             var seen = Set<String>()
             let ordered = episodes.filter { seen.insert($0.stableID).inserted }
                 .sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
-            let title = (ordered.first?.caption ?? key.replacingOccurrences(of: "-", with: " "))
-                .replacingOccurrences(of: #"\s+[0-9]+$"#, with: "", options: .regularExpression)
+            let title = ordered.compactMap(\.seriesTitle).first(where: { !$0.isEmpty })
+                ?? ordered.first?.hanimeShowTitle ?? key.replacingOccurrences(of: "-", with: " ")
             return ShowGroup(id: key, title: title, episodes: ordered)
         }.sorted { a, b in
             a.recent == b.recent ? a.title.localizedStandardCompare(b.title) == .orderedAscending : a.recent > b.recent
@@ -1762,7 +1766,7 @@ private struct HanimeShowsBrowserView: View {
                     if search.isEmpty, let featured = shows.first {
                         NavigationLink { detail(featured) } label: {
                             VStack(alignment: .leading, spacing: 10) {
-                                artwork(featured.cover, height: min(270, layout.contentWidth * 0.56))
+                                artwork(featured.cover, height: min(420, layout.contentWidth * 0.95))
                                 Text(featured.title).font(.title2.bold()).lineLimit(2)
                                 Text("\(featured.episodes.count) episodes available").font(.subheadline).foregroundStyle(.secondary)
                                 Label("View episodes", systemImage: "play.rectangle")
@@ -1779,15 +1783,15 @@ private struct HanimeShowsBrowserView: View {
                                 ForEach(continuing.prefix(12)) { show in
                                     NavigationLink { detail(show) } label: {
                                         VStack(alignment: .leading) {
-                                            artwork(show.cover, height: 90)
+                                            artwork(show.cover, height: 250)
                                             Text(show.title).font(.caption).lineLimit(1)
-                                        }.frame(width: 155)
+                                        }.frame(width: 166)
                                     }.buttonStyle(.plain)
                                 }
                             }
                         }
                     }
-                    Text(search.isEmpty ? "Browse shows" : "Search results").font(.headline)
+                    Text(search.isEmpty ? "Browse shows" : "Search results").font(.title2.bold())
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(layout.cardWidth), spacing: 12, alignment: .top), count: layout.columns), alignment: .leading, spacing: 20) {
                         ForEach(visible) { show in
                             NavigationLink { detail(show) } label: {
@@ -1833,7 +1837,7 @@ private struct HanimeShowsBrowserView: View {
         }
     }
 
-    private func artwork(_ url: String, height: CGFloat) -> some View {
+    private func artwork(_ url: String, height: CGFloat, fill: Bool = false) -> some View {
         // An overlay takes the base view's bounds rather than proposing the
         // image's intrinsic width to the surrounding grid or episode row.
         RoundedRectangle(cornerRadius: 12).fill(AppTheme.elevatedSurface)
@@ -1841,7 +1845,7 @@ private struct HanimeShowsBrowserView: View {
             .overlay {
                 GeometryReader { geometry in
                     if !url.isEmpty {
-                        CachedMediaImage(url: url, pixels: 540, fill: true)
+                        CachedMediaImage(url: url, pixels: 900, fill: fill)
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .clipped()
                     } else {
@@ -1856,7 +1860,7 @@ private struct HanimeShowsBrowserView: View {
     private func detail(_ show: ShowGroup) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                artwork(show.cover, height: 240)
+                artwork(show.cover, height: 420)
                 Text(show.title).font(.largeTitle.bold())
                 Text("\(show.episodes.count) episodes available").foregroundStyle(.secondary)
                 if let episode = show.episodes.first(where: { (store.resumePosition($0.stableID) ?? 0) > 5 }) ?? show.episodes.first {
@@ -1871,7 +1875,7 @@ private struct HanimeShowsBrowserView: View {
                     HStack(spacing: 8) {
                         Button { play(episode, in: show) } label: {
                             HStack(spacing: 10) {
-                            artwork(episode.thumbUrl, height: 63).frame(width: 112)
+                            artwork(episode.episodeCoverURL ?? episode.thumbUrl, height: 90, fill: true).frame(width: 150)
                             VStack(alignment: .leading, spacing: 5) {
                                 let number = episode.id.split(separator: "-").last.flatMap { Int($0) }
                                 Text("Episode \(number ?? (index + 1))").font(.headline)
@@ -1910,9 +1914,9 @@ private struct HanimeShowsBrowserView: View {
             let response = try await store.api.posts(provider: .hanime,
                 query: QueryParser.parse(""), page: page, sort: "recent")
             try Task.checkCancellation()
-            var seen = Set(catalog.map(\.stableID))
-            let incoming = response.items.filter { seen.insert($0.stableID).inserted }
-            catalog += incoming
+            var merged = Dictionary(catalog.map { ($0.stableID, $0) }, uniquingKeysWith: { _, new in new })
+            for item in response.items { merged[item.stableID] = item }
+            catalog = Array(merged.values)
             hasMore = (response.hasMore ?? false) && !response.items.isEmpty && page < 100
             page += 1
         } catch is CancellationError {
@@ -1928,7 +1932,7 @@ struct ShowsGridLayout {
     let cardWidth: CGFloat
     init(availableWidth: CGFloat) {
         contentWidth = max(1, min(availableWidth - 32, 1000))
-        let count = min(6, max(1, Int((contentWidth + 12) / 112)))
+        let count = min(4, max(1, Int((contentWidth + 12) / 160)))
         columns = count
         cardWidth = max(1, (contentWidth - CGFloat(count - 1) * 12) / CGFloat(count))
     }

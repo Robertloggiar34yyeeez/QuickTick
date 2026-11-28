@@ -89,6 +89,24 @@ final class PersistenceTests: XCTestCase {
                              RecommendationEngine.referenceSimilarity(["alpha", "other", "different"], references: references))
     }
 
+    func testSeriesPosterNeverUsesRandomEpisodePreview() throws {
+        var later = Post(key: "hanime:series-3", id: "series-3", provider: "Hanime",
+                         thumbUrl: "https://example.invalid/preview.jpg", type: "video")
+        later.episodePosterURL = "https://example.invalid/episode3.jpg"
+        XCTAssertEqual(Post.hanimeShowPoster(in: [later]), "")
+        var first = Post(key: "hanime:series-1", id: "series-1", provider: "Hanime", type: "video")
+        first.episodePosterURL = "https://example.invalid/poster.jpg"
+        XCTAssertEqual(Post.hanimeShowPoster(in: [later, first]), "https://example.invalid/poster.jpg")
+        later.seriesPosterURL = "https://example.invalid/series.jpg"
+        later.seriesTitle = "Series title"
+        XCTAssertEqual(Post.hanimeShowPoster(in: [first, later]), "https://example.invalid/series.jpg")
+        let decoded = try JSONDecoder().decode(Post.self, from: JSONEncoder().encode(later))
+        XCTAssertEqual(decoded.seriesPosterURL, later.seriesPosterURL)
+        XCTAssertEqual(decoded.hanimeShowTitle, "Series title")
+        XCTAssertEqual(ShowsGridLayout(availableWidth: 390).columns, 2)
+        XCTAssertGreaterThan(ShowsGridLayout(availableWidth: 390).cardWidth, 165)
+    }
+
     func testShowsGridFitsPhoneAndTabletWidths() {
         for width: CGFloat in [320, 375, 430, 600, 768, 1024, 1366] {
             let layout = ShowsGridLayout(availableWidth: width)

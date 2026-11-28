@@ -91,6 +91,28 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
     var creator: String?
     var category: String?
     var createdAt: Double?
+    var seriesID: String?
+    var seriesTitle: String?
+    var seriesPosterURL: String?
+    var episodePosterURL: String?
+    var episodeCoverURL: String?
+    var hanimeEpisodeNumber: Int? {
+        guard id.contains("-"), let suffix = id.split(separator: "-").last else { return nil }
+        return Int(suffix)
+    }
+    var hanimeSeriesKey: String {
+        if let seriesID, !seriesID.isEmpty { return seriesID }
+        return id.replacingOccurrences(of: #"-[0-9]+$"#, with: "", options: .regularExpression)
+    }
+    var hanimeShowTitle: String {
+        if let seriesTitle, !seriesTitle.isEmpty { return seriesTitle }
+        return (caption ?? hanimeSeriesKey.replacingOccurrences(of: "-", with: " ")).replacingOccurrences(of: #"\s+[0-9]+$"#, with: "", options: .regularExpression)
+    }
+    static func hanimeShowPoster(in episodes: [Post]) -> String {
+        if let poster = episodes.compactMap(\.seriesPosterURL).first(where: { !$0.isEmpty }) { return poster }
+        let first = episodes.first { $0.hanimeEpisodeNumber == 1 } ?? episodes.first { $0.hanimeEpisodeNumber == nil }
+        return first?.episodePosterURL ?? ""
+    }
     var nativeSize: CGSize? { guard let width, let height, width > 0, height > 0 else { return nil }; return CGSize(width: width, height: height) }
 
     var stableID: String { key.isEmpty ? "\(provider):\(id)" : key }
@@ -102,6 +124,7 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case key, id, provider, score, tags, mediaUrl, previewUrl, thumbUrl, pageUrl, type, embedUrl, width, height, caption, creator, category, createdAt
+        case seriesID, seriesTitle, seriesPosterURL, episodePosterURL, episodeCoverURL
     }
 
     init(key: String, id: String, provider: String, score: Double = 0, tags: [String] = [], mediaUrl: String = "", previewUrl: String = "", thumbUrl: String = "", pageUrl: String = "", type: String = "", embedUrl: String? = nil) {
@@ -125,6 +148,11 @@ struct Post: Codable, Identifiable, Hashable, Sendable, Equatable {
         embedUrl = try c.decodeIfPresent(String.self, forKey: .embedUrl)
         width = try? c.decode(Double.self, forKey: .width); height = try? c.decode(Double.self, forKey: .height)
         caption = try? c.decode(String.self, forKey: .caption); creator = try? c.decode(String.self, forKey: .creator); category = try? c.decode(String.self, forKey: .category); createdAt = try? c.decode(Double.self, forKey: .createdAt)
+        seriesID = try? c.decode(String.self, forKey: .seriesID)
+        seriesTitle = try? c.decode(String.self, forKey: .seriesTitle)
+        seriesPosterURL = try? c.decode(String.self, forKey: .seriesPosterURL)
+        episodePosterURL = try? c.decode(String.self, forKey: .episodePosterURL)
+        episodeCoverURL = try? c.decode(String.self, forKey: .episodeCoverURL)
     }
 }
 

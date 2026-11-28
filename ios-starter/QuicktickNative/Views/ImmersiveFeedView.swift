@@ -242,7 +242,12 @@ struct ImmersiveFeedView: View {
                     Spacer(minLength: 0)
                     if !offline && onClose == nil {
                         Menu { ForEach(Provider.allCases) { provider in
-                            Button(provider.displayName) { store.selectedProvider = provider; Task { await store.refresh(immersive: true) } }
+                            Button {
+                                store.selectedProvider = provider
+                                Task { await store.refresh(immersive: true) }
+                            } label: {
+                                Label(provider.displayName, systemImage: ProviderLogoView.symbol(for: provider))
+                            }
                         }; Divider(); Button("Personalize recommendations") { preferencesVisible = true } } label: {
                             ProviderLogoView(provider: store.selectedProvider)
                                 .frame(width: 58, height: 52)
@@ -687,10 +692,7 @@ private struct ImmersiveItemView: View {
                                  haven: skipHavenIntros, hanime: skipHanimeIntros)
     }
     private var hanimePage: URL? {
-        guard post.providerKey == .hanime,
-              let url = URL(string: post.pageUrl), url.scheme == "https",
-              ["hanime.tv", "www.hanime.tv"].contains(url.host ?? "") else { return nil }
-        return url
+        offline ? nil : HanimeGeneratedAPI.watchURL(for: post)
     }
     private var pornhubPage: URL? {
         guard post.providerKey == .pornhub,
@@ -898,7 +900,11 @@ private struct ImmersiveItemView: View {
                             mediaRetry += 1
                         }.frame(minHeight: 44)
                         if hanimePage != nil {
-                            Button("Open on Hanime inside QuickTick") { browseHanime = true }
+                            Button("Open original player") {
+                                player?.pause()
+                                playing = false
+                                browseHanime = true
+                            }.buttonStyle(.borderedProminent)
                                 .frame(minHeight: 44)
                         }
                         if pornhubPage != nil {

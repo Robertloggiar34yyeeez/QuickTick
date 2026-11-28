@@ -21,6 +21,19 @@ enum CandidatePoolMix {
         return unique < 10 ? 420 : 260
     }
 
+    // Consecutive pages share one cursor; a fast second page cannot stand
+    // in for an unfinished first page, and the last page decides exhaustion.
+    static func consecutiveNextPage(first: Int, firstReceived: Bool, secondReceived: Bool) -> Int {
+        guard firstReceived else { return first }
+        return first + (secondReceived ? 2 : 1)
+    }
+
+    static func consecutiveHasMore(first: PostPage?, second: PostPage?) -> Bool {
+        guard let first else { return true }
+        let last = second ?? first
+        return last.hasMore ?? !last.items.isEmpty
+    }
+
     static func interleave(_ focused: [Post], _ broad: [Post]) -> [Post] {
         var mixed: [Post] = []
         mixed.reserveCapacity(focused.count + broad.count)
@@ -1086,6 +1099,7 @@ final class AppStore: ObservableObject {
         // Structured concurrent child tasks capture immutable query snapshots
         // rather than AppStore's mutable local, satisfying Swift 6 isolation.
         let b = proposedB
+        let consecutive = a.key == b.key && b.page == a.page + 1
         let primaryQuery = a.query
         let primaryPageNumber = a.page
         let secondaryQuery = b.query
@@ -1114,7 +1128,7 @@ final class AppStore: ObservableObject {
         // Immersive's second lane supplies the next distinct clip. Scheduling
         // it as background utility work often loses the grace race while
         // 100 duplicate fixture/source rows parse on the primary lane.
-        let secondaryFlight = Task(priority: mediaOnly ? .userInitiated : .utility) {
+        let secondaryFlight = Task(priority: (mediaOnly || consecutive) ? .userInitiated : .utility) {
             let response = try? await client.posts(provider: provider, query: secondaryQuery,
                                                    page: secondaryPageNumber, sort: secondarySort, immersive: mediaOnly)
             emitter.yield(.second(response))
@@ -1139,7 +1153,10 @@ final class AppStore: ObservableObject {
                 // lane on almost every focused response. Give it a bounded
                 // chance to contribute, especially for sparse pages, without
                 // blocking first paint on an indefinitely slow provider.
-                if available > 0 && deadline == nil {
+                // Shared cursor pages must finish together (within normal
+                // request timeouts). The host rate gate alone can exceed the
+                // fast grace interval, even when both responses are healthy.
+                if !consecutive && available > 0 && deadline == nil {
                     // Huge archive/booru pages can consist of repeated IDs.
                     // Their raw row count is not a useful measure of whether
                     // the first response contains enough to scroll through.
@@ -1173,18 +1190,29 @@ final class AppStore: ObservableObject {
                 context: context, page: page, sort: sort, mediaOnly: mediaOnly)
         }
         if generation == requestedGeneration {
-            if firstPage != nil {
-                candidateCursors[a.key] = a.page + 1
-                await recommendations.advanceCandidatePage(context: a.key, nextPage: a.page + 1)
-            }
-            if secondPage != nil {
-                candidateCursors[b.key] = b.page + 1
-                await recommendations.advanceCandidatePage(context: b.key, nextPage: b.page + 1)
+            if consecutive {
+                let next = CandidatePoolMix.consecutiveNextPage(first: a.page,
+                    firstReceived: firstPage != nil, secondReceived: secondPage != nil)
+                if next > a.page {
+                    candidateCursors[a.key] = next
+                    await recommendations.advanceCandidatePage(context: a.key, nextPage: next)
+                }
+            } else {
+                if firstPage != nil {
+                    candidateCursors[a.key] = a.page + 1
+                    await recommendations.advanceCandidatePage(context: a.key, nextPage: a.page + 1)
+                }
+                if secondPage != nil {
+                    candidateCursors[b.key] = b.page + 1
+                    await recommendations.advanceCandidatePage(context: b.key, nextPage: b.page + 1)
+                }
             }
         }
         let combined = PostPage(
             items: CandidatePoolMix.interleave(firstPage?.items ?? [], secondPage?.items ?? []),
-            hasMore: (firstPage?.hasMore ?? false) || (secondPage?.hasMore ?? false))
+            hasMore: consecutive
+                ? CandidatePoolMix.consecutiveHasMore(first: firstPage, second: secondPage)
+                : (firstPage == nil || secondPage == nil || firstPage?.hasMore == true || secondPage?.hasMore == true))
         if provider == .eporner, parsed.included.isEmpty, combined.items.isEmpty,
            a.page > 1 || b.page > 1, generation == requestedGeneration {
             // A persisted recommendation cursor can run past Eporner's

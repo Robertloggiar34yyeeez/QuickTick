@@ -118,6 +118,17 @@ final class FeedReliabilityTests: XCTestCase {
         XCTAssertTrue(other.isEmpty)
     }
 
+    func testConsecutiveCandidateCursorNeverSkipsAnUnreceivedPage() {
+        XCTAssertEqual(CandidatePoolMix.consecutiveNextPage(first: 3, firstReceived: false, secondReceived: true), 3)
+        XCTAssertEqual(CandidatePoolMix.consecutiveNextPage(first: 3, firstReceived: true, secondReceived: false), 4)
+        XCTAssertEqual(CandidatePoolMix.consecutiveNextPage(first: 3, firstReceived: true, secondReceived: true), 5)
+        let earlier = PostPage(items: [], hasMore: true)
+        let final = PostPage(items: [], hasMore: false)
+        XCTAssertFalse(CandidatePoolMix.consecutiveHasMore(first: earlier, second: final))
+        XCTAssertTrue(CandidatePoolMix.consecutiveHasMore(first: earlier, second: nil))
+        XCTAssertTrue(CandidatePoolMix.consecutiveHasMore(first: nil, second: final))
+    }
+
     func testImmersiveCandidateGracePreservesSparseBatches() {
         XCTAssertEqual(CandidatePoolMix.graceMilliseconds(unique: 2, immersive: true), 720)
         XCTAssertLessThan(CandidatePoolMix.graceMilliseconds(unique: 10, immersive: true),

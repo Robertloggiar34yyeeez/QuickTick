@@ -101,6 +101,11 @@ private final class NativeProviderProtocol: URLProtocol, @unchecked Sendable {
             let clear = try? HanimeHandshakeCodec.open(token)
             let input = clear.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
             let slug = input?["slug"] as? String ?? ""
+            if slug == "blocked-fixture" {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 403,
+                    httpVersion: nil, headerFields: ["cf-mitigated": "challenge"])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self); return
+            }
             if slug == "missing-404" {
                 client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 404,
                     httpVersion: nil, headerFields: [:])!, cacheStoragePolicy: .notAllowed)
@@ -626,6 +631,23 @@ final class NativeProviderAPITests: XCTestCase {
         XCTAssertEqual(resolved.type, "hls")
         XCTAssertFalse(NativeProviderProtocol.log.snapshot().contains { $0.url?.path == "/api/v8/video" },
                        "Play native HLS immediately instead of hitting the removed v8 endpoint")
+    }
+
+    func testHanimeDeniedHandshakeStopsAndExposesOriginalPlayer() async throws {
+        let (api, session) = client(); defer { session.invalidateAndCancel() }
+        NativeProviderProtocol.log.reset()
+        let post = Post(key: "hanime:blocked-fixture", id: "blocked-fixture", provider: "Hanime",
+                        pageUrl: "https://hanime.tv/videos/hentai/blocked-fixture", type: "video")
+        do {
+            _ = try await api.resolveMedia(post)
+            XCTFail("Denied playback must not be reported as playable")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, HanimeGeneratedAPI.nativeAccessDeniedMessage)
+            XCTAssertNotNil(HanimeGeneratedAPI.watchURL(for: post))
+            XCTAssertEqual(NativeProviderProtocol.log.snapshot().filter {
+                $0.url?.path == "/api/v11/handshake"
+            }.count, 1)
+        }
     }
 
     func testHanimeRemovedEndpointShowsAuthorizedPlaybackFallback() async throws {
